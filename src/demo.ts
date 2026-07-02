@@ -1,18 +1,23 @@
 /**
- * v1 ジャーニー実行デモ（実装契約 §12 / README §7）。
+ * v3 縦切りジャーニーデモ（v3 実装契約 §4 / README §7）。
  *
- * `npm run demo`（= `tsx src/demo.ts`）で実行する。
- * README §7 の代表ジャーニーを実ノード（createDefaultRegistry）と実 EtlEngine で
- * 構築し、各ノードのスキーマ状態（type/state/列）と最終プレビュー行を人間可読に
- * console.log する。副作用・外部通信なし。終了コード 0 で正常終了する。
+ * `npm run demo` で実行する。Composition Root（createApp）経由で
+ * 保存(1.0.0) → 再保存(1.0.1) → バージョン一覧 → inspect（スキーマ状態）→
+ * preview（最終出力行）→ 旧バージョン指定 preview（結果差の実証）→ close
+ * の縦切りを実演する。副作用・外部通信なし。終了コード 0 で正常終了する。
+ *
+ * adapters は直接 import しない（composition 経由のみ / depcruise ルール）。
  *
  * ジャーニー:
  *   csv-source → select → filter(age gte 18) → rename(name→displayName) → cast(age→string)
+ *   v1.0.1 では filter を age gte 26 に変更し、バージョン固定の結果差を示す。
  */
+import { createApp } from './composition/root';
+import type { App } from './composition/root';
 import type { Cell, Row, Schema, Table } from './domain/data/types';
-import { createDefaultRegistry } from './domain/etl/nodes/index';
-import { EtlEngine } from './application/etl/engine';
 import type { GraphNode, ToolGraph } from './domain/etl/graph';
+import type { TenantScope } from './domain/tool/ids';
+import { SemVer } from './domain/tool/semver';
 
 /** README §7 相当のサンプル CSV（複数型を含む 4 行）。 */
 const SAMPLE_CSV = [
@@ -23,31 +28,47 @@ const SAMPLE_CSV = [
   '4,Dave,15,true,2022-03-22',
 ].join('\n');
 
-/** README §7 のジャーニーを表す ToolGraph。 */
-const journey: ToolGraph = {
-  nodes: [
-    { id: 'src', type: 'csv-source', config: { text: SAMPLE_CSV } },
-    { id: 'sel', type: 'select', config: { columns: ['id', 'name', 'age', 'active'] } },
-    { id: 'flt', type: 'filter', config: { column: 'age', op: 'gte', value: 18 } },
-    { id: 'ren', type: 'rename', config: { renames: [{ from: 'name', to: 'displayName' }] } },
-    { id: 'cst', type: 'cast', config: { casts: [{ column: 'age', to: 'string' }] } },
-  ],
-  edges: [
-    { from: 'src', to: 'sel' },
-    { from: 'sel', to: 'flt' },
-    { from: 'flt', to: 'ren' },
-    { from: 'ren', to: 'cst' },
-  ],
-};
+/** filter の閾値だけを差し替えて README §7 のジャーニーグラフを作る。 */
+function makeJourneyGraph(minAge: number): ToolGraph {
+  return {
+    nodes: [
+      { id: 'src', type: 'csv-source', config: { text: SAMPLE_CSV } },
+      { id: 'sel', type: 'select', config: { columns: ['id', 'name', 'age', 'active'] } },
+      { id: 'flt', type: 'filter', config: { column: 'age', op: 'gte', value: minAge } },
+      { id: 'ren', type: 'rename', config: { renames: [{ from: 'name', to: 'displayName' }] } },
+      { id: 'cst', type: 'cast', config: { casts: [{ column: 'age', to: 'string' }] } },
+    ],
+    edges: [
+      { from: 'src', to: 'sel' },
+      { from: 'sel', to: 'flt' },
+      { from: 'flt', to: 'ren' },
+      { from: 'ren', to: 'cst' },
+    ],
+  };
+}
 
-/** ノードごとの人間可読ラベル（デモ出力用）。 */
-const NODE_LABELS: Record<string, string> = {
-  src: 'csv-source',
-  sel: "select[id,name,age,active]",
-  flt: 'filter[age gte 18]',
-  ren: 'rename[name -> displayName]',
-  cst: 'cast[age -> string]',
-};
+/** ノードの人間可読ラベルを config から導出する（デモ出力用）。 */
+function describeNode(gn: GraphNode): string {
+  const config = gn.config as Record<string, unknown>;
+  switch (gn.type) {
+    case 'csv-source':
+      return 'csv-source';
+    case 'select':
+      return `select[${(config['columns'] as string[]).join(',')}]`;
+    case 'filter':
+      return `filter[${String(config['column'])} ${String(config['op'])} ${String(config['value'])}]`;
+    case 'rename': {
+      const renames = config['renames'] as ReadonlyArray<{ from: string; to: string }>;
+      return `rename[${renames.map((r) => `${r.from} -> ${r.to}`).join(', ')}]`;
+    }
+    case 'cast': {
+      const casts = config['casts'] as ReadonlyArray<{ column: string; to: string }>;
+      return `cast[${casts.map((c) => `${c.column} -> ${c.to}`).join(', ')}]`;
+    }
+    default:
+      return gn.type;
+  }
+}
 
 /** スキーマを "name:type(?)" のカンマ区切り文字列にする。 */
 function formatSchema(schema: Schema): string {
@@ -65,71 +86,118 @@ function formatCell(value: Cell): string {
 
 /** 1 行を "k=v, k=v" 形式にする（列順に従う）。 */
 function formatRow(row: Row, schema: Schema): string {
-  return schema.columns
-    .map((c) => `${c.name}=${formatCell(row[c.name] ?? null)}`)
-    .join(', ');
+  return schema.columns.map((c) => `${c.name}=${formatCell(row[c.name] ?? null)}`).join(', ');
 }
 
-function main(): void {
-  const registry = createDefaultRegistry();
-  const engine = new EtlEngine(registry);
-  const nodeById = new Map<string, GraphNode>(journey.nodes.map((n) => [n.id, n]));
+/** テーブルの全行を "row[i] { ... }" 形式で出力する。 */
+function printRows(output: Table): void {
+  output.rows.forEach((row, i) => {
+    console.log(`  row[${i}] { ${formatRow(row, output.schema)} }`);
+  });
+}
 
-  console.log('=== AgentContext v1 journey demo ===');
+const scope: TenantScope = { tenantId: 'demo-tenant', workspaceId: 'demo-ws' };
+const TOOL_ID = 'adult-users';
+
+async function main(app: App): Promise<void> {
+  console.log('=== AgentContext v3 vertical-slice demo (via composition root) ===');
+  console.log(`profile: ${app.profile} (sqlite :memory:)`);
   console.log('journey: csv-source -> select -> filter -> rename -> cast');
   console.log('');
   console.log('--- input CSV ---');
   console.log(SAMPLE_CSV);
   console.log('');
 
-  // 1) スキーマ伝播。
-  const prop = engine.propagateSchemas(journey);
-  console.log('--- schema propagation (per node) ---');
-  console.log(`topological order: ${prop.order.join(' -> ')}`);
-  console.log(`hasErrors: ${prop.hasErrors}`);
-  for (const id of prop.order) {
-    const inf = prop.nodes[id];
+  // 1) 保存 1.0.0（filter: age gte 18）。
+  const v1 = await app.saveTool.execute({
+    scope,
+    internalId: TOOL_ID,
+    workingName: 'adult-users-working',
+    displayName: 'Adult Users',
+    publishName: 'adult_users',
+    owner: 'demo@example.com',
+    sideEffect: 'read-only',
+    graph: makeJourneyGraph(18),
+  });
+  console.log('--- save (initial) ---');
+  console.log(`saved ${TOOL_ID}@${v1.metadata.version.toString()} (filter: age gte 18)`);
+
+  // 2) グラフを少し変えて再保存 → 1.0.1（bump 省略 = patch）。
+  const v2 = await app.saveTool.execute({
+    scope,
+    internalId: TOOL_ID,
+    workingName: 'adult-users-working',
+    displayName: 'Adult Users',
+    publishName: 'adult_users',
+    owner: 'demo@example.com',
+    sideEffect: 'read-only',
+    graph: makeJourneyGraph(26),
+  });
+  console.log('');
+  console.log('--- save (updated graph) ---');
+  console.log(`saved ${TOOL_ID}@${v2.metadata.version.toString()} (filter: age gte 26)`);
+
+  // 3) バージョン一覧。
+  const versions = await app.listToolVersions.execute(scope, TOOL_ID);
+  console.log('');
+  console.log('--- versions ---');
+  console.log(`${TOOL_ID}: ${versions.map((v) => v.toString()).join(', ')}`);
+
+  // 4) inspect（latest = 1.0.1）: 各ノードのスキーマ状態を表示。
+  const { tool: inspected, propagation } = await app.previewTool.inspect(scope, TOOL_ID);
+  const nodeById = new Map<string, GraphNode>(inspected.graph.nodes.map((n) => [n.id, n]));
+  console.log('');
+  console.log(`--- inspect: schema propagation (latest ${inspected.metadata.version.toString()}) ---`);
+  console.log(`topological order: ${propagation.order.join(' -> ')}`);
+  console.log(`hasErrors: ${propagation.hasErrors}`);
+  for (const id of propagation.order) {
+    const inf = propagation.nodes[id];
     if (inf === undefined) continue;
     const gn = nodeById.get(id);
-    const label = NODE_LABELS[id] ?? gn?.type ?? id;
     console.log('');
-    console.log(`[${id}] ${label}`);
+    console.log(`[${id}] ${gn !== undefined ? describeNode(gn) : id}`);
     console.log(`  type   : ${gn?.type ?? '(unknown)'}`);
     console.log(`  state  : ${inf.state}`);
     console.log(`  schema : ${formatSchema(inf.schema)}`);
-    if (inf.issues.length > 0) {
-      for (const issue of inf.issues) {
-        const col = issue.column ? ` (column: ${issue.column})` : '';
-        console.log(`  issue  : [${issue.severity}] ${issue.message}${col}`);
-      }
+    for (const issue of inf.issues) {
+      const col = issue.column ? ` (column: ${issue.column})` : '';
+      console.log(`  issue  : [${issue.severity}] ${issue.message}${col}`);
     }
   }
 
-  // 2) プレビュー実行（最終出力の行を表示）。
-  const preview = engine.preview(journey);
-  const output: Table = preview.output;
+  // 5) preview（latest = 1.0.1）: 最終出力行を表示。
+  const latest = await app.previewTool.preview(scope, TOOL_ID);
+  console.log('');
+  console.log(`--- preview: final output (latest ${latest.tool.metadata.version.toString()}) ---`);
+  console.log(`terminal node : ${latest.result.terminalId}`);
+  console.log(`output schema : ${formatSchema(latest.result.output.schema)}`);
+  console.log(`output rows   : ${latest.result.output.rows.length}`);
+  printRows(latest.result.output);
+
+  // 6) 旧バージョン(1.0.0)を version 指定で preview → 最新版と結果が異なる。
+  const pinned = await app.previewTool.preview(scope, TOOL_ID, { version: SemVer.of(1, 0, 0) });
+  console.log('');
+  console.log(`--- preview: pinned version ${pinned.tool.metadata.version.toString()} ---`);
+  console.log(`output rows   : ${pinned.result.output.rows.length}`);
+  printRows(pinned.result.output);
 
   console.log('');
-  console.log('--- preview: final output ---');
-  console.log(`terminal node : ${preview.terminalId}`);
-  console.log(`output schema : ${formatSchema(output.schema)}`);
-  console.log(`output rows   : ${output.rows.length}`);
-  output.rows.forEach((row, i) => {
-    console.log(`  row[${i}] { ${formatRow(row, output.schema)} }`);
-  });
-
-  console.log('');
-  console.log('--- preview: row counts per node ---');
-  for (const id of prop.order) {
-    const np = preview.nodes[id];
-    if (np === undefined) continue;
-    const label = NODE_LABELS[id] ?? id;
-    const trunc = np.truncated ? ' (truncated)' : '';
-    console.log(`  [${id}] ${label}: ${np.table.rows.length} row(s)${trunc}`);
-  }
+  console.log('--- version pinning: result difference ---');
+  console.log(`latest 1.0.1 (age gte 26): ${latest.result.output.rows.length} row(s)`);
+  console.log(`pinned 1.0.0 (age gte 18): ${pinned.result.output.rows.length} row(s)`);
+  console.log(
+    `same tool id, different version -> different result: ${
+      latest.result.output.rows.length !== pinned.result.output.rows.length
+    }`,
+  );
 
   console.log('');
   console.log('=== demo complete ===');
 }
 
-main();
+const app = createApp({ profile: 'local', dbPath: ':memory:' });
+try {
+  await main(app);
+} finally {
+  app.close();
+}

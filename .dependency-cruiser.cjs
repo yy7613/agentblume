@@ -30,6 +30,20 @@ module.exports = {
       from: {},
       to: { circular: true },
     },
+    {
+      name: 'only-root-imports-composition',
+      comment: 'composition(組み立て)をimportできるのはエントリポイント(demo等のsrc直下)だけ',
+      severity: 'error',
+      from: { path: '^src/(domain|application|adapters)' },
+      to: { path: '^src/composition' },
+    },
+    {
+      name: 'entrypoints-use-composition-not-adapters',
+      comment: 'エントリポイント(src直下)はadapters実装を直接importせずcompositionを経由する',
+      severity: 'error',
+      from: { path: '^src/[^/]+\\.ts$' },
+      to: { path: '^src/adapters' },
+    },
   ],
   options: {
     doNotFollow: { path: 'node_modules' },

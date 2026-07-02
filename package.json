@@ -10,7 +10,7 @@
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "depcruise": "depcruise src --config .dependency-cruiser.cjs",
-    "demo": "tsx src/demo.ts"
+    "demo": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx src/demo.ts"
   },
   "license": "UNLICENSED",
   "devDependencies": {
