@@ -6,13 +6,15 @@
  */
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
+import { registerDraftToolRoutes } from './draft-tool-routes';
+import type { DraftToolRouteDeps } from './draft-tool-routes';
 import { toHttpError } from './error-mapping';
 import { registerToolRoutes } from './tool-routes';
 import type { ToolRouteDeps } from './tool-routes';
 
 /** ルート・エラーハンドラ設定済みの Fastify インスタンスを組み立てる（listen しない）。 */
 export function buildServer(
-  deps: ToolRouteDeps,
+  deps: ToolRouteDeps & DraftToolRouteDeps,
   options?: { logger?: boolean },
 ): FastifyInstance {
   const app = Fastify({ logger: options?.logger ?? false });
@@ -24,6 +26,7 @@ export function buildServer(
   });
 
   registerToolRoutes(app, deps);
+  registerDraftToolRoutes(app, deps);
 
   // ヘルスチェック。
   app.get('/health', async () => ({ status: 'ok' }));

@@ -12,6 +12,7 @@
 import { InMemoryToolRepository } from '../adapters/storage/in-memory-tool-repository';
 import { SqliteToolRepository } from '../adapters/storage/sqlite-tool-repository';
 import { EtlEngine } from '../application/etl/engine';
+import { DraftToolUseCase } from '../application/tool/draft-tool';
 import { PreviewToolUseCase } from '../application/tool/preview-tool';
 import { GetToolUseCase, ListToolVersionsUseCase } from '../application/tool/query-tool';
 import { SaveToolUseCase } from '../application/tool/save-tool';
@@ -35,6 +36,7 @@ export interface App {
   readonly profile: Profile;
   readonly repo: ToolRepository;
   readonly engine: EtlEngine;
+  readonly draftTool: DraftToolUseCase;
   readonly saveTool: SaveToolUseCase;
   readonly getTool: GetToolUseCase;
   readonly listToolVersions: ListToolVersionsUseCase;
@@ -78,6 +80,7 @@ export function createApp(options?: AppOptions): App {
     profile,
     repo,
     engine,
+    draftTool: new DraftToolUseCase(engine),
     saveTool: new SaveToolUseCase(repo, engine),
     getTool: new GetToolUseCase(repo),
     listToolVersions: new ListToolVersionsUseCase(repo),

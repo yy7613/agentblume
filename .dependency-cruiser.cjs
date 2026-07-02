@@ -58,6 +58,13 @@ module.exports = {
       from: { path: '^src/api', pathNot: '\\.test\\.ts$' },
       to: { path: '^src/(adapters|composition)' },
     },
+    {
+      name: 'ui-http-boundary-only',
+      comment: 'UIはHTTP DTO/clientだけを所有し、backend内部レイヤを直接importしない',
+      severity: 'error',
+      from: { path: '^src/ui' },
+      to: { path: '^src/(domain|application|api|adapters|composition)' },
+    },
   ],
   options: {
     doNotFollow: { path: 'node_modules' },

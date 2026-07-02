@@ -2,14 +2,10 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
     // node:sqlite（組込み・実験的）を各テストワーカーで有効化する（ADR-0004）
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        execArgv: ['--experimental-sqlite', '--disable-warning=ExperimentalWarning'],
-      },
-    },
+    execArgv: ['--experimental-sqlite', '--disable-warning=ExperimentalWarning'],
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],

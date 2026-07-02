@@ -16,7 +16,7 @@ export const tenantScopeSchema = z.object({
 });
 
 /** ToolGraph の構造検証（config は unknown のまま通す）。 */
-const graphSchema = z.object({
+export const graphSchema = z.object({
   nodes: z.array(
     z.object({
       id: z.string(),
@@ -64,6 +64,17 @@ export const saveToolBodySchema = z.object({
 export const previewBodySchema = z.object({
   scope: tenantScopeSchema,
   version: z.string().optional(),
+  rowLimit: z.number().int().min(1).max(10000).optional(),
+});
+
+/** 未保存 graph のスキーマ点検 body。 */
+export const draftInspectBodySchema = z.object({
+  graph: graphSchema,
+});
+
+/** 未保存 graph のプレビュー body。 */
+export const draftPreviewBodySchema = z.object({
+  graph: graphSchema,
   rowLimit: z.number().int().min(1).max(10000).optional(),
 });
 
