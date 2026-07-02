@@ -1,0 +1,27 @@
+{
+  "name": "agentcontext",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentContext — ノーコード・エージェントIDE (v1 increment: ETL Tool Engine)",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:cov": "vitest run --coverage",
+    "depcruise": "depcruise src --config .dependency-cruiser.cjs",
+    "demo": "tsx src/demo.ts"
+  },
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "@vitest/coverage-v8": "^4.1.9",
+    "dependency-cruiser": "^18.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  }
+}
