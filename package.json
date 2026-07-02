@@ -10,7 +10,8 @@
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "depcruise": "depcruise src --config .dependency-cruiser.cjs",
-    "demo": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx src/demo.ts"
+    "demo": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx src/demo.ts",
+    "serve": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx src/server.ts"
   },
   "license": "UNLICENSED",
   "devDependencies": {
@@ -22,6 +23,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
+    "fastify": "^5.9.0",
     "zod": "^4.4.3"
   }
 }

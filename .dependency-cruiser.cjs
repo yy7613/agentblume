@@ -44,6 +44,20 @@ module.exports = {
       from: { path: '^src/[^/]+\\.ts$' },
       to: { path: '^src/adapters' },
     },
+    {
+      name: 'inner-layers-no-api',
+      comment: 'api(駆動アダプター)をimportできるのはエントリポイントだけ',
+      severity: 'error',
+      from: { path: '^src/(domain|application|adapters|composition)' },
+      to: { path: '^src/api' },
+    },
+    {
+      name: 'api-production-no-adapters-composition',
+      comment: 'apiの本体はuse case注入で受け、adapters/compositionを直接importしない（テストは配線のためcomposition可）',
+      severity: 'error',
+      from: { path: '^src/api', pathNot: '\\.test\\.ts$' },
+      to: { path: '^src/(adapters|composition)' },
+    },
   ],
   options: {
     doNotFollow: { path: 'node_modules' },
