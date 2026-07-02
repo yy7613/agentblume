@@ -12,7 +12,7 @@ import { SchemaError } from '../../domain/etl/errors';
 import type { EtlNode, SchemaInference, SchemaIssue } from '../../domain/etl/node';
 import { NodeRegistry } from '../../domain/etl/registry';
 import { EtlEngine } from './engine';
-import type { ToolGraph } from './graph';
+import type { ToolGraph } from '../../domain/etl/graph';
 
 // ---------------------------------------------------------------------------
 // スタブノード定義（EtlNode を満たす最小実装）

@@ -12,7 +12,7 @@
 import type { Cell, Row, Schema, Table } from './domain/data/types';
 import { createDefaultRegistry } from './domain/etl/nodes/index';
 import { EtlEngine } from './application/etl/engine';
-import type { GraphNode, ToolGraph } from './application/etl/graph';
+import type { GraphNode, ToolGraph } from './domain/etl/graph';
 
 /** README §7 相当のサンプル CSV（複数型を含む 4 行）。 */
 const SAMPLE_CSV = [

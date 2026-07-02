@@ -3,10 +3,18 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
+    // node:sqlite（組込み・実験的）を各テストワーカーで有効化する（ADR-0004）
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        execArgv: ['--experimental-sqlite', '--disable-warning=ExperimentalWarning'],
+      },
+    },
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.test.ts', 'src/demo.ts', 'src/**/index.ts'],
+      // *.contract.ts は共有テストスイート（テストコード）なので計測対象外
+      exclude: ['src/**/*.test.ts', 'src/**/*.contract.ts', 'src/demo.ts', 'src/**/index.ts'],
       thresholds: {
         lines: 90,
         functions: 90,

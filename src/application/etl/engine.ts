@@ -16,7 +16,7 @@ import type { EtlNode, SchemaIssue } from '../../domain/etl/node';
 import type { NodeRegistry } from '../../domain/etl/registry';
 import { combineStates } from '../../domain/etl/state';
 import { topologicalSort } from '../../domain/etl/topo';
-import type { GraphNode, ToolGraph } from './graph';
+import type { GraphNode, ToolGraph } from '../../domain/etl/graph';
 
 /** 1ノードのスキーマ推論結果（上流合成後の最終 state を含む）。 */
 export interface NodeInference {

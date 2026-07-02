@@ -18,7 +18,7 @@ import { describe, expect, it } from 'vitest';
 import type { DataType, Schema } from '../../domain/data/types';
 import { createDefaultRegistry } from '../../domain/etl/nodes/index';
 import { EtlEngine } from './engine';
-import type { ToolGraph } from './graph';
+import type { ToolGraph } from '../../domain/etl/graph';
 
 // ---------------------------------------------------------------------------
 // 共通のサンプル / ヘルパ
