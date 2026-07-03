@@ -1,4 +1,4 @@
-export const NODE_TYPES = ['json-source', 'csv-source', 'select', 'filter', 'rename', 'cast'] as const;
+export const NODE_TYPES = ['agent-input', 'json-source', 'csv-source', 'select', 'filter', 'rename', 'cast'] as const;
 export type ToolNodeType = (typeof NODE_TYPES)[number];
 
 export interface NodeCatalogItem {
@@ -10,6 +10,14 @@ export interface NodeCatalogItem {
 }
 
 export const NODE_CATALOG: readonly NodeCatalogItem[] = [
+  {
+    type: 'agent-input', label: 'Agent input', kind: 'source',
+    description: 'Tool Calling引数を1行の入力として受け取ります。',
+    defaultConfig: {
+      schema: { columns: [{ name: 'query', type: 'string', nullable: false }] },
+      sample: { query: 'sample' },
+    },
+  },
   {
     type: 'json-source', label: 'JSON source', kind: 'source',
     description: '固定 JSON 行を読み込みます。', defaultConfig: { rows: [{ id: 1, name: 'Alice', age: 30 }, { id: 2, name: 'Bob', age: 17 }] },

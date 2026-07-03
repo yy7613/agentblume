@@ -78,6 +78,30 @@ export const draftPreviewBodySchema = z.object({
   rowLimit: z.number().int().min(1).max(10000).optional(),
 });
 
+/** POST /runs: 保存済みTool 1本を使うAgent preview。 */
+export const runAgentBodySchema = z.object({
+  scope: tenantScopeSchema,
+  tool: z.object({
+    internalId: z.string().min(1),
+    version: z.string().optional(),
+  }),
+  systemPrompt: z.string().min(1),
+  message: z.string().min(1),
+  mode: z.enum(['preview', 'test']).default('preview'),
+});
+
+export const runListQuerySchema = z.object({
+  tenantId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  status: z.enum(['running', 'succeeded', 'failed']).optional(),
+});
+
+export const runTraceQuerySchema = z.object({
+  tenantId: z.string().min(1),
+  workspaceId: z.string().min(1),
+});
+
 /** GET /tools/:id 系の query（version は任意文字列、妥当性はルート側）。 */
 export const versionQuerySchema = z.object({
   tenantId: z.string().min(1),

@@ -123,7 +123,10 @@ export function flowToGraph(nodes: readonly ToolFlowNode[], edges: readonly Edge
 
 export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
   ...initialState(),
-  setMetadata: (key, value) => set((state) => ({ metadata: { ...state.metadata, [key]: value } })),
+  setMetadata: (key, value) => set((state) => ({
+    metadata: { ...state.metadata, [key]: value },
+    ...(['tenantId', 'workspaceId', 'internalId'].includes(key) ? { currentVersion: undefined, versions: [] } : {}),
+  })),
   addNode: (type) => set((state) => {
     const id = `${type}-${nextNodeId++}`;
     const selected = state.nodes.find((node) => node.id === state.selectedNodeId);

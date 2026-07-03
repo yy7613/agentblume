@@ -174,3 +174,4 @@ flowchart LR
 
 - トレースは `TelemetryPort` 経由（[04-api-spec.md](./04-api-spec.md#24-永続化観測監査)）。
 - 監査ログは秘密情報・個人情報をマスキングして `AuditSink` へ。
+- v1ローカル実装は成功/失敗Runと最小traceを `RunRepository`（SQLite）へ保存し、Status画面から再取得する。OpenTelemetry exportとretention policyは後続で追加する。

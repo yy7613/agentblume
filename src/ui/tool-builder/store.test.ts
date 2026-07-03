@@ -57,4 +57,10 @@ describe('tool builder store', () => {
     expect(useToolBuilderStore.getState().edges).toEqual([]);
     expect(flowToGraph(useToolBuilderStore.getState().nodes, [])).toHaveProperty('edges', []);
   });
+
+  it('Tool identity変更時は保存versionを引き継がない', () => {
+    useToolBuilderStore.getState().setSavedVersion('1.0.0', ['1.0.0']);
+    useToolBuilderStore.getState().setMetadata('internalId', 'another-tool');
+    expect(useToolBuilderStore.getState()).toMatchObject({ currentVersion: undefined, versions: [] });
+  });
 });

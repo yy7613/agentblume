@@ -5,6 +5,10 @@ import type {
   SerializedToolDto,
   TenantScopeDto,
   ToolGraphDto,
+  AgentPreviewRunDto,
+  RunAgentDto,
+  RunRecordDto,
+  RunSummaryDto,
 } from './types';
 
 export class ApiError extends Error {
@@ -12,6 +16,7 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly runId?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -60,6 +65,24 @@ export class ToolApiClient {
     return (await this.request<{ tool: SerializedToolDto }>(`/tools/${encodeURIComponent(internalId)}?${query}`)).tool;
   }
 
+  async runAgent(input: RunAgentDto, signal?: AbortSignal): Promise<AgentPreviewRunDto> {
+    return (await this.request<{ run: AgentPreviewRunDto }>('/runs', {
+      method: 'POST', body: JSON.stringify(input), signal,
+    })).run;
+  }
+
+  async listRuns(scope: TenantScopeDto, options?: { readonly limit?: number; readonly status?: 'running' | 'succeeded' | 'failed' }): Promise<readonly RunSummaryDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (options?.limit !== undefined) query.set('limit', String(options.limit));
+    if (options?.status !== undefined) query.set('status', options.status);
+    return (await this.request<{ runs: RunSummaryDto[] }>(`/runs?${query}`)).runs;
+  }
+
+  async getRunTrace(runId: string, scope: TenantScopeDto): Promise<RunRecordDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ run: RunRecordDto }>(`/runs/${encodeURIComponent(runId)}/trace?${query}`)).run;
+  }
+
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await this.fetcher(`${this.baseUrl}${path}`, {
       ...init,
@@ -67,11 +90,12 @@ export class ToolApiClient {
     });
     const body = (await response.json()) as unknown;
     if (!response.ok) {
-      const error = body as { error?: { code?: string; message?: string } };
+      const error = body as { error?: { code?: string; message?: string; runId?: string } };
       throw new ApiError(
         response.status,
         error.error?.code ?? 'HTTP_ERROR',
         error.error?.message ?? response.statusText,
+        error.error?.runId,
       );
     }
     return body as T;

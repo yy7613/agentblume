@@ -65,11 +65,14 @@ interface AgentRuntimePort {
 }
 
 interface ModelProviderPort {
-  complete(req: CompletionRequest): AsyncIterable<Token>;
-  embed(req: EmbedRequest): Promise<Vector>;
+  // v1 Agent previewはTool Callingを含む正規化済みcompletionを返す。
+  // token streamingは後続のAgentRuntimePort実装で共通RuntimeEventへ拡張する。
+  complete(req: CompletionRequest, signal?: AbortSignal): Promise<ModelCompletion>;
   capabilities(): ModelCapability[]; // 未対応機能は暗黙フォールバックしない
 }
 ```
+
+> v1の `ModelProviderPort` は `chat` / `tool-calling` に限定する。埋め込みはRAG導入時に `embed` capabilityと要求型を追加する。
 
 ### 2.2 MCP系
 
@@ -175,6 +178,7 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/agents/{id}/generate-prompt` | Skill/Toolメタからsystem prompt自動生成 | `agent:edit` |
 | `POST` | `/agents/{id}/export` | Mastraコードへ一方向エクスポート | `agent:edit` |
 | `POST` | `/runs` | Agent実行（chat / preview / test） | `agent:execute` |
+| `GET` | `/runs` | workspace内のRun履歴一覧 | `agent:read` |
 | `GET` | `/runs/{id}/trace` | 実行トレース取得 | `agent:read` |
 | `POST` | `/validations` | 検証ケース定義 | `agent:edit` |
 | `POST` | `/validations/{id}/run` | 疑似ユーザーで検証実行 | `agent:execute` |

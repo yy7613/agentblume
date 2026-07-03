@@ -10,6 +10,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryToolRepository } from '../adapters/storage/in-memory-tool-repository';
 import { SqliteToolRepository } from '../adapters/storage/sqlite-tool-repository';
+import { LmStudioModelProvider } from '../adapters/model/lm-studio-model-provider';
+import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider';
+import { InMemoryRunRepository } from '../adapters/storage/in-memory-run-repository';
+import { SqliteRunRepository } from '../adapters/storage/sqlite-run-repository';
 import type { ToolGraph } from '../domain/etl/graph';
 import { ToolValidationError } from '../domain/tool/errors';
 import type { TenantScope } from '../domain/tool/ids';
@@ -58,6 +62,8 @@ describe('createApp', () => {
 
     expect(app.profile).toBe('test');
     expect(app.repo).toBeInstanceOf(InMemoryToolRepository);
+    expect(app.modelProvider).toBeInstanceOf(ScriptedModelProvider);
+    expect(app.runRepo).toBeInstanceOf(InMemoryRunRepository);
     await roundTrip(app);
     app.close(); // InMemory は no-op（例外なし）。
   });
@@ -67,6 +73,8 @@ describe('createApp', () => {
 
     expect(app.profile).toBe('local');
     expect(app.repo).toBeInstanceOf(SqliteToolRepository);
+    expect(app.modelProvider).toBeInstanceOf(LmStudioModelProvider);
+    expect(app.runRepo).toBeInstanceOf(SqliteRunRepository);
     await roundTrip(app);
     app.close();
   });
@@ -135,6 +143,11 @@ describe('createApp', () => {
 
       expect(() => createApp()).toThrow(ToolValidationError);
       expect(() => createApp()).toThrow(/staging/);
+    });
+
+    it('不正な LM_STUDIO_TIMEOUT_MS を拒否する', () => {
+      vi.stubEnv('LM_STUDIO_TIMEOUT_MS', 'not-a-number');
+      expect(() => createApp({ profile: 'local', dbPath: ':memory:' })).toThrow(/LM_STUDIO_TIMEOUT_MS/);
     });
 
     it('env AGENTCONTEXT_DB_PATH が dbPath 既定として使われる（ファイルへ永続化される）', async () => {

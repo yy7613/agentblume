@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { ColumnDto } from '../api/types';
+import type { ColumnDto, DataType, SchemaDto } from '../api/types';
 import { catalogItem, type ToolNodeType } from './node-catalog';
 import { useToolBuilderStore } from './store';
 
@@ -51,6 +51,7 @@ export function NodeInspector() {
       <h2>{catalogItem(type).label}</h2>
       <p>{catalogItem(type).description}</p>
       <datalist id="upstream-columns">{columns.map((column) => <option key={column.name} value={column.name} />)}</datalist>
+      {type === 'agent-input' && <AgentInputFields key={node.id} config={config} setConfig={setConfig} />}
       {type === 'json-source' && (
         <label>JSON rows<textarea rows={12} value={jsonText} onChange={(event) => {
           const text = event.target.value; setJsonText(text);
@@ -66,6 +67,46 @@ export function NodeInspector() {
       {columns.length > 0 && <div className="column-hints"><strong>Upstream columns</strong>{columns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
     </aside>
   );
+}
+
+const DATA_TYPES: readonly DataType[] = ['string', 'number', 'boolean', 'date', 'null', 'unknown'];
+
+function columnsText(schema: SchemaDto | undefined): string {
+  return (schema?.columns ?? []).map((column) => `${column.name}:${column.type}:${column.nullable ? 'optional' : 'required'}`).join('\n');
+}
+
+function parseColumns(value: string): ColumnDto[] {
+  return value.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [name = '', rawType = '', presence = 'required'] = line.split(':').map((part) => part.trim());
+    if (name === '') throw new Error('列名が必要です');
+    if (!DATA_TYPES.includes(rawType as DataType)) throw new Error(`未対応の型です: ${rawType}`);
+    if (presence !== 'required' && presence !== 'optional') throw new Error(`required/optionalを指定してください: ${presence}`);
+    return { name, type: rawType as DataType, nullable: presence === 'optional' };
+  });
+}
+
+function AgentInputFields({ config, setConfig }: { config: Readonly<Record<string, unknown>>; setConfig(patch: Record<string, unknown>): void }) {
+  const schema = config['schema'] as SchemaDto | undefined;
+  const sample = config['sample'] as Readonly<Record<string, unknown>> | undefined;
+  const [schemaValue, setSchemaValue] = useState(columnsText(schema));
+  const [sampleValue, setSampleValue] = useState(JSON.stringify(sample ?? {}, null, 2));
+  const [schemaError, setSchemaError] = useState<string>();
+  const [sampleError, setSampleError] = useState<string>();
+  return <>
+    <label>Input columns <small>name:type:required|optional</small><textarea aria-label="Input columns" rows={7} value={schemaValue} onChange={(event) => {
+      const value = event.target.value; setSchemaValue(value);
+      try { const columns = parseColumns(value); setSchemaError(undefined); setConfig({ schema: { columns } }); }
+      catch (error) { setSchemaError(error instanceof Error ? error.message : 'Invalid schema'); }
+    }} />{schemaError !== undefined && <small className="field-error">{schemaError}</small>}</label>
+    <label>Sample arguments<textarea aria-label="Sample arguments" rows={8} value={sampleValue} onChange={(event) => {
+      const value = event.target.value; setSampleValue(value);
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON objectを入力してください');
+        setSampleError(undefined); setConfig({ sample: parsed });
+      } catch (error) { setSampleError(error instanceof Error ? error.message : 'Invalid JSON'); }
+    }} />{sampleError !== undefined && <small className="field-error">{sampleError}</small>}</label>
+  </>;
 }
 
 function CsvFields({ config, setConfig }: { config: Readonly<Record<string, unknown>>; setConfig(patch: Record<string, unknown>): void }) {

@@ -12,11 +12,15 @@ import {
   ToolValidationError,
   VersionConflictError,
 } from '../domain/tool/errors';
+import { AgentRunError, ToolArgumentsError, UnsafeToolError } from '../application/agent/errors';
+import { ModelProviderError } from '../application/model/model-provider';
+import { RunFailedError } from '../application/agent/errors';
+import { RunNotFoundError } from '../domain/run/errors';
 
 /** HTTP エラーレスポンス表現。 */
 export interface HttpError {
   readonly status: number;
-  readonly body: { error: { code: string; message: string } };
+  readonly body: { error: { code: string; message: string; runId?: string } };
 }
 
 /**
@@ -49,15 +53,30 @@ function httpError(status: number, code: string, message: string): HttpError {
  * | ConfigError | 422 | ETL_CONFIG |
  * | SchemaError | 422 | ETL_SCHEMA |
  * | BadRequestError | 400 | BAD_REQUEST |
+ * | UnsafeToolError | 403 | UNSAFE_TOOL |
+ * | ToolArgumentsError / AgentRunError | 422 | TOOL_ARGUMENTS / AGENT_RUN |
+ * | ModelProviderError | 502 | MODEL_PROVIDER |
+ * | RunNotFoundError | 404 | RUN_NOT_FOUND |
+ * | RunFailedError | 元例外のstatus/code + runId |
  * | その他 | 500 | INTERNAL（message 'internal error' 固定） |
  */
 export function toHttpError(err: unknown): HttpError {
+  if (err instanceof RunFailedError) {
+    const mapped = toHttpError(err.cause);
+    return { status: mapped.status, body: { error: { ...mapped.body.error, runId: err.runId } } };
+  }
   if (err instanceof BadRequestError) return httpError(400, err.code, err.message);
 
   // Tool ドメイン: 具象クラスを ToolValidationError より先に判定する。
   if (err instanceof ToolNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof VersionConflictError) return httpError(409, err.code, err.message);
   if (err instanceof ToolValidationError) return httpError(400, err.code, err.message);
+  if (err instanceof RunNotFoundError) return httpError(404, err.code, err.message);
+
+  if (err instanceof UnsafeToolError) return httpError(403, err.code, err.message);
+  if (err instanceof ToolArgumentsError) return httpError(422, err.code, err.message);
+  if (err instanceof AgentRunError) return httpError(422, err.code, err.message);
+  if (err instanceof ModelProviderError) return httpError(502, err.code, err.message);
 
   // ETL ドメイン: いずれも 422。
   if (err instanceof GraphError) return httpError(422, err.code, err.message);

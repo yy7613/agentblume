@@ -30,6 +30,8 @@ export function MetadataBar({ client }: { readonly client: ToolApiClient }) {
         owner: metadata.owner,
         sideEffect: metadata.sideEffect,
         graph: currentGraph(),
+        ...(inputSchema() !== undefined ? { inputSchema: inputSchema() } : {}),
+        ...(outputSchema() !== undefined ? { outputSchema: outputSchema() } : {}),
       });
       const nextVersions = await client.listVersions(metadata.internalId, scope);
       setSavedVersion(tool.metadata.version, nextVersions);
@@ -75,4 +77,18 @@ export function MetadataBar({ client }: { readonly client: ToolApiClient }) {
       </div>
     </header>
   );
+}
+
+function inputSchema() {
+  const graph = currentGraph();
+  const node = graph.nodes.find((candidate) => candidate.type === 'agent-input');
+  const config = node?.config as { schema?: import('../api/types').SchemaDto } | undefined;
+  return config?.schema;
+}
+
+function outputSchema() {
+  const propagation = useToolBuilderStore.getState().propagation;
+  if (propagation === undefined) return undefined;
+  const terminalId = propagation?.order.at(-1);
+  return terminalId === undefined ? undefined : propagation.nodes[terminalId]?.schema;
 }

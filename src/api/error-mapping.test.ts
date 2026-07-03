@@ -12,6 +12,10 @@ import {
   VersionConflictError,
 } from '../domain/tool/errors';
 import { BadRequestError, toHttpError } from './error-mapping';
+import { AgentRunError, ToolArgumentsError, UnsafeToolError } from '../application/agent/errors';
+import { ModelProviderError } from '../application/model/model-provider';
+import { RunFailedError } from '../application/agent/errors';
+import { RunNotFoundError } from '../domain/run/errors';
 
 describe('toHttpError', () => {
   it.each([
@@ -22,12 +26,23 @@ describe('toHttpError', () => {
     [new ConfigError('bad config'), 422, 'ETL_CONFIG', 'bad config'],
     [new SchemaError('bad schema'), 422, 'ETL_SCHEMA', 'bad schema'],
     [new BadRequestError('bad request'), 400, 'BAD_REQUEST', 'bad request'],
+    [new UnsafeToolError('unsafe'), 403, 'UNSAFE_TOOL', 'unsafe'],
+    [new ToolArgumentsError('bad args'), 422, 'TOOL_ARGUMENTS', 'bad args'],
+    [new AgentRunError('bad run'), 422, 'AGENT_RUN', 'bad run'],
+    [new ModelProviderError('offline'), 502, 'MODEL_PROVIDER', 'offline'],
+    [new RunNotFoundError('missing run'), 404, 'RUN_NOT_FOUND', 'missing run'],
   ] as const)(
     '%s → status=%i code=%s',
     (err, status, code, message) => {
       expect(toHttpError(err)).toEqual({ status, body: { error: { code, message } } });
     },
   );
+
+  it('RunFailedErrorは元status/codeを維持してrunIdを付ける', () => {
+    expect(toHttpError(new RunFailedError('run-1', new ModelProviderError('offline')))).toEqual({
+      status: 502, body: { error: { code: 'MODEL_PROVIDER', message: 'offline', runId: 'run-1' } },
+    });
+  });
 
   it('具象クラスは基底クラスの分岐に飲み込まれない（判定順序）', () => {
     // ToolNotFoundError / VersionConflictError は ToolError 派生。

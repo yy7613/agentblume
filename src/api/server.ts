@@ -11,10 +11,12 @@ import type { DraftToolRouteDeps } from './draft-tool-routes';
 import { toHttpError } from './error-mapping';
 import { registerToolRoutes } from './tool-routes';
 import type { ToolRouteDeps } from './tool-routes';
+import { registerRunRoutes } from './run-routes';
+import type { RunRouteDeps } from './run-routes';
 
 /** ルート・エラーハンドラ設定済みの Fastify インスタンスを組み立てる（listen しない）。 */
 export function buildServer(
-  deps: ToolRouteDeps & DraftToolRouteDeps,
+  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps,
   options?: { logger?: boolean },
 ): FastifyInstance {
   const app = Fastify({ logger: options?.logger ?? false });
@@ -27,6 +29,7 @@ export function buildServer(
 
   registerToolRoutes(app, deps);
   registerDraftToolRoutes(app, deps);
+  registerRunRoutes(app, deps);
 
   // ヘルスチェック。
   app.get('/health', async () => ({ status: 'ok' }));

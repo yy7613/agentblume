@@ -8,7 +8,7 @@ const STATE_LABEL = {
 export function ToolNode({ id, data, selected }: NodeProps<ToolFlowNode>) {
   const inference = useToolBuilderStore((state) => state.propagation?.nodes[id]);
   const hasError = inference?.issues.some((issue) => issue.severity === 'error') ?? false;
-  const isSource = data.nodeType.endsWith('-source');
+  const isSource = data.nodeType.endsWith('-source') || data.nodeType === 'agent-input';
   return (
     <div className={`tool-node ${selected ? 'selected' : ''} ${hasError ? 'invalid' : ''}`}>
       {!isSource && <Handle type="target" position={Position.Left} />}

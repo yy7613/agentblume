@@ -10,6 +10,7 @@ export default defineConfig({
       '/health': 'http://127.0.0.1:3030',
       '/tools': 'http://127.0.0.1:3030',
       '/tool-drafts': 'http://127.0.0.1:3030',
+      '/runs': 'http://127.0.0.1:3030',
     },
   },
   build: { outDir: 'dist/ui', emptyOutDir: true },

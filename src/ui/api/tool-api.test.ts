@@ -53,6 +53,33 @@ describe('ToolApiClient', () => {
     await expect(promise).rejects.toEqual(expect.objectContaining({ status: 422, code: 'ETL_GRAPH', message: 'broken graph', name: 'ApiError' }));
   });
 
+  it('Agent runをversion固定bodyとAbortSignalで呼ぶ', async () => {
+    const run = { runId: 'run-1', response: 'done', trace: [] };
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ run }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    const controller = new AbortController();
+    const input = { scope, tool: { internalId: 'tool-1', version: '1.0.0' }, systemPrompt: 'Use tools', message: 'go', mode: 'preview' as const };
+    await expect(client.runAgent(input, controller.signal)).resolves.toMatchObject(run);
+    expect(fetcher).toHaveBeenCalledWith('/api/runs', expect.objectContaining({
+      method: 'POST', body: JSON.stringify(input), signal: controller.signal,
+    }));
+  });
+
+  it('run list/traceをscope付きで取得し失敗runIdを保持する', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ runs: [{ runId: 'run-1' }] }))
+      .mockResolvedValueOnce(jsonResponse({ run: { runId: 'run-1', trace: [] } }))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'MODEL_PROVIDER', message: 'offline', runId: 'run-2' } }, 502));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    await client.listRuns(scope, { limit: 10, status: 'failed' });
+    await client.getRunTrace('run/1', scope);
+    const error = await client.runAgent({ scope, tool: { internalId: 'x' }, systemPrompt: 'x', message: 'x', mode: 'preview' }).catch((cause: unknown) => cause);
+    expect(fetcher.mock.calls[0]?.[0]).toContain('limit=10');
+    expect(fetcher.mock.calls[0]?.[0]).toContain('status=failed');
+    expect(fetcher.mock.calls[1]?.[0]).toContain('/runs/run%2F1/trace?');
+    expect(error).toMatchObject({ code: 'MODEL_PROVIDER', runId: 'run-2' });
+  });
+
   it('標準形式でないHTTPエラーにもfallbackを使う', async () => {
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({}, 500));
     await expect(new ToolApiClient('', fetcher as typeof fetch).inferDraft(graph)).rejects.toMatchObject({ code: 'HTTP_ERROR' });
