@@ -28,9 +28,10 @@ describe('agent routes', () => {
     const toolList = await server.inject({ method: 'GET', url: '/tools', query: scope });
     expect(toolList.json().tools).toMatchObject([{ internalId: 'scores', latestVersion: '1.0.0' }]);
 
-    const first = await server.inject({ method: 'POST', url: '/agents', payload: body() });
+    const first = await server.inject({ method: 'POST', url: '/agents', payload: body({ output: { name: 'assistant_response', fields: [{ name: 'answer', type: 'string', required: true }] } }) });
     expect(first.statusCode).toBe(201);
     expect(first.json().agent.metadata.version).toBe('1.0.0');
+    expect(first.json().agent.output).toEqual({ name: 'assistant_response', fields: [{ name: 'answer', type: 'string', required: true }] });
     const second = await server.inject({ method: 'POST', url: '/agents', payload: body() });
     expect(second.json().agent.metadata.version).toBe('1.0.1');
 

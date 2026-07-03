@@ -1,7 +1,13 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('local', 'team', 'test')]
+  [ValidateSet('local', 'test')]
   [string]$Profile = 'local',
+
+  [ValidateRange(1, 65535)]
+  [int]$ApiPort = 3030,
+
+  [ValidateRange(1, 65535)]
+  [int]$UiPort = 5173,
 
   [switch]$ApiOnly,
 
@@ -110,6 +116,43 @@ function Stop-LoggedProcess {
   $Entry.Process.Dispose()
 }
 
+function Get-PortOwnerLabel {
+  param(
+    [Parameter(Mandatory = $true)]
+    [int]$Port
+  )
+
+  $connection = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($null -eq $connection) {
+    return $null
+  }
+
+  $owner = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
+  if ($null -eq $owner) {
+    return "PID $($connection.OwningProcess)"
+  }
+  return "PID $($owner.Id) ($($owner.ProcessName))"
+}
+
+function Assert-PortAvailable {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Name,
+
+    [Parameter(Mandatory = $true)]
+    [int]$Port,
+
+    [Parameter(Mandatory = $true)]
+    [string]$OverrideParameter
+  )
+
+  $owner = Get-PortOwnerLabel -Port $Port
+  if ($null -ne $owner) {
+    throw "$Name ポート $Port は使用中です: $owner。既存プロセスを停止するか、-$OverrideParameter で別ポートを指定してください。"
+  }
+}
+
 $targets = @()
 if (-not $UiOnly) {
   $targets += [pscustomobject]@{
@@ -117,6 +160,9 @@ if (-not $UiOnly) {
     Arguments = 'run serve'
     Environment = @{
       AGENTCONTEXT_PROFILE = $Profile
+      AGENTCONTEXT_PORT = $ApiPort
+      NO_COLOR = '1'
+      FORCE_COLOR = '0'
     }
   }
 }
@@ -124,25 +170,40 @@ if (-not $UiOnly) {
 if (-not $ApiOnly) {
   $targets += [pscustomobject]@{
     Name = 'ui'
-    Arguments = 'run dev:ui'
-    Environment = @{}
+    Arguments = "run dev:ui -- --port $UiPort --strictPort"
+    Environment = @{
+      AGENTCONTEXT_API_URL = "http://127.0.0.1:$ApiPort"
+      NO_COLOR = '1'
+      FORCE_COLOR = '0'
+    }
   }
 }
 
 if ($DryRun) {
   foreach ($target in $targets) {
-    Write-Host "$($target.Name): $npmPath $($target.Arguments)"
+    if ($target.Name -eq 'api') {
+      Write-Host "api: AGENTCONTEXT_PROFILE=$Profile AGENTCONTEXT_PORT=$ApiPort $npmPath $($target.Arguments)"
+    } else {
+      Write-Host "ui: AGENTCONTEXT_API_URL=http://127.0.0.1:$ApiPort $npmPath $($target.Arguments)"
+    }
   }
   exit 0
+}
+
+if (-not $UiOnly) {
+  Assert-PortAvailable -Name 'API' -Port $ApiPort -OverrideParameter 'ApiPort'
+}
+if (-not $ApiOnly) {
+  Assert-PortAvailable -Name 'UI' -Port $UiPort -OverrideParameter 'UiPort'
 }
 
 Write-Host "Repo root: $repoRoot"
 Write-Host "Profile : $Profile"
 if (-not $UiOnly) {
-  Write-Host 'API     : http://127.0.0.1:3030/health'
+  Write-Host "API     : http://127.0.0.1:$ApiPort/health"
 }
 if (-not $ApiOnly) {
-  Write-Host 'UI      : http://127.0.0.1:5173'
+  Write-Host "UI      : http://127.0.0.1:$UiPort"
 }
 Write-Host 'Ctrl+C で起動したプロセスを停止します。'
 
@@ -154,7 +215,7 @@ try {
     $started += Start-LoggedProcess -Name $target.Name -Arguments $target.Arguments -Environment $target.Environment
   }
 
-  while ($true) {
+  :monitor while ($true) {
     foreach ($entry in $started) {
       if ($entry.Process.HasExited) {
         if ($entry.Process.ExitCode -ne 0) {
@@ -163,7 +224,7 @@ try {
         } else {
           Write-Host "$($entry.Name) が終了しました。"
         }
-        return
+        break monitor
       }
     }
 

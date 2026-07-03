@@ -17,6 +17,7 @@ import type {
   AgentToolRefDto,
   AgentSummaryDto,
   RunSavedAgentDto,
+  StructuredOutputDto,
 } from './types';
 
 export class ApiError extends Error {
@@ -95,7 +96,7 @@ export class ToolApiClient {
     return (await this.request<{ agents: AgentSummaryDto[] }>(`/agents?${query}`)).agents;
   }
 
-  async generateAgentPrompt(input: { readonly scope: TenantScopeDto; readonly displayName: string; readonly kind: AgentKindDto; readonly tools: readonly AgentToolRefDto[] }): Promise<AgentPromptDraftDto> {
+  async generateAgentPrompt(input: { readonly scope: TenantScopeDto; readonly displayName: string; readonly kind: AgentKindDto; readonly tools: readonly AgentToolRefDto[]; readonly output?: StructuredOutputDto }): Promise<AgentPromptDraftDto> {
     return (await this.request<{ draft: AgentPromptDraftDto }>('/agent-drafts/generate-prompt', {
       method: 'POST', body: JSON.stringify(input),
     })).draft;

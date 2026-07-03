@@ -51,9 +51,15 @@ describe('LmStudioModelProvider', () => {
         { role: 'tool', content: '{"value":"x"}', toolCallId: 'c' },
       ],
       temperature: 0,
+      responseFormat: {
+        name: 'answer', strict: true,
+        schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'], additionalProperties: false },
+      },
     });
     const body = JSON.parse(String((fetcher.mock.calls[0]?.[1] as RequestInit).body));
-    expect(body).toMatchObject({ temperature: 0, messages: [
+    expect(body).toMatchObject({ temperature: 0, response_format: {
+      type: 'json_schema', json_schema: { name: 'answer', strict: true, schema: { type: 'object', required: ['answer'], additionalProperties: false } },
+    }, messages: [
       { role: 'assistant', tool_calls: [{ function: { arguments: '{"value":"x"}' } }] },
       { role: 'tool', tool_call_id: 'c' },
     ] });

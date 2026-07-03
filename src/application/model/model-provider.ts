@@ -40,6 +40,11 @@ export interface ModelCompletionRequest {
   readonly messages: readonly ModelMessage[];
   readonly tools?: readonly ModelToolDefinition[];
   readonly temperature?: number;
+  readonly responseFormat?: {
+    readonly name: string;
+    readonly strict: boolean;
+    readonly schema: JsonSchemaObject;
+  };
 }
 
 export interface ModelUsage {
@@ -54,7 +59,7 @@ export interface ModelCompletion {
   readonly usage?: ModelUsage;
 }
 
-export type ModelCapability = 'chat' | 'tool-calling';
+export type ModelCapability = 'chat' | 'tool-calling' | 'structured-output';
 
 export interface ModelProviderPort {
   complete(request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion>;

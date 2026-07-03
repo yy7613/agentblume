@@ -2,6 +2,7 @@ import type { ToolId, TenantScope } from '../tool/ids';
 import { isPublishState, type PublishState } from '../tool/metadata';
 import { SemVer } from '../tool/semver';
 import { AgentValidationError } from './errors';
+import { createStructuredOutput, type StructuredOutputDefinition } from './structured-output';
 
 export const AGENT_KINDS = ['normal', 'pseudo-user', 'evaluator'] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
@@ -27,6 +28,7 @@ export interface Agent {
   readonly kind: AgentKind;
   readonly systemPrompt: string;
   readonly tools: readonly AgentToolRef[];
+  readonly output?: StructuredOutputDefinition;
 }
 
 export interface CreateAgentProps {
@@ -34,6 +36,7 @@ export interface CreateAgentProps {
   readonly kind: AgentKind;
   readonly systemPrompt: string;
   readonly tools: readonly AgentToolRef[];
+  readonly output?: StructuredOutputDefinition;
 }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
@@ -91,5 +94,6 @@ export function createAgent(props: CreateAgentProps): Agent {
     kind: props.kind,
     systemPrompt: props.systemPrompt,
     tools,
+    ...(props.output !== undefined ? { output: createStructuredOutput(props.output) } : {}),
   };
 }

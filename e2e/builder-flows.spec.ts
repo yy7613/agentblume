@@ -48,6 +48,7 @@ test('Agent BuilderでTool選択からprompt生成・編集・保存まで完了
   await expect(page.getByText('Agent Builder', { exact: true })).toBeVisible();
   await page.getByLabel('Agent internal ID').fill('e2e-agent');
   await page.getByRole('checkbox', { name: /E2E Score Tool/ }).check();
+  await page.getByRole('checkbox', { name: 'Enable structured output' }).check();
 
   await page.getByRole('button', { name: 'Generate draft' }).click();
   const prompt = page.getByLabel('System prompt');
@@ -61,13 +62,14 @@ test('Agent BuilderでTool選択からprompt生成・編集・保存まで完了
   const agent = (await agentResponse.json()).agent;
   expect(agent.systemPrompt).toBe('Reviewed E2E system prompt.');
   expect(agent.tools).toEqual([{ internalId: 'e2e-score-tool', version: '1.0.0' }]);
+  expect(agent.output).toEqual({ name: 'assistant_agent_response', fields: [{ name: 'answer', type: 'string', required: true }] });
 
   await page.route('**/runs', async (route) => {
     const request = route.request();
     expect(request.postDataJSON()).toMatchObject({ agent: { internalId: 'e2e-agent', version: '1.0.0' }, mode: 'preview' });
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ run: {
-      runId: 'e2e-run', mode: 'preview', agent: { internalId: 'e2e-agent', version: '1.0.0' }, response: 'E2E agent response', usage: {},
-      trace: [{ sequence: 1, kind: 'model-response', content: 'E2E agent response' }],
+      runId: 'e2e-run', mode: 'preview', agent: { internalId: 'e2e-agent', version: '1.0.0' }, response: '{"answer":"E2E agent response"}', structuredResponse: { answer: 'E2E agent response' }, usage: {},
+      trace: [{ sequence: 1, kind: 'model-response', content: '{"answer":"E2E agent response"}' }],
     } }) });
   });
   await page.getByRole('button', { name: 'Run saved agent' }).click();

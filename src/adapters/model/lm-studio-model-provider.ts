@@ -74,7 +74,7 @@ export class LmStudioModelProvider implements ModelProviderPort {
   }
 
   capabilities(): readonly ModelCapability[] {
-    return ['chat', 'tool-calling'];
+    return ['chat', 'tool-calling', 'structured-output'];
   }
 
   async complete(request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion> {
@@ -106,6 +106,16 @@ export class LmStudioModelProvider implements ModelProviderPort {
               }
             : {}),
           ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+          ...(request.responseFormat !== undefined ? {
+            response_format: {
+              type: 'json_schema',
+              json_schema: {
+                name: request.responseFormat.name,
+                strict: request.responseFormat.strict,
+                schema: request.responseFormat.schema,
+              },
+            },
+          } : {}),
           stream: false,
         }),
         signal: controller.signal,

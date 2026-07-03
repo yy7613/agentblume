@@ -11,7 +11,7 @@ export class ScriptedModelProvider implements ModelProviderPort {
   private readonly queue: ModelCompletion[] = [];
 
   capabilities(): readonly ModelCapability[] {
-    return ['chat', 'tool-calling'];
+    return ['chat', 'tool-calling', 'structured-output'];
   }
 
   enqueue(...completions: readonly ModelCompletion[]): void {

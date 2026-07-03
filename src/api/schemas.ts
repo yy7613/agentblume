@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { PUBLISH_STATES, SIDE_EFFECTS } from '../domain/tool/metadata';
 import type { PublishState, SideEffect } from '../domain/tool/metadata';
 import { AGENT_KINDS } from '../domain/agent/agent';
+import { STRUCTURED_OUTPUT_TYPES } from '../domain/agent/structured-output';
 
 /** テナントスコープ（tenantId / workspaceId 非空）。 */
 export const tenantScopeSchema = z.object({
@@ -66,6 +67,16 @@ const agentToolRefSchema = z.object({
   version: z.string().min(1),
 });
 
+const structuredOutputSchema = z.object({
+  name: z.string().min(1).max(64),
+  fields: z.array(z.object({
+    name: z.string().min(1),
+    type: z.enum(STRUCTURED_OUTPUT_TYPES),
+    required: z.boolean(),
+    description: z.string().optional(),
+  })).min(1),
+});
+
 /** POST /agents の body。Tool参照は保存済みversionへ固定する。 */
 export const saveAgentBodySchema = z.object({
   scope: tenantScopeSchema,
@@ -77,6 +88,7 @@ export const saveAgentBodySchema = z.object({
   kind: z.enum(AGENT_KINDS),
   systemPrompt: z.string().min(1),
   tools: z.array(agentToolRefSchema),
+  output: structuredOutputSchema.optional(),
   bump: z.enum(['major', 'minor', 'patch']).optional(),
   state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
 });
@@ -87,6 +99,7 @@ export const agentDraftPromptBodySchema = z.object({
   displayName: z.string().min(1),
   kind: z.enum(AGENT_KINDS),
   tools: z.array(agentToolRefSchema),
+  output: structuredOutputSchema.optional(),
 });
 
 /** 保存済みAgent向けprompt生成。 */

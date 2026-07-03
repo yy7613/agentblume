@@ -24,11 +24,12 @@ class FakeTools implements ToolRepository {
 
 describe('GenerateAgentPromptUseCase', () => {
   it('Tool公開名・固定version・schema・side effectを編集可能な草案へ含める', async () => {
-    const result = await new GenerateAgentPromptUseCase(new FakeTools()).execute({ scope, displayName: 'Judge', kind: 'evaluator', tools: [{ internalId: 'scores', version: SemVer.of(2, 0, 0) }] });
+    const result = await new GenerateAgentPromptUseCase(new FakeTools()).execute({ scope, displayName: 'Judge', kind: 'evaluator', tools: [{ internalId: 'scores', version: SemVer.of(2, 0, 0) }], output: { name: 'judge_response', fields: [{ name: 'verdict', type: 'boolean', required: true }] } });
     expect(result.editable).toBe(true);
     expect(result.systemPromptDraft).toContain('filter_scores@2.0.0');
     expect(result.systemPromptDraft).toContain('score:number');
     expect(result.systemPromptDraft).toContain('side-effect read-only');
+    expect(result.systemPromptDraft).toContain('verdict:boolean');
     expect(result.sources).toEqual(['tool:filter_scores@2.0.0 の入出力・副作用']);
   });
 

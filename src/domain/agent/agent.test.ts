@@ -14,6 +14,7 @@ function valid() {
     kind: 'normal' as const,
     systemPrompt: 'Use the selected tools.',
     tools: [{ internalId: 'tool-1', version: SemVer.of(2, 1, 0) }],
+    output: { name: 'agent_response', fields: [{ name: 'answer', type: 'string' as const, required: true }] },
   };
 }
 
@@ -24,6 +25,7 @@ describe('Agent aggregate', () => {
     input.metadata.tenant.tenantId = 'changed';
     expect(agent.metadata.tenant.tenantId).toBe('tenant');
     expect(serializeAgent(deserializeAgent(serializeAgent(agent)))).toEqual(serializeAgent(agent));
+    expect(agent.output?.fields[0]?.name).toBe('answer');
   });
 
   it('空system prompt、重複Tool、不正serialized dataを拒否する', () => {

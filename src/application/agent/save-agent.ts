@@ -1,5 +1,6 @@
 import { createAgent, type Agent, type AgentKind } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
+import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
 import { AgentValidationError } from '../../domain/agent/errors';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { PublishState } from '../../domain/tool/metadata';
@@ -18,6 +19,7 @@ export interface SaveAgentInput {
   readonly tools: readonly { readonly internalId: string; readonly version: SemVer }[];
   readonly bump?: 'major' | 'minor' | 'patch';
   readonly state?: PublishState;
+  readonly output?: StructuredOutputDefinition;
 }
 
 export class SaveAgentUseCase {
@@ -40,6 +42,7 @@ export class SaveAgentUseCase {
       kind: input.kind,
       systemPrompt: input.systemPrompt,
       tools: input.tools,
+      ...(input.output !== undefined ? { output: input.output } : {}),
     });
     await this.agents.save(agent);
     return agent;

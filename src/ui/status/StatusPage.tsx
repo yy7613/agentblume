@@ -37,7 +37,7 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
       <section className="run-detail" aria-label="Run trace">
         {selected === undefined ? <p className="empty-state">runを選択するとtraceを表示します。</p> : <>
           <div className="run-detail-title"><div><span className={`run-status ${selected.status}`}>{selected.status}</span><h2>{selected.runId}</h2></div><code>{selected.agent?.internalId ?? selected.tool?.internalId ?? 'unknown'}@{selected.agent?.version ?? selected.tool?.version ?? 'latest'}</code></div>
-          {selected.response !== undefined && <div className="chat-response"><span>Response</span><p>{selected.response}</p></div>}
+          {selected.response !== undefined && <div className="chat-response"><span>Response</span>{selected.structuredResponse === undefined ? <p>{selected.response}</p> : <pre>{JSON.stringify(selected.structuredResponse, null, 2)}</pre>}</div>}
           {selected.failure !== undefined && <div className="api-error"><strong>{selected.failure.code}</strong> {selected.failure.message}</div>}
           <div className="trace-list">{selected.trace.map((event) => <StatusTraceEvent key={event.sequence} event={event} />)}</div>
         </>}

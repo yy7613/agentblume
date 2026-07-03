@@ -80,6 +80,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
       displayName: agent.metadata.displayName,
       kind: agent.kind,
       tools: agent.tools,
+      ...(agent.output !== undefined ? { output: agent.output } : {}),
     });
     return { draft };
   });

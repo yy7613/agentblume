@@ -1,7 +1,7 @@
 export class AgentRunError extends Error {
   readonly code: string = 'AGENT_RUN';
 
-  constructor(message: string) {
+  constructor(message: string, override readonly cause?: unknown) {
     super(message);
     this.name = 'AgentRunError';
   }

@@ -61,7 +61,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
       ...(query.status !== undefined ? { status: query.status } : {}),
     });
     return { runs: records.map((record) => ({
-      runId: record.runId, status: record.status, mode: record.mode, tool: record.tool, agent: record.agent,
+      runId: record.runId, status: record.status, mode: record.mode, tool: record.tool, tools: record.tools, agent: record.agent,
       startedAt: record.startedAt, completedAt: record.completedAt,
       response: record.response, failure: record.failure, usage: record.usage,
       traceEventCount: record.trace.length,

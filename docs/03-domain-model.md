@@ -126,6 +126,8 @@ classDiagram
 - `SideEffect`: `ReadOnly`（副作用なし）/ `Write`（書き込み）/ `ExternalAction`（外部操作）。`Write`・`ExternalAction` は実行前承認の対象。
 - `AgentKind`: `Normal`（通常）/ `PseudoUser`（ユーザープロファイル駆動の疑似ユーザー）/ `Evaluator`（評価用）。
 
+v1の`StructuredOutput`はJSON object直下の`string / number / integer / boolean` fieldに限定し、requiredとdescriptionを保持する。nested object、array、enumは後続で拡張する。
+
 ---
 
 ## 3. Tool の内部構造（ノードフロー）

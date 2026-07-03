@@ -78,6 +78,17 @@ export interface ToolSummaryDto {
 }
 
 export type AgentKindDto = 'normal' | 'pseudo-user' | 'evaluator';
+export type StructuredOutputTypeDto = 'string' | 'number' | 'integer' | 'boolean';
+export interface StructuredOutputFieldDto {
+  readonly name: string;
+  readonly type: StructuredOutputTypeDto;
+  readonly required: boolean;
+  readonly description?: string;
+}
+export interface StructuredOutputDto {
+  readonly name: string;
+  readonly fields: readonly StructuredOutputFieldDto[];
+}
 export interface AgentToolRefDto { readonly internalId: string; readonly version: string }
 export interface SerializedAgentDto {
   readonly metadata: {
@@ -93,6 +104,7 @@ export interface SerializedAgentDto {
   readonly kind: AgentKindDto;
   readonly systemPrompt: string;
   readonly tools: readonly AgentToolRefDto[];
+  readonly output?: StructuredOutputDto;
 }
 export interface SaveAgentDto {
   readonly scope: TenantScopeDto;
@@ -104,6 +116,7 @@ export interface SaveAgentDto {
   readonly kind: AgentKindDto;
   readonly systemPrompt: string;
   readonly tools: readonly AgentToolRefDto[];
+  readonly output?: StructuredOutputDto;
   readonly bump?: 'major' | 'minor' | 'patch';
 }
 export interface AgentSummaryDto {
@@ -133,7 +146,9 @@ export interface AgentPreviewRunDto {
   readonly mode: 'preview' | 'test';
   readonly agent?: { readonly internalId: string; readonly publishName?: string; readonly version?: string };
   readonly tool?: { readonly internalId: string; readonly publishName?: string; readonly version?: string };
+  readonly tools?: readonly { readonly internalId: string; readonly publishName?: string; readonly version?: string }[];
   readonly response: string;
+  readonly structuredResponse?: Readonly<Record<string, unknown>>;
   readonly trace: readonly RunTraceEventDto[];
   readonly usage: { readonly promptTokens?: number; readonly completionTokens?: number; readonly totalTokens?: number };
 }
@@ -159,9 +174,11 @@ export interface RunSummaryDto {
   readonly mode: 'preview' | 'test';
   readonly agent?: { readonly internalId: string; readonly version?: string; readonly publishName?: string };
   readonly tool?: { readonly internalId: string; readonly version?: string; readonly publishName?: string };
+  readonly tools?: readonly { readonly internalId: string; readonly version?: string; readonly publishName?: string }[];
   readonly startedAt: string;
   readonly completedAt?: string;
   readonly response?: string;
+  readonly structuredResponse?: Readonly<Record<string, unknown>>;
   readonly failure?: { readonly code: string; readonly message: string };
   readonly usage?: AgentPreviewRunDto['usage'];
   readonly traceEventCount: number;

@@ -63,7 +63,8 @@ describe('POST /runs', () => {
     });
     model.enqueue(
       { message: { role: 'assistant', content: null, toolCalls: [{ id: 'call-2', name: 'other_lookup', arguments: { name: 'Bob', score: 7 } }] }, finishReason: 'tool_calls' },
-      { message: { role: 'assistant', content: 'Bob: 7' }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'call-3', name: 'score_lookup', arguments: { name: 'Alice', score: 42 } }] }, finishReason: 'tool_calls' },
+      { message: { role: 'assistant', content: 'Bob: 7, Alice: 42' }, finishReason: 'stop' },
     );
 
     const response = await server.inject({ method: 'POST', url: '/runs', payload: {
@@ -71,13 +72,18 @@ describe('POST /runs', () => {
     } });
     expect(response.statusCode).toBe(200);
     expect(response.json().run).toMatchObject({
-      response: 'Bob: 7',
+      response: 'Bob: 7, Alice: 42',
       agent: { internalId: 'score-agent', version: '1.0.0', publishName: 'score_agent' },
-      tool: { internalId: 'other-tool', version: '1.0.0', publishName: 'other_lookup' },
+      tool: { internalId: 'score-tool', version: '1.0.0', publishName: 'score_lookup' },
+      tools: [
+        { internalId: 'other-tool', version: '1.0.0', publishName: 'other_lookup' },
+        { internalId: 'score-tool', version: '1.0.0', publishName: 'score_lookup' },
+      ],
     });
     expect(model.requests[0]?.tools?.map((tool) => tool.name)).toEqual(['score_lookup', 'other_lookup']);
+    expect(model.requests[1]?.tools?.map((tool) => tool.name)).toEqual(['score_lookup', 'other_lookup']);
     const list = await server.inject({ method: 'GET', url: '/runs?tenantId=tenant&workspaceId=workspace' });
-    expect(list.json().runs[0]).toMatchObject({ agent: { internalId: 'score-agent', version: '1.0.0' } });
+    expect(list.json().runs[0]).toMatchObject({ agent: { internalId: 'score-agent', version: '1.0.0' }, tools: [{ internalId: 'other-tool' }, { internalId: 'score-tool' }] });
   });
 
   it('Toolを持たない保存済みAgentの直接応答を記録する', async () => {
@@ -92,6 +98,32 @@ describe('POST /runs', () => {
     expect(response.json().run).toMatchObject({ response: 'Direct answer.', agent: { internalId: 'chat-agent', version: '1.0.0' } });
     expect(response.json().run.tool).toBeUndefined();
     expect(model.requests[0]?.tools).toBeUndefined();
+  });
+
+  it('保存済みAgentのstructured outputをProviderへ渡して再検証・永続化する', async () => {
+    await app.saveAgent.execute({
+      scope, internalId: 'structured-agent', workingName: 'structured', displayName: 'Structured Agent', publishName: 'structured_agent', owner: 'owner', kind: 'normal', systemPrompt: 'Return JSON.', tools: [],
+      output: { name: 'structured_response', fields: [
+        { name: 'answer', type: 'string', required: true },
+        { name: 'score', type: 'integer', required: true },
+      ] },
+    });
+    model.enqueue({ message: { role: 'assistant', content: '{"answer":"done","score":9}' }, finishReason: 'stop' });
+    const response = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, agent: { internalId: 'structured-agent', version: '1.0.0' }, message: 'Answer', mode: 'preview',
+    } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().run.structuredResponse).toEqual({ answer: 'done', score: 9 });
+    expect(model.requests[0]?.responseFormat).toMatchObject({ name: 'structured_response', strict: true, schema: { required: ['answer', 'score'] } });
+    const trace = await server.inject({ method: 'GET', url: `/runs/${response.json().run.runId}/trace?tenantId=tenant&workspaceId=workspace` });
+    expect(trace.json().run.structuredResponse).toEqual({ answer: 'done', score: 9 });
+
+    model.enqueue({ message: { role: 'assistant', content: '{"answer":"missing score"}' }, finishReason: 'stop' });
+    const invalid = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, agent: { internalId: 'structured-agent' }, message: 'Invalid', mode: 'preview',
+    } });
+    expect(invalid.statusCode).toBe(422);
+    expect(invalid.json().error).toMatchObject({ code: 'AGENT_RUN', runId: expect.any(String) });
   });
 
   it('保存済みAgentの候補にwrite Toolがあれば403でfail closedする', async () => {

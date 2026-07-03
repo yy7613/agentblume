@@ -1,5 +1,6 @@
 import type { AgentKind } from '../../domain/agent/agent';
 import { AgentValidationError } from '../../domain/agent/errors';
+import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
 import type { Schema } from '../../domain/data/types';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
@@ -23,7 +24,7 @@ const KIND_GUIDE: Record<AgentKind, string> = {
 export class GenerateAgentPromptUseCase {
   constructor(private readonly tools: ToolRepository) {}
 
-  async execute(input: { readonly scope: TenantScope; readonly displayName: string; readonly kind: AgentKind; readonly tools: readonly PromptToolRef[] }): Promise<AgentPromptDraft> {
+  async execute(input: { readonly scope: TenantScope; readonly displayName: string; readonly kind: AgentKind; readonly tools: readonly PromptToolRef[]; readonly output?: StructuredOutputDefinition }): Promise<AgentPromptDraft> {
     if (input.displayName.trim().length === 0) throw new AgentValidationError('GenerateAgentPrompt: displayName is required');
     const loaded: Tool[] = [];
     for (const ref of input.tools) {
@@ -35,7 +36,10 @@ export class GenerateAgentPromptUseCase {
     const toolUsageGuide = loaded.length === 0
       ? '# Tool使用ガイド\n利用可能なToolはありません。'
       : `# Tool使用ガイド\n${loaded.map(toolGuide).join('\n')}`;
-    const rules = '# 実行規則\n- Tool名は公開名をそのまま使用する。\n- Toolの入力スキーマを満たす引数だけを渡す。\n- Tool結果を推測で補完せず、回答に使用した事実を区別する。\n- writeまたはexternal-actionのToolは明示的な承認なしに実行しない。';
+    const outputRule = input.output === undefined
+      ? ''
+      : `\n- 最終応答はJSON objectとし、次のfield契約を満たす: ${input.output.fields.map((field) => `${field.name}:${field.type}${field.required ? '' : '?'}`).join(', ')}。`;
+    const rules = `# 実行規則\n- Tool名は公開名をそのまま使用する。\n- Toolの入力スキーマを満たす引数だけを渡す。\n- Tool結果を推測で補完せず、回答に使用した事実を区別する。\n- writeまたはexternal-actionのToolは明示的な承認なしに実行しない。${outputRule}`;
     return {
       systemPromptDraft: [role, toolUsageGuide, rules].join('\n\n'),
       sections: { role, toolUsageGuide, rules },

@@ -26,24 +26,24 @@ export interface RunFailure {
   readonly message: string;
 }
 
+export interface RunArtifactRef {
+  readonly internalId: string;
+  readonly version?: string;
+  readonly publishName?: string;
+}
+
 export interface RunRecord {
   readonly runId: string;
   readonly scope: TenantScope;
   readonly status: RunStatus;
   readonly mode: RunMode;
-  readonly tool?: {
-    readonly internalId: string;
-    readonly version?: string;
-    readonly publishName?: string;
-  };
-  readonly agent?: {
-    readonly internalId: string;
-    readonly version?: string;
-    readonly publishName?: string;
-  };
+  readonly tool?: RunArtifactRef;
+  readonly tools?: readonly RunArtifactRef[];
+  readonly agent?: RunArtifactRef;
   readonly startedAt: string;
   readonly completedAt?: string;
   readonly response?: string;
+  readonly structuredResponse?: Readonly<Record<string, unknown>>;
   readonly trace: readonly RunTraceEvent[];
   readonly usage?: RunUsage;
   readonly failure?: RunFailure;
@@ -54,6 +54,7 @@ export interface StartRunProps {
   readonly scope: TenantScope;
   readonly mode: RunMode;
   readonly tool?: RunRecord['tool'];
+  readonly tools?: RunRecord['tools'];
   readonly agent?: RunRecord['agent'];
   readonly startedAt: string;
 }
@@ -63,6 +64,7 @@ export function startRun(props: StartRunProps): RunRecord {
     ...props,
     scope: { ...props.scope },
     ...(props.tool !== undefined ? { tool: { ...props.tool } } : {}),
+    ...(props.tools !== undefined ? { tools: props.tools.map((tool) => ({ ...tool })) } : {}),
     ...(props.agent !== undefined ? { agent: { ...props.agent } } : {}),
     status: 'running',
     trace: [],
@@ -71,8 +73,10 @@ export function startRun(props: StartRunProps): RunRecord {
 
 export function succeedRun(record: RunRecord, result: {
   readonly tool?: RunRecord['tool'];
+  readonly tools?: RunRecord['tools'];
   readonly agent?: RunRecord['agent'];
   readonly response: string;
+  readonly structuredResponse?: Readonly<Record<string, unknown>>;
   readonly trace: readonly RunTraceEvent[];
   readonly usage: RunUsage;
   readonly completedAt: string;
@@ -82,8 +86,10 @@ export function succeedRun(record: RunRecord, result: {
     ...record,
     status: 'succeeded',
     ...(result.tool !== undefined ? { tool: { ...result.tool } } : {}),
+    ...(result.tools !== undefined ? { tools: result.tools.map((tool) => ({ ...tool })) } : {}),
     ...(result.agent !== undefined ? { agent: { ...result.agent } } : {}),
     response: result.response,
+    ...(result.structuredResponse !== undefined ? { structuredResponse: structuredClone(result.structuredResponse) } : {}),
     trace: structuredClone(result.trace),
     usage: { ...result.usage },
     completedAt: result.completedAt,

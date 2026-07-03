@@ -146,3 +146,10 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .prompt-editor-card > p { color: #758198; font-size: 11px; line-height: 1.5; }
 .agent-run-panel { border-top: 1px solid #e3e7ef; margin-top: 18px; padding-top: 17px; }
 .agent-run-panel .chat-compose { grid-template-columns: 1fr 150px; }
+.structured-output-toggle { flex-direction: row; align-items: center; margin-bottom: 10px; }
+.structured-output-fields { display: grid; gap: 8px; }
+.structured-output-field { display: grid; grid-template-columns: minmax(120px, 1fr) 100px 86px 36px; gap: 7px; align-items: center; }
+.structured-output-field > label { flex-direction: row; align-items: center; }
+.structured-output-field > button { height: 36px; padding: 0; }
+.structured-output-fields > .secondary { justify-self: start; height: 34px; }
+.chat-response pre { margin: 6px 0 0; overflow: auto; font-size: 11px; }

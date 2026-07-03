@@ -100,6 +100,9 @@ sequenceDiagram
   Chat-->>User: 表示（Markdown/Mermaid/Chart.js）
 ```
 
+v1のAgent preview/testは停止性を保証するため、1 RunあたりTool call最大4回・model round最大5回とする。各roundでは保存済みAgent versionに固定された同じTool集合を提示し、preview/testは候補集合全体がread-onlyの場合だけ実行する。
+Structured Outputを持つAgentは最終contentをJSON parseし、required、primitive型、追加field禁止を検証してからRunへ保存する。
+
 ---
 
 ## 4. 検証（疑似ユーザー）実行

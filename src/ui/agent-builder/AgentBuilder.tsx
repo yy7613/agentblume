@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AgentKindDto, AgentPreviewRunDto, ToolSummaryDto } from '../api/types';
+import type { AgentKindDto, AgentPreviewRunDto, StructuredOutputFieldDto, StructuredOutputTypeDto, ToolSummaryDto } from '../api/types';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
@@ -14,6 +14,8 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   const [owner, setOwner] = useState('local-user');
   const [kind, setKind] = useState<AgentKindDto>('normal');
   const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
+  const [structuredOutput, setStructuredOutput] = useState(false);
+  const [outputFields, setOutputFields] = useState<StructuredOutputFieldDto[]>([{ name: 'answer', type: 'string', required: true }]);
   const [savedVersion, setSavedVersion] = useState<string>();
   const [chatMessage, setChatMessage] = useState('Use the available tools and explain the result.');
   const [run, setRun] = useState<AgentPreviewRunDto>();
@@ -30,6 +32,8 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   }, [client]);
 
   const refs = useMemo(() => tools.filter((tool) => selected.has(key(tool))).map((tool) => ({ internalId: tool.internalId, version: tool.latestVersion })), [selected, tools]);
+  const output = useMemo(() => structuredOutput ? { name: responseFormatName(publishName), fields: outputFields } : undefined, [outputFields, publishName, structuredOutput]);
+  const outputValid = !structuredOutput || (outputFields.length > 0 && outputFields.every((field) => field.name.trim() !== '') && new Set(outputFields.map((field) => field.name)).size === outputFields.length);
 
   function toggle(tool: ToolSummaryDto): void {
     const id = key(tool);
@@ -43,7 +47,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   async function generate(): Promise<void> {
     setBusy('generate'); setError(undefined);
     try {
-      const draft = await client.generateAgentPrompt({ scope, displayName, kind, tools: refs });
+      const draft = await client.generateAgentPrompt({ scope, displayName, kind, tools: refs, ...(output !== undefined ? { output } : {}) });
       setSystemPrompt(draft.systemPromptDraft);
     } catch (cause) { setError(message(cause)); }
     finally { setBusy(undefined); }
@@ -52,10 +56,14 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   async function save(): Promise<void> {
     setBusy('save'); setError(undefined);
     try {
-      const agent = await client.saveAgent({ scope, internalId, workingName, displayName, publishName, owner, kind, systemPrompt, tools: refs });
+      const agent = await client.saveAgent({ scope, internalId, workingName, displayName, publishName, owner, kind, systemPrompt, tools: refs, ...(output !== undefined ? { output } : {}) });
       setSavedVersion(agent.metadata.version);
     } catch (cause) { setError(message(cause)); }
     finally { setBusy(undefined); }
+  }
+
+  function updateOutputField(index: number, patch: Partial<StructuredOutputFieldDto>): void {
+    setOutputFields((fields) => fields.map((field, fieldIndex) => fieldIndex === index ? { ...field, ...patch } : field));
   }
 
   async function runSaved(): Promise<void> {
@@ -78,7 +86,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
       <div className="save-actions">
         {savedVersion !== undefined && <span className="version-chip">saved {savedVersion}</span>}
         <button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void generate()}>{busy === 'generate' ? 'Generating…' : 'Generate draft'}</button>
-        <button type="button" className="primary" disabled={busy !== undefined || systemPrompt.trim() === ''} onClick={() => void save()}>{busy === 'save' ? 'Saving…' : 'Save version'}</button>
+        <button type="button" className="primary" disabled={busy !== undefined || systemPrompt.trim() === '' || !outputValid} onClick={() => void save()}>{busy === 'save' ? 'Saving…' : 'Save version'}</button>
       </div>
     </header>
     {error !== undefined && <div className="api-error">{error}</div>}
@@ -99,6 +107,18 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
           {busy !== 'load' && tools.length === 0 && <p className="empty-state">保存済みToolがありません。</p>}
           {tools.map((tool) => <label key={key(tool)} className="agent-tool-option"><input type="checkbox" checked={selected.has(key(tool))} onChange={() => toggle(tool)} /><span><strong>{tool.displayName}</strong><code>{tool.publishName}@{tool.latestVersion}</code></span><small>{tool.state}</small></label>)}
         </div>
+        <h2>Structured output</h2>
+        <label className="structured-output-toggle"><input aria-label="Enable structured output" type="checkbox" checked={structuredOutput} onChange={(event) => setStructuredOutput(event.target.checked)} /> Require a validated JSON response</label>
+        {structuredOutput && <div className="structured-output-fields">
+          {outputFields.map((field, index) => <div className="structured-output-field" key={index}>
+            <input aria-label={`Output field ${index + 1} name`} value={field.name} onChange={(event) => updateOutputField(index, { name: event.target.value })} />
+            <select aria-label={`Output field ${index + 1} type`} value={field.type} onChange={(event) => updateOutputField(index, { type: event.target.value as StructuredOutputTypeDto })}><option>string</option><option>number</option><option>integer</option><option>boolean</option></select>
+            <label><input aria-label={`Output field ${index + 1} required`} type="checkbox" checked={field.required} onChange={(event) => updateOutputField(index, { required: event.target.checked })} /> required</label>
+            <button aria-label={`Remove output field ${index + 1}`} type="button" className="secondary" disabled={outputFields.length === 1} onClick={() => setOutputFields((fields) => fields.filter((_, fieldIndex) => fieldIndex !== index))}>×</button>
+          </div>)}
+          <button type="button" className="secondary" onClick={() => setOutputFields((fields) => [...fields, { name: `field_${fields.length + 1}`, type: 'string', required: true }])}>Add output field</button>
+          {!outputValid && <p className="field-error">Field names must be non-empty and unique.</p>}
+        </div>}
       </section>
       <section className="prompt-editor-card">
         <div className="panel-title"><div><span className="eyebrow">Editable escape hatch</span><h2>System prompt</h2></div><span className="version-chip">{systemPrompt.length} chars</span></div>
@@ -107,7 +127,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
         <div className="agent-run-panel">
           <div className="panel-title"><div><span className="eyebrow">Saved Agent preview</span><h2>Chat</h2></div><span className="version-chip">{savedVersion === undefined ? 'Save first' : `Agent v${savedVersion}`}</span></div>
           <div className="chat-compose"><textarea aria-label="Agent chat message" rows={2} value={chatMessage} onChange={(event) => setChatMessage(event.target.value)} /><button type="button" className="primary" disabled={savedVersion === undefined || busy !== undefined || chatMessage.trim() === ''} onClick={() => void runSaved()}>{busy === 'run' ? 'Running…' : 'Run saved agent'}</button></div>
-          {run !== undefined && <><div className="chat-response"><span>Assistant</span><p>{run.response}</p></div><div className="trace-list"><strong>Trace · {run.runId}</strong>{run.trace.map((event) => <div className={`trace-event ${event.kind === 'tool-call' || event.kind === 'tool-result' ? 'tool' : ''}`} key={event.sequence}><span>{event.sequence}</span><p>{event.kind}</p></div>)}</div></>}
+          {run !== undefined && <><div className="chat-response"><span>Assistant</span>{run.structuredResponse === undefined ? <p>{run.response}</p> : <pre>{JSON.stringify(run.structuredResponse, null, 2)}</pre>}</div><div className="trace-list"><strong>Trace · {run.runId}</strong>{run.trace.map((event) => <div className={`trace-event ${event.kind === 'tool-call' || event.kind === 'tool-result' ? 'tool' : ''}`} key={event.sequence}><span>{event.sequence}</span><p>{event.kind}</p></div>)}</div></>}
         </div>
       </section>
     </div>
@@ -116,3 +136,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
 
 function key(tool: ToolSummaryDto): string { return `${tool.internalId}@${tool.latestVersion}`; }
 function message(cause: unknown): string { return cause instanceof Error ? cause.message : 'Request failed'; }
+function responseFormatName(publishName: string): string {
+  const normalized = `${publishName}_response`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+  return normalized === '' ? 'agent_response' : normalized;
+}

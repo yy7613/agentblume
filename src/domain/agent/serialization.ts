@@ -3,6 +3,7 @@ import { PUBLISH_STATES, type PublishState } from '../tool/metadata';
 import { SemVer } from '../tool/semver';
 import { AGENT_KINDS, createAgent, type Agent, type AgentKind } from './agent';
 import { AgentValidationError } from './errors';
+import { STRUCTURED_OUTPUT_TYPES, type StructuredOutputDefinition } from './structured-output';
 
 export interface SerializedAgent {
   readonly metadata: {
@@ -18,6 +19,7 @@ export interface SerializedAgent {
   readonly kind: AgentKind;
   readonly systemPrompt: string;
   readonly tools: readonly { readonly internalId: string; readonly version: string }[];
+  readonly output?: StructuredOutputDefinition;
 }
 
 const schema = z.object({
@@ -30,6 +32,15 @@ const schema = z.object({
   kind: z.enum(AGENT_KINDS),
   systemPrompt: z.string(),
   tools: z.array(z.object({ internalId: z.string(), version: z.string() })),
+  output: z.object({
+    name: z.string(),
+    fields: z.array(z.object({
+      name: z.string(),
+      type: z.enum(STRUCTURED_OUTPUT_TYPES),
+      required: z.boolean(),
+      description: z.string().optional(),
+    })),
+  }).optional(),
 });
 
 export function serializeAgent(agent: Agent): SerializedAgent {
@@ -42,6 +53,7 @@ export function serializeAgent(agent: Agent): SerializedAgent {
     kind: agent.kind,
     systemPrompt: agent.systemPrompt,
     tools: agent.tools.map((tool) => ({ internalId: tool.internalId, version: tool.version.toString() })),
+    ...(agent.output !== undefined ? { output: structuredClone(agent.output) } : {}),
   };
 }
 
@@ -61,5 +73,6 @@ export function deserializeAgent(value: unknown): Agent {
     kind: agent.kind,
     systemPrompt: agent.systemPrompt,
     tools: agent.tools.map((tool) => ({ internalId: tool.internalId, version: SemVer.parse(tool.version) })),
+    ...(agent.output !== undefined ? { output: agent.output } : {}),
   });
 }

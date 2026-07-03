@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Agent } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import { AgentNotFoundError } from '../../domain/agent/errors';
+import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
 import type { Row, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
 import type { RunMode, RunRecord, RunTraceEvent, RunUsage } from '../../domain/run/run';
@@ -13,10 +14,11 @@ import type { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import { EtlEngine } from '../etl/engine';
-import type { ModelCompletion, ModelMessage, ModelProviderPort, ModelUsage } from '../model/model-provider';
+import type { ModelCompletion, ModelMessage, ModelProviderPort, ModelToolCall, ModelUsage } from '../model/model-provider';
 import { AgentRunError, RunFailedError, UnsafeToolError } from './errors';
 import { failureFrom, sanitizeRunTrace } from './run-trace';
 import { assertOutputMatchesSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
+import { toModelResponseFormat, validateStructuredResponse } from './structured-output';
 
 export type AgentRunMode = RunMode;
 
@@ -42,12 +44,17 @@ export interface AgentPreviewRun {
   readonly mode: AgentRunMode;
   readonly agent?: RunRecord['agent'];
   readonly tool?: RunRecord['tool'];
+  readonly tools?: RunRecord['tools'];
   readonly response: string;
+  readonly structuredResponse?: Readonly<Record<string, unknown>>;
   readonly trace: readonly RunTraceEvent[];
   readonly usage: RunUsage;
 }
 
 type RunResult = Omit<AgentPreviewRun, 'runId' | 'mode' | 'trace'>;
+
+export const MAX_TOOL_CALLS = 4;
+export const MAX_MODEL_ROUNDS = 5;
 
 function mergeUsage(...completions: readonly ModelCompletion[]): ModelUsage {
   const sum = (select: (usage: ModelUsage) => number | undefined): number | undefined => {
@@ -101,7 +108,8 @@ export class RunAgentPreviewUseCase {
       { tool: { internalId: input.toolId, ...(input.version !== undefined ? { version: input.version.toString() } : {}) } },
       async (trace) => {
         const tool = await this.loadTool(input.scope, input.toolId, input.version);
-        return this.perform(input.systemPrompt, input.message, [tool], trace, signal);
+        const result = await this.perform(input.systemPrompt, input.message, [tool], trace, signal);
+        return result.tool === undefined ? { ...result, tool: this.toolRef(tool) } : result;
       },
     );
   }
@@ -115,7 +123,7 @@ export class RunAgentPreviewUseCase {
         const agent = await this.loadAgent(input.scope, input.agentId, input.version);
         const tools: Tool[] = [];
         for (const ref of agent.tools) tools.push(await this.loadTool(input.scope, ref.internalId, ref.version));
-        return this.perform(agent.systemPrompt, input.message, tools, trace, signal, this.agentRef(agent));
+        return this.perform(agent.systemPrompt, input.message, tools, trace, signal, this.agentRef(agent), agent.output);
       },
     );
   }
@@ -134,8 +142,10 @@ export class RunAgentPreviewUseCase {
       const result = await work(trace);
       await this.runRepo.save(succeedRun(started, {
         ...(result.tool !== undefined ? { tool: result.tool } : {}),
+        ...(result.tools !== undefined ? { tools: result.tools } : {}),
         ...(result.agent !== undefined ? { agent: result.agent } : {}),
         response: result.response,
+        ...(result.structuredResponse !== undefined ? { structuredResponse: result.structuredResponse } : {}),
         trace: sanitizeRunTrace(trace),
         usage: result.usage,
         completedAt: this.now().toISOString(),
@@ -156,6 +166,7 @@ export class RunAgentPreviewUseCase {
     trace: RunTraceEvent[],
     signal?: AbortSignal,
     agent?: RunRecord['agent'],
+    output?: StructuredOutputDefinition,
   ): Promise<RunResult> {
     for (const tool of tools) {
       if (tool.sideEffect !== 'read-only') {
@@ -165,62 +176,77 @@ export class RunAgentPreviewUseCase {
     if (tools.length > 0 && !this.model.capabilities().includes('tool-calling')) {
       throw new AgentRunError('configured model provider does not support tool-calling');
     }
+    if (output !== undefined && !this.model.capabilities().includes('structured-output')) {
+      throw new AgentRunError('configured model provider does not support structured output');
+    }
 
     const definitions = tools.map(toolToModelDefinition);
     const messages: ModelMessage[] = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage },
     ];
-    trace.push({ sequence: 1, kind: 'model-request', step: 1, toolNames: definitions.map((definition) => definition.name) });
-    const first = await this.model.complete({ messages, ...(definitions.length > 0 ? { tools: definitions } : {}) }, signal);
-    const calls = first.message.toolCalls ?? [];
-    if (first.finishReason === 'tool_calls' && calls.length === 0) {
-      throw new AgentRunError('model reported tool_calls without a tool call');
-    }
-    if (calls.length === 0) {
-      const content = first.message.content ?? '';
-      trace.push({ sequence: 2, kind: 'model-response', content });
-      return { ...(agent !== undefined ? { agent } : {}), response: content, usage: mergeUsage(first) };
-    }
-    if (calls.length !== 1) throw new AgentRunError(`expected one or zero tool calls, received ${calls.length}`);
-    const call = calls[0];
-    const selectedIndex = definitions.findIndex((definition) => definition.name === call?.name);
-    const tool = selectedIndex < 0 ? undefined : tools[selectedIndex];
-    if (call === undefined || tool === undefined) {
-      throw new AgentRunError(`model requested unknown tool: ${call?.name ?? '(missing)'}`);
-    }
+    const completions: ModelCompletion[] = [];
+    const executed: NonNullable<RunRecord['tool']>[] = [];
+    const responseFormat = output === undefined ? undefined : toModelResponseFormat(output);
 
-    trace.push({ sequence: 2, kind: 'tool-call', name: call.name, arguments: call.arguments });
+    for (let step = 1; step <= MAX_MODEL_ROUNDS; step += 1) {
+      trace.push({ sequence: trace.length + 1, kind: 'model-request', step, toolNames: definitions.map((definition) => definition.name) });
+      const completion = await this.model.complete({
+        messages,
+        ...(definitions.length > 0 ? { tools: definitions } : {}),
+        ...(responseFormat !== undefined ? { responseFormat } : {}),
+      }, signal);
+      completions.push(completion);
+      const calls = completion.message.toolCalls ?? [];
+      if (completion.finishReason === 'tool_calls' && calls.length === 0) {
+        throw new AgentRunError('model reported tool_calls without a tool call');
+      }
+      if (calls.length === 0) {
+        const content = completion.message.content ?? '';
+        const structuredResponse = output === undefined ? undefined : validateStructuredResponse(output, content);
+        trace.push({ sequence: trace.length + 1, kind: 'model-response', content });
+        const last = executed.at(-1);
+        return {
+          ...(agent !== undefined ? { agent } : {}),
+          ...(last !== undefined ? { tool: last, tools: executed } : {}),
+          response: content,
+          ...(structuredResponse !== undefined ? { structuredResponse } : {}),
+          usage: mergeUsage(...completions),
+        };
+      }
+      if (executed.length + calls.length > MAX_TOOL_CALLS) {
+        throw new AgentRunError(`tool call limit exceeded: maximum ${MAX_TOOL_CALLS}`);
+      }
+
+      messages.push({ role: 'assistant', content: completion.message.content, toolCalls: calls });
+      for (const call of calls) {
+        const selectedIndex = definitions.findIndex((definition) => definition.name === call.name);
+        const tool = selectedIndex < 0 ? undefined : tools[selectedIndex];
+        if (tool === undefined) throw new AgentRunError(`model requested unknown tool: ${call.name}`);
+        messages.push(this.executeTool(tool, call, trace));
+        executed.push(this.toolRef(tool));
+      }
+    }
+    throw new AgentRunError(`model round limit exceeded: maximum ${MAX_MODEL_ROUNDS}`);
+  }
+
+  private executeTool(tool: Tool, call: ModelToolCall, trace: RunTraceEvent[]): ModelMessage {
+    trace.push({ sequence: trace.length + 1, kind: 'tool-call', name: call.name, arguments: call.arguments });
     const args = validateToolArguments(tool.inputSchema, call.arguments);
     const preview = this.engine.preview(graphWithArguments(tool, args), { rowLimit: 100 });
     assertOutputMatchesSchema(preview.output, tool.outputSchema);
     trace.push({
-      sequence: 3,
+      sequence: trace.length + 1,
       kind: 'tool-result',
       name: call.name,
       terminalId: preview.terminalId,
       nodes: Object.values(preview.nodes).map((node) => ({ nodeId: node.nodeId, rowCount: node.table.rows.length, truncated: node.truncated })),
       outputPreview: preview.output.rows.slice(0, 10).map((row) => ({ ...row })),
     });
-
-    const assistantMessage: ModelMessage = { role: 'assistant', content: first.message.content, toolCalls: [call] };
-    const toolMessage: ModelMessage = {
+    return {
       role: 'tool',
       content: JSON.stringify({ schema: preview.output.schema, rows: preview.output.rows }),
       toolCallId: call.id,
-    };
-    trace.push({ sequence: 4, kind: 'model-request', step: 2, toolNames: [] });
-    const second = await this.model.complete({ messages: [...messages, assistantMessage, toolMessage] }, signal);
-    if ((second.message.toolCalls?.length ?? 0) > 0) {
-      throw new AgentRunError('model requested an additional tool call after the single-call preview limit');
-    }
-    const content = second.message.content ?? '';
-    trace.push({ sequence: 5, kind: 'model-response', content });
-    return {
-      ...(agent !== undefined ? { agent } : {}),
-      tool: this.toolRef(tool),
-      response: content,
-      usage: mergeUsage(first, second),
     };
   }
 

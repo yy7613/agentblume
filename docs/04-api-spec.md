@@ -72,7 +72,9 @@ interface ModelProviderPort {
 }
 ```
 
-> v1の `ModelProviderPort` は `chat` / `tool-calling` に限定する。埋め込みはRAG導入時に `embed` capabilityと要求型を追加する。
+> v1の `ModelProviderPort` は `chat` / `tool-calling` / `structured-output` に限定する。埋め込みはRAG導入時に `embed` capabilityと要求型を追加する。
+
+AgentにStructured Outputがある場合、completion requestへ`responseFormat: { name, strict, schema }`を指定する。LM Studio adapterはOpenAI互換`response_format.json_schema`へ変換し、最終contentはアプリケーション側でも再検証する。
 
 ### 2.2 MCP系
 
@@ -215,6 +217,7 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 ```
 
 保存済みAgent実行では、system promptとTool候補をAgent versionから解決する。
+v1の実行上限はTool call 4回、model round 5回であり、実際の呼び出し順はRun traceと`tools`へ保存する。
 
 ```jsonc
 // POST /runs

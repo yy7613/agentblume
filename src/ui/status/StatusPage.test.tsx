@@ -23,4 +23,13 @@ describe('StatusPage', () => {
     expect(screen.getAllByText(/MODEL_PROVIDER/).length).toBeGreaterThan(0);
     expect(screen.getByText('run-1')).toBeTruthy();
   });
+
+  it('Agent runのstructured responseを整形表示する', async () => {
+    const summary = { runId: 'run-json', status: 'succeeded', mode: 'preview', agent: { internalId: 'agent', version: '1.0.0' }, startedAt: '2026-07-03T00:00:00Z', response: '{"answer":"done"}', traceEventCount: 1 };
+    const record = { ...summary, scope: { tenantId: 'local', workspaceId: 'default' }, structuredResponse: { answer: 'done' }, trace: [{ sequence: 1, kind: 'model-response', content: '{"answer":"done"}' }] };
+    const client = { listRuns: vi.fn().mockResolvedValue([summary]), getRunTrace: vi.fn().mockResolvedValue(record) } as unknown as ToolApiClient;
+    render(<StatusPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /agent/ }));
+    expect(await screen.findByText(/"answer": "done"/)).toBeTruthy();
+  });
 });
