@@ -23,10 +23,16 @@ export interface AgentToolRef {
   readonly version: SemVer;
 }
 
+export interface AgentSkillRef {
+  readonly internalId: string;
+  readonly version: SemVer;
+}
+
 export interface Agent {
   readonly metadata: AgentMetadata;
   readonly kind: AgentKind;
   readonly systemPrompt: string;
+  readonly skills: readonly AgentSkillRef[];
   readonly tools: readonly AgentToolRef[];
   readonly output?: StructuredOutputDefinition;
 }
@@ -35,6 +41,7 @@ export interface CreateAgentProps {
   readonly metadata: AgentMetadata;
   readonly kind: AgentKind;
   readonly systemPrompt: string;
+  readonly skills?: readonly AgentSkillRef[];
   readonly tools: readonly AgentToolRef[];
   readonly output?: StructuredOutputDefinition;
 }
@@ -68,6 +75,18 @@ export function createAgent(props: CreateAgentProps): Agent {
   }
   nonEmpty(props.systemPrompt, 'systemPrompt');
 
+  const seenSkills = new Set<string>();
+  const skills = (props.skills ?? []).map((skill, index) => {
+    nonEmpty(skill.internalId, `skills.${index}.internalId`);
+    if (!(skill.version instanceof SemVer)) {
+      throw new AgentValidationError(`createAgent: skills.${index}.version must be a SemVer instance`);
+    }
+    const key = `${skill.internalId}@${skill.version.toString()}`;
+    if (seenSkills.has(key)) throw new AgentValidationError(`createAgent: duplicate skill reference: ${key}`);
+    seenSkills.add(key);
+    return { internalId: skill.internalId, version: skill.version };
+  });
+
   const seen = new Set<string>();
   const tools = props.tools.map((tool, index) => {
     nonEmpty(tool.internalId, `tools.${index}.internalId`);
@@ -93,6 +112,7 @@ export function createAgent(props: CreateAgentProps): Agent {
     },
     kind: props.kind,
     systemPrompt: props.systemPrompt,
+    skills,
     tools,
     ...(props.output !== undefined ? { output: createStructuredOutput(props.output) } : {}),
   };

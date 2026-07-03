@@ -13,12 +13,14 @@ import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
+import type { SkillRepository } from '../../domain/skill/skill-repository';
 import { EtlEngine } from '../etl/engine';
 import type { ModelCompletion, ModelMessage, ModelProviderPort, ModelToolCall, ModelUsage } from '../model/model-provider';
 import { AgentRunError, RunFailedError, UnsafeToolError } from './errors';
 import { failureFrom, sanitizeRunTrace } from './run-trace';
 import { assertOutputMatchesSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
 import { toModelResponseFormat, validateStructuredResponse } from './structured-output';
+import { composeAgentSystemPrompt, resolveAgentCapabilities } from './resolve-agent-capabilities';
 
 export type AgentRunMode = RunMode;
 
@@ -99,6 +101,7 @@ export class RunAgentPreviewUseCase {
     private readonly makeRunId: () => string = randomUUID,
     private readonly now: () => Date = () => new Date(),
     private readonly agents?: AgentRepository,
+    private readonly skills?: SkillRepository,
   ) {}
 
   async execute(input: RunAgentPreviewInput, signal?: AbortSignal): Promise<AgentPreviewRun> {
@@ -121,9 +124,8 @@ export class RunAgentPreviewUseCase {
       { agent: { internalId: input.agentId, ...(input.version !== undefined ? { version: input.version.toString() } : {}) } },
       async (trace) => {
         const agent = await this.loadAgent(input.scope, input.agentId, input.version);
-        const tools: Tool[] = [];
-        for (const ref of agent.tools) tools.push(await this.loadTool(input.scope, ref.internalId, ref.version));
-        return this.perform(agent.systemPrompt, input.message, tools, trace, signal, this.agentRef(agent), agent.output);
+        const resolved = await resolveAgentCapabilities(input.scope, agent.skills, agent.tools, this.repo, this.skills);
+        return this.perform(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), input.message, resolved.tools, trace, signal, this.agentRef(agent), agent.output);
       },
     );
   }

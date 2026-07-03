@@ -55,6 +55,21 @@ describe('agent routes', () => {
     expect(saved.json().draft.sections.toolUsageGuide).toContain('score:number');
   });
 
+  it('version固定Skillを保存しinstructionsと依存Toolをpromptへ展開する', async () => {
+    const skill = await server.inject({ method: 'POST', url: '/skills', payload: {
+      scope, internalId: 'analysis', workingName: 'Analysis', displayName: 'Analysis', publishName: 'analysis', owner: 'owner',
+      responsibility: 'Analyze scores.', activationCondition: 'For score questions.', inputDescription: 'Scores.', outputDescription: 'Answer.', instructions: 'Ground every answer in score data.',
+      tools: [{ internalId: 'scores', version: '1.0.0' }],
+    } });
+    expect(skill.statusCode).toBe(201);
+    const saved = await server.inject({ method: 'POST', url: '/agents', payload: body({ skills: [{ internalId: 'analysis', version: '1.0.0' }], tools: [] }) });
+    expect(saved.statusCode).toBe(201);
+    expect(saved.json().agent.skills).toEqual([{ internalId: 'analysis', version: '1.0.0' }]);
+    const prompt = await server.inject({ method: 'POST', url: '/agents/assistant/generate-prompt', payload: { scope } });
+    expect(prompt.json().draft.systemPromptDraft).toContain('Ground every answer in score data.');
+    expect(prompt.json().draft.systemPromptDraft).toContain('filter_scores@1.0.0');
+  });
+
   it('不正version・未存在Tool・別scopeを境界エラーへ変換する', async () => {
     const badVersion = await server.inject({ method: 'POST', url: '/agents', payload: body({ tools: [{ internalId: 'scores', version: 'bad' }] }) });
     expect(badVersion.statusCode).toBe(400);

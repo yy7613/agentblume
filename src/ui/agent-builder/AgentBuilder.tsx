@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AgentKindDto, AgentPreviewRunDto, StructuredOutputFieldDto, StructuredOutputTypeDto, ToolSummaryDto } from '../api/types';
+import type { AgentKindDto, AgentPreviewRunDto, SkillSummaryDto, StructuredOutputFieldDto, StructuredOutputTypeDto, ToolSummaryDto } from '../api/types';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
 export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   const [tools, setTools] = useState<readonly ToolSummaryDto[]>([]);
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [skills, setSkills] = useState<readonly SkillSummaryDto[]>([]);
+  const [selectedTools, setSelectedTools] = useState<ReadonlySet<string>>(new Set());
+  const [selectedSkills, setSelectedSkills] = useState<ReadonlySet<string>>(new Set());
   const [internalId, setInternalId] = useState('assistant-agent');
   const [workingName, setWorkingName] = useState('Assistant Agent');
   const [displayName, setDisplayName] = useState('Assistant Agent');
@@ -25,19 +27,29 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   useEffect(() => {
     let active = true;
     setBusy('load');
-    void client.listTools(scope).then((items) => { if (active) setTools(items); })
+    void Promise.all([client.listTools(scope), client.listSkills(scope)]).then(([toolItems, skillItems]) => { if (active) { setTools(toolItems); setSkills(skillItems); } })
       .catch((cause: unknown) => { if (active) setError(message(cause)); })
       .finally(() => { if (active) setBusy(undefined); });
     return () => { active = false; };
   }, [client]);
 
-  const refs = useMemo(() => tools.filter((tool) => selected.has(key(tool))).map((tool) => ({ internalId: tool.internalId, version: tool.latestVersion })), [selected, tools]);
+  const refs = useMemo(() => tools.filter((tool) => selectedTools.has(key(tool))).map((tool) => ({ internalId: tool.internalId, version: tool.latestVersion })), [selectedTools, tools]);
+  const skillRefs = useMemo(() => skills.filter((skill) => selectedSkills.has(key(skill))).map((skill) => ({ internalId: skill.internalId, version: skill.latestVersion })), [selectedSkills, skills]);
   const output = useMemo(() => structuredOutput ? { name: responseFormatName(publishName), fields: outputFields } : undefined, [outputFields, publishName, structuredOutput]);
   const outputValid = !structuredOutput || (outputFields.length > 0 && outputFields.every((field) => field.name.trim() !== '') && new Set(outputFields.map((field) => field.name)).size === outputFields.length);
 
   function toggle(tool: ToolSummaryDto): void {
     const id = key(tool);
-    setSelected((current) => {
+    setSelectedTools((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSkill(skill: SkillSummaryDto): void {
+    const id = key(skill);
+    setSelectedSkills((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
@@ -47,7 +59,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   async function generate(): Promise<void> {
     setBusy('generate'); setError(undefined);
     try {
-      const draft = await client.generateAgentPrompt({ scope, displayName, kind, tools: refs, ...(output !== undefined ? { output } : {}) });
+      const draft = await client.generateAgentPrompt({ scope, displayName, kind, skills: skillRefs, tools: refs, ...(output !== undefined ? { output } : {}) });
       setSystemPrompt(draft.systemPromptDraft);
     } catch (cause) { setError(message(cause)); }
     finally { setBusy(undefined); }
@@ -56,7 +68,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   async function save(): Promise<void> {
     setBusy('save'); setError(undefined);
     try {
-      const agent = await client.saveAgent({ scope, internalId, workingName, displayName, publishName, owner, kind, systemPrompt, tools: refs, ...(output !== undefined ? { output } : {}) });
+      const agent = await client.saveAgent({ scope, internalId, workingName, displayName, publishName, owner, kind, systemPrompt, skills: skillRefs, tools: refs, ...(output !== undefined ? { output } : {}) });
       setSavedVersion(agent.metadata.version);
     } catch (cause) { setError(message(cause)); }
     finally { setBusy(undefined); }
@@ -101,11 +113,16 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
           <label>Owner<input value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
           <label>Kind<select aria-label="Agent kind" value={kind} onChange={(event) => setKind(event.target.value as AgentKindDto)}><option value="normal">Normal</option><option value="pseudo-user">Pseudo user</option><option value="evaluator">Evaluator</option></select></label>
         </div>
+        <h2>Skills <small>{skillRefs.length} selected</small></h2>
+        <div className="agent-tool-list">
+          {busy !== 'load' && skills.length === 0 && <p className="empty-state">保存済みSkillがありません。</p>}
+          {skills.map((skill) => <label key={key(skill)} className="agent-tool-option"><input type="checkbox" checked={selectedSkills.has(key(skill))} onChange={() => toggleSkill(skill)} /><span><strong>{skill.displayName}</strong><code>{skill.publishName}@{skill.latestVersion}</code></span><small>{skill.state}</small></label>)}
+        </div>
         <h2>Tools <small>{refs.length} selected</small></h2>
         <div className="agent-tool-list">
           {busy === 'load' && <p className="empty-state">Loading tools…</p>}
           {busy !== 'load' && tools.length === 0 && <p className="empty-state">保存済みToolがありません。</p>}
-          {tools.map((tool) => <label key={key(tool)} className="agent-tool-option"><input type="checkbox" checked={selected.has(key(tool))} onChange={() => toggle(tool)} /><span><strong>{tool.displayName}</strong><code>{tool.publishName}@{tool.latestVersion}</code></span><small>{tool.state}</small></label>)}
+          {tools.map((tool) => <label key={key(tool)} className="agent-tool-option"><input type="checkbox" checked={selectedTools.has(key(tool))} onChange={() => toggle(tool)} /><span><strong>{tool.displayName}</strong><code>{tool.publishName}@{tool.latestVersion}</code></span><small>{tool.state}</small></label>)}
         </div>
         <h2>Structured output</h2>
         <label className="structured-output-toggle"><input aria-label="Enable structured output" type="checkbox" checked={structuredOutput} onChange={(event) => setStructuredOutput(event.target.checked)} /> Require a validated JSON response</label>
@@ -134,7 +151,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   </main>;
 }
 
-function key(tool: ToolSummaryDto): string { return `${tool.internalId}@${tool.latestVersion}`; }
+function key(item: ToolSummaryDto | SkillSummaryDto): string { return `${item.internalId}@${item.latestVersion}`; }
 function message(cause: unknown): string { return cause instanceof Error ? cause.message : 'Request failed'; }
 function responseFormatName(publishName: string): string {
   const normalized = `${publishName}_response`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);

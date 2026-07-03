@@ -87,6 +87,7 @@ export const saveAgentBodySchema = z.object({
   owner: z.string().min(1),
   kind: z.enum(AGENT_KINDS),
   systemPrompt: z.string().min(1),
+  skills: z.array(agentToolRefSchema).default([]),
   tools: z.array(agentToolRefSchema),
   output: structuredOutputSchema.optional(),
   bump: z.enum(['major', 'minor', 'patch']).optional(),
@@ -98,6 +99,7 @@ export const agentDraftPromptBodySchema = z.object({
   scope: tenantScopeSchema,
   displayName: z.string().min(1),
   kind: z.enum(AGENT_KINDS),
+  skills: z.array(agentToolRefSchema).default([]),
   tools: z.array(agentToolRefSchema),
   output: structuredOutputSchema.optional(),
 });

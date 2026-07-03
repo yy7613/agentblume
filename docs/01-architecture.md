@@ -172,6 +172,8 @@ flowchart TB
 
 `ideas.md §UI` の8画面をワークエリアに配置し、左サイドバーで切り替える。**Tool開発画面がノーコード体験の心臓部**（[06-etl-tool-builder.md](./06-etl-tool-builder.md)）。
 
+v1ローカルUIでは8画面をすべて有効化する。MCP画面はversion固定manifestの構成までとし、認証・認可・監査が未接続の外部公開はfail closedとする。検証画面は単一シナリオのtest mode実行と期待Tool照合を提供し、ケース永続化・集計レポートは後続Incrementで扱う。
+
 ---
 
 ## 4. 実行エンジンの三分割

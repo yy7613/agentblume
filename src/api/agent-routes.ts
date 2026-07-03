@@ -36,6 +36,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
     const body = parseWith(saveAgentBodySchema, request.body, 'invalid body');
     const agent = await deps.saveAgent.execute({
       ...body,
+      skills: body.skills.map((skill) => ({ internalId: skill.internalId, version: version(skill.version) as SemVer })),
       tools: body.tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer })),
     });
     return reply.status(201).send({ agent: serializeAgent(agent) });
@@ -67,6 +68,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
     const body = parseWith(agentDraftPromptBodySchema, request.body, 'invalid body');
     const draft = await deps.generateAgentPrompt.execute({
       ...body,
+      skills: body.skills.map((skill) => ({ internalId: skill.internalId, version: version(skill.version) as SemVer })),
       tools: body.tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer })),
     });
     return { draft };
@@ -79,6 +81,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
       scope: body.scope,
       displayName: agent.metadata.displayName,
       kind: agent.kind,
+      skills: agent.skills,
       tools: agent.tools,
       ...(agent.output !== undefined ? { output: agent.output } : {}),
     });

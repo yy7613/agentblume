@@ -50,6 +50,10 @@ export class ToolApiClient {
     this.fetcher = fetcher.bind(globalThis);
   }
 
+  async health(): Promise<{ readonly status: string }> {
+    return this.request<{ status: string }>('/health');
+  }
+
   async inferDraft(graph: ToolGraphDto, signal?: AbortSignal): Promise<PropagationResultDto> {
     const body = await this.request<{ propagation: PropagationResultDto }>(
       '/tool-drafts/infer-schema',
@@ -100,7 +104,7 @@ export class ToolApiClient {
     return (await this.request<{ agents: AgentSummaryDto[] }>(`/agents?${query}`)).agents;
   }
 
-  async generateAgentPrompt(input: { readonly scope: TenantScopeDto; readonly displayName: string; readonly kind: AgentKindDto; readonly tools: readonly AgentToolRefDto[]; readonly output?: StructuredOutputDto }): Promise<AgentPromptDraftDto> {
+  async generateAgentPrompt(input: { readonly scope: TenantScopeDto; readonly displayName: string; readonly kind: AgentKindDto; readonly skills?: readonly AgentToolRefDto[]; readonly tools: readonly AgentToolRefDto[]; readonly output?: StructuredOutputDto }): Promise<AgentPromptDraftDto> {
     return (await this.request<{ draft: AgentPromptDraftDto }>('/agent-drafts/generate-prompt', {
       method: 'POST', body: JSON.stringify(input),
     })).draft;

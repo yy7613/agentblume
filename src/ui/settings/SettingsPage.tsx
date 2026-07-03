@@ -1,0 +1,9 @@
+import { useCallback, useEffect, useState } from 'react';
+import type { ToolApiClient } from '../api/tool-api';
+
+export function SettingsPage({ client }: { readonly client: ToolApiClient }) {
+  const [health, setHealth] = useState<'checking' | 'ok' | 'offline'>('checking');
+  const refresh = useCallback(async () => { setHealth('checking'); try { await client.health(); setHealth('ok'); } catch { setHealth('offline'); } }, [client]);
+  useEffect(() => { void refresh(); }, [refresh]);
+  return <main className="workspace-page"><header className="workspace-header"><div><span className="eyebrow">Settings</span><h1>Runtime settings</h1><p>ローカル実行環境と安全境界を確認します。</p></div><button type="button" className="secondary" onClick={() => void refresh()}>Refresh status</button></header><div className="settings-grid"><section className="workspace-card"><h2>Connection</h2><dl className="settings-list"><div><dt>API</dt><dd><span className={`health-dot ${health}`} />{health}</dd></div><div><dt>Scope</dt><dd><code>local / default</code></dd></div><div><dt>Mode</dt><dd><code>LOCAL · PREVIEW</code></dd></div></dl></section><section className="workspace-card"><h2>Model provider</h2><dl className="settings-list"><div><dt>Provider</dt><dd>LM Studio · OpenAI compatible</dd></div><div><dt>Endpoint</dt><dd><code>LM_STUDIO_BASE_URL</code></dd></div><div><dt>Model</dt><dd><code>LM_STUDIO_MODEL</code></dd></div><div><dt>Timeout</dt><dd><code>LM_STUDIO_TIMEOUT_MS</code></dd></div></dl><p className="empty-state">Server-side environment variables are intentionally not editable from the browser.</p></section><section className="workspace-card"><h2>Security gates</h2><ul className="gate-list"><li className="ready">Preview blocks write Tools</li><li className="ready">Run trace persistence enabled</li><li className="locked">MCP publication locked until auth/audit adapters exist</li><li className="locked">Production execution unavailable</li></ul></section></div></main>;
+}

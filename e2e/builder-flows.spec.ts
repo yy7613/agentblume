@@ -104,3 +104,40 @@ test('Skill Builderで固定Tool参照からprompt生成・編集・保存まで
   expect(skill.instructions).toBe('Reviewed E2E skill instructions.');
   expect(skill.tools).toEqual([{ internalId: 'e2e-skill-tool', version: '1.0.0' }]);
 });
+
+test('Chat・MCP・Validation・Settingsの全ナビが実操作できる', async ({ page }) => {
+  const tool = await page.request.post('/tools', { data: {
+    scope, internalId: 'screen-tool', workingName: 'Screen tool', displayName: 'Screen Tool', publishName: 'screen_tool', owner: 'e2e', sideEffect: 'read-only',
+    graph: { nodes: [{ id: 'input', type: 'agent-input', config: { schema: { columns: [] }, sample: {} } }], edges: [] }, inputSchema: { columns: [] }, outputSchema: { columns: [] },
+  } });
+  expect(tool.status()).toBe(201);
+  const agent = await page.request.post('/agents', { data: {
+    scope, internalId: 'screen-agent', workingName: 'Screen agent', displayName: 'Screen Agent', publishName: 'screen_agent', owner: 'e2e', kind: 'normal', systemPrompt: 'Use the screen tool.', skills: [], tools: [{ internalId: 'screen-tool', version: '1.0.0' }],
+  } });
+  expect(agent.status()).toBe(201);
+  await page.route('**/runs', async (route) => {
+    const body = route.request().postDataJSON();
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ run: { runId: `screen-${body.mode}`, mode: body.mode, agent: body.agent, response: 'screen response', tools: [{ internalId: 'screen-tool', publishName: 'screen_tool', version: '1.0.0' }], trace: [], usage: {} } }) });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Chat', exact: true }).click();
+  await page.getByLabel('Chat agent').selectOption('screen-agent');
+  await page.getByRole('button', { name: 'Send' }).click();
+  await expect(page.getByText('screen response')).toBeVisible();
+
+  await page.getByRole('button', { name: 'MCP', exact: true }).click();
+  await page.getByRole('checkbox', { name: /Screen Tool/ }).check();
+  await expect(page.locator('.manifest-preview')).toContainText('screen-tool@1.0.0');
+  await expect(page.getByRole('button', { name: 'Publish MCP server' })).toBeDisabled();
+
+  await page.getByRole('button', { name: 'Validation', exact: true }).click();
+  await page.getByLabel('Validation agent').selectOption('screen-agent');
+  await page.getByLabel('Expected tool').fill('screen_tool');
+  await page.getByRole('button', { name: 'Run validation' }).click();
+  await expect(page.getByText('PASS')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Runtime settings' })).toBeVisible();
+  await expect(page.getByText('ok', { exact: true })).toBeVisible();
+});

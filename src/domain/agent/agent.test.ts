@@ -13,6 +13,7 @@ function valid() {
     },
     kind: 'normal' as const,
     systemPrompt: 'Use the selected tools.',
+    skills: [{ internalId: 'skill-1', version: SemVer.of(1, 3, 0) }],
     tools: [{ internalId: 'tool-1', version: SemVer.of(2, 1, 0) }],
     output: { name: 'agent_response', fields: [{ name: 'answer', type: 'string' as const, required: true }] },
   };
@@ -28,10 +29,12 @@ describe('Agent aggregate', () => {
     expect(agent.output?.fields[0]?.name).toBe('answer');
   });
 
-  it('空system prompt、重複Tool、不正serialized dataを拒否する', () => {
+  it('空system prompt、重複Skill/Tool、不正serialized dataを拒否する', () => {
     expect(() => createAgent({ ...valid(), systemPrompt: ' ' })).toThrow(AgentValidationError);
     const ref = { internalId: 'tool-1', version: SemVer.of(1, 0, 0) };
     expect(() => createAgent({ ...valid(), tools: [ref, ref] })).toThrow(/duplicate tool/);
+    const skill = { internalId: 'skill-1', version: SemVer.of(1, 0, 0) };
+    expect(() => createAgent({ ...valid(), skills: [skill, skill] })).toThrow(/duplicate skill/);
     expect(() => deserializeAgent({ nope: true })).toThrow(AgentValidationError);
   });
 });

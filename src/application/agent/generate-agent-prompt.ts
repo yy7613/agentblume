@@ -6,11 +6,13 @@ import type { TenantScope } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
+import type { SkillRepository } from '../../domain/skill/skill-repository';
+import { resolveAgentCapabilities } from './resolve-agent-capabilities';
 
 export interface PromptToolRef { readonly internalId: string; readonly version: SemVer }
 export interface AgentPromptDraft {
   readonly systemPromptDraft: string;
-  readonly sections: { readonly role: string; readonly toolUsageGuide: string; readonly rules: string };
+  readonly sections: { readonly role: string; readonly skillGuide: string; readonly toolUsageGuide: string; readonly rules: string };
   readonly editable: true;
   readonly sources: readonly string[];
 }
@@ -22,17 +24,18 @@ const KIND_GUIDE: Record<AgentKind, string> = {
 };
 
 export class GenerateAgentPromptUseCase {
-  constructor(private readonly tools: ToolRepository) {}
+  constructor(private readonly tools: ToolRepository, private readonly skills?: SkillRepository) {}
 
-  async execute(input: { readonly scope: TenantScope; readonly displayName: string; readonly kind: AgentKind; readonly tools: readonly PromptToolRef[]; readonly output?: StructuredOutputDefinition }): Promise<AgentPromptDraft> {
+  async execute(input: { readonly scope: TenantScope; readonly displayName: string; readonly kind: AgentKind; readonly skills?: readonly PromptToolRef[]; readonly tools: readonly PromptToolRef[]; readonly output?: StructuredOutputDefinition }): Promise<AgentPromptDraft> {
     if (input.displayName.trim().length === 0) throw new AgentValidationError('GenerateAgentPrompt: displayName is required');
-    const loaded: Tool[] = [];
-    for (const ref of input.tools) {
-      const tool = await this.tools.findVersion(input.scope, ref.internalId, ref.version);
-      if (tool === null) throw new AgentValidationError(`GenerateAgentPrompt: tool not found: ${ref.internalId}@${ref.version.toString()}`);
-      loaded.push(tool);
-    }
+    let resolved;
+    try { resolved = await resolveAgentCapabilities(input.scope, input.skills ?? [], input.tools, this.tools, this.skills); }
+    catch (error) { throw error instanceof AgentValidationError ? new AgentValidationError(`GenerateAgentPrompt: ${error.message}`) : error; }
+    const loaded = resolved.tools;
     const role = `# 役割\nあなたは「${input.displayName}」です。${KIND_GUIDE[input.kind]}`;
+    const skillGuide = resolved.skills.length === 0
+      ? '# Skillガイド\n適用するSkillはありません。'
+      : `# Skillガイド\n${resolved.skills.map((skill) => `- ${skill.metadata.publishName}@${skill.metadata.version.toString()}: ${skill.responsibility}\n  発火条件: ${skill.activationCondition}\n  instructions: ${skill.instructions}`).join('\n')}`;
     const toolUsageGuide = loaded.length === 0
       ? '# Tool使用ガイド\n利用可能なToolはありません。'
       : `# Tool使用ガイド\n${loaded.map(toolGuide).join('\n')}`;
@@ -41,10 +44,13 @@ export class GenerateAgentPromptUseCase {
       : `\n- 最終応答はJSON objectとし、次のfield契約を満たす: ${input.output.fields.map((field) => `${field.name}:${field.type}${field.required ? '' : '?'}`).join(', ')}。`;
     const rules = `# 実行規則\n- Tool名は公開名をそのまま使用する。\n- Toolの入力スキーマを満たす引数だけを渡す。\n- Tool結果を推測で補完せず、回答に使用した事実を区別する。\n- writeまたはexternal-actionのToolは明示的な承認なしに実行しない。${outputRule}`;
     return {
-      systemPromptDraft: [role, toolUsageGuide, rules].join('\n\n'),
-      sections: { role, toolUsageGuide, rules },
+      systemPromptDraft: [role, skillGuide, toolUsageGuide, rules].join('\n\n'),
+      sections: { role, skillGuide, toolUsageGuide, rules },
       editable: true,
-      sources: loaded.map((tool) => `tool:${tool.metadata.publishName}@${tool.metadata.version.toString()} の入出力・副作用`),
+      sources: [
+        ...resolved.skills.map((skill) => `skill:${skill.metadata.publishName}@${skill.metadata.version.toString()} の責務・発火条件・instructions`),
+        ...loaded.map((tool) => `tool:${tool.metadata.publishName}@${tool.metadata.version.toString()} の入出力・副作用`),
+      ],
     };
   }
 }

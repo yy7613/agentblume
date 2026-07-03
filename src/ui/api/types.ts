@@ -103,6 +103,7 @@ export interface SerializedAgentDto {
   };
   readonly kind: AgentKindDto;
   readonly systemPrompt: string;
+  readonly skills: readonly AgentToolRefDto[];
   readonly tools: readonly AgentToolRefDto[];
   readonly output?: StructuredOutputDto;
 }
@@ -115,6 +116,7 @@ export interface SaveAgentDto {
   readonly owner: string;
   readonly kind: AgentKindDto;
   readonly systemPrompt: string;
+  readonly skills?: readonly AgentToolRefDto[];
   readonly tools: readonly AgentToolRefDto[];
   readonly output?: StructuredOutputDto;
   readonly bump?: 'major' | 'minor' | 'patch';
@@ -129,7 +131,7 @@ export interface AgentSummaryDto {
 }
 export interface AgentPromptDraftDto {
   readonly systemPromptDraft: string;
-  readonly sections: { readonly role: string; readonly toolUsageGuide: string; readonly rules: string };
+  readonly sections: { readonly role: string; readonly skillGuide: string; readonly toolUsageGuide: string; readonly rules: string };
   readonly editable: true;
   readonly sources: readonly string[];
 }
