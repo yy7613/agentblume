@@ -18,6 +18,10 @@ import type {
   AgentSummaryDto,
   RunSavedAgentDto,
   StructuredOutputDto,
+  SaveSkillDto,
+  SerializedSkillDto,
+  SkillSummaryDto,
+  SkillPromptDraftDto,
 } from './types';
 
 export class ApiError extends Error {
@@ -100,6 +104,19 @@ export class ToolApiClient {
     return (await this.request<{ draft: AgentPromptDraftDto }>('/agent-drafts/generate-prompt', {
       method: 'POST', body: JSON.stringify(input),
     })).draft;
+  }
+
+  async saveSkill(input: SaveSkillDto): Promise<SerializedSkillDto> {
+    return (await this.request<{ skill: SerializedSkillDto }>('/skills', { method: 'POST', body: JSON.stringify(input) })).skill;
+  }
+
+  async listSkills(scope: TenantScopeDto): Promise<readonly SkillSummaryDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ skills: SkillSummaryDto[] }>(`/skills?${query}`)).skills;
+  }
+
+  async generateSkillPrompt(input: Omit<SaveSkillDto, 'internalId' | 'workingName' | 'publishName' | 'owner' | 'instructions' | 'bump'>): Promise<SkillPromptDraftDto> {
+    return (await this.request<{ draft: SkillPromptDraftDto }>('/skill-drafts/generate-prompt', { method: 'POST', body: JSON.stringify(input) })).draft;
   }
 
   async runAgent(input: RunAgentDto, signal?: AbortSignal): Promise<AgentPreviewRunDto> {

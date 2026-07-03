@@ -75,3 +75,32 @@ test('Agent BuilderでTool選択からprompt生成・編集・保存まで完了
   await page.getByRole('button', { name: 'Run saved agent' }).click();
   await expect(page.getByText('E2E agent response')).toBeVisible();
 });
+
+test('Skill Builderで固定Tool参照からprompt生成・編集・保存まで完了する', async ({ page }) => {
+  const toolResponse = await page.request.post('/tools', { data: {
+    scope, internalId: 'e2e-skill-tool', workingName: 'E2E skill tool', displayName: 'E2E Skill Tool',
+    publishName: 'e2e_skill_tool', owner: 'e2e@example.com', sideEffect: 'read-only',
+    graph: { nodes: [{ id: 'input', type: 'agent-input', config: { schema: { columns: [{ name: 'value', type: 'number', nullable: false }] }, sample: { value: 42 } } }], edges: [] },
+    inputSchema: { columns: [{ name: 'value', type: 'number', nullable: false }] },
+    outputSchema: { columns: [{ name: 'value', type: 'number', nullable: false }] },
+  } });
+  expect(toolResponse.status()).toBe(201);
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Skill', exact: true }).click();
+  await expect(page.getByText('Skill Builder', { exact: true })).toBeVisible();
+  await page.getByLabel('Skill internal ID').fill('e2e-analysis-skill');
+  await page.getByRole('checkbox', { name: /E2E Skill Tool/ }).check();
+  await page.getByRole('button', { name: 'Generate draft' }).click();
+  const instructions = page.getByLabel('Skill instructions');
+  await expect(instructions).toHaveValue(/e2e_skill_tool@1\.0\.0/);
+  await instructions.fill('Reviewed E2E skill instructions.');
+  await page.getByRole('button', { name: 'Save version' }).click();
+  await expect(page.getByText('saved 1.0.0')).toBeVisible();
+
+  const response = await page.request.get('/skills/e2e-analysis-skill', { params: scope });
+  expect(response.status()).toBe(200);
+  const skill = (await response.json()).skill;
+  expect(skill.instructions).toBe('Reviewed E2E skill instructions.');
+  expect(skill.tools).toEqual([{ internalId: 'e2e-skill-tool', version: '1.0.0' }]);
+});

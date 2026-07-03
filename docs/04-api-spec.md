@@ -176,6 +176,10 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/tools/{id}/publish` | 公開（エイリアス/互換性管理） | `tool:publish` |
 | `POST` | `/tools/{id}/expose-mcp` | MCPサーバとして公開 | `deployment:publish` |
 | `POST` | `/skills` | Skill作成 | `skill:create` |
+| `GET` | `/skills` | workspace内のSkill latest一覧 | `skill:read` |
+| `GET` | `/skills/{id}` | Skill取得（latest / version固定） | `skill:read` |
+| `GET` | `/skills/{id}/versions` | Skill version一覧 | `skill:read` |
+| `POST` | `/skill-drafts/generate-prompt` | 未保存Skillの責務・Toolメタからprompt草案生成 | `skill:edit` |
 | `POST` | `/skills/{id}/generate-prompt` | 発火条件からプロンプト草案生成 | `skill:edit` |
 | `POST` | `/agents` | Agent作成 | `agent:create` |
 | `GET` | `/agents` | workspace内のAgent latest一覧 | `agent:read` |

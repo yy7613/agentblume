@@ -33,6 +33,12 @@ import { GenerateAgentPromptUseCase } from '../application/agent/generate-agent-
 import { QueryAgentsUseCase } from '../application/agent/query-agents';
 import { SaveAgentUseCase } from '../application/agent/save-agent';
 import type { AgentRepository } from '../domain/agent/agent-repository';
+import { InMemorySkillRepository } from '../adapters/storage/in-memory-skill-repository';
+import { SqliteSkillRepository } from '../adapters/storage/sqlite-skill-repository';
+import { GenerateSkillPromptUseCase } from '../application/skill/generate-skill-prompt';
+import { QuerySkillsUseCase } from '../application/skill/query-skills';
+import { SaveSkillUseCase } from '../application/skill/save-skill';
+import type { SkillRepository } from '../domain/skill/skill-repository';
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
@@ -47,6 +53,7 @@ export interface AppOptions {
   readonly modelProvider?: ModelProviderPort;
   readonly runRepository?: RunRepository;
   readonly agentRepository?: AgentRepository;
+  readonly skillRepository?: SkillRepository;
 }
 
 /** 配線済みアプリケーション。 */
@@ -57,11 +64,15 @@ export interface App {
   readonly modelProvider: ModelProviderPort;
   readonly runRepo: RunRepository;
   readonly agentRepo: AgentRepository;
+  readonly skillRepo: SkillRepository;
   readonly runAgentPreview: RunAgentPreviewUseCase;
   readonly queryRuns: QueryRunsUseCase;
   readonly saveAgent: SaveAgentUseCase;
   readonly queryAgents: QueryAgentsUseCase;
   readonly generateAgentPrompt: GenerateAgentPromptUseCase;
+  readonly saveSkill: SaveSkillUseCase;
+  readonly querySkills: QuerySkillsUseCase;
+  readonly generateSkillPrompt: GenerateSkillPromptUseCase;
   readonly draftTool: DraftToolUseCase;
   readonly saveTool: SaveToolUseCase;
   readonly getTool: GetToolUseCase;
@@ -120,6 +131,11 @@ export function createApp(options?: AppOptions): App {
     : profile === 'local'
       ? (() => { const sqlite = new SqliteAgentRepository(path ?? ':memory:'); return { repo: sqlite as AgentRepository, close: () => sqlite.close() }; })()
       : { repo: new InMemoryAgentRepository() as AgentRepository, close: () => {} };
+  const skillAdapter = options?.skillRepository !== undefined
+    ? { repo: options.skillRepository, close: () => {} }
+    : profile === 'local'
+      ? (() => { const sqlite = new SqliteSkillRepository(path ?? ':memory:'); return { repo: sqlite as SkillRepository, close: () => sqlite.close() }; })()
+      : { repo: new InMemorySkillRepository() as SkillRepository, close: () => {} };
 
   const engine = new EtlEngine(createDefaultRegistry());
   const modelProvider = options?.modelProvider ?? (profile === 'test'
@@ -138,11 +154,15 @@ export function createApp(options?: AppOptions): App {
     modelProvider,
     runRepo: runAdapter.repo,
     agentRepo: agentAdapter.repo,
+    skillRepo: skillAdapter.repo,
     runAgentPreview: new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo),
     queryRuns: new QueryRunsUseCase(runAdapter.repo),
     saveAgent: new SaveAgentUseCase(agentAdapter.repo, repo),
     queryAgents: new QueryAgentsUseCase(agentAdapter.repo),
     generateAgentPrompt: new GenerateAgentPromptUseCase(repo),
+    saveSkill: new SaveSkillUseCase(skillAdapter.repo, repo),
+    querySkills: new QuerySkillsUseCase(skillAdapter.repo),
+    generateSkillPrompt: new GenerateSkillPromptUseCase(repo),
     draftTool: new DraftToolUseCase(engine),
     saveTool: new SaveToolUseCase(repo, engine),
     getTool: new GetToolUseCase(repo),
@@ -153,7 +173,10 @@ export function createApp(options?: AppOptions): App {
       try { closeTools(); }
       finally {
         try { runAdapter.close(); }
-        finally { agentAdapter.close(); }
+        finally {
+          try { agentAdapter.close(); }
+          finally { skillAdapter.close(); }
+        }
       }
     },
   };

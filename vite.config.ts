@@ -15,6 +15,8 @@ export default defineConfig({
       '/runs': apiTarget,
       '/agents': apiTarget,
       '/agent-drafts': apiTarget,
+      '/skills': apiTarget,
+      '/skill-drafts': apiTarget,
     },
   },
   build: { outDir: 'dist/ui', emptyOutDir: true },

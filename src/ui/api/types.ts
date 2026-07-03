@@ -134,6 +134,24 @@ export interface AgentPromptDraftDto {
   readonly sources: readonly string[];
 }
 
+export interface SerializedSkillDto {
+  readonly metadata: SerializedAgentDto['metadata'];
+  readonly responsibility: string;
+  readonly activationCondition: string;
+  readonly inputDescription: string;
+  readonly outputDescription: string;
+  readonly instructions: string;
+  readonly tools: readonly AgentToolRefDto[];
+}
+export interface SaveSkillDto {
+  readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string;
+  readonly publishName: string; readonly owner: string; readonly responsibility: string; readonly activationCondition: string;
+  readonly inputDescription: string; readonly outputDescription: string; readonly instructions: string;
+  readonly tools: readonly AgentToolRefDto[]; readonly bump?: 'major' | 'minor' | 'patch';
+}
+export interface SkillSummaryDto { readonly internalId: string; readonly displayName: string; readonly publishName: string; readonly latestVersion: string; readonly state: SerializedAgentDto['metadata']['state'] }
+export interface SkillPromptDraftDto { readonly promptDraft: string; readonly sections: { readonly responsibility: string; readonly activation: string; readonly ioContract: string; readonly toolGuide: string }; readonly editable: true; readonly sources: readonly string[] }
+
 export type RunTraceEventDto =
   | { readonly sequence: number; readonly kind: 'model-request'; readonly step: number; readonly toolNames: readonly string[] }
   | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }

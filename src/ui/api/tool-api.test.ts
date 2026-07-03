@@ -109,4 +109,24 @@ describe('ToolApiClient', () => {
     await client.runSavedAgent({ scope, agent: { internalId: 'agent', version: '1.0.0' }, message: 'go', mode: 'preview' });
     expect(fetcher.mock.calls.map((call) => call[0])).toEqual(expect.arrayContaining(['/api/agent-drafts/generate-prompt', '/api/agents']));
   });
+
+  it('Skill Builderのprompt生成・保存・一覧contractを扱う', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ draft: { promptDraft: 'draft' } }))
+      .mockResolvedValueOnce(jsonResponse({ skill: { metadata: { version: '1.0.0' } } }))
+      .mockResolvedValueOnce(jsonResponse({ skills: [{ internalId: 'analysis', latestVersion: '1.0.0' }] }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    const fields = {
+      scope, displayName: 'Analysis', responsibility: 'Analyze.', activationCondition: 'For data.',
+      inputDescription: 'Data.', outputDescription: 'Answer.', tools: [{ internalId: 'tool', version: '1.0.0' }],
+    };
+    await client.generateSkillPrompt(fields);
+    await client.saveSkill({ ...fields, internalId: 'analysis', workingName: 'Analysis', publishName: 'analysis', owner: 'owner', instructions: 'draft' });
+    await client.listSkills(scope);
+    expect(fetcher.mock.calls.map((call) => call[0])).toEqual([
+      '/api/skill-drafts/generate-prompt', '/api/skills', expect.stringContaining('/api/skills?'),
+    ]);
+    const savedBody = JSON.parse(String((fetcher.mock.calls[1]?.[1] as RequestInit | undefined)?.body));
+    expect(savedBody).toMatchObject({ internalId: 'analysis', instructions: 'draft', tools: [{ internalId: 'tool', version: '1.0.0' }] });
+  });
 });

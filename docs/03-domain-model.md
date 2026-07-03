@@ -85,6 +85,7 @@ classDiagram
     +IOContract io
     +List~ToolRef~ dependencies
     +string activationCondition
+    +string instructions
   }
 
   class Agent {
@@ -127,6 +128,8 @@ classDiagram
 - `AgentKind`: `Normal`（通常）/ `PseudoUser`（ユーザープロファイル駆動の疑似ユーザー）/ `Evaluator`（評価用）。
 
 v1の`StructuredOutput`はJSON object直下の`string / number / integer / boolean` fieldに限定し、requiredとdescriptionを保持する。nested object、array、enumは後続で拡張する。
+
+v1の`Skill`は責務・発火条件・入出力説明・編集可能なinstructionsを持ち、依存Toolを`internalId + SemVer`で固定する。latest参照は保存しないため、Tool更新後も既存Skillの再現性を維持する。AgentへのSkill組み込みは後続Incrementで扱う。
 
 ---
 

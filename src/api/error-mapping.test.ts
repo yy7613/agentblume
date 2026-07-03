@@ -16,6 +16,7 @@ import { AgentRunError, ToolArgumentsError, UnsafeToolError } from '../applicati
 import { ModelProviderError } from '../application/model/model-provider';
 import { RunFailedError } from '../application/agent/errors';
 import { RunNotFoundError } from '../domain/run/errors';
+import { SkillNotFoundError, SkillValidationError, SkillVersionConflictError } from '../domain/skill/errors';
 
 describe('toHttpError', () => {
   it.each([
@@ -31,6 +32,9 @@ describe('toHttpError', () => {
     [new AgentRunError('bad run'), 422, 'AGENT_RUN', 'bad run'],
     [new ModelProviderError('offline'), 502, 'MODEL_PROVIDER', 'offline'],
     [new RunNotFoundError('missing run'), 404, 'RUN_NOT_FOUND', 'missing run'],
+    [new SkillNotFoundError('missing skill'), 404, 'SKILL_NOT_FOUND', 'missing skill'],
+    [new SkillVersionConflictError('dup skill'), 409, 'SKILL_VERSION_CONFLICT', 'dup skill'],
+    [new SkillValidationError('bad skill'), 400, 'SKILL_VALIDATION', 'bad skill'],
   ] as const)(
     '%s → status=%i code=%s',
     (err, status, code, message) => {

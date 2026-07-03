@@ -108,6 +108,25 @@ export const agentPromptBodySchema = z.object({
   version: z.string().optional(),
 });
 
+const skillFieldsSchema = {
+  responsibility: z.string().min(1),
+  activationCondition: z.string().min(1),
+  inputDescription: z.string().min(1),
+  outputDescription: z.string().min(1),
+  tools: z.array(agentToolRefSchema),
+} as const;
+
+export const saveSkillBodySchema = z.object({
+  scope: tenantScopeSchema,
+  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1),
+  publishName: z.string().min(1), owner: z.string().min(1), ...skillFieldsSchema,
+  instructions: z.string().min(1),
+  bump: z.enum(['major', 'minor', 'patch']).optional(),
+  state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
+});
+export const skillDraftPromptBodySchema = z.object({ scope: tenantScopeSchema, displayName: z.string().min(1), ...skillFieldsSchema });
+export const skillPromptBodySchema = z.object({ scope: tenantScopeSchema, version: z.string().optional() });
+
 /** POST /tools/:id/infer-schema・/preview の body。 */
 export const previewBodySchema = z.object({
   scope: tenantScopeSchema,
