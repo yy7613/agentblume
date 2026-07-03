@@ -21,12 +21,18 @@ import { EtlEngine } from '../application/etl/engine';
 import type { ModelProviderPort } from '../application/model/model-provider';
 import { DraftToolUseCase } from '../application/tool/draft-tool';
 import { PreviewToolUseCase } from '../application/tool/preview-tool';
-import { GetToolUseCase, ListToolVersionsUseCase } from '../application/tool/query-tool';
+import { GetToolUseCase, ListToolVersionsUseCase, ListToolsUseCase } from '../application/tool/query-tool';
 import { SaveToolUseCase } from '../application/tool/save-tool';
 import { createDefaultRegistry } from '../domain/etl/nodes/index';
 import { ToolValidationError } from '../domain/tool/errors';
 import type { ToolRepository } from '../domain/tool/tool-repository';
 import type { RunRepository } from '../domain/run/run-repository';
+import { InMemoryAgentRepository } from '../adapters/storage/in-memory-agent-repository';
+import { SqliteAgentRepository } from '../adapters/storage/sqlite-agent-repository';
+import { GenerateAgentPromptUseCase } from '../application/agent/generate-agent-prompt';
+import { QueryAgentsUseCase } from '../application/agent/query-agents';
+import { SaveAgentUseCase } from '../application/agent/save-agent';
+import type { AgentRepository } from '../domain/agent/agent-repository';
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
@@ -40,6 +46,7 @@ export interface AppOptions {
   /** テスト・埋め込み用の明示provider。省略時はprofileに従う。 */
   readonly modelProvider?: ModelProviderPort;
   readonly runRepository?: RunRepository;
+  readonly agentRepository?: AgentRepository;
 }
 
 /** 配線済みアプリケーション。 */
@@ -49,12 +56,17 @@ export interface App {
   readonly engine: EtlEngine;
   readonly modelProvider: ModelProviderPort;
   readonly runRepo: RunRepository;
+  readonly agentRepo: AgentRepository;
   readonly runAgentPreview: RunAgentPreviewUseCase;
   readonly queryRuns: QueryRunsUseCase;
+  readonly saveAgent: SaveAgentUseCase;
+  readonly queryAgents: QueryAgentsUseCase;
+  readonly generateAgentPrompt: GenerateAgentPromptUseCase;
   readonly draftTool: DraftToolUseCase;
   readonly saveTool: SaveToolUseCase;
   readonly getTool: GetToolUseCase;
   readonly listToolVersions: ListToolVersionsUseCase;
+  readonly listTools: ListToolsUseCase;
   readonly previewTool: PreviewToolUseCase;
   /** SqliteToolRepository の close を委譲する（InMemory は no-op）。 */
   close(): void;
@@ -103,6 +115,11 @@ export function createApp(options?: AppOptions): App {
     : profile === 'local'
       ? (() => { const sqlite = new SqliteRunRepository(path ?? ':memory:'); return { repo: sqlite as RunRepository, close: () => sqlite.close() }; })()
       : { repo: new InMemoryRunRepository() as RunRepository, close: () => {} };
+  const agentAdapter = options?.agentRepository !== undefined
+    ? { repo: options.agentRepository, close: () => {} }
+    : profile === 'local'
+      ? (() => { const sqlite = new SqliteAgentRepository(path ?? ':memory:'); return { repo: sqlite as AgentRepository, close: () => sqlite.close() }; })()
+      : { repo: new InMemoryAgentRepository() as AgentRepository, close: () => {} };
 
   const engine = new EtlEngine(createDefaultRegistry());
   const modelProvider = options?.modelProvider ?? (profile === 'test'
@@ -120,16 +137,24 @@ export function createApp(options?: AppOptions): App {
     engine,
     modelProvider,
     runRepo: runAdapter.repo,
-    runAgentPreview: new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo),
+    agentRepo: agentAdapter.repo,
+    runAgentPreview: new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo),
     queryRuns: new QueryRunsUseCase(runAdapter.repo),
+    saveAgent: new SaveAgentUseCase(agentAdapter.repo, repo),
+    queryAgents: new QueryAgentsUseCase(agentAdapter.repo),
+    generateAgentPrompt: new GenerateAgentPromptUseCase(repo),
     draftTool: new DraftToolUseCase(engine),
     saveTool: new SaveToolUseCase(repo, engine),
     getTool: new GetToolUseCase(repo),
     listToolVersions: new ListToolVersionsUseCase(repo),
+    listTools: new ListToolsUseCase(repo),
     previewTool: new PreviewToolUseCase(repo, engine),
     close: () => {
       try { closeTools(); }
-      finally { runAdapter.close(); }
+      finally {
+        try { runAdapter.close(); }
+        finally { agentAdapter.close(); }
+      }
     },
   };
 }

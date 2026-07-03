@@ -5,7 +5,7 @@
   "type": "module",
   "description": "AgentContext — ノーコード・エージェントIDE (v1 increment: ETL Tool Engine)",
   "scripts": {
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json && tsc -p tsconfig.e2e.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
@@ -13,10 +13,14 @@
     "demo": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx src/demo.ts",
     "serve": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx src/server.ts",
     "dev:ui": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:install": "playwright install chromium"
   },
   "license": "UNLICENSED",
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/node": "^26.1.0",

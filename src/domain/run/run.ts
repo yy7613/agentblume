@@ -31,7 +31,12 @@ export interface RunRecord {
   readonly scope: TenantScope;
   readonly status: RunStatus;
   readonly mode: RunMode;
-  readonly tool: {
+  readonly tool?: {
+    readonly internalId: string;
+    readonly version?: string;
+    readonly publishName?: string;
+  };
+  readonly agent?: {
     readonly internalId: string;
     readonly version?: string;
     readonly publishName?: string;
@@ -48,23 +53,41 @@ export interface StartRunProps {
   readonly runId: string;
   readonly scope: TenantScope;
   readonly mode: RunMode;
-  readonly tool: RunRecord['tool'];
+  readonly tool?: RunRecord['tool'];
+  readonly agent?: RunRecord['agent'];
   readonly startedAt: string;
 }
 
 export function startRun(props: StartRunProps): RunRecord {
-  return { ...props, scope: { ...props.scope }, tool: { ...props.tool }, status: 'running', trace: [] };
+  return {
+    ...props,
+    scope: { ...props.scope },
+    ...(props.tool !== undefined ? { tool: { ...props.tool } } : {}),
+    ...(props.agent !== undefined ? { agent: { ...props.agent } } : {}),
+    status: 'running',
+    trace: [],
+  };
 }
 
 export function succeedRun(record: RunRecord, result: {
-  readonly tool: RunRecord['tool'];
+  readonly tool?: RunRecord['tool'];
+  readonly agent?: RunRecord['agent'];
   readonly response: string;
   readonly trace: readonly RunTraceEvent[];
   readonly usage: RunUsage;
   readonly completedAt: string;
 }): RunRecord {
   assertRunning(record);
-  return { ...record, status: 'succeeded', tool: { ...result.tool }, response: result.response, trace: structuredClone(result.trace), usage: { ...result.usage }, completedAt: result.completedAt };
+  return {
+    ...record,
+    status: 'succeeded',
+    ...(result.tool !== undefined ? { tool: { ...result.tool } } : {}),
+    ...(result.agent !== undefined ? { agent: { ...result.agent } } : {}),
+    response: result.response,
+    trace: structuredClone(result.trace),
+    usage: { ...result.usage },
+    completedAt: result.completedAt,
+  };
 }
 
 export function failRun(record: RunRecord, result: {

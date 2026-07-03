@@ -9,6 +9,7 @@ import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
+import type { ToolSummary } from '../../domain/tool/metadata';
 
 /** Tool を取得するユースケース。無ければ ToolNotFoundError。 */
 export class GetToolUseCase {
@@ -44,4 +45,10 @@ export class ListToolVersionsUseCase {
   async execute(scope: TenantScope, internalId: ToolId): Promise<SemVer[]> {
     return this.repo.listVersions(scope, internalId);
   }
+}
+
+/** workspace内の各Toolのlatest summaryを返す。 */
+export class ListToolsUseCase {
+  constructor(private readonly repo: ToolRepository) {}
+  execute(scope: TenantScope): Promise<ToolSummary[]> { return this.repo.list(scope); }
 }

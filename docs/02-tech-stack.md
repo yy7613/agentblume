@@ -99,7 +99,7 @@ flowchart LR
 | Secrets | 🔶 **HashiCorp Vault / クラウドKMS** | `SecretProvider` の実装 |
 | 観測 | 🔶 **OpenTelemetry** | `TelemetryPort` の実装。トレース可視化 |
 | サンドボックス | 🔶 **isolated-vm / WASM / コンテナ** | カスタムコードノード（Phase 3） |
-| テスト | 🔶 **Vitest + カバレッジ計測** | `ideas.md §開発Tools` のカバレッジ計測要件 |
+| テスト | 🔶 **Vitest + Playwright + カバレッジ計測** | ドメイン・API・UI unit/integrationはVitest、実ブラウザ縦切りはPlaywright |
 
 ---
 

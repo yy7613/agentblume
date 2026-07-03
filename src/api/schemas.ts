@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { PUBLISH_STATES, SIDE_EFFECTS } from '../domain/tool/metadata';
 import type { PublishState, SideEffect } from '../domain/tool/metadata';
+import { AGENT_KINDS } from '../domain/agent/agent';
 
 /** テナントスコープ（tenantId / workspaceId 非空）。 */
 export const tenantScopeSchema = z.object({
@@ -60,6 +61,40 @@ export const saveToolBodySchema = z.object({
   state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
 });
 
+const agentToolRefSchema = z.object({
+  internalId: z.string().min(1),
+  version: z.string().min(1),
+});
+
+/** POST /agents の body。Tool参照は保存済みversionへ固定する。 */
+export const saveAgentBodySchema = z.object({
+  scope: tenantScopeSchema,
+  internalId: z.string().min(1),
+  workingName: z.string().min(1),
+  displayName: z.string().min(1),
+  publishName: z.string().min(1),
+  owner: z.string().min(1),
+  kind: z.enum(AGENT_KINDS),
+  systemPrompt: z.string().min(1),
+  tools: z.array(agentToolRefSchema),
+  bump: z.enum(['major', 'minor', 'patch']).optional(),
+  state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
+});
+
+/** 未保存Agent向けprompt生成。 */
+export const agentDraftPromptBodySchema = z.object({
+  scope: tenantScopeSchema,
+  displayName: z.string().min(1),
+  kind: z.enum(AGENT_KINDS),
+  tools: z.array(agentToolRefSchema),
+});
+
+/** 保存済みAgent向けprompt生成。 */
+export const agentPromptBodySchema = z.object({
+  scope: tenantScopeSchema,
+  version: z.string().optional(),
+});
+
 /** POST /tools/:id/infer-schema・/preview の body。 */
 export const previewBodySchema = z.object({
   scope: tenantScopeSchema,
@@ -78,17 +113,27 @@ export const draftPreviewBodySchema = z.object({
   rowLimit: z.number().int().min(1).max(10000).optional(),
 });
 
-/** POST /runs: 保存済みTool 1本を使うAgent preview。 */
-export const runAgentBodySchema = z.object({
+const runBaseSchema = {
   scope: tenantScopeSchema,
+  message: z.string().min(1),
+  mode: z.enum(['preview', 'test']).default('preview'),
+} as const;
+
+/** POST /runs: inline Tool previewまたは保存済みAgent preview。 */
+export const runAgentBodySchema = z.union([z.object({
+  ...runBaseSchema,
   tool: z.object({
     internalId: z.string().min(1),
     version: z.string().optional(),
   }),
   systemPrompt: z.string().min(1),
-  message: z.string().min(1),
-  mode: z.enum(['preview', 'test']).default('preview'),
-});
+}), z.object({
+  ...runBaseSchema,
+  agent: z.object({
+    internalId: z.string().min(1),
+    version: z.string().optional(),
+  }),
+})]);
 
 export const runListQuerySchema = z.object({
   tenantId: z.string().min(1),
@@ -107,4 +152,9 @@ export const versionQuerySchema = z.object({
   tenantId: z.string().min(1),
   workspaceId: z.string().min(1),
   version: z.string().optional(),
+});
+
+export const scopeQuerySchema = z.object({
+  tenantId: z.string().min(1),
+  workspaceId: z.string().min(1),
 });

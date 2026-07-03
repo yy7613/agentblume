@@ -29,15 +29,27 @@ function parseVersion(value: string | undefined): SemVer | undefined {
 export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): void {
   app.post('/runs', async (request) => {
     const body = parseWith(runAgentBodySchema, request.body);
-    const version = parseVersion(body.tool.version);
-    const run = await deps.runAgentPreview.execute({
-      scope: body.scope,
-      toolId: body.tool.internalId,
-      ...(version !== undefined ? { version } : {}),
-      systemPrompt: body.systemPrompt,
-      message: body.message,
-      mode: body.mode,
-    }, request.raw.signal);
+    let run;
+    if ('agent' in body) {
+      const version = parseVersion(body.agent.version);
+      run = await deps.runAgentPreview.executeSaved({
+        scope: body.scope,
+        agentId: body.agent.internalId,
+        ...(version !== undefined ? { version } : {}),
+        message: body.message,
+        mode: body.mode,
+      }, request.raw.signal);
+    } else {
+      const version = parseVersion(body.tool.version);
+      run = await deps.runAgentPreview.execute({
+        scope: body.scope,
+        toolId: body.tool.internalId,
+        ...(version !== undefined ? { version } : {}),
+        systemPrompt: body.systemPrompt,
+        message: body.message,
+        mode: body.mode,
+      }, request.raw.signal);
+    }
     return { run };
   });
 
@@ -49,7 +61,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
       ...(query.status !== undefined ? { status: query.status } : {}),
     });
     return { runs: records.map((record) => ({
-      runId: record.runId, status: record.status, mode: record.mode, tool: record.tool,
+      runId: record.runId, status: record.status, mode: record.mode, tool: record.tool, agent: record.agent,
       startedAt: record.startedAt, completedAt: record.completedAt,
       response: record.response, failure: record.failure, usage: record.usage,
       traceEventCount: record.trace.length,

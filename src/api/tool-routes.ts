@@ -16,18 +16,19 @@
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { PreviewToolUseCase, PreviewToolOptions } from '../application/tool/preview-tool';
-import type { GetToolUseCase, ListToolVersionsUseCase } from '../application/tool/query-tool';
+import type { GetToolUseCase, ListToolVersionsUseCase, ListToolsUseCase } from '../application/tool/query-tool';
 import type { SaveToolUseCase } from '../application/tool/save-tool';
 import { serializeTool } from '../domain/tool/serialization';
 import { SemVer } from '../domain/tool/semver';
 import { BadRequestError } from './error-mapping';
-import { previewBodySchema, saveToolBodySchema, versionQuerySchema } from './schemas';
+import { previewBodySchema, saveToolBodySchema, scopeQuerySchema, versionQuerySchema } from './schemas';
 
 /** ルートが必要とする use case 群（Composition Root から注入される）。 */
 export interface ToolRouteDeps {
   saveTool: SaveToolUseCase;
   getTool: GetToolUseCase;
   listToolVersions: ListToolVersionsUseCase;
+  listTools: ListToolsUseCase;
   previewTool: PreviewToolUseCase;
 }
 
@@ -68,6 +69,13 @@ function previewOptions(version: SemVer | undefined, rowLimit?: number): Preview
 
 /** /tools 配下のルートを登録する（§4 の表に準拠）。 */
 export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): void {
+  // GET /tools — workspace内の各Toolのlatest summary。
+  app.get('/tools', async (request) => {
+    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
+    const tools = await deps.listTools.execute({ tenantId: query.tenantId, workspaceId: query.workspaceId });
+    return { tools: tools.map((tool) => ({ ...tool, latestVersion: tool.latestVersion.toString() })) };
+  });
+
   // POST /tools — 保存（検証・採番）→ 201。
   app.post('/tools', async (request, reply) => {
     const body = parseWith(saveToolBodySchema, request.body, 'invalid body');

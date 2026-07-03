@@ -167,6 +167,7 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | メソッド | パス | ユースケース | 認可アクション |
 |---|---|---|---|
 | `POST` | `/tools` | Tool作成（ノードフロー） | `tool:create` |
+| `GET` | `/tools` | workspace内のTool latest一覧 | `tool:read` |
 | `PUT` | `/tools/{id}` | Toolフロー更新 | `tool:edit` |
 | `POST` | `/tools/{id}/preview` | 固定サンプルでプレビュー実行 | `tool:execute` |
 | `POST` | `/tools/{id}/infer-schema` | スキーマ伝播・推論 | `tool:edit` |
@@ -175,6 +176,10 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/skills` | Skill作成 | `skill:create` |
 | `POST` | `/skills/{id}/generate-prompt` | 発火条件からプロンプト草案生成 | `skill:edit` |
 | `POST` | `/agents` | Agent作成 | `agent:create` |
+| `GET` | `/agents` | workspace内のAgent latest一覧 | `agent:read` |
+| `GET` | `/agents/{id}` | Agent取得（latest / version固定） | `agent:read` |
+| `GET` | `/agents/{id}/versions` | Agent version一覧 | `agent:read` |
+| `POST` | `/agent-drafts/generate-prompt` | 未保存AgentのToolメタからsystem prompt草案生成 | `agent:edit` |
 | `POST` | `/agents/{id}/generate-prompt` | Skill/Toolメタからsystem prompt自動生成 | `agent:edit` |
 | `POST` | `/agents/{id}/export` | Mastraコードへ一方向エクスポート | `agent:edit` |
 | `POST` | `/runs` | Agent実行（chat / preview / test） | `agent:execute` |
@@ -206,6 +211,18 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
   },
   "editable": true,
   "sources": ["skill:rag-qa の責務・発火条件", "tool:search-docs の入出力"]
+}
+```
+
+保存済みAgent実行では、system promptとTool候補をAgent versionから解決する。
+
+```jsonc
+// POST /runs
+{
+  "scope": { "tenantId": "local", "workspaceId": "default" },
+  "agent": { "internalId": "assistant-agent", "version": "1.0.0" },
+  "message": "Aliceのスコアを確認して",
+  "mode": "preview"
 }
 ```
 

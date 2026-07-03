@@ -13,4 +13,10 @@ describe('Run serialization', () => {
   it('不正status/traceを拒否する', () => {
     expect(() => deserializeRun({ runId: 'x', scope: { tenantId: 't', workspaceId: 'w' }, status: 'bad', mode: 'preview', tool: { internalId: 't' }, startedAt: 'x', trace: [] })).toThrow();
   });
+
+  it('Tool未選択の保存済みAgent runを往復する', () => {
+    const record = startRun({ runId: 'run-agent', scope: { tenantId: 't', workspaceId: 'w' }, mode: 'preview', agent: { internalId: 'agent', version: '1.0.0' }, startedAt: 'now' });
+    expect(deserializeRun(serializeRun(record))).toEqual(record);
+    expect(() => deserializeRun({ ...record, agent: undefined })).toThrow(/tool or agent/);
+  });
 });

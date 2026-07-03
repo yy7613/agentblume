@@ -126,3 +126,23 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .run-detail-title > div { display: flex; align-items: center; gap: 8px; }
 .run-detail-title h2 { margin: 0; font-size: 15px; }
 .run-detail-title > code { color: #758198; font-size: 10px; }
+.agent-builder { min-width: 0; padding: 24px; overflow: auto; }
+.agent-builder-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+.agent-builder-header h1 { margin: 3px 0; font-size: 24px; }
+.agent-builder-header p { margin: 0; color: #758198; font-size: 12px; }
+.agent-builder-grid { display: grid; grid-template-columns: minmax(360px, .8fr) minmax(520px, 1.2fr); gap: 16px; }
+.agent-definition-card, .prompt-editor-card { background: white; border: 1px solid #dce1eb; border-radius: 12px; padding: 18px; }
+.agent-definition-card h2, .prompt-editor-card h2 { margin: 2px 0 14px; font-size: 16px; }
+.agent-definition-card h2:not(:first-child) { border-top: 1px solid #e3e7ef; margin-top: 20px; padding-top: 17px; }
+.agent-definition-card h2 small { color: #8490a5; font-size: 10px; font-weight: 500; }
+.agent-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+.agent-tool-list { display: grid; gap: 7px; max-height: 300px; overflow: auto; }
+.agent-tool-option { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; border: 1px solid #dce1eb; border-radius: 8px; padding: 10px; cursor: pointer; }
+.agent-tool-option:has(input:checked) { border-color: #6576f1; background: #f2f4ff; }
+.agent-tool-option span, .agent-tool-option strong, .agent-tool-option code { display: block; }
+.agent-tool-option code { color: #758198; font-size: 9px; margin-top: 3px; }
+.agent-tool-option small { color: #68758f; }
+.prompt-editor-card textarea { width: 100%; min-height: 520px; }
+.prompt-editor-card > p { color: #758198; font-size: 11px; line-height: 1.5; }
+.agent-run-panel { border-top: 1px solid #e3e7ef; margin-top: 18px; padding-top: 17px; }
+.agent-run-panel .chat-compose { grid-template-columns: 1fr 150px; }

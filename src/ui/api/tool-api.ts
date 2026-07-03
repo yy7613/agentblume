@@ -9,6 +9,14 @@ import type {
   RunAgentDto,
   RunRecordDto,
   RunSummaryDto,
+  ToolSummaryDto,
+  SaveAgentDto,
+  SerializedAgentDto,
+  AgentPromptDraftDto,
+  AgentKindDto,
+  AgentToolRefDto,
+  AgentSummaryDto,
+  RunSavedAgentDto,
 } from './types';
 
 export class ApiError extends Error {
@@ -26,10 +34,16 @@ export class ApiError extends Error {
 type Fetcher = typeof fetch;
 
 export class ToolApiClient {
+  private readonly fetcher: Fetcher;
+
   constructor(
     private readonly baseUrl = '',
-    private readonly fetcher: Fetcher = fetch,
-  ) {}
+    fetcher: Fetcher = fetch,
+  ) {
+    // Window.fetch は ToolApiClient のメソッドとして呼ぶと Illegal invocation になる。
+    // globalThis へ束縛し、実ブラウザと注入テストの両方で同じ呼び出し規約にする。
+    this.fetcher = fetcher.bind(globalThis);
+  }
 
   async inferDraft(graph: ToolGraphDto, signal?: AbortSignal): Promise<PropagationResultDto> {
     const body = await this.request<{ propagation: PropagationResultDto }>(
@@ -65,7 +79,35 @@ export class ToolApiClient {
     return (await this.request<{ tool: SerializedToolDto }>(`/tools/${encodeURIComponent(internalId)}?${query}`)).tool;
   }
 
+  async listTools(scope: TenantScopeDto): Promise<readonly ToolSummaryDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ tools: ToolSummaryDto[] }>(`/tools?${query}`)).tools;
+  }
+
+  async saveAgent(input: SaveAgentDto): Promise<SerializedAgentDto> {
+    return (await this.request<{ agent: SerializedAgentDto }>('/agents', {
+      method: 'POST', body: JSON.stringify(input),
+    })).agent;
+  }
+
+  async listAgents(scope: TenantScopeDto): Promise<readonly AgentSummaryDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ agents: AgentSummaryDto[] }>(`/agents?${query}`)).agents;
+  }
+
+  async generateAgentPrompt(input: { readonly scope: TenantScopeDto; readonly displayName: string; readonly kind: AgentKindDto; readonly tools: readonly AgentToolRefDto[] }): Promise<AgentPromptDraftDto> {
+    return (await this.request<{ draft: AgentPromptDraftDto }>('/agent-drafts/generate-prompt', {
+      method: 'POST', body: JSON.stringify(input),
+    })).draft;
+  }
+
   async runAgent(input: RunAgentDto, signal?: AbortSignal): Promise<AgentPreviewRunDto> {
+    return (await this.request<{ run: AgentPreviewRunDto }>('/runs', {
+      method: 'POST', body: JSON.stringify(input), signal,
+    })).run;
+  }
+
+  async runSavedAgent(input: RunSavedAgentDto, signal?: AbortSignal): Promise<AgentPreviewRunDto> {
     return (await this.request<{ run: AgentPreviewRunDto }>('/runs', {
       method: 'POST', body: JSON.stringify(input), signal,
     })).run;

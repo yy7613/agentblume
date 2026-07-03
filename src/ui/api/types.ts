@@ -69,6 +69,58 @@ export interface SaveToolDto {
   readonly bump?: 'major' | 'minor' | 'patch';
 }
 
+export interface ToolSummaryDto {
+  readonly internalId: string;
+  readonly publishName: string;
+  readonly displayName: string;
+  readonly latestVersion: string;
+  readonly state: SerializedToolDto['metadata']['state'];
+}
+
+export type AgentKindDto = 'normal' | 'pseudo-user' | 'evaluator';
+export interface AgentToolRefDto { readonly internalId: string; readonly version: string }
+export interface SerializedAgentDto {
+  readonly metadata: {
+    readonly internalId: string;
+    readonly workingName: string;
+    readonly displayName: string;
+    readonly publishName: string;
+    readonly version: string;
+    readonly owner: string;
+    readonly state: SerializedToolDto['metadata']['state'];
+    readonly tenant: TenantScopeDto;
+  };
+  readonly kind: AgentKindDto;
+  readonly systemPrompt: string;
+  readonly tools: readonly AgentToolRefDto[];
+}
+export interface SaveAgentDto {
+  readonly scope: TenantScopeDto;
+  readonly internalId: string;
+  readonly workingName: string;
+  readonly displayName: string;
+  readonly publishName: string;
+  readonly owner: string;
+  readonly kind: AgentKindDto;
+  readonly systemPrompt: string;
+  readonly tools: readonly AgentToolRefDto[];
+  readonly bump?: 'major' | 'minor' | 'patch';
+}
+export interface AgentSummaryDto {
+  readonly internalId: string;
+  readonly displayName: string;
+  readonly publishName: string;
+  readonly latestVersion: string;
+  readonly kind: AgentKindDto;
+  readonly state: SerializedAgentDto['metadata']['state'];
+}
+export interface AgentPromptDraftDto {
+  readonly systemPromptDraft: string;
+  readonly sections: { readonly role: string; readonly toolUsageGuide: string; readonly rules: string };
+  readonly editable: true;
+  readonly sources: readonly string[];
+}
+
 export type RunTraceEventDto =
   | { readonly sequence: number; readonly kind: 'model-request'; readonly step: number; readonly toolNames: readonly string[] }
   | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }
@@ -79,7 +131,8 @@ export type RunTraceEventDto =
 export interface AgentPreviewRunDto {
   readonly runId: string;
   readonly mode: 'preview' | 'test';
-  readonly tool: { readonly internalId: string; readonly publishName: string; readonly version: string };
+  readonly agent?: { readonly internalId: string; readonly publishName?: string; readonly version?: string };
+  readonly tool?: { readonly internalId: string; readonly publishName?: string; readonly version?: string };
   readonly response: string;
   readonly trace: readonly RunTraceEventDto[];
   readonly usage: { readonly promptTokens?: number; readonly completionTokens?: number; readonly totalTokens?: number };
@@ -93,11 +146,19 @@ export interface RunAgentDto {
   readonly mode: 'preview' | 'test';
 }
 
+export interface RunSavedAgentDto {
+  readonly scope: TenantScopeDto;
+  readonly agent: { readonly internalId: string; readonly version?: string };
+  readonly message: string;
+  readonly mode: 'preview' | 'test';
+}
+
 export interface RunSummaryDto {
   readonly runId: string;
   readonly status: 'running' | 'succeeded' | 'failed';
   readonly mode: 'preview' | 'test';
-  readonly tool: { readonly internalId: string; readonly version?: string; readonly publishName?: string };
+  readonly agent?: { readonly internalId: string; readonly version?: string; readonly publishName?: string };
+  readonly tool?: { readonly internalId: string; readonly version?: string; readonly publishName?: string };
   readonly startedAt: string;
   readonly completedAt?: string;
   readonly response?: string;

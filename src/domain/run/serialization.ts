@@ -15,11 +15,14 @@ const runSchema = z.object({
   scope: z.object({ tenantId: z.string().min(1), workspaceId: z.string().min(1) }),
   status: z.enum(['running', 'succeeded', 'failed'] as [RunStatus, ...RunStatus[]]),
   mode: z.enum(['preview', 'test']),
-  tool: z.object({ internalId: z.string().min(1), version: z.string().optional(), publishName: z.string().optional() }),
+  tool: z.object({ internalId: z.string().min(1), version: z.string().optional(), publishName: z.string().optional() }).optional(),
+  agent: z.object({ internalId: z.string().min(1), version: z.string().optional(), publishName: z.string().optional() }).optional(),
   startedAt: z.string().min(1), completedAt: z.string().min(1).optional(), response: z.string().optional(),
   trace: z.array(traceSchema),
   usage: z.object({ promptTokens: z.number().int().nonnegative().optional(), completionTokens: z.number().int().nonnegative().optional(), totalTokens: z.number().int().nonnegative().optional() }).optional(),
   failure: z.object({ code: z.string(), message: z.string() }).optional(),
+}).refine((record) => record.tool !== undefined || record.agent !== undefined, {
+  message: 'run requires a tool or agent reference',
 });
 
 export function serializeRun(record: RunRecord): RunRecord {

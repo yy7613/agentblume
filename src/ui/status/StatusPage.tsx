@@ -31,12 +31,12 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
     <div className="status-workspace">
       <section className="run-list" aria-label="Run history">
         {runs.length === 0 && !loading ? <p className="empty-state">保存済みrunはありません。</p> : runs.map((run) => <button type="button" key={run.runId} className={selected?.runId === run.runId ? 'selected' : ''} onClick={() => void select(run.runId)}>
-          <span className={`run-status ${run.status}`}>{run.status}</span><strong>{run.tool.publishName ?? run.tool.internalId}</strong><code>{run.tool.version ?? 'latest'} · {run.traceEventCount} events</code><time>{new Date(run.startedAt).toLocaleString()}</time>
+          <span className={`run-status ${run.status}`}>{run.status}</span><strong>{run.agent?.publishName ?? run.agent?.internalId ?? run.tool?.publishName ?? run.tool?.internalId ?? 'unknown'}</strong><code>{run.agent?.version ?? run.tool?.version ?? 'latest'} · {run.traceEventCount} events</code><time>{new Date(run.startedAt).toLocaleString()}</time>
         </button>)}
       </section>
       <section className="run-detail" aria-label="Run trace">
         {selected === undefined ? <p className="empty-state">runを選択するとtraceを表示します。</p> : <>
-          <div className="run-detail-title"><div><span className={`run-status ${selected.status}`}>{selected.status}</span><h2>{selected.runId}</h2></div><code>{selected.tool.internalId}@{selected.tool.version ?? 'latest'}</code></div>
+          <div className="run-detail-title"><div><span className={`run-status ${selected.status}`}>{selected.status}</span><h2>{selected.runId}</h2></div><code>{selected.agent?.internalId ?? selected.tool?.internalId ?? 'unknown'}@{selected.agent?.version ?? selected.tool?.version ?? 'latest'}</code></div>
           {selected.response !== undefined && <div className="chat-response"><span>Response</span><p>{selected.response}</p></div>}
           {selected.failure !== undefined && <div className="api-error"><strong>{selected.failure.code}</strong> {selected.failure.message}</div>}
           <div className="trace-list">{selected.trace.map((event) => <StatusTraceEvent key={event.sequence} event={event} />)}</div>

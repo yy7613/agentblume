@@ -1,18 +1,22 @@
 import { randomUUID } from 'node:crypto';
+import type { Agent } from '../../domain/agent/agent';
+import type { AgentRepository } from '../../domain/agent/agent-repository';
+import { AgentNotFoundError } from '../../domain/agent/errors';
 import type { Row, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
+import type { RunMode, RunRecord, RunTraceEvent, RunUsage } from '../../domain/run/run';
+import { failRun, startRun, succeedRun } from '../../domain/run/run';
+import type { RunRepository } from '../../domain/run/run-repository';
 import { ToolNotFoundError } from '../../domain/tool/errors';
 import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
-import { failRun, startRun, succeedRun, type RunMode, type RunTraceEvent, type RunUsage } from '../../domain/run/run';
-import type { RunRepository } from '../../domain/run/run-repository';
-import { EtlEngine, type PreviewResult } from '../etl/engine';
-import type { JsonObject, ModelCompletion, ModelMessage, ModelProviderPort, ModelUsage } from '../model/model-provider';
+import { EtlEngine } from '../etl/engine';
+import type { ModelCompletion, ModelMessage, ModelProviderPort, ModelUsage } from '../model/model-provider';
 import { AgentRunError, RunFailedError, UnsafeToolError } from './errors';
-import { assertOutputMatchesSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
 import { failureFrom, sanitizeRunTrace } from './run-trace';
+import { assertOutputMatchesSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
 
 export type AgentRunMode = RunMode;
 
@@ -25,24 +29,40 @@ export interface RunAgentPreviewInput {
   readonly mode: AgentRunMode;
 }
 
+export interface RunSavedAgentPreviewInput {
+  readonly scope: TenantScope;
+  readonly agentId: string;
+  readonly version?: SemVer;
+  readonly message: string;
+  readonly mode: AgentRunMode;
+}
+
 export interface AgentPreviewRun {
   readonly runId: string;
   readonly mode: AgentRunMode;
-  readonly tool: { readonly internalId: string; readonly publishName: string; readonly version: string };
+  readonly agent?: RunRecord['agent'];
+  readonly tool?: RunRecord['tool'];
   readonly response: string;
   readonly trace: readonly RunTraceEvent[];
   readonly usage: RunUsage;
 }
 
+type RunResult = Omit<AgentPreviewRun, 'runId' | 'mode' | 'trace'>;
+
 function mergeUsage(...completions: readonly ModelCompletion[]): ModelUsage {
   const sum = (select: (usage: ModelUsage) => number | undefined): number | undefined => {
-    const values = completions.map((completion) => completion.usage).filter((usage): usage is ModelUsage => usage !== undefined).map(select).filter((value): value is number => value !== undefined);
+    const values = completions.map((completion) => completion.usage)
+      .filter((usage): usage is ModelUsage => usage !== undefined)
+      .map(select).filter((value): value is number => value !== undefined);
     return values.length === 0 ? undefined : values.reduce((total, value) => total + value, 0);
   };
+  const promptTokens = sum((usage) => usage.promptTokens);
+  const completionTokens = sum((usage) => usage.completionTokens);
+  const totalTokens = sum((usage) => usage.totalTokens);
   return {
-    ...(sum((usage) => usage.promptTokens) !== undefined ? { promptTokens: sum((usage) => usage.promptTokens) } : {}),
-    ...(sum((usage) => usage.completionTokens) !== undefined ? { completionTokens: sum((usage) => usage.completionTokens) } : {}),
-    ...(sum((usage) => usage.totalTokens) !== undefined ? { totalTokens: sum((usage) => usage.totalTokens) } : {}),
+    ...(promptTokens !== undefined ? { promptTokens } : {}),
+    ...(completionTokens !== undefined ? { completionTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
   };
 }
 
@@ -71,23 +91,56 @@ export class RunAgentPreviewUseCase {
     private readonly runRepo: RunRepository,
     private readonly makeRunId: () => string = randomUUID,
     private readonly now: () => Date = () => new Date(),
+    private readonly agents?: AgentRepository,
   ) {}
 
   async execute(input: RunAgentPreviewInput, signal?: AbortSignal): Promise<AgentPreviewRun> {
+    return this.executeRun(
+      input.scope,
+      input.mode,
+      { tool: { internalId: input.toolId, ...(input.version !== undefined ? { version: input.version.toString() } : {}) } },
+      async (trace) => {
+        const tool = await this.loadTool(input.scope, input.toolId, input.version);
+        return this.perform(input.systemPrompt, input.message, [tool], trace, signal);
+      },
+    );
+  }
+
+  async executeSaved(input: RunSavedAgentPreviewInput, signal?: AbortSignal): Promise<AgentPreviewRun> {
+    return this.executeRun(
+      input.scope,
+      input.mode,
+      { agent: { internalId: input.agentId, ...(input.version !== undefined ? { version: input.version.toString() } : {}) } },
+      async (trace) => {
+        const agent = await this.loadAgent(input.scope, input.agentId, input.version);
+        const tools: Tool[] = [];
+        for (const ref of agent.tools) tools.push(await this.loadTool(input.scope, ref.internalId, ref.version));
+        return this.perform(agent.systemPrompt, input.message, tools, trace, signal, this.agentRef(agent));
+      },
+    );
+  }
+
+  private async executeRun(
+    scope: TenantScope,
+    mode: AgentRunMode,
+    refs: Pick<RunRecord, 'tool' | 'agent'>,
+    work: (trace: RunTraceEvent[]) => Promise<RunResult>,
+  ): Promise<AgentPreviewRun> {
     const runId = this.makeRunId();
-    const started = startRun({
-      runId, scope: input.scope, mode: input.mode,
-      tool: { internalId: input.toolId, ...(input.version !== undefined ? { version: input.version.toString() } : {}) },
-      startedAt: this.now().toISOString(),
-    });
+    const started = startRun({ runId, scope, mode, ...refs, startedAt: this.now().toISOString() });
     await this.runRepo.save(started);
     const trace: RunTraceEvent[] = [];
     try {
-      const result = await this.perform(input, trace, signal);
+      const result = await work(trace);
       await this.runRepo.save(succeedRun(started, {
-        tool: result.tool, response: result.response, trace: sanitizeRunTrace(trace), usage: result.usage, completedAt: this.now().toISOString(),
+        ...(result.tool !== undefined ? { tool: result.tool } : {}),
+        ...(result.agent !== undefined ? { agent: result.agent } : {}),
+        response: result.response,
+        trace: sanitizeRunTrace(trace),
+        usage: result.usage,
+        completedAt: this.now().toISOString(),
       }));
-      return { runId, mode: input.mode, ...result, trace };
+      return { runId, mode, ...result, trace };
     } catch (error) {
       const failure = failureFrom(error);
       trace.push({ sequence: trace.length + 1, kind: 'error', code: failure.code, message: failure.message });
@@ -96,22 +149,30 @@ export class RunAgentPreviewUseCase {
     }
   }
 
-  private async perform(input: RunAgentPreviewInput, trace: RunTraceEvent[], signal?: AbortSignal): Promise<Omit<AgentPreviewRun, 'runId' | 'mode' | 'trace'>> {
-    const tool = await this.loadTool(input.scope, input.toolId, input.version);
-    if (tool.sideEffect !== 'read-only') {
-      throw new UnsafeToolError(`Agent preview refuses ${tool.sideEffect} tool '${tool.metadata.internalId}'`);
+  private async perform(
+    systemPrompt: string,
+    userMessage: string,
+    tools: readonly Tool[],
+    trace: RunTraceEvent[],
+    signal?: AbortSignal,
+    agent?: RunRecord['agent'],
+  ): Promise<RunResult> {
+    for (const tool of tools) {
+      if (tool.sideEffect !== 'read-only') {
+        throw new UnsafeToolError(`Agent preview refuses ${tool.sideEffect} tool '${tool.metadata.internalId}'`);
+      }
     }
-    if (!this.model.capabilities().includes('tool-calling')) {
+    if (tools.length > 0 && !this.model.capabilities().includes('tool-calling')) {
       throw new AgentRunError('configured model provider does not support tool-calling');
     }
 
-    const definition = toolToModelDefinition(tool);
+    const definitions = tools.map(toolToModelDefinition);
     const messages: ModelMessage[] = [
-      { role: 'system', content: input.systemPrompt },
-      { role: 'user', content: input.message },
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
     ];
-    trace.push({ sequence: 1, kind: 'model-request', step: 1, toolNames: [definition.name] });
-    const first = await this.model.complete({ messages, tools: [definition] }, signal);
+    trace.push({ sequence: 1, kind: 'model-request', step: 1, toolNames: definitions.map((definition) => definition.name) });
+    const first = await this.model.complete({ messages, ...(definitions.length > 0 ? { tools: definitions } : {}) }, signal);
     const calls = first.message.toolCalls ?? [];
     if (first.finishReason === 'tool_calls' && calls.length === 0) {
       throw new AgentRunError('model reported tool_calls without a tool call');
@@ -119,30 +180,30 @@ export class RunAgentPreviewUseCase {
     if (calls.length === 0) {
       const content = first.message.content ?? '';
       trace.push({ sequence: 2, kind: 'model-response', content });
-      return { tool: this.toolRef(tool), response: content, usage: mergeUsage(first) };
+      return { ...(agent !== undefined ? { agent } : {}), response: content, usage: mergeUsage(first) };
     }
-    if (calls.length !== 1) throw new AgentRunError(`expected one tool call, received ${calls.length}`);
+    if (calls.length !== 1) throw new AgentRunError(`expected one or zero tool calls, received ${calls.length}`);
     const call = calls[0];
-    if (call === undefined || call.name !== definition.name) {
+    const selectedIndex = definitions.findIndex((definition) => definition.name === call?.name);
+    const tool = selectedIndex < 0 ? undefined : tools[selectedIndex];
+    if (call === undefined || tool === undefined) {
       throw new AgentRunError(`model requested unknown tool: ${call?.name ?? '(missing)'}`);
     }
 
     trace.push({ sequence: 2, kind: 'tool-call', name: call.name, arguments: call.arguments });
     const args = validateToolArguments(tool.inputSchema, call.arguments);
-    const graph = graphWithArguments(tool, args);
-    const preview = this.engine.preview(graph, { rowLimit: 100 });
+    const preview = this.engine.preview(graphWithArguments(tool, args), { rowLimit: 100 });
     assertOutputMatchesSchema(preview.output, tool.outputSchema);
     trace.push({
-      sequence: 3, kind: 'tool-result', name: call.name, terminalId: preview.terminalId,
+      sequence: 3,
+      kind: 'tool-result',
+      name: call.name,
+      terminalId: preview.terminalId,
       nodes: Object.values(preview.nodes).map((node) => ({ nodeId: node.nodeId, rowCount: node.table.rows.length, truncated: node.truncated })),
       outputPreview: preview.output.rows.slice(0, 10).map((row) => ({ ...row })),
     });
 
-    const assistantMessage: ModelMessage = {
-      role: 'assistant',
-      content: first.message.content,
-      toolCalls: [call],
-    };
+    const assistantMessage: ModelMessage = { role: 'assistant', content: first.message.content, toolCalls: [call] };
     const toolMessage: ModelMessage = {
       role: 'tool',
       content: JSON.stringify({ schema: preview.output.schema, rows: preview.output.rows }),
@@ -151,22 +212,36 @@ export class RunAgentPreviewUseCase {
     trace.push({ sequence: 4, kind: 'model-request', step: 2, toolNames: [] });
     const second = await this.model.complete({ messages: [...messages, assistantMessage, toolMessage] }, signal);
     if ((second.message.toolCalls?.length ?? 0) > 0) {
-      throw new AgentRunError('model requested an additional tool call after the v6 limit');
+      throw new AgentRunError('model requested an additional tool call after the single-call preview limit');
     }
     const content = second.message.content ?? '';
     trace.push({ sequence: 5, kind: 'model-response', content });
-    return { tool: this.toolRef(tool), response: content, usage: mergeUsage(first, second) };
+    return {
+      ...(agent !== undefined ? { agent } : {}),
+      tool: this.toolRef(tool),
+      response: content,
+      usage: mergeUsage(first, second),
+    };
   }
 
-  private toolRef(tool: Tool): AgentPreviewRun['tool'] {
+  private toolRef(tool: Tool): NonNullable<RunRecord['tool']> {
     return { internalId: tool.metadata.internalId, publishName: tool.metadata.publishName, version: tool.metadata.version.toString() };
   }
 
+  private agentRef(agent: Agent): NonNullable<RunRecord['agent']> {
+    return { internalId: agent.metadata.internalId, publishName: agent.metadata.publishName, version: agent.metadata.version.toString() };
+  }
+
   private async loadTool(scope: TenantScope, toolId: ToolId, version?: SemVer): Promise<Tool> {
-    const tool = version === undefined
-      ? await this.repo.findLatest(scope, toolId)
-      : await this.repo.findVersion(scope, toolId, version);
+    const tool = version === undefined ? await this.repo.findLatest(scope, toolId) : await this.repo.findVersion(scope, toolId, version);
     if (tool === null) throw new ToolNotFoundError(`RunAgentPreview: tool not found: ${toolId}${version === undefined ? '' : `@${version.toString()}`}`);
     return tool;
+  }
+
+  private async loadAgent(scope: TenantScope, agentId: string, version?: SemVer): Promise<Agent> {
+    if (this.agents === undefined) throw new AgentRunError('saved Agent execution is not configured');
+    const agent = version === undefined ? await this.agents.findLatest(scope, agentId) : await this.agents.findVersion(scope, agentId, version);
+    if (agent === null) throw new AgentNotFoundError(`RunAgentPreview: agent not found: ${agentId}${version === undefined ? '' : `@${version.toString()}`}`);
+    return agent;
   }
 }

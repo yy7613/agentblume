@@ -1,16 +1,20 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const apiTarget = process.env['AGENTCONTEXT_API_URL'] ?? 'http://127.0.0.1:3030';
+
 export default defineConfig({
   plugins: [react()],
   server: {
     host: '127.0.0.1',
     port: 5173,
     proxy: {
-      '/health': 'http://127.0.0.1:3030',
-      '/tools': 'http://127.0.0.1:3030',
-      '/tool-drafts': 'http://127.0.0.1:3030',
-      '/runs': 'http://127.0.0.1:3030',
+      '/health': apiTarget,
+      '/tools': apiTarget,
+      '/tool-drafts': apiTarget,
+      '/runs': apiTarget,
+      '/agents': apiTarget,
+      '/agent-drafts': apiTarget,
     },
   },
   build: { outDir: 'dist/ui', emptyOutDir: true },

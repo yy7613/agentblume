@@ -10,6 +10,14 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe('ToolApiClient', () => {
+  it('fetcherをglobalThisへ束縛してブラウザのIllegal invocationを防ぐ', async () => {
+    const fetcher = vi.fn(function (this: unknown) {
+      if (this !== globalThis) throw new TypeError('Illegal invocation');
+      return Promise.resolve(jsonResponse({ tools: [] }));
+    });
+    await expect(new ToolApiClient('', fetcher as typeof fetch).listTools(scope)).resolves.toEqual([]);
+  });
+
   it('draft infer/preview を正しい body と AbortSignal で呼ぶ', async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ propagation: { order: ['source'], nodes: {}, hasErrors: false } }))
@@ -83,5 +91,22 @@ describe('ToolApiClient', () => {
   it('標準形式でないHTTPエラーにもfallbackを使う', async () => {
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({}, 500));
     await expect(new ToolApiClient('', fetcher as typeof fetch).inferDraft(graph)).rejects.toMatchObject({ code: 'HTTP_ERROR' });
+  });
+
+  it('Agent BuilderのTool一覧・prompt生成・保存contractを扱う', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ tools: [{ internalId: 'tool', latestVersion: '1.0.0' }] }))
+      .mockResolvedValueOnce(jsonResponse({ draft: { systemPromptDraft: 'draft' } }))
+      .mockResolvedValueOnce(jsonResponse({ agent: { metadata: { version: '1.0.0' } } }))
+      .mockResolvedValueOnce(jsonResponse({ agents: [{ internalId: 'agent' }] }))
+      .mockResolvedValueOnce(jsonResponse({ run: { runId: 'run-1', response: 'done' } }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    const refs = [{ internalId: 'tool', version: '1.0.0' }];
+    await client.listTools(scope);
+    await client.generateAgentPrompt({ scope, displayName: 'Agent', kind: 'normal', tools: refs });
+    await client.saveAgent({ scope, internalId: 'agent', workingName: 'Agent', displayName: 'Agent', publishName: 'agent', owner: 'owner', kind: 'normal', systemPrompt: 'draft', tools: refs });
+    await client.listAgents(scope);
+    await client.runSavedAgent({ scope, agent: { internalId: 'agent', version: '1.0.0' }, message: 'go', mode: 'preview' });
+    expect(fetcher.mock.calls.map((call) => call[0])).toEqual(expect.arrayContaining(['/api/agent-drafts/generate-prompt', '/api/agents']));
   });
 });
