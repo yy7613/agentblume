@@ -6,3 +6,4 @@ coverage/
 .vitest/
 playwright-report/
 test-results/
+scripts/lm-studio.local.ps1
