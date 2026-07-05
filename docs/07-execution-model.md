@@ -133,6 +133,8 @@ sequenceDiagram
 
 測定指標は [09-roadmap.md](./09-roadmap.md#検証指標) を参照。
 
+複数ターン会話の終了条件（疑似ユーザーの `endConversation` / `maxUserTurns` 上限 / エラー）とアンケート取得の詳細シーケンスは [11-scenario-validation.md §4-§5](./11-scenario-validation.md) を参照。対象Agentの1ターンには本ドキュメントの実行上限（Tool call 4回 / model round 5回）と read-only 制約がそのまま適用される。
+
 ---
 
 ## 5. Workflow実行（Phase 3）

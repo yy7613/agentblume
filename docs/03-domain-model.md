@@ -263,3 +263,5 @@ classDiagram
 ```
 
 検証指標の一覧は [09-roadmap.md](./09-roadmap.md#検証指標) を参照。
+
+疑似ユーザーの種別（Persona）・複数ターン会話・アンケート/感想を含む**シナリオ検証**の詳細モデル（Persona / Scenario / ScenarioRun / SurveyQuestion）は [11-scenario-validation.md](./11-scenario-validation.md) を参照。v16では疑似ユーザーは検証コンテキストの `Persona` として実装し、`AgentKind.PseudoUser` への昇格は将来とする（[ADR-0017](./adr/0017-scenario-validation-pseudo-users.md)）。
