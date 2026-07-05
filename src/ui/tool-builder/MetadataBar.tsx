@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { SideEffectDto } from '../api/types';
 import { currentGraph, useToolBuilderStore } from './store';
+import { useI18n } from '../i18n';
 
 export function MetadataBar({ client }: { readonly client: ToolApiClient }) {
   const metadata = useToolBuilderStore((state) => state.metadata);
@@ -15,6 +16,7 @@ export function MetadataBar({ client }: { readonly client: ToolApiClient }) {
   const propagation = useToolBuilderStore((state) => state.propagation);
   const error = useToolBuilderStore((state) => state.error);
   const [saving, setSaving] = useState(false);
+  const { text } = useI18n();
 
   const scope = { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId };
 
@@ -53,27 +55,27 @@ export function MetadataBar({ client }: { readonly client: ToolApiClient }) {
 
   return (
     <header className="metadata-bar">
-      <div className="title-block"><span className="eyebrow">Tool Builder</span><input aria-label="Display name" value={metadata.displayName} onChange={(event) => setMetadata('displayName', event.target.value)} /></div>
+      <div className="title-block"><span className="eyebrow">{text('Tool Builder', 'ツールビルダー')}</span><input aria-label={text('Display name', '表示名')} value={metadata.displayName} onChange={(event) => setMetadata('displayName', event.target.value)} /></div>
       <details>
-        <summary>Metadata</summary>
+        <summary>{text('Metadata', 'メタデータ')}</summary>
         <div className="metadata-grid">
-          <label>Internal ID<input value={metadata.internalId} onChange={(event) => setMetadata('internalId', event.target.value)} /></label>
-          <label>Working name<input value={metadata.workingName} onChange={(event) => setMetadata('workingName', event.target.value)} /></label>
-          <label>Publish name<input value={metadata.publishName} onChange={(event) => setMetadata('publishName', event.target.value)} /></label>
-          <label>Owner<input value={metadata.owner} onChange={(event) => setMetadata('owner', event.target.value)} /></label>
-          <label>Tenant<input value={metadata.tenantId} onChange={(event) => setMetadata('tenantId', event.target.value)} /></label>
-          <label>Workspace<input value={metadata.workspaceId} onChange={(event) => setMetadata('workspaceId', event.target.value)} /></label>
-          <label>Side effect<select value={metadata.sideEffect} onChange={(event) => setMetadata('sideEffect', event.target.value as SideEffectDto)}><option>read-only</option><option>write</option><option>external-action</option></select></label>
+          <label>{text('Internal ID', '内部ID')}<input value={metadata.internalId} onChange={(event) => setMetadata('internalId', event.target.value)} /></label>
+          <label>{text('Working name', '作業名')}<input value={metadata.workingName} onChange={(event) => setMetadata('workingName', event.target.value)} /></label>
+          <label>{text('Publish name', '公開名')}<input value={metadata.publishName} onChange={(event) => setMetadata('publishName', event.target.value)} /></label>
+          <label>{text('Owner', '所有者')}<input value={metadata.owner} onChange={(event) => setMetadata('owner', event.target.value)} /></label>
+          <label>{text('Tenant', 'テナント')}<input value={metadata.tenantId} onChange={(event) => setMetadata('tenantId', event.target.value)} /></label>
+          <label>{text('Workspace', 'ワークスペース')}<input value={metadata.workspaceId} onChange={(event) => setMetadata('workspaceId', event.target.value)} /></label>
+          <label>{text('Side effect', '副作用')}<select value={metadata.sideEffect} onChange={(event) => setMetadata('sideEffect', event.target.value as SideEffectDto)}><option>read-only</option><option>write</option><option>external-action</option></select></label>
         </div>
       </details>
       <div className="save-actions">
-        <span className={`validation-status ${error !== undefined || propagation?.hasErrors ? 'bad' : 'good'}`}>{error !== undefined ? 'Invalid draft' : propagation === undefined ? 'Checking…' : propagation.hasErrors ? 'Issues' : 'Valid draft'}</span>
-        <button type="button" className="secondary" onClick={() => void refreshVersions()}>Versions</button>
-        <select aria-label="Version history" value={currentVersion ?? ''} onChange={(event) => void load(event.target.value)}>
-          <option value="">{versions.length === 0 ? 'No saved versions' : 'Select version'}</option>
+        <span className={`validation-status ${error !== undefined || propagation?.hasErrors ? 'bad' : 'good'}`}>{error !== undefined ? text('Invalid draft', '草案に問題あり') : propagation === undefined ? text('Checking…', '確認中…') : propagation.hasErrors ? text('Issues', '問題あり') : text('Valid draft', '有効な草案')}</span>
+        <button type="button" className="secondary" onClick={() => void refreshVersions()}>{text('Versions', 'バージョン')}</button>
+        <select aria-label={text('Version history', 'バージョン履歴')} value={currentVersion ?? ''} onChange={(event) => void load(event.target.value)}>
+          <option value="">{versions.length === 0 ? text('No saved versions', '保存済みバージョンなし') : text('Select version', 'バージョンを選択')}</option>
           {versions.map((version) => <option key={version} value={version}>{version}</option>)}
         </select>
-        <button type="button" className="primary" disabled={saving || error !== undefined || propagation?.hasErrors !== false} onClick={() => void save()}>{saving ? 'Saving…' : 'Save version'}</button>
+        <button type="button" className="primary" disabled={saving || error !== undefined || propagation?.hasErrors !== false} onClick={() => void save()}>{saving ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
       </div>
     </header>
   );

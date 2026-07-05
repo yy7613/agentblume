@@ -321,6 +321,60 @@ function Test-AgentContextApiHealth {
   }
 }
 
+function Test-AgentContextUiHealth {
+  param(
+    [Parameter(Mandatory = $true)]
+    [int]$Port
+  )
+
+  try {
+    $response = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/" -TimeoutSec 2 -ErrorAction Stop
+    $content = [string]$response.Content
+    return $response.StatusCode -eq 200 -and $content.Contains('AgentContext') -and $content.Contains('/src/ui/main.tsx')
+  }
+  catch {
+    return $false
+  }
+}
+
+function Stop-ProcessTree {
+  param(
+    [Parameter(Mandatory = $true)]
+    [pscustomobject]$Owner
+  )
+
+  $process = Get-Process -Id $Owner.Pid -ErrorAction SilentlyContinue
+  if ($null -eq $process) {
+    return
+  }
+
+  Write-Host "Stopping : $($Owner.Label)"
+  $process.Kill($true)
+  $null = $process.WaitForExit(5000)
+}
+
+function Wait-ForPortRelease {
+  param(
+    [Parameter(Mandatory = $true)]
+    [int]$Port,
+
+    [int]$TimeoutMs = 5000
+  )
+
+  $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+  do {
+    if ($null -eq (Get-PortOwnerInfo -Port $Port)) {
+      return
+    }
+    Start-Sleep -Milliseconds 200
+  } while ([DateTime]::UtcNow -lt $deadline)
+
+  $owner = Get-PortOwnerLabel -Port $Port
+  if ($null -ne $owner) {
+    throw "ポート $Port の解放待ちがタイムアウトしました: $owner"
+  }
+}
+
 function Assert-PortAvailable {
   param(
     [Parameter(Mandatory = $true)]
@@ -339,21 +393,34 @@ function Assert-PortAvailable {
   }
 }
 
-$reuseExistingApi = $false
+$restartExistingApi = $false
 $existingApiOwner = $null
 if (-not $UiOnly) {
   $existingApiOwner = Get-PortOwnerInfo -Port $ApiPort
   if ($null -ne $existingApiOwner) {
     if (Test-AgentContextApiHealth -Port $ApiPort) {
-      $reuseExistingApi = $true
+      $restartExistingApi = $true
     } else {
       throw "API ポート $ApiPort は使用中です: $($existingApiOwner.Label)。既存プロセスを停止するか、-ApiPort で別ポートを指定してください。"
     }
   }
 }
 
+$restartExistingUi = $false
+$existingUiOwner = $null
+if (-not $ApiOnly) {
+  $existingUiOwner = Get-PortOwnerInfo -Port $UiPort
+  if ($null -ne $existingUiOwner) {
+    if (Test-AgentContextUiHealth -Port $UiPort) {
+      $restartExistingUi = $true
+    } else {
+      throw "UI ポート $UiPort は使用中です: $($existingUiOwner.Label)。既存プロセスを停止するか、-UiPort で別ポートを指定してください。"
+    }
+  }
+}
+
 $targets = @()
-if ((-not $UiOnly) -and (-not $reuseExistingApi)) {
+if (-not $UiOnly) {
   $targets += [pscustomobject]@{
     Name = 'api'
     Arguments = 'run serve'
@@ -379,6 +446,12 @@ if (-not $ApiOnly) {
 }
 
 if ($DryRun) {
+  if ($restartExistingApi) {
+    Write-Host "restart api: stop $($existingApiOwner.Label)"
+  }
+  if ($restartExistingUi) {
+    Write-Host "restart ui: stop $($existingUiOwner.Label)"
+  }
   foreach ($target in $targets) {
     if ($target.Name -eq 'api') {
       Write-Host "api: AGENTCONTEXT_PROFILE=$Profile AGENTCONTEXT_PORT=$ApiPort $npmPath $($target.Arguments)"
@@ -389,24 +462,46 @@ if ($DryRun) {
   exit 0
 }
 
-if ((-not $UiOnly) -and (-not $reuseExistingApi)) {
+$ownersToRestart = @()
+if ($restartExistingUi) {
+  $ownersToRestart += [pscustomobject]@{ Name = 'ui'; Owner = $existingUiOwner }
+}
+if ($restartExistingApi) {
+  $ownersToRestart += [pscustomobject]@{ Name = 'api'; Owner = $existingApiOwner }
+}
+
+$stoppedPids = @{}
+foreach ($entry in $ownersToRestart) {
+  if (-not $stoppedPids.ContainsKey($entry.Owner.Pid)) {
+    Stop-ProcessTree -Owner $entry.Owner
+    $stoppedPids[$entry.Owner.Pid] = $true
+  }
+}
+
+if (-not $UiOnly) {
+  Wait-ForPortRelease -Port $ApiPort
   Assert-PortAvailable -Name 'API' -Port $ApiPort -OverrideParameter 'ApiPort'
 }
 if (-not $ApiOnly) {
+  Wait-ForPortRelease -Port $UiPort
   Assert-PortAvailable -Name 'UI' -Port $UiPort -OverrideParameter 'UiPort'
 }
 
 Write-Host "Repo root: $repoRoot"
 Write-Host "Profile : $Profile"
 if (-not $UiOnly) {
-  if ($reuseExistingApi) {
-    Write-Host "API     : http://127.0.0.1:$ApiPort/health (reuse existing: $($existingApiOwner.Label))"
+  if ($restartExistingApi) {
+    Write-Host "API     : http://127.0.0.1:$ApiPort/health (restart: $($existingApiOwner.Label))"
   } else {
     Write-Host "API     : http://127.0.0.1:$ApiPort/health"
   }
 }
 if (-not $ApiOnly) {
-  Write-Host "UI      : http://127.0.0.1:$UiPort"
+  if ($restartExistingUi) {
+    Write-Host "UI      : http://127.0.0.1:$UiPort (restart: $($existingUiOwner.Label))"
+  } else {
+    Write-Host "UI      : http://127.0.0.1:$UiPort"
+  }
 }
 Write-Host 'Ctrl+C で起動したプロセスを停止します。'
 
@@ -414,11 +509,6 @@ $started = @()
 $exitCode = 0
 
 try {
-  if ($ApiOnly -and $reuseExistingApi) {
-    Write-Host "既存の AgentContext API を再利用します: $($existingApiOwner.Label)"
-    exit 0
-  }
-
   foreach ($target in $targets) {
     $started += Start-LoggedProcess -Name $target.Name -Arguments $target.Arguments -Environment $target.Environment
   }

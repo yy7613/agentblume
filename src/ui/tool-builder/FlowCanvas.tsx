@@ -8,6 +8,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { ToolNode } from './ToolNode';
 import { useToolBuilderStore } from './store';
+import { useI18n } from '../i18n';
 
 const nodeTypes: NodeTypes = { tool: ToolNode };
 
@@ -18,8 +19,9 @@ export function FlowCanvas() {
   const onEdgesChange = useToolBuilderStore((state) => state.onEdgesChange);
   const onConnect = useToolBuilderStore((state) => state.onConnect);
   const selectNode = useToolBuilderStore((state) => state.selectNode);
+  const { text } = useI18n();
   return (
-    <main className="flow-canvas" aria-label="ETL canvas">
+    <main className="flow-canvas" aria-label={text('ETL canvas', 'ETLキャンバス')}>
       <ReactFlow
         nodes={nodes}
         edges={edges}

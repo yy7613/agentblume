@@ -8,13 +8,19 @@ import { ChatPage } from './chat/ChatPage';
 import { McpPage } from './mcp/McpPage';
 import { ValidationPage } from './validation/ValidationPage';
 import { SettingsPage } from './settings/SettingsPage';
+import { useI18n } from './i18n';
 
-const NAV_ITEMS = ['Chat', 'Agent', 'Skill', 'Tool', 'MCP', 'Validation', 'Settings', 'Status'];
+const NAV_ITEMS = [
+  { id: 'Chat', ja: 'チャット' }, { id: 'Agent', ja: 'エージェント' }, { id: 'Skill', ja: 'スキル' }, { id: 'Tool', ja: 'ツール' },
+  { id: 'MCP', ja: 'MCP' }, { id: 'Validation', ja: '検証' }, { id: 'Settings', ja: '設定' }, { id: 'Status', ja: 'ステータス' },
+] as const;
+type Screen = (typeof NAV_ITEMS)[number]['id'];
 
 export function App({ client }: { readonly client: ToolApiClient }) {
-  const [screen, setScreen] = useState<(typeof NAV_ITEMS)[number]>('Tool');
+  const [screen, setScreen] = useState<Screen>('Tool');
+  const { text } = useI18n();
   return <div className="app-shell">
-    <nav className="app-nav"><div className="brand"><span>AC</span><strong>AgentContext</strong></div>{NAV_ITEMS.map((item) => <button key={item} type="button" className={item === screen ? 'active' : ''} onClick={() => setScreen(item)}><span className="nav-dot" />{item}</button>)}<small>LOCAL · PREVIEW</small></nav>
+    <nav className="app-nav"><div className="brand"><span>AC</span><strong>AgentContext</strong></div>{NAV_ITEMS.map((item) => <button key={item.id} type="button" className={item.id === screen ? 'active' : ''} onClick={() => setScreen(item.id)}><span className="nav-dot" />{text(item.id, item.ja)}</button>)}<small>LOCAL · PREVIEW</small></nav>
     {screen === 'Tool' ? <ToolBuilder client={client} /> : screen === 'Agent' ? <AgentBuilder client={client} /> : screen === 'Skill' ? <SkillBuilder client={client} /> : screen === 'Chat' ? <ChatPage client={client} /> : screen === 'MCP' ? <McpPage client={client} /> : screen === 'Validation' ? <ValidationPage client={client} /> : screen === 'Settings' ? <SettingsPage client={client} /> : <StatusPage client={client} />}
   </div>;
 }

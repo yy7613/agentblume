@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentKindDto, AgentPreviewRunDto, SkillSummaryDto, StructuredOutputFieldDto, StructuredOutputTypeDto, ToolSummaryDto } from '../api/types';
+import { useI18n } from '../i18n';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
@@ -23,6 +24,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   const [run, setRun] = useState<AgentPreviewRunDto>();
   const [busy, setBusy] = useState<'load' | 'generate' | 'save' | 'run'>();
   const [error, setError] = useState<string>();
+  const { text } = useI18n();
 
   useEffect(() => {
     let active = true;
@@ -94,57 +96,57 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
 
   return <main className="agent-builder">
     <header className="agent-builder-header">
-      <div><span className="eyebrow">Agent Builder</span><h1>{displayName}</h1><p>Tool metadataからsystem promptを生成し、編集後の定義をversion保存します。</p></div>
+      <div><span className="eyebrow">{text('Agent Builder', 'エージェントビルダー')}</span><h1>{displayName}</h1><p>{text('Generate a system prompt from Skill and Tool metadata, then save the reviewed definition as a new version.', 'スキルとツールのメタデータからシステムプロンプトを生成し、レビュー後の定義を新しいバージョンとして保存します。')}</p></div>
       <div className="save-actions">
-        {savedVersion !== undefined && <span className="version-chip">saved {savedVersion}</span>}
-        <button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void generate()}>{busy === 'generate' ? 'Generating…' : 'Generate draft'}</button>
-        <button type="button" className="primary" disabled={busy !== undefined || systemPrompt.trim() === '' || !outputValid} onClick={() => void save()}>{busy === 'save' ? 'Saving…' : 'Save version'}</button>
+        {savedVersion !== undefined && <span className="version-chip">{text('saved', '保存済み')} {savedVersion}</span>}
+        <button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void generate()}>{busy === 'generate' ? text('Generating…', '生成中…') : text('Generate draft', '草案を生成')}</button>
+        <button type="button" className="primary" disabled={busy !== undefined || systemPrompt.trim() === '' || !outputValid} onClick={() => void save()}>{busy === 'save' ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
       </div>
     </header>
     {error !== undefined && <div className="api-error">{error}</div>}
     <div className="agent-builder-grid">
       <section className="agent-definition-card">
-        <h2>Definition</h2>
+        <h2>{text('Definition', '定義')}</h2>
         <div className="agent-fields">
-          <label>Internal ID<input aria-label="Agent internal ID" value={internalId} onChange={(event) => setInternalId(event.target.value)} /></label>
-          <label>Working name<input value={workingName} onChange={(event) => setWorkingName(event.target.value)} /></label>
-          <label>Display name<input aria-label="Agent display name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
-          <label>Publish name<input value={publishName} onChange={(event) => setPublishName(event.target.value)} /></label>
-          <label>Owner<input value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
-          <label>Kind<select aria-label="Agent kind" value={kind} onChange={(event) => setKind(event.target.value as AgentKindDto)}><option value="normal">Normal</option><option value="pseudo-user">Pseudo user</option><option value="evaluator">Evaluator</option></select></label>
+          <label>{text('Internal ID', '内部ID')}<input aria-label={text('Agent internal ID', 'エージェント内部ID')} value={internalId} onChange={(event) => setInternalId(event.target.value)} /></label>
+          <label>{text('Working name', '作業名')}<input value={workingName} onChange={(event) => setWorkingName(event.target.value)} /></label>
+          <label>{text('Display name', '表示名')}<input aria-label={text('Agent display name', 'エージェント表示名')} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
+          <label>{text('Publish name', '公開名')}<input value={publishName} onChange={(event) => setPublishName(event.target.value)} /></label>
+          <label>{text('Owner', '所有者')}<input value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
+          <label>{text('Kind', '種別')}<select aria-label={text('Agent kind', 'エージェント種別')} value={kind} onChange={(event) => setKind(event.target.value as AgentKindDto)}><option value="normal">{text('Normal', '通常')}</option><option value="pseudo-user">{text('Pseudo user', '疑似ユーザー')}</option><option value="evaluator">{text('Evaluator', '評価者')}</option></select></label>
         </div>
-        <h2>Skills <small>{skillRefs.length} selected</small></h2>
+        <h2>{text('Skills', 'スキル')} <small>{skillRefs.length} {text('selected', '件選択')}</small></h2>
         <div className="agent-tool-list">
           {busy !== 'load' && skills.length === 0 && <p className="empty-state">保存済みSkillがありません。</p>}
           {skills.map((skill) => <label key={key(skill)} className="agent-tool-option"><input type="checkbox" checked={selectedSkills.has(key(skill))} onChange={() => toggleSkill(skill)} /><span><strong>{skill.displayName}</strong><code>{skill.publishName}@{skill.latestVersion}</code></span><small>{skill.state}</small></label>)}
         </div>
-        <h2>Tools <small>{refs.length} selected</small></h2>
+        <h2>{text('Tools', 'ツール')} <small>{refs.length} {text('selected', '件選択')}</small></h2>
         <div className="agent-tool-list">
-          {busy === 'load' && <p className="empty-state">Loading tools…</p>}
+          {busy === 'load' && <p className="empty-state">{text('Loading tools…', 'ツールを読み込み中…')}</p>}
           {busy !== 'load' && tools.length === 0 && <p className="empty-state">保存済みToolがありません。</p>}
           {tools.map((tool) => <label key={key(tool)} className="agent-tool-option"><input type="checkbox" checked={selectedTools.has(key(tool))} onChange={() => toggle(tool)} /><span><strong>{tool.displayName}</strong><code>{tool.publishName}@{tool.latestVersion}</code></span><small>{tool.state}</small></label>)}
         </div>
-        <h2>Structured output</h2>
-        <label className="structured-output-toggle"><input aria-label="Enable structured output" type="checkbox" checked={structuredOutput} onChange={(event) => setStructuredOutput(event.target.checked)} /> Require a validated JSON response</label>
+        <h2>{text('Structured output', '構造化出力')}</h2>
+        <label className="structured-output-toggle"><input aria-label={text('Enable structured output', '構造化出力を有効化')} type="checkbox" checked={structuredOutput} onChange={(event) => setStructuredOutput(event.target.checked)} /> {text('Require a validated JSON response', '検証済みJSON応答を必須にする')}</label>
         {structuredOutput && <div className="structured-output-fields">
           {outputFields.map((field, index) => <div className="structured-output-field" key={index}>
-            <input aria-label={`Output field ${index + 1} name`} value={field.name} onChange={(event) => updateOutputField(index, { name: event.target.value })} />
-            <select aria-label={`Output field ${index + 1} type`} value={field.type} onChange={(event) => updateOutputField(index, { type: event.target.value as StructuredOutputTypeDto })}><option>string</option><option>number</option><option>integer</option><option>boolean</option></select>
-            <label><input aria-label={`Output field ${index + 1} required`} type="checkbox" checked={field.required} onChange={(event) => updateOutputField(index, { required: event.target.checked })} /> required</label>
-            <button aria-label={`Remove output field ${index + 1}`} type="button" className="secondary" disabled={outputFields.length === 1} onClick={() => setOutputFields((fields) => fields.filter((_, fieldIndex) => fieldIndex !== index))}>×</button>
+            <input aria-label={`${text('Output field', '出力フィールド')} ${index + 1} ${text('name', '名前')}`} value={field.name} onChange={(event) => updateOutputField(index, { name: event.target.value })} />
+            <select aria-label={`${text('Output field', '出力フィールド')} ${index + 1} ${text('type', '型')}`} value={field.type} onChange={(event) => updateOutputField(index, { type: event.target.value as StructuredOutputTypeDto })}><option>string</option><option>number</option><option>integer</option><option>boolean</option></select>
+            <label><input aria-label={`${text('Output field', '出力フィールド')} ${index + 1} ${text('required', '必須')}`} type="checkbox" checked={field.required} onChange={(event) => updateOutputField(index, { required: event.target.checked })} /> {text('required', '必須')}</label>
+            <button aria-label={`${text('Remove output field', '出力フィールドを削除')} ${index + 1}`} type="button" className="secondary" disabled={outputFields.length === 1} onClick={() => setOutputFields((fields) => fields.filter((_, fieldIndex) => fieldIndex !== index))}>×</button>
           </div>)}
-          <button type="button" className="secondary" onClick={() => setOutputFields((fields) => [...fields, { name: `field_${fields.length + 1}`, type: 'string', required: true }])}>Add output field</button>
-          {!outputValid && <p className="field-error">Field names must be non-empty and unique.</p>}
+          <button type="button" className="secondary" onClick={() => setOutputFields((fields) => [...fields, { name: `field_${fields.length + 1}`, type: 'string', required: true }])}>{text('Add output field', '出力フィールドを追加')}</button>
+          {!outputValid && <p className="field-error">{text('Field names must be non-empty and unique.', 'フィールド名は空にできず、重複も許可されません。')}</p>}
         </div>}
       </section>
       <section className="prompt-editor-card">
-        <div className="panel-title"><div><span className="eyebrow">Editable escape hatch</span><h2>System prompt</h2></div><span className="version-chip">{systemPrompt.length} chars</span></div>
-        <textarea aria-label="System prompt" rows={28} value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} />
-        <p>Generate draftは保存を行いません。草案をレビュー・編集してからSave versionを実行してください。</p>
+        <div className="panel-title"><div><span className="eyebrow">{text('Editable escape hatch', '編集可能')}</span><h2>{text('System prompt', 'システムプロンプト')}</h2></div><span className="version-chip">{systemPrompt.length} {text('chars', '文字')}</span></div>
+        <textarea aria-label={text('System prompt', 'システムプロンプト')} rows={28} value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} />
+        <p>{text('Generating a draft does not save it. Review and edit the draft before saving a version.', '草案の生成だけでは保存されません。内容をレビュー・編集してからバージョンを保存してください。')}</p>
         <div className="agent-run-panel">
-          <div className="panel-title"><div><span className="eyebrow">Saved Agent preview</span><h2>Chat</h2></div><span className="version-chip">{savedVersion === undefined ? 'Save first' : `Agent v${savedVersion}`}</span></div>
-          <div className="chat-compose"><textarea aria-label="Agent chat message" rows={2} value={chatMessage} onChange={(event) => setChatMessage(event.target.value)} /><button type="button" className="primary" disabled={savedVersion === undefined || busy !== undefined || chatMessage.trim() === ''} onClick={() => void runSaved()}>{busy === 'run' ? 'Running…' : 'Run saved agent'}</button></div>
-          {run !== undefined && <><div className="chat-response"><span>Assistant</span>{run.structuredResponse === undefined ? <p>{run.response}</p> : <pre>{JSON.stringify(run.structuredResponse, null, 2)}</pre>}</div><div className="trace-list"><strong>Trace · {run.runId}</strong>{run.trace.map((event) => <div className={`trace-event ${event.kind === 'tool-call' || event.kind === 'tool-result' ? 'tool' : ''}`} key={event.sequence}><span>{event.sequence}</span><p>{event.kind}</p></div>)}</div></>}
+          <div className="panel-title"><div><span className="eyebrow">{text('Saved Agent preview', '保存済みエージェントのプレビュー')}</span><h2>{text('Chat', 'チャット')}</h2></div><span className="version-chip">{savedVersion === undefined ? text('Save first', '先に保存してください') : `Agent v${savedVersion}`}</span></div>
+          <div className="chat-compose"><textarea aria-label={text('Agent chat message', 'エージェントへのメッセージ')} rows={2} value={chatMessage} onChange={(event) => setChatMessage(event.target.value)} /><button type="button" className="primary" disabled={savedVersion === undefined || busy !== undefined || chatMessage.trim() === ''} onClick={() => void runSaved()}>{busy === 'run' ? text('Running…', '実行中…') : text('Run saved agent', '保存済みエージェントを実行')}</button></div>
+          {run !== undefined && <><div className="chat-response"><span>{text('Assistant', 'アシスタント')}</span>{run.structuredResponse === undefined ? <p>{run.response}</p> : <pre>{JSON.stringify(run.structuredResponse, null, 2)}</pre>}</div><div className="trace-list"><strong>{text('Trace', 'トレース')} · {run.runId}</strong>{run.trace.map((event) => <div className={`trace-event ${event.kind === 'tool-call' || event.kind === 'tool-result' ? 'tool' : ''}`} key={event.sequence}><span>{event.sequence}</span><p>{event.kind}</p></div>)}</div></>}
         </div>
       </section>
     </div>

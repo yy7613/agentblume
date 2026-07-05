@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { RunRecordDto, RunSummaryDto, RunTraceEventDto } from '../api/types';
 import { useToolBuilderStore } from '../tool-builder/store';
+import { useI18n } from '../i18n';
 
 export function StatusPage({ client }: { readonly client: ToolApiClient }) {
   const metadata = useToolBuilderStore((state) => state.metadata);
@@ -10,6 +11,7 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
   const [selected, setSelected] = useState<RunRecordDto>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
+  const { language, text } = useI18n();
 
   const refresh = useCallback(async () => {
     setLoading(true); setError(undefined);
@@ -26,18 +28,18 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
   }
 
   return <main className="status-page">
-    <header className="status-header"><div><span className="eyebrow">Observability</span><h1>Run status</h1><p>{scope.tenantId} / {scope.workspaceId}</p></div><button type="button" className="secondary" onClick={() => void refresh()}>{loading ? 'Loading…' : 'Refresh'}</button></header>
+    <header className="status-header"><div><span className="eyebrow">{text('Observability', 'オブザーバビリティ')}</span><h1>{text('Run status', '実行ステータス')}</h1><p>{scope.tenantId} / {scope.workspaceId}</p></div><button type="button" className="secondary" onClick={() => void refresh()}>{loading ? text('Loading…', '読み込み中…') : text('Refresh', '更新')}</button></header>
     {error !== undefined && <div className="api-error" role="alert">{error}</div>}
     <div className="status-workspace">
-      <section className="run-list" aria-label="Run history">
-        {runs.length === 0 && !loading ? <p className="empty-state">保存済みrunはありません。</p> : runs.map((run) => <button type="button" key={run.runId} className={selected?.runId === run.runId ? 'selected' : ''} onClick={() => void select(run.runId)}>
-          <span className={`run-status ${run.status}`}>{run.status}</span><strong>{run.agent?.publishName ?? run.agent?.internalId ?? run.tool?.publishName ?? run.tool?.internalId ?? 'unknown'}</strong><code>{run.agent?.version ?? run.tool?.version ?? 'latest'} · {run.traceEventCount} events</code><time>{new Date(run.startedAt).toLocaleString()}</time>
+      <section className="run-list" aria-label={text('Run history', '実行履歴')}>
+        {runs.length === 0 && !loading ? <p className="empty-state">{text('No saved runs.', '保存済みの実行はありません。')}</p> : runs.map((run) => <button type="button" key={run.runId} className={selected?.runId === run.runId ? 'selected' : ''} onClick={() => void select(run.runId)}>
+          <span className={`run-status ${run.status}`}>{run.status}</span><strong>{run.agent?.publishName ?? run.agent?.internalId ?? run.tool?.publishName ?? run.tool?.internalId ?? text('unknown', '不明')}</strong><code>{run.agent?.version ?? run.tool?.version ?? 'latest'} · {run.traceEventCount} {text('events', 'イベント')}</code><time>{new Date(run.startedAt).toLocaleString(language === 'ja' ? 'ja-JP' : 'en-US')}</time>
         </button>)}
       </section>
-      <section className="run-detail" aria-label="Run trace">
-        {selected === undefined ? <p className="empty-state">runを選択するとtraceを表示します。</p> : <>
+      <section className="run-detail" aria-label={text('Run trace', '実行トレース')}>
+        {selected === undefined ? <p className="empty-state">{text('Select a run to view its trace.', '実行を選択するとトレースを表示します。')}</p> : <>
           <div className="run-detail-title"><div><span className={`run-status ${selected.status}`}>{selected.status}</span><h2>{selected.runId}</h2></div><code>{selected.agent?.internalId ?? selected.tool?.internalId ?? 'unknown'}@{selected.agent?.version ?? selected.tool?.version ?? 'latest'}</code></div>
-          {selected.response !== undefined && <div className="chat-response"><span>Response</span>{selected.structuredResponse === undefined ? <p>{selected.response}</p> : <pre>{JSON.stringify(selected.structuredResponse, null, 2)}</pre>}</div>}
+          {selected.response !== undefined && <div className="chat-response"><span>{text('Response', '応答')}</span>{selected.structuredResponse === undefined ? <p>{selected.response}</p> : <pre>{JSON.stringify(selected.structuredResponse, null, 2)}</pre>}</div>}
           {selected.failure !== undefined && <div className="api-error"><strong>{selected.failure.code}</strong> {selected.failure.message}</div>}
           <div className="trace-list">{selected.trace.map((event) => <StatusTraceEvent key={event.sequence} event={event} />)}</div>
         </>}

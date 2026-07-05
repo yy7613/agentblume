@@ -128,6 +128,37 @@ function Write-ModelList {
   }
 }
 
+function Prompt-ForModelSelection {
+  param(
+    [Parameter(Mandatory = $true)]
+    [object[]]$Models
+  )
+
+  while ($true) {
+    $selection = Read-Host 'Select model by number or id'
+    if ([string]::IsNullOrWhiteSpace($selection)) {
+      throw 'LM Studio model selection was cancelled.'
+    }
+
+    $trimmed = $selection.Trim()
+    $index = 0
+    if ([int]::TryParse($trimmed, [ref]$index)) {
+      if ($index -ge 1 -and $index -le $Models.Count) {
+        return $Models[$index - 1].Id
+      }
+      Write-Warning "選択番号が範囲外です: $trimmed"
+      continue
+    }
+
+    $matched = @($Models | Where-Object { $_.Id -eq $trimmed })
+    if ($matched.Count -eq 1) {
+      return $matched[0].Id
+    }
+
+    Write-Warning "一致するモデルが見つかりません: $trimmed"
+  }
+}
+
 function Escape-SingleQuoted {
   param(
     [Parameter(Mandatory = $true)]
@@ -178,9 +209,12 @@ if ([string]::IsNullOrWhiteSpace($resolvedModel)) {
   } elseif ($models.Count -gt 1 -and $UseFirstModel) {
     $resolvedModel = $models[0].Id
     Write-Warning "複数モデルがあるため先頭を採用しました: $resolvedModel"
+  } elseif ($models.Count -gt 1) {
+    Write-ModelList -Models $models -ResolvedBaseUrl $resolvedBaseUrl
+    $resolvedModel = Prompt-ForModelSelection -Models $models
   } else {
     Write-ModelList -Models $models -ResolvedBaseUrl $resolvedBaseUrl
-    throw 'LM Studio model is not resolved. Re-run with -Model <id> or -UseFirstModel.'
+    throw 'LM Studio model is not resolved because LM Studio returned no models.'
   }
 }
 

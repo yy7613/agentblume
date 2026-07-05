@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ApiError, type ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, RunRecordDto, RunTraceEventDto } from '../api/types';
 import { useToolBuilderStore } from './store';
+import { useI18n } from '../i18n';
 
 export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
   const metadata = useToolBuilderStore((state) => state.metadata);
@@ -13,6 +14,7 @@ export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const controller = useRef<AbortController | undefined>(undefined);
+  const { text } = useI18n();
 
   useEffect(() => () => controller.current?.abort(), []);
 
@@ -42,24 +44,25 @@ export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
     }
   }
 
-  return <section className="agent-chat-panel" aria-label="Agent chat">
-    <div className="panel-title"><div><span className="eyebrow">Agent preview</span><h2>LM Studio chat</h2></div><span className="version-chip">{currentVersion === undefined ? 'Save first' : `Tool v${currentVersion}`}</span></div>
-    <label>System prompt<textarea rows={2} value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} /></label>
-    <div className="chat-compose"><textarea aria-label="Chat message" rows={2} value={message} onChange={(event) => setMessage(event.target.value)} /><button type="button" className="primary" disabled={currentVersion === undefined || loading || message.trim() === ''} onClick={() => void send()}>{loading ? 'Running…' : 'Run agent'}</button></div>
-    {currentVersion === undefined && <p className="empty-state">検証済みToolを保存するとAgentへ接続できます。</p>}
+  return <section className="agent-chat-panel" aria-label={text('Agent chat', 'エージェントチャット')}>
+    <div className="panel-title"><div><span className="eyebrow">{text('Agent preview', 'エージェントプレビュー')}</span><h2>LM Studio {text('chat', 'チャット')}</h2></div><span className="version-chip">{currentVersion === undefined ? text('Save first', '先に保存してください') : `Tool v${currentVersion}`}</span></div>
+    <label>{text('System prompt', 'システムプロンプト')}<textarea rows={2} value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} /></label>
+    <div className="chat-compose"><textarea aria-label={text('Chat message', 'チャットメッセージ')} rows={2} value={message} onChange={(event) => setMessage(event.target.value)} /><button type="button" className="primary" disabled={currentVersion === undefined || loading || message.trim() === ''} onClick={() => void send()}>{loading ? text('Running…', '実行中…') : text('Run agent', 'エージェントを実行')}</button></div>
+    {currentVersion === undefined && <p className="empty-state">{text('Save a validated Tool before connecting it to an Agent.', '検証済みツールを保存するとエージェントへ接続できます。')}</p>}
     {error !== undefined && <div className="api-error" role="alert">{error}</div>}
     {run !== undefined && <>
-      <div className="chat-response"><span>Assistant</span><p>{run.response}</p></div>
+      <div className="chat-response"><span>{text('Assistant', 'アシスタント')}</span><p>{run.response}</p></div>
       <div className="trace-list"><strong>Trace · {run.runId}</strong>{run.trace.map((event) => <TraceEvent key={event.sequence} event={event} />)}</div>
     </>}
-    {failedRun !== undefined && <div className="trace-list"><strong>Failed trace · {failedRun.runId}</strong>{failedRun.trace.map((event) => <TraceEvent key={event.sequence} event={event} />)}</div>}
+    {failedRun !== undefined && <div className="trace-list"><strong>{text('Failed trace', '失敗トレース')} · {failedRun.runId}</strong>{failedRun.trace.map((event) => <TraceEvent key={event.sequence} event={event} />)}</div>}
   </section>;
 }
 
 function TraceEvent({ event }: { readonly event: RunTraceEventDto }) {
-  if (event.kind === 'model-request') return <div className="trace-event"><span>{event.sequence}</span><p>Model request · step {event.step}{event.toolNames.length > 0 ? ` · ${event.toolNames.join(', ')}` : ''}</p></div>;
+  const { text } = useI18n();
+  if (event.kind === 'model-request') return <div className="trace-event"><span>{event.sequence}</span><p>{text('Model request', 'モデル要求')} · step {event.step}{event.toolNames.length > 0 ? ` · ${event.toolNames.join(', ')}` : ''}</p></div>;
   if (event.kind === 'tool-call') return <div className="trace-event tool"><span>{event.sequence}</span><p><strong>{event.name}</strong> {JSON.stringify(event.arguments)}</p></div>;
-  if (event.kind === 'tool-result') return <div className="trace-event tool"><span>{event.sequence}</span><div><strong>Node outputs</strong>{event.nodes.map((node) => <code key={node.nodeId}>{node.nodeId}: {node.rowCount} row(s){node.truncated ? ' · truncated' : ''}</code>)}</div></div>;
+  if (event.kind === 'tool-result') return <div className="trace-event tool"><span>{event.sequence}</span><div><strong>{text('Node outputs', 'ノード出力')}</strong>{event.nodes.map((node) => <code key={node.nodeId}>{node.nodeId}: {node.rowCount} {text('row(s)', '行')}{node.truncated ? text(' · truncated', ' · 切り詰め') : ''}</code>)}</div></div>;
   if (event.kind === 'error') return <div className="trace-event error"><span>{event.sequence}</span><p><strong>{event.code}</strong> {event.message}</p></div>;
-  return <div className="trace-event"><span>{event.sequence}</span><p>Model response</p></div>;
+  return <div className="trace-event"><span>{event.sequence}</span><p>{text('Model response', 'モデル応答')}</p></div>;
 }

@@ -140,4 +140,10 @@ test('Chat・MCP・Validation・Settingsの全ナビが実操作できる', asyn
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Runtime settings' })).toBeVisible();
   await expect(page.getByText('ok', { exact: true })).toBeVisible();
+  await page.getByLabel('Language').selectOption('ja');
+  await expect(page.getByRole('heading', { name: '実行環境設定' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'ツール', exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText('ツールビルダー', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('agentcontext.language'))).toBe('ja');
 });
