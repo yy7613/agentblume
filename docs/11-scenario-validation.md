@@ -70,6 +70,22 @@ interface Persona {
 
 Persona から疑似ユーザーの system prompt を**決定的に生成**する（テンプレート合成。LLMは使わない）。生成結果は画面でプレビュー・上書き可能（エスケープハッチ原則）。
 
+### Persona登録 → 疑似ユーザーAgentへの統合（v18・[ADR-0019](./adr/0019-persona-pseudo-user-agent-integration.md)）
+
+Persona は「ユーザープロファイル」として存続し、**登録操作で `kind='pseudo-user'` の Agent として実体化**する。
+
+```mermaid
+flowchart LR
+  P["Persona<br/>（プロファイル定義・SemVer）"] -->|登録（ベースプロンプト生成）| PA["疑似ユーザーAgent<br/>kind='pseudo-user'・persona@version を出所として保持"]
+  PA -->|シナリオが選択（SemVer固定）| S["Scenario.pseudoUser"]
+  S -->|実行時に goal/context を合成| RUN["会話ループ"]
+  P -.改訂時は再生成→新Agent版.-> PA
+```
+
+- Agentの `systemPrompt` = Personaから生成した**目標非依存のベースプロンプト**（編集可）。goal/context はシナリオ実行時に合成 → 1つの疑似ユーザーAgentを複数シナリオで再利用できる。
+- v18時点の疑似ユーザーAgentは Tools / Skills / サブエージェントを持てない（将来解除）。
+- シナリオの疑似ユーザー選択は **Agent参照に統一**（既存のPersona直接参照は後方互換として読み込み・実行のみ維持、deprecated）。
+
 ---
 
 ## 3. Scenario（検証パターン）🔷
@@ -78,7 +94,8 @@ Persona から疑似ユーザーの system prompt を**決定的に生成**す�
 interface Scenario {
   metadata: /* SemVer付き共通形 */;
   target: { agentId: string; version: SemVer };   // 検証対象（バージョン固定）
-  persona: { personaId: string; version: SemVer };
+  pseudoUser?: { agentId: string; version: SemVer }; // 疑似ユーザーAgent（v18〜。kind='pseudo-user' 検証）
+  persona?: { personaId: string; version: SemVer };  // 直接参照（deprecated・後方互換）。pseudoUserと排他でどちらか必須
   goal: string;                 // 疑似ユーザーが達成したいこと（例: 先月の売上サマリを得る）
   context?: string;             // 状況設定（例: 経理締め前で急いでいる）
   maxUserTurns: number;         // 1..8（既定4）— LLM同士の無限対話の防止
@@ -181,9 +198,9 @@ interface ScenarioRun {
 
 ---
 
-## 8. 非目標（v16時点）
+## 8. 非目標
 
 - LLM-as-Judge / Evaluator agent による第三者採点（Phase 4）
 - 複数Persona一括実行・統計集計（次段。まず1実行を確実に）
-- 疑似ユーザーの完全なAgent化（AgentKind.PseudoUser への統合は将来。[ADR-0017](./adr/0017-scenario-validation-pseudo-users.md) 参照）
+- ~~疑似ユーザーの完全なAgent化~~ → **v18で統合**（[ADR-0019](./adr/0019-persona-pseudo-user-agent-integration.md)）。残る非目標: 疑似ユーザーAgentへの Tools / Skills / サブエージェント付与（将来解除）
 - write/external-action Tool を含むAgentへのシナリオ実行
