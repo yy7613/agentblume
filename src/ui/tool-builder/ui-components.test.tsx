@@ -89,6 +89,101 @@ describe('NodeInspector', () => {
     selected = useToolBuilderStore.getState().selectedNodeId;
     expect(useToolBuilderStore.getState().nodes.find((node) => node.id === selected)?.data.config).toEqual({ casts: [{ column: 'age', to: 'number' }] });
   });
+
+  it('joinのmode/キーペア/サフィックスを編集し左右の上流列を提示する', async () => {
+    useToolBuilderStore.getState().loadTool({
+      metadata: { internalId: 'joined', workingName: 'w', displayName: 'Joined', publishName: 'joined', version: '1.0.0', owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },
+      sideEffect: 'read-only',
+      graph: {
+        nodes: [
+          { id: 'left-1', type: 'json-source', config: { rows: [{ id: 1, name: 'Alice' }] } },
+          { id: 'right-1', type: 'json-source', config: { rows: [{ id: 1, score: 90 }] } },
+          { id: 'join-1', type: 'join', config: { mode: 'inner', keys: [], rightSuffix: '_right' } },
+        ],
+        edges: [{ from: 'left-1', to: 'join-1', toInput: 0 }, { from: 'right-1', to: 'join-1', toInput: 1 }],
+      },
+    } as SerializedToolDto);
+    useToolBuilderStore.getState().setPropagation({
+      order: ['left-1', 'right-1', 'join-1'], hasErrors: false,
+      nodes: {
+        'left-1': { nodeId: 'left-1', state: 'inferred', issues: [], schema: { columns: [{ name: 'id', type: 'number', nullable: false }, { name: 'name', type: 'string', nullable: false }] } },
+        'right-1': { nodeId: 'right-1', state: 'inferred', issues: [], schema: { columns: [{ name: 'id', type: 'number', nullable: false }, { name: 'score', type: 'number', nullable: false }] } },
+        'join-1': { nodeId: 'join-1', state: 'confirmed', issues: [], schema: { columns: [] } },
+      },
+    });
+    useToolBuilderStore.getState().selectNode('join-1');
+    render(<NodeInspector />);
+
+    // 左右それぞれの上流スキーマが列候補として提示される。
+    expect(screen.getByText('Left input columns')).toBeTruthy();
+    expect(screen.getByText('Right input columns')).toBeTruthy();
+    expect(screen.getByText('score: number')).toBeTruthy();
+
+    await userEvent.selectOptions(screen.getByLabelText('Join mode'), 'left');
+    await userEvent.click(screen.getByRole('button', { name: 'Add key' }));
+    await userEvent.type(screen.getByLabelText('Left key'), 'id');
+    await userEvent.type(screen.getByLabelText('Right key'), 'id');
+    await userEvent.clear(screen.getByLabelText('Right suffix'));
+    await userEvent.type(screen.getByLabelText('Right suffix'), '_r');
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === 'join-1')?.data.config).toEqual({
+      mode: 'left', keys: [{ left: 'id', right: 'id' }], rightSuffix: '_r',
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Remove key' }));
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === 'join-1')?.data.config).toMatchObject({ keys: [] });
+  });
+
+  it('fill-nullのルールを追加・編集し、drop-rowでvalueを外す', async () => {
+    useToolBuilderStore.getState().addNode('fill-null');
+    useToolBuilderStore.getState().setPropagation(propagation);
+    render(<NodeInspector />);
+    const nodeId = useToolBuilderStore.getState().selectedNodeId;
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add rule' }));
+    await userEvent.type(screen.getByLabelText('Rule column'), 'age');
+    await userEvent.clear(screen.getByLabelText('Fill value'));
+    await userEvent.type(screen.getByLabelText('Fill value'), '42');
+    // 上流列型がnumberなのでvalueは数値化される。
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === nodeId)?.data.config).toEqual({
+      rules: [{ column: 'age', strategy: 'constant', value: 42 }],
+    });
+
+    await userEvent.selectOptions(screen.getByLabelText('Strategy'), 'drop-row');
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === nodeId)?.data.config).toEqual({
+      rules: [{ column: 'age', strategy: 'drop-row' }],
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Remove rule' }));
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === nodeId)?.data.config).toEqual({ rules: [] });
+  });
+
+  it('union/sort/distinct/replace設定をフォームから構造化する', async () => {
+    useToolBuilderStore.getState().addNode('union');
+    const { rerender } = render(<NodeInspector />);
+    await userEvent.click(screen.getByLabelText(/Strict column match/));
+    let selected = useToolBuilderStore.getState().selectedNodeId;
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === selected)?.data.config).toEqual({ strict: true });
+
+    useToolBuilderStore.getState().addNode('sort');
+    rerender(<NodeInspector />);
+    fireEvent.change(screen.getByLabelText(/Sort keys/), { target: { value: 'age:desc:first\nname' } });
+    selected = useToolBuilderStore.getState().selectedNodeId;
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === selected)?.data.config).toEqual({
+      keys: [{ column: 'age', direction: 'desc', nulls: 'first' }, { column: 'name' }],
+    });
+
+    useToolBuilderStore.getState().addNode('distinct');
+    rerender(<NodeInspector />);
+    fireEvent.change(screen.getByLabelText(/Distinct columns/), { target: { value: 'id, name' } });
+    selected = useToolBuilderStore.getState().selectedNodeId;
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === selected)?.data.config).toEqual({ columns: ['id', 'name'] });
+
+    useToolBuilderStore.getState().addNode('replace');
+    rerender(<NodeInspector />);
+    fireEvent.change(screen.getByLabelText(/Replacements/), { target: { value: 'name:N/A:null' } });
+    selected = useToolBuilderStore.getState().selectedNodeId;
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === selected)?.data.config).toEqual({
+      rules: [{ column: 'name', from: 'N/A', to: null }],
+    });
+  });
 });
 
 describe('PreviewPanel', () => {

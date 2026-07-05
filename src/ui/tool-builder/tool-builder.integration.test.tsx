@@ -2,7 +2,7 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
-import type { PreviewResultDto, PropagationResultDto } from '../api/types';
+import type { PreviewResultDto, PropagationResultDto, SerializedToolDto } from '../api/types';
 import { ToolBuilder } from './ToolBuilder';
 import { useToolBuilderStore } from './store';
 
@@ -44,5 +44,59 @@ describe('ToolBuilder preview integration', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(300); });
     expect(screen.getAllByText('age is missing').length).toBeGreaterThan(0);
     expect(client.previewDraft).toHaveBeenCalledOnce();
+  });
+
+  it('2ソース→joinのグラフをtoInput付きでdraft APIへ流し、join結果の行を描画する', async () => {
+    const joinColumns = [
+      { name: 'id', type: 'number', nullable: false },
+      { name: 'name', type: 'string', nullable: false },
+      { name: 'score', type: 'number', nullable: false },
+    ] as const;
+    const joinPropagation: PropagationResultDto = {
+      order: ['left-1', 'right-1', 'join-1'], hasErrors: false,
+      nodes: {
+        'left-1': { nodeId: 'left-1', state: 'inferred', issues: [], schema: { columns: [joinColumns[0], joinColumns[1]] } },
+        'right-1': { nodeId: 'right-1', state: 'inferred', issues: [], schema: { columns: [joinColumns[0], joinColumns[2]] } },
+        'join-1': { nodeId: 'join-1', state: 'confirmed', issues: [], schema: { columns: [...joinColumns] } },
+      },
+    };
+    const joinPreview: PreviewResultDto = {
+      terminalId: 'join-1',
+      output: { schema: { columns: [...joinColumns] }, rows: [{ id: 1, name: 'Alice', score: 90 }] },
+      nodes: { 'join-1': { nodeId: 'join-1', truncated: false, table: { schema: { columns: [...joinColumns] }, rows: [{ id: 1, name: 'Alice', score: 90 }] } } },
+    };
+    const inferDraft = vi.fn().mockResolvedValue(joinPropagation);
+    const previewDraft = vi.fn().mockResolvedValue(joinPreview);
+    const client = { inferDraft, previewDraft } as unknown as ToolApiClient;
+
+    useToolBuilderStore.getState().loadTool({
+      metadata: { internalId: 'joined', workingName: 'w', displayName: 'Joined', publishName: 'joined', version: '1.0.0', owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },
+      sideEffect: 'read-only',
+      graph: {
+        nodes: [
+          { id: 'left-1', type: 'json-source', config: { rows: [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }] } },
+          { id: 'right-1', type: 'json-source', config: { rows: [{ id: 1, score: 90 }] } },
+          { id: 'join-1', type: 'join', config: { mode: 'inner', keys: [{ left: 'id', right: 'id' }], rightSuffix: '_right' } },
+        ],
+        edges: [{ from: 'left-1', to: 'join-1', toInput: 0 }, { from: 'right-1', to: 'join-1', toInput: 1 }],
+      },
+    } as SerializedToolDto);
+    useToolBuilderStore.getState().selectNode('join-1');
+    render(<ToolBuilder client={client} />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+
+    // joinノードと2本のtoInput付きedgeがそのままinfer-schema/previewへ渡る。
+    const sentGraph = inferDraft.mock.calls[0]?.[0] as { nodes: { type: string }[]; edges: unknown[] };
+    expect(sentGraph.nodes.map((node) => node.type)).toEqual(['json-source', 'json-source', 'join']);
+    expect(sentGraph.edges).toEqual([
+      { from: 'left-1', to: 'join-1', toInput: 0 },
+      { from: 'right-1', to: 'join-1', toInput: 1 },
+    ]);
+    expect(previewDraft).toHaveBeenCalledWith(sentGraph, 100, expect.any(AbortSignal));
+
+    // join結果の期待行が描画される。
+    expect(screen.getByRole('cell', { name: 'Alice' })).toBeTruthy();
+    expect(screen.getByRole('cell', { name: '90' })).toBeTruthy();
   });
 });

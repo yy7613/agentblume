@@ -16,7 +16,7 @@ import type {
   SideEffectDto,
   ToolGraphDto,
 } from '../api/types';
-import { catalogItem, type ToolNodeType } from './node-catalog';
+import { catalogItem, inputHandleId, toInputOf, type ToolNodeType } from './node-catalog';
 
 export interface ToolNodeData extends Record<string, unknown> {
   readonly nodeType: ToolNodeType;
@@ -117,7 +117,12 @@ function initialState() {
 export function flowToGraph(nodes: readonly ToolFlowNode[], edges: readonly Edge[]): ToolGraphDto {
   return {
     nodes: nodes.map((node) => ({ id: node.id, type: node.data.nodeType, config: node.data.config })),
-    edges: edges.map((edge) => ({ from: edge.source, to: edge.target })),
+    edges: edges.map((edge) => {
+      const toInput = toInputOf(edge.targetHandle);
+      return toInput === undefined
+        ? { from: edge.source, to: edge.target }
+        : { from: edge.source, to: edge.target, toInput };
+    }),
   };
 }
 
@@ -134,8 +139,14 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
     const y = selected === undefined ? 100 + state.nodes.length * 55 : selected.position.y;
     const node = makeNode(id, type, { x, y });
     const item = catalogItem(type);
+    // 2入力ノードは選択ノードを左（toInput:0）へ自動接続し、右（toInput:1）は手動接続に任せる。
     const edge = item.kind === 'transform' && selected !== undefined
-      ? [{ id: `${selected.id}-${id}`, source: selected.id, target: id }]
+      ? [{
+          id: `${selected.id}-${id}`,
+          source: selected.id,
+          target: id,
+          ...(item.inputArity === 2 ? { targetHandle: inputHandleId(0) } : {}),
+        }]
       : [];
     return { nodes: [...state.nodes, node], edges: [...state.edges, ...edge], selectedNodeId: id };
   }),
@@ -173,6 +184,7 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
       id: `${edge.from}-${edge.to}-${index}`,
       source: edge.from,
       target: edge.to,
+      ...(edge.toInput === undefined ? {} : { targetHandle: inputHandleId(edge.toInput) }),
     })),
     selectedNodeId: tool.graph.nodes[0]?.id,
     currentVersion: tool.metadata.version,

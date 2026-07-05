@@ -57,6 +57,11 @@ textarea { resize: vertical; font-family: "SFMono-Regular", Consolas, monospace;
 .inspector label > small { font-weight: 400; color: #8a94a8; }
 .inspector .check { flex-direction: row; align-items: center; }
 .field-error, .inline-issue.error, .node-issue.error { color: #b73343; }
+.inspector .rule-title { display: block; margin-top: 14px; font-size: 12px; }
+.inspector .rule-title small { font-weight: 400; color: #8a94a8; }
+.inspector .rule-row { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+.inspector .rule-row input, .inspector .rule-row select { min-width: 0; flex: 1; }
+.inspector .rule-row button { flex: none; padding: 4px 8px; }
 .column-hints { border-top: 1px solid #dce1eb; margin-top: 20px; padding-top: 12px; display: flex; flex-wrap: wrap; gap: 5px; }
 .column-hints strong { width: 100%; font-size: 11px; }
 .column-hints code { background: #edf0f6; border-radius: 4px; padding: 3px 5px; font-size: 10px; }
@@ -66,6 +71,7 @@ textarea { resize: vertical; font-family: "SFMono-Regular", Consolas, monospace;
 .tool-node .node-kind { font-size: 8px; letter-spacing: .12em; color: #8390a7; }
 .tool-node strong { font-size: 13px; }
 .tool-node code { font-size: 9px; color: #8691a6; }
+.tool-node .input-label { position: absolute; left: 6px; transform: translateY(-50%); font-size: 8px; color: #8390a7; pointer-events: none; }
 .state-badge { justify-self: start; border-radius: 99px; font-size: 9px; padding: 3px 6px; background: #edf0f6; }
 .state-confirmed, .state-inferred { background: #e3f4ed; color: #167158; }
 .state-mismatch { background: #fae5e8; color: #ad3442; }

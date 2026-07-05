@@ -63,4 +63,56 @@ describe('tool builder store', () => {
     useToolBuilderStore.getState().setMetadata('internalId', 'another-tool');
     expect(useToolBuilderStore.getState()).toMatchObject({ currentVersion: undefined, versions: [] });
   });
+
+  it('join追加は左(toInput:0)へ自動接続し、右(in-1)への手動接続をtoInput:1でDTO化する', () => {
+    useToolBuilderStore.getState().addNode('join');
+    const joinId = useToolBuilderStore.getState().selectedNodeId ?? '';
+    expect(useToolBuilderStore.getState().edges.at(-1)).toMatchObject({ source: 'filter-1', target: joinId, targetHandle: 'in-0' });
+
+    useToolBuilderStore.getState().addNode('csv-source');
+    const csvId = useToolBuilderStore.getState().selectedNodeId ?? '';
+    useToolBuilderStore.getState().onConnect({ source: csvId, target: joinId, sourceHandle: null, targetHandle: 'in-1' });
+
+    const graph = currentGraph();
+    expect(graph.edges).toContainEqual({ from: 'filter-1', to: joinId, toInput: 0 });
+    expect(graph.edges).toContainEqual({ from: csvId, to: joinId, toInput: 1 });
+    // 単一入力ノードへのedgeはtoInputなしのまま。
+    expect(graph.edges).toContainEqual({ from: 'source-1', to: 'filter-1' });
+  });
+
+  it('同一入力ポートへの二重接続は既存単一入力と同じく許容し、arity検証はengine側に委ねる', () => {
+    useToolBuilderStore.getState().addNode('union');
+    const unionId = useToolBuilderStore.getState().selectedNodeId ?? '';
+    useToolBuilderStore.getState().addNode('csv-source');
+    const csvId = useToolBuilderStore.getState().selectedNodeId ?? '';
+    const before = useToolBuilderStore.getState().edges.length;
+    useToolBuilderStore.getState().onConnect({ source: csvId, target: unionId, sourceHandle: null, targetHandle: 'in-0' });
+    expect(useToolBuilderStore.getState().edges).toHaveLength(before + 1);
+    const graph = currentGraph();
+    expect(graph.edges.filter((edge) => edge.to === unionId && edge.toInput === 0)).toHaveLength(2);
+  });
+
+  it('保存済みDTOのtoInputをtarget handleへ復元し、再serializeで維持する', () => {
+    const tool = {
+      metadata: { internalId: 'joined', workingName: 'w', displayName: 'Joined', publishName: 'joined', version: '1.0.0', owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },
+      sideEffect: 'read-only',
+      graph: {
+        nodes: [
+          { id: 'left-1', type: 'json-source', config: { rows: [] } },
+          { id: 'right-1', type: 'json-source', config: { rows: [] } },
+          { id: 'join-1', type: 'join', config: { mode: 'inner', keys: [{ left: 'id', right: 'id' }], rightSuffix: '_right' } },
+        ],
+        edges: [
+          { from: 'left-1', to: 'join-1', toInput: 0 },
+          { from: 'right-1', to: 'join-1', toInput: 1 },
+        ],
+      },
+    } as SerializedToolDto;
+    useToolBuilderStore.getState().loadTool(tool);
+    expect(useToolBuilderStore.getState().edges.map((edge) => edge.targetHandle)).toEqual(['in-0', 'in-1']);
+    expect(currentGraph().edges).toEqual([
+      { from: 'left-1', to: 'join-1', toInput: 0 },
+      { from: 'right-1', to: 'join-1', toInput: 1 },
+    ]);
+  });
 });
