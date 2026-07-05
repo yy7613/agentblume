@@ -94,6 +94,7 @@ classDiagram
     +AgentKind kind
     +List~SkillRef~ skills
     +List~ToolRef~ tools
+    +List~SubAgentRef~ agents
   }
 
   class SideEffect {
@@ -130,6 +131,8 @@ classDiagram
 v1の`StructuredOutput`はJSON object直下の`string / number / integer / boolean` fieldに限定し、requiredとdescriptionを保持する。nested object、array、enumは後続で拡張する。
 
 v1の`Skill`は責務・発火条件・入出力説明・編集可能なinstructionsを持ち、依存Toolを`internalId + SemVer`で固定する。latest参照は保存しないため、Tool更新後も既存Skillの再現性を維持する。AgentへのSkill組み込みは後続Incrementで扱う。
+
+`Agent.agents`（サブエージェント参照 = `internalId + SemVer + usage委譲基準`）によるマルチエージェント合成は [12-multi-agent.md](./12-multi-agent.md) を参照。バージョン固定参照のため循環は構造的に不可能で、合成体も通常のAgentと同一の抽象として扱う（[ADR-0018](./adr/0018-multi-agent-sub-agent-delegation.md)）。
 
 ---
 

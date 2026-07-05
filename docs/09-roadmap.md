@@ -151,6 +151,8 @@ flowchart TB
 ノーコード体験の深掘りからは外れるが、いずれ必要になるもの（`ideas-v2.md §13`）。
 
 > **昇格**: 「メモリ」は `ideas-v3` により **長期記憶（LLM Wiki + Skillsベース）** として具体化され、Phase 4 の計画に昇格した（[10-memory.md](./10-memory.md)）。RAG（埋め込み検索）はその M4 段階に含む。
+>
+> **昇格**: 「マルチエージェント」は **サブエージェント委譲**（Agent集約への参照追加・ツール委譲実行・単一チャット面）として具体化され、v17 実装計画に昇格した（[12-multi-agent.md](./12-multi-agent.md) / [ADR-0018](./adr/0018-multi-agent-sub-agent-delegation.md)）。
 
 ```mermaid
 mindmap
