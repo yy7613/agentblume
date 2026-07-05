@@ -39,6 +39,21 @@ import { GenerateSkillPromptUseCase } from '../application/skill/generate-skill-
 import { QuerySkillsUseCase } from '../application/skill/query-skills';
 import { SaveSkillUseCase } from '../application/skill/save-skill';
 import type { SkillRepository } from '../domain/skill/skill-repository';
+import { InMemoryPersonaRepository } from '../adapters/storage/in-memory-persona-repository';
+import { SqlitePersonaRepository } from '../adapters/storage/sqlite-persona-repository';
+import { InMemoryScenarioRepository } from '../adapters/storage/in-memory-scenario-repository';
+import { SqliteScenarioRepository } from '../adapters/storage/sqlite-scenario-repository';
+import { InMemoryScenarioRunRepository } from '../adapters/storage/in-memory-scenario-run-repository';
+import { SqliteScenarioRunRepository } from '../adapters/storage/sqlite-scenario-run-repository';
+import { QueryPersonasUseCase } from '../application/validation/query-personas';
+import { QueryScenarioRunsUseCase } from '../application/validation/query-scenario-runs';
+import { QueryScenariosUseCase } from '../application/validation/query-scenarios';
+import { RunScenarioUseCase } from '../application/validation/run-scenario';
+import { SavePersonaUseCase } from '../application/validation/save-persona';
+import { SaveScenarioUseCase } from '../application/validation/save-scenario';
+import type { PersonaRepository } from '../domain/validation/persona-repository';
+import type { ScenarioRepository } from '../domain/validation/scenario-repository';
+import type { ScenarioRunRepository } from '../domain/validation/scenario-run-repository';
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
@@ -65,6 +80,9 @@ export interface App {
   readonly runRepo: RunRepository;
   readonly agentRepo: AgentRepository;
   readonly skillRepo: SkillRepository;
+  readonly personaRepo: PersonaRepository;
+  readonly scenarioRepo: ScenarioRepository;
+  readonly scenarioRunRepo: ScenarioRunRepository;
   readonly runAgentPreview: RunAgentPreviewUseCase;
   readonly queryRuns: QueryRunsUseCase;
   readonly saveAgent: SaveAgentUseCase;
@@ -73,6 +91,12 @@ export interface App {
   readonly saveSkill: SaveSkillUseCase;
   readonly querySkills: QuerySkillsUseCase;
   readonly generateSkillPrompt: GenerateSkillPromptUseCase;
+  readonly savePersona: SavePersonaUseCase;
+  readonly queryPersonas: QueryPersonasUseCase;
+  readonly saveScenario: SaveScenarioUseCase;
+  readonly queryScenarios: QueryScenariosUseCase;
+  readonly runScenario: RunScenarioUseCase;
+  readonly queryScenarioRuns: QueryScenarioRunsUseCase;
   readonly draftTool: DraftToolUseCase;
   readonly saveTool: SaveToolUseCase;
   readonly getTool: GetToolUseCase;
@@ -137,6 +161,16 @@ export function createApp(options?: AppOptions): App {
       ? (() => { const sqlite = new SqliteSkillRepository(path ?? ':memory:'); return { repo: sqlite as SkillRepository, close: () => sqlite.close() }; })()
       : { repo: new InMemorySkillRepository() as SkillRepository, close: () => {} };
 
+  const personaAdapter = profile === 'local'
+    ? (() => { const sqlite = new SqlitePersonaRepository(path ?? ':memory:'); return { repo: sqlite as PersonaRepository, close: () => sqlite.close() }; })()
+    : { repo: new InMemoryPersonaRepository() as PersonaRepository, close: () => {} };
+  const scenarioAdapter = profile === 'local'
+    ? (() => { const sqlite = new SqliteScenarioRepository(path ?? ':memory:'); return { repo: sqlite as ScenarioRepository, close: () => sqlite.close() }; })()
+    : { repo: new InMemoryScenarioRepository() as ScenarioRepository, close: () => {} };
+  const scenarioRunAdapter = profile === 'local'
+    ? (() => { const sqlite = new SqliteScenarioRunRepository(path ?? ':memory:'); return { repo: sqlite as ScenarioRunRepository, close: () => sqlite.close() }; })()
+    : { repo: new InMemoryScenarioRunRepository() as ScenarioRunRepository, close: () => {} };
+
   const engine = new EtlEngine(createDefaultRegistry());
   const modelProvider = options?.modelProvider ?? (profile === 'test'
     ? new ScriptedModelProvider()
@@ -147,6 +181,8 @@ export function createApp(options?: AppOptions): App {
         ...(process.env['LM_STUDIO_API_KEY'] !== undefined ? { apiKey: process.env['LM_STUDIO_API_KEY'] } : {}),
       }));
 
+  const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo);
+
   return {
     profile,
     repo,
@@ -155,7 +191,10 @@ export function createApp(options?: AppOptions): App {
     runRepo: runAdapter.repo,
     agentRepo: agentAdapter.repo,
     skillRepo: skillAdapter.repo,
-    runAgentPreview: new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo),
+    personaRepo: personaAdapter.repo,
+    scenarioRepo: scenarioAdapter.repo,
+    scenarioRunRepo: scenarioRunAdapter.repo,
+    runAgentPreview,
     queryRuns: new QueryRunsUseCase(runAdapter.repo),
     saveAgent: new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo),
     queryAgents: new QueryAgentsUseCase(agentAdapter.repo),
@@ -163,6 +202,12 @@ export function createApp(options?: AppOptions): App {
     saveSkill: new SaveSkillUseCase(skillAdapter.repo, repo),
     querySkills: new QuerySkillsUseCase(skillAdapter.repo),
     generateSkillPrompt: new GenerateSkillPromptUseCase(repo),
+    savePersona: new SavePersonaUseCase(personaAdapter.repo),
+    queryPersonas: new QueryPersonasUseCase(personaAdapter.repo),
+    saveScenario: new SaveScenarioUseCase(scenarioAdapter.repo, agentAdapter.repo, personaAdapter.repo),
+    queryScenarios: new QueryScenariosUseCase(scenarioAdapter.repo),
+    runScenario: new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo),
+    queryScenarioRuns: new QueryScenarioRunsUseCase(scenarioRunAdapter.repo),
     draftTool: new DraftToolUseCase(engine),
     saveTool: new SaveToolUseCase(repo, engine),
     getTool: new GetToolUseCase(repo),
@@ -175,7 +220,16 @@ export function createApp(options?: AppOptions): App {
         try { runAdapter.close(); }
         finally {
           try { agentAdapter.close(); }
-          finally { skillAdapter.close(); }
+          finally {
+            try { skillAdapter.close(); }
+            finally {
+              try { personaAdapter.close(); }
+              finally {
+                try { scenarioAdapter.close(); }
+                finally { scenarioRunAdapter.close(); }
+              }
+            }
+          }
         }
       }
     },

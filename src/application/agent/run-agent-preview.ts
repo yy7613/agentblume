@@ -33,12 +33,19 @@ export interface RunAgentPreviewInput {
   readonly mode: AgentRunMode;
 }
 
+/** 直前までの会話履歴（system直後へ注入される。v16: シナリオ検証の複数ターン会話用）。 */
+export interface AgentHistoryMessage {
+  readonly role: 'user' | 'assistant';
+  readonly content: string;
+}
+
 export interface RunSavedAgentPreviewInput {
   readonly scope: TenantScope;
   readonly agentId: string;
   readonly version?: SemVer;
   readonly message: string;
   readonly mode: AgentRunMode;
+  readonly history?: readonly AgentHistoryMessage[];
 }
 
 export interface AgentPreviewRun {
@@ -125,7 +132,7 @@ export class RunAgentPreviewUseCase {
       async (trace) => {
         const agent = await this.loadAgent(input.scope, input.agentId, input.version);
         const resolved = await resolveAgentCapabilities(input.scope, agent.skills, agent.tools, this.repo, this.skills);
-        return this.perform(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), input.message, resolved.tools, trace, signal, this.agentRef(agent), agent.output);
+        return this.perform(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), input.message, resolved.tools, trace, signal, this.agentRef(agent), agent.output, input.history);
       },
     );
   }
@@ -169,6 +176,7 @@ export class RunAgentPreviewUseCase {
     signal?: AbortSignal,
     agent?: RunRecord['agent'],
     output?: StructuredOutputDefinition,
+    history?: readonly AgentHistoryMessage[],
   ): Promise<RunResult> {
     for (const tool of tools) {
       if (tool.sideEffect !== 'read-only') {
@@ -185,6 +193,8 @@ export class RunAgentPreviewUseCase {
     const definitions = tools.map(toolToModelDefinition);
     const messages: ModelMessage[] = [
       { role: 'system', content: systemPrompt },
+      // v16: 会話履歴（シナリオ検証の複数ターン）を system 直後へ注入する（後方互換: 省略時は従来どおり）。
+      ...(history ?? []).map((entry): ModelMessage => ({ role: entry.role, content: entry.content })),
       { role: 'user', content: userMessage },
     ];
     const completions: ModelCompletion[] = [];

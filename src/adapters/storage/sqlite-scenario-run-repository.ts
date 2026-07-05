@@ -1,0 +1,57 @@
+import { DatabaseSync } from 'node:sqlite';
+import type { TenantScope } from '../../domain/tool/ids';
+import { ValidationDomainError } from '../../domain/validation/errors';
+import type { ScenarioRun } from '../../domain/validation/scenario-run';
+import type { ScenarioRunFilter, ScenarioRunRepository } from '../../domain/validation/scenario-run-repository';
+import { deserializeScenarioRun, serializeScenarioRun } from '../../domain/validation/serialization';
+
+const CREATE_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS scenario_runs (
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    scenario_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, workspace_id, run_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_scenario_runs_scope_started
+    ON scenario_runs (tenant_id, workspace_id, started_at DESC);
+`;
+
+const fromJson = (value: unknown): ScenarioRun => deserializeScenarioRun(JSON.parse(String(value)));
+
+export class SqliteScenarioRunRepository implements ScenarioRunRepository {
+  private readonly db: DatabaseSync;
+
+  constructor(path = ':memory:') {
+    this.db = new DatabaseSync(path);
+    this.db.exec(CREATE_TABLE_SQL);
+  }
+
+  close(): void { this.db.close(); }
+
+  async save(run: ScenarioRun): Promise<void> {
+    try {
+      this.db.prepare(`INSERT INTO scenario_runs (tenant_id, workspace_id, run_id, scenario_id, started_at, record_json) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(run.scope.tenantId, run.scope.workspaceId, run.id, run.scenario.id, run.startedAt, JSON.stringify(serializeScenarioRun(run)));
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
+        throw new ValidationDomainError(`ScenarioRun already exists: ${run.id}`);
+      }
+      throw error;
+    }
+  }
+
+  async find(scope: TenantScope, id: string): Promise<ScenarioRun | null> {
+    const row = this.db.prepare(`SELECT record_json FROM scenario_runs WHERE tenant_id=? AND workspace_id=? AND run_id=?`).get(scope.tenantId, scope.workspaceId, id);
+    return row === undefined ? null : fromJson(row['record_json']);
+  }
+
+  async list(scope: TenantScope, filter?: ScenarioRunFilter): Promise<ScenarioRun[]> {
+    const rows = filter?.scenarioId === undefined
+      ? this.db.prepare(`SELECT record_json FROM scenario_runs WHERE tenant_id=? AND workspace_id=? ORDER BY started_at DESC`).all(scope.tenantId, scope.workspaceId)
+      : this.db.prepare(`SELECT record_json FROM scenario_runs WHERE tenant_id=? AND workspace_id=? AND scenario_id=? ORDER BY started_at DESC`).all(scope.tenantId, scope.workspaceId, filter.scenarioId);
+    return rows.map((row) => fromJson(row['record_json']));
+  }
+}

@@ -18,6 +18,7 @@ import { RunFailedError } from '../application/agent/errors';
 import { RunNotFoundError } from '../domain/run/errors';
 import { AgentNotFoundError, AgentValidationError, AgentVersionConflictError } from '../domain/agent/errors';
 import { SkillNotFoundError, SkillValidationError, SkillVersionConflictError } from '../domain/skill/errors';
+import { PersonaNotFoundError, ScenarioNotFoundError, ScenarioRunNotFoundError, ValidationDomainError } from '../domain/validation/errors';
 
 /** HTTP エラーレスポンス表現。 */
 export interface HttpError {
@@ -80,6 +81,12 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof SkillNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof SkillVersionConflictError) return httpError(409, err.code, err.message);
   if (err instanceof SkillValidationError) return httpError(400, err.code, err.message);
+
+  // 検証（シナリオ検証）ドメイン: NotFound系は404、その他の不変条件違反は400。
+  if (err instanceof PersonaNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof ScenarioNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof ScenarioRunNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof ValidationDomainError) return httpError(400, err.code, err.message);
 
   if (err instanceof UnsafeToolError) return httpError(403, err.code, err.message);
   if (err instanceof ToolArgumentsError) return httpError(422, err.code, err.message);

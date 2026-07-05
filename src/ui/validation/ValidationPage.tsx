@@ -1,16 +1,28 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AgentSummaryDto } from '../api/types';
 import { useI18n } from '../i18n';
+import { PersonasTab } from './PersonasTab';
+import { RunsTab } from './RunsTab';
+import { ScenariosTab } from './ScenariosTab';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
-interface Result { readonly passed: boolean; readonly runId: string; readonly observed: readonly string[]; readonly response: string }
+type Tab = 'personas' | 'scenarios' | 'runs';
+
 export function ValidationPage({ client }: { readonly client: ToolApiClient }) {
-  const [agents, setAgents] = useState<readonly AgentSummaryDto[]>([]); const [agentId, setAgentId] = useState('');
-  const [scenario, setScenario] = useState('Answer the request using the appropriate Tool.'); const [expectedTool, setExpectedTool] = useState('');
-  const [result, setResult] = useState<Result>(); const [busy, setBusy] = useState(false); const [error, setError] = useState<string>();
+  const [tab, setTab] = useState<Tab>('personas');
   const { text } = useI18n();
-  useEffect(() => { let active = true; void client.listAgents(scope).then((items) => { if (active) { setAgents(items); setAgentId(items[0]?.internalId ?? ''); } }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Request failed'); }); return () => { active = false; }; }, [client]);
-  async function validate() { const agent = agents.find((item) => item.internalId === agentId); if (agent === undefined) return; setBusy(true); setError(undefined); setResult(undefined); try { const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: scenario, mode: 'test' }); const observed = (run.tools ?? (run.tool === undefined ? [] : [run.tool])).map((tool) => tool.publishName ?? tool.internalId); const expected = expectedTool.trim(); setResult({ passed: expected === '' ? true : observed.includes(expected), runId: run.runId, observed, response: run.response }); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Request failed'); } finally { setBusy(false); } }
-  return <main className="workspace-page"><header className="workspace-header"><div><span className="eyebrow">{text('Validation', '検証')}</span><h1>{text('Scenario validation', 'シナリオ検証')}</h1><p>{text('Run a saved Agent in test mode and compare expected and observed Tool calls.', '保存済みエージェントをテストモードで実行し、期待するツールと実際の呼び出しを照合します。')}</p></div></header>{error !== undefined && <div className="api-error">{error}</div>}<div className="two-column-workspace"><section className="workspace-card"><label>{text('Target agent', '対象エージェント')}<select aria-label={text('Validation agent', '検証対象エージェント')} value={agentId} onChange={(event) => setAgentId(event.target.value)}><option value="">{text('Select an agent', 'エージェントを選択')}</option>{agents.map((agent) => <option value={agent.internalId} key={agent.internalId}>{agent.displayName} · {agent.latestVersion}</option>)}</select></label><label>{text('Scenario', 'シナリオ')}<textarea aria-label={text('Validation scenario', '検証シナリオ')} rows={7} value={scenario} onChange={(event) => setScenario(event.target.value)} /></label><label>{text('Expected Tool publish name', '期待するツール公開名')}<input aria-label={text('Expected tool', '期待するツール')} value={expectedTool} placeholder={text('Optional', '任意')} onChange={(event) => setExpectedTool(event.target.value)} /></label><button type="button" className="primary" disabled={busy || agentId === '' || scenario.trim() === ''} onClick={() => void validate()}>{busy ? text('Validating…', '検証中…') : text('Run validation', '検証を実行')}</button></section><section className="workspace-card" aria-label={text('Validation result', '検証結果')}><h2>{text('Result', '結果')}</h2>{result === undefined ? <p className="empty-state">{text('Validation results will appear here.', '検証結果がここに表示されます。')}</p> : <div className={`validation-result ${result.passed ? 'passed' : 'failed'}`}><strong>{result.passed ? 'PASS' : 'FAIL'}</strong><code>{result.runId}</code><p>{text('Observed Tools', '実行されたツール')}: {result.observed.join(', ') || text('none', 'なし')}</p><p>{result.response}</p></div>}</section></div></main>;
+  const tabs: readonly { readonly id: Tab; readonly label: string }[] = [
+    { id: 'personas', label: text('Personas', 'ペルソナ') },
+    { id: 'scenarios', label: text('Scenarios', 'シナリオ') },
+    { id: 'runs', label: text('Runs', '実行結果') },
+  ];
+  return <main className="workspace-page">
+    <header className="workspace-header"><div><span className="eyebrow">{text('Validation', '検証')}</span><h1>{text('Scenario validation', 'シナリオ検証')}</h1><p>{text('Define personas and scenarios, run multi-turn pseudo-user conversations against saved Agents, and review transcripts and surveys.', 'ペルソナとシナリオを定義し、保存済みエージェントに対する疑似ユーザーの複数ターン会話を実行して、トランスクリプトとアンケートを確認します。')}</p></div></header>
+    <div className="validation-tabs" role="tablist" aria-label={text('Validation tabs', '検証タブ')}>
+      {tabs.map((item) => <button type="button" key={item.id} role="tab" aria-selected={tab === item.id} className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}>{item.label}</button>)}
+    </div>
+    {tab === 'personas' ? <PersonasTab client={client} scope={scope} />
+      : tab === 'scenarios' ? <ScenariosTab client={client} scope={scope} onRunCompleted={() => setTab('runs')} />
+      : <RunsTab client={client} scope={scope} />}
+  </main>;
 }

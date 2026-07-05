@@ -132,10 +132,18 @@ test('Chat・MCP・Validation・Settingsの全ナビが実操作できる', asyn
   await expect(page.getByRole('button', { name: 'Publish MCP server' })).toBeDisabled();
 
   await page.getByRole('button', { name: 'Validation', exact: true }).click();
-  await page.getByLabel('Validation agent').selectOption('screen-agent');
-  await page.getByLabel('Expected tool').fill('screen_tool');
-  await page.getByRole('button', { name: 'Run validation' }).click();
-  await expect(page.getByText('PASS')).toBeVisible();
+  await page.getByRole('tab', { name: 'Personas' }).click();
+  await page.getByRole('button', { name: 'New persona' }).click();
+  await page.getByLabel('Persona internal ID').fill('screen-persona');
+  await page.getByLabel('Persona working name').fill('Screen persona');
+  await page.getByLabel('Persona display name').fill('Screen Persona');
+  await page.getByLabel('Persona publish name').fill('screen_persona');
+  await page.getByRole('button', { name: 'Save version' }).click();
+  await expect(page.getByRole('button', { name: /Screen Persona/ })).toContainText('1.0.0');
+  await page.getByRole('tab', { name: 'Scenarios' }).click();
+  await expect(page.getByRole('tab', { name: 'Scenarios' })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: 'Runs' }).click();
+  await expect(page.getByRole('tab', { name: 'Runs' })).toHaveAttribute('aria-selected', 'true');
 
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Runtime settings' })).toBeVisible();

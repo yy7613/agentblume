@@ -15,10 +15,11 @@ import { registerRunRoutes } from './run-routes';
 import type { RunRouteDeps } from './run-routes';
 import { registerAgentRoutes, type AgentRouteDeps } from './agent-routes';
 import { registerSkillRoutes, type SkillRouteDeps } from './skill-routes';
+import { registerValidationRoutes, type ValidationRouteDeps } from './validation-routes';
 
 /** ルート・エラーハンドラ設定済みの Fastify インスタンスを組み立てる（listen しない）。 */
 export function buildServer(
-  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & SkillRouteDeps,
+  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & SkillRouteDeps & ValidationRouteDeps,
   options?: { logger?: boolean },
 ): FastifyInstance {
   const app = Fastify({ logger: options?.logger ?? false });
@@ -34,6 +35,7 @@ export function buildServer(
   registerRunRoutes(app, deps);
   registerAgentRoutes(app, deps);
   registerSkillRoutes(app, deps);
+  registerValidationRoutes(app, deps);
 
   // ヘルスチェック。
   app.get('/health', async () => ({ status: 'ok' }));

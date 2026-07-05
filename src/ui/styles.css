@@ -174,6 +174,39 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .validation-result.passed { background: #e4f5ef; color: #12634f; }
 .validation-result.failed { background: #fce8ea; color: #9f3040; }
 .validation-result strong, .validation-result code { display: block; margin-bottom: 8px; }
+.validation-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.validation-tabs button { border: 1px solid #ccd3e0; background: white; color: #354158; border-radius: 99px; padding: 7px 16px; font-size: 12px; font-weight: 700; }
+.validation-tabs button.active { background: #5365ed; border-color: #5365ed; color: white; }
+.validation-list { display: grid; gap: 7px; max-height: 460px; overflow: auto; }
+.validation-list > button { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; text-align: left; border: 1px solid #dce1eb; background: white; border-radius: 8px; padding: 10px; }
+.validation-list > button.selected { border-color: #6576f1; background: #f2f4ff; }
+.validation-list strong { flex: 1; font-size: 12px; }
+.validation-list .run-meta, .validation-list time { width: 100%; font-size: 10px; color: #7a869c; }
+.archetype-badge { border-radius: 99px; font-size: 9px; font-weight: 800; text-transform: uppercase; padding: 3px 6px; background: #e8ebf3; color: #4f5d76; }
+.run-status.scenario-completed { background: #e4f5ef; color: #137058; }
+.run-status.scenario-max-turns { background: #fff4dc; color: #856015; }
+.run-status.scenario-error { background: #fce8ea; color: #b43a46; }
+.survey-editor { display: grid; gap: 8px; }
+.survey-editor-row { display: grid; grid-template-columns: 88px 1fr 1fr 88px 56px 56px 32px; gap: 6px; align-items: center; }
+.survey-editor-row > button { height: 34px; padding: 0; }
+.survey-editor > .secondary { justify-self: start; height: 32px; }
+.transcript { display: grid; gap: 8px; margin: 10px 0 16px; }
+.transcript-turn { max-width: 88%; border-radius: 10px; padding: 10px 12px; font-size: 12px; line-height: 1.5; }
+.transcript-turn.user { justify-self: end; background: #e8ecff; color: #26325a; }
+.transcript-turn.agent { justify-self: start; background: #f2f4f8; color: #2c3850; }
+.transcript-turn .turn-speaker { display: block; font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; color: #68758f; margin-bottom: 4px; }
+.transcript-turn p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.transcript-turn .run-link { margin-top: 7px; font-size: 10px; padding: 3px 8px; }
+.survey-result { display: grid; gap: 10px; margin-bottom: 16px; }
+.survey-question { display: block; font-size: 11px; color: #526078; font-weight: 650; margin-bottom: 3px; }
+.survey-scale { display: grid; grid-template-columns: 1fr 44px; align-items: center; gap: 4px 8px; }
+.survey-scale .survey-question, .survey-boolean .survey-question { grid-column: 1 / -1; margin-bottom: 0; }
+.survey-scale-track { height: 8px; border-radius: 99px; background: #e8ebf3; overflow: hidden; }
+.survey-scale-fill { height: 100%; background: #5365ed; border-radius: 99px; }
+.survey-scale strong { font-size: 11px; color: #354158; }
+.survey-boolean strong.yes { color: #137058; }
+.survey-boolean strong.no { color: #b43a46; }
+.survey-text p { margin: 0; font-size: 12px; background: #f8f9fc; border: 1px solid #e3e7ef; border-radius: 8px; padding: 9px; }
 .settings-grid { display: grid; grid-template-columns: repeat(3, minmax(260px, 1fr)); gap: 16px; }
 .settings-list { margin: 0; }
 .settings-list > div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e6e9f0; padding: 10px 0; font-size: 11px; }

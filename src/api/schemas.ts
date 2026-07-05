@@ -10,6 +10,8 @@ import { PUBLISH_STATES, SIDE_EFFECTS } from '../domain/tool/metadata';
 import type { PublishState, SideEffect } from '../domain/tool/metadata';
 import { AGENT_KINDS } from '../domain/agent/agent';
 import { STRUCTURED_OUTPUT_TYPES } from '../domain/agent/structured-output';
+import { PERSONA_ARCHETYPES, PERSONA_LANGUAGES, PERSONA_LEVELS, PERSONA_VERBOSITIES } from '../domain/validation/persona';
+import { SURVEY_QUESTION_KINDS } from '../domain/validation/survey';
 
 /** テナントスコープ（tenantId / workspaceId 非空）。 */
 export const tenantScopeSchema = z.object({
@@ -179,6 +181,62 @@ export const runListQuerySchema = z.object({
 export const runTraceQuerySchema = z.object({
   tenantId: z.string().min(1),
   workspaceId: z.string().min(1),
+});
+
+/** POST /personas の body（v16 §5）。 */
+export const savePersonaBodySchema = z.object({
+  scope: tenantScopeSchema,
+  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1),
+  publishName: z.string().min(1), owner: z.string().min(1),
+  archetype: z.enum(PERSONA_ARCHETYPES),
+  knowledgeLevel: z.enum(PERSONA_LEVELS),
+  patience: z.enum(PERSONA_LEVELS),
+  tone: z.string().min(1),
+  verbosity: z.enum(PERSONA_VERBOSITIES),
+  language: z.enum(PERSONA_LANGUAGES),
+  extraInstructions: z.string().optional(),
+  promptOverride: z.string().optional(),
+  bump: z.enum(['major', 'minor', 'patch']).optional(),
+  state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
+});
+
+const surveyQuestionSchema = z.object({
+  id: z.string().min(1),
+  textJa: z.string().min(1),
+  textEn: z.string().min(1),
+  kind: z.enum(SURVEY_QUESTION_KINDS),
+  min: z.number().optional(),
+  max: z.number().optional(),
+});
+
+/** POST /scenarios の body（対象Agent・Personaはversion固定参照。整合はユースケース側で検証）。 */
+export const saveScenarioBodySchema = z.object({
+  scope: tenantScopeSchema,
+  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1),
+  publishName: z.string().min(1), owner: z.string().min(1),
+  target: z.object({ agentId: z.string().min(1), version: z.string().min(1) }),
+  persona: z.object({ personaId: z.string().min(1), version: z.string().min(1) }),
+  goal: z.string().min(1),
+  context: z.string().optional(),
+  maxUserTurns: z.number().int(),
+  expectedTools: z.array(z.string()).optional(),
+  survey: z.array(surveyQuestionSchema),
+  bump: z.enum(['major', 'minor', 'patch']).optional(),
+  state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
+});
+
+/** POST /scenarios/:id/run の body。 */
+export const runScenarioBodySchema = z.object({
+  scope: tenantScopeSchema,
+  version: z.string().optional(),
+  mode: z.enum(['preview', 'test']).default('preview'),
+});
+
+/** GET /scenario-runs の query。 */
+export const scenarioRunListQuerySchema = z.object({
+  tenantId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  scenarioId: z.string().optional(),
 });
 
 /** GET /tools/:id 系の query（version は任意文字列、妥当性はルート側）。 */

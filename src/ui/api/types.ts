@@ -208,3 +208,105 @@ export interface RunRecordDto extends Omit<RunSummaryDto, 'traceEventCount'> {
   readonly scope: TenantScopeDto;
   readonly trace: readonly RunTraceEventDto[];
 }
+
+export type PersonaArchetypeDto = 'novice' | 'expert' | 'busy' | 'vague' | 'skeptical' | 'custom';
+export type PersonaLevelDto = 'low' | 'mid' | 'high';
+export type PersonaVerbosityDto = 'terse' | 'normal' | 'chatty';
+export type PersonaLanguageDto = 'ja' | 'en';
+export interface SerializedPersonaDto {
+  readonly metadata: SerializedAgentDto['metadata'];
+  readonly archetype: PersonaArchetypeDto;
+  readonly knowledgeLevel: PersonaLevelDto;
+  readonly patience: PersonaLevelDto;
+  readonly tone: string;
+  readonly verbosity: PersonaVerbosityDto;
+  readonly language: PersonaLanguageDto;
+  readonly extraInstructions?: string;
+  readonly promptOverride?: string;
+}
+export interface SavePersonaDto {
+  readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string;
+  readonly publishName: string; readonly owner: string;
+  readonly archetype: PersonaArchetypeDto;
+  readonly knowledgeLevel: PersonaLevelDto;
+  readonly patience: PersonaLevelDto;
+  readonly tone: string;
+  readonly verbosity: PersonaVerbosityDto;
+  readonly language: PersonaLanguageDto;
+  readonly extraInstructions?: string;
+  readonly promptOverride?: string;
+  readonly bump?: 'major' | 'minor' | 'patch';
+}
+export interface PersonaSummaryDto {
+  readonly internalId: string;
+  readonly displayName: string;
+  readonly publishName: string;
+  readonly latestVersion: string;
+  readonly archetype: PersonaArchetypeDto;
+  readonly state: SerializedAgentDto['metadata']['state'];
+}
+
+export type SurveyQuestionKindDto = 'scale' | 'boolean' | 'text';
+export interface SurveyQuestionDto {
+  readonly id: string;
+  readonly textJa: string;
+  readonly textEn: string;
+  readonly kind: SurveyQuestionKindDto;
+  readonly min?: number;
+  readonly max?: number;
+}
+export interface SerializedScenarioDto {
+  readonly metadata: SerializedAgentDto['metadata'];
+  readonly target: { readonly agentId: string; readonly version: string };
+  readonly persona: { readonly personaId: string; readonly version: string };
+  readonly goal: string;
+  readonly context?: string;
+  readonly maxUserTurns: number;
+  readonly expectedTools?: readonly string[];
+  readonly survey: readonly SurveyQuestionDto[];
+}
+export interface SaveScenarioDto {
+  readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string;
+  readonly publishName: string; readonly owner: string;
+  readonly target: { readonly agentId: string; readonly version: string };
+  readonly persona: { readonly personaId: string; readonly version: string };
+  readonly goal: string;
+  readonly context?: string;
+  readonly maxUserTurns: number;
+  readonly expectedTools?: readonly string[];
+  readonly survey: readonly SurveyQuestionDto[];
+  readonly bump?: 'major' | 'minor' | 'patch';
+}
+export interface ScenarioSummaryDto {
+  readonly internalId: string;
+  readonly displayName: string;
+  readonly publishName: string;
+  readonly latestVersion: string;
+  readonly state: SerializedAgentDto['metadata']['state'];
+}
+
+export type ScenarioRunStatusDto = 'completed' | 'max-turns' | 'error';
+export interface ScenarioTurnDto { readonly speaker: 'user' | 'agent'; readonly message: string; readonly runId?: string }
+export interface ScenarioRunDto {
+  readonly id: string;
+  readonly scope: TenantScopeDto;
+  readonly scenario: { readonly id: string; readonly version: string };
+  readonly status: ScenarioRunStatusDto;
+  readonly goalAchieved: boolean | null;
+  readonly transcript: readonly ScenarioTurnDto[];
+  readonly survey: readonly { readonly questionId: string; readonly value: number | boolean | string }[];
+  readonly impressions: string;
+  readonly metrics: {
+    readonly userTurns: number; readonly agentRuns: number; readonly totalToolCalls: number;
+    readonly expectedToolHit?: { readonly expected: readonly string[]; readonly called: readonly string[]; readonly hitRate: number };
+    readonly durationMs: number;
+    readonly usage: AgentPreviewRunDto['usage'];
+  };
+  readonly startedAt: string;
+  readonly finishedAt: string;
+}
+export interface RunScenarioDto {
+  readonly scope: TenantScopeDto;
+  readonly version?: string;
+  readonly mode: 'preview' | 'test';
+}
