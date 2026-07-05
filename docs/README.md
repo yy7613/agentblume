@@ -27,6 +27,7 @@
 | 07 | [07-execution-model.md](./07-execution-model.md) | 実行モデル・データフロー（シーケンス図） |
 | 08 | [08-security-auth.md](./08-security-auth.md) | セキュリティ・認証認可設計 |
 | 09 | [09-roadmap.md](./09-roadmap.md) | ロードマップと検証指標 |
+| 10 | [10-memory.md](./10-memory.md) | 長期記憶（LLM Wiki + Skillsベース、`ideas-v3` 由来） |
 
 > **凡例**: 本ドキュメント群では、アイデアに明記された内容を「✅ 記載あり」、本仕様書が補う未決定の提案を「🔷 提案」、採用を決定した提案を「🔶 採用決定」として区別する。
 

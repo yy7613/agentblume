@@ -68,15 +68,20 @@ flowchart LR
 
 ### 2.2 変換 (transform)
 
-| 分類 | ノード |
-|---|---|
-| 結合 | `join`（inner/left/right/full）, `union` |
-| 行 | `filter`, `sort`, 重複排除（distinct） |
-| 列 | `select`, `rename`, `cast`, 計算列（式エディタ） |
-| 整形 | null処理, 値の置換, 文字列整形 |
-| 集計 | `group by` 集計, ウィンドウ関数 |
-| 表形式 | `pivot`, `unpivot`, `split`, `merge` |
-| 時系列 | 日付変換, リサンプリング |
+| 分類 | ノード | 実装状況 |
+|---|---|---|
+| 結合 | `join`（inner/left/right/full）, `union` | **v15（次増分）** |
+| 行 | `filter` | ✅ 実装済み |
+| 行 | `sort`, 重複排除（`distinct`） | **v15（次増分）** |
+| 列 | `select`, `rename`, `cast` | ✅ 実装済み |
+| 列 | 計算列（式エディタ） | v16以降（式エディタと同時） |
+| 整形 | null処理（`fill-null`）, 値の置換（`replace`） | **v15（次増分）** |
+| 整形 | 文字列整形 | v16以降 |
+| 集計 | `group by` 集計, ウィンドウ関数 | v16以降 |
+| 表形式 | `pivot`, `unpivot`, `split`, `merge` | v16以降 |
+| 時系列 | 日付変換, リサンプリング | v16以降 |
+
+> v15 のスコープと各ノードの詳細契約は [implementation/v15-etl-transforms.md](../implementation/v15-etl-transforms.md)（[ADR-0015](./adr/0015-etl-transform-expansion.md)）。2入力ノード（join/union）は `EtlNode.inputArity=2` と `GraphEdge.toInput` を使う（エンジンは対応済み）。
 
 ### 2.3 分析 (analyze)
 

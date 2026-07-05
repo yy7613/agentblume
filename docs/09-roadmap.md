@@ -60,6 +60,7 @@ DB/API接続、Secrets Provider、認証アダプター、ワークスペースR
 
 ### Phase 4: 評価と運用
 データセット評価、回帰、LLM-as-Judge、本番ログからの評価データ化、環境昇格、高度なポリシー制御。
+加えて **長期記憶（`ideas-v3`）**: LLM Wiki（WikiPage + 検索）と Skillsベースの蒸留（Run → 提案 → 人手承認 → Skill.instructions 改訂）。詳細は [10-memory.md](./10-memory.md)。
 
 ---
 
@@ -90,8 +91,12 @@ flowchart TB
     F16["cron/イベントトリガーGUI"]
     F17["Workflow Builderの制御ノード"]
   end
+  subgraph PH4["Phase 4"]
+    F18["長期記憶: LLM Wiki（WikiPage+検索）"]
+    F19["長期記憶: Run→Skill蒸留（人手承認）"]
+  end
 
-  PH1 --> PH2 --> PH3
+  PH1 --> PH2 --> PH3 --> PH4
 
   classDef v1 fill:#e3f2fd,stroke:#1565c0;
   class F1,F2,F3,F4,F5,F6,F7,F8,F9,F10 v1;
@@ -145,13 +150,15 @@ flowchart TB
 
 ノーコード体験の深掘りからは外れるが、いずれ必要になるもの（`ideas-v2.md §13`）。
 
+> **昇格**: 「メモリ」は `ideas-v3` により **長期記憶（LLM Wiki + Skillsベース）** として具体化され、Phase 4 の計画に昇格した（[10-memory.md](./10-memory.md)）。RAG（埋め込み検索）はその M4 段階に含む。
+
 ```mermaid
 mindmap
   root((将来拡張))
     観測
       トレースの本格版
     知識
-      メモリ
+      メモリ（→Phase4へ昇格）
       RAG
     協調
       マルチエージェント
