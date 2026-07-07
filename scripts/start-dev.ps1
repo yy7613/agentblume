@@ -330,7 +330,7 @@ function Test-AgentContextUiHealth {
   try {
     $response = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/" -TimeoutSec 2 -ErrorAction Stop
     $content = [string]$response.Content
-    return $response.StatusCode -eq 200 -and $content.Contains('AgentContext') -and $content.Contains('/src/ui/main.tsx')
+    return $response.StatusCode -eq 200 -and $content.Contains('agentblume') -and $content.Contains('/src/ui/main.tsx')
   }
   catch {
     return $false

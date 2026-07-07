@@ -1,9 +1,9 @@
 {
-  "name": "agentcontext",
+  "name": "agentblume",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "AgentContext — ノーコード・エージェントIDE (v1 increment: ETL Tool Engine)",
+  "description": "agentblume — ノーコード・エージェントIDE (v1 increment: ETL Tool Engine)",
   "scripts": {
     "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json && tsc -p tsconfig.e2e.json",
     "test": "vitest run",

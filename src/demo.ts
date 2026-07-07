@@ -100,7 +100,7 @@ const scope: TenantScope = { tenantId: 'demo-tenant', workspaceId: 'demo-ws' };
 const TOOL_ID = 'adult-users';
 
 async function main(app: App): Promise<void> {
-  console.log('=== AgentContext v3 vertical-slice demo (via composition root) ===');
+  console.log('=== agentblume v3 vertical-slice demo (via composition root) ===');
   console.log(`profile: ${app.profile} (sqlite :memory:)`);
   console.log('journey: csv-source -> select -> filter -> rename -> cast');
   console.log('');

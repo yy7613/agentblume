@@ -1,7 +1,7 @@
-# AgentContext 仕様書（ノーコード・エージェントIDE）
+# agentblume 仕様書（ノーコード・エージェントIDE）
 
 > 本ドキュメント群は [`ideas/ideas.md`](../ideas/ideas.md)（構想の全体像）と [`ideas/ideas-v2.md`](../ideas/ideas-v2.md)（ノーコード体験の深掘り）から起こした仕様書である。
-> **AgentContext** はリポジトリ名に由来する仮称。
+> **agentblume** はプロジェクト名。
 
 ---
 

@@ -28,7 +28,7 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
 try {
   await server.listen({ port, host: '127.0.0.1' });
-  server.log.info(`AgentContext API started (profile=${app.profile}, port=${port})`);
+  server.log.info(`agentblume API started (profile=${app.profile}, port=${port})`);
 } catch (err) {
   server.log.error(err);
   app.close();

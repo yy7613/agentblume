@@ -27,7 +27,7 @@ DB/API接続・カスタムコード・MCP公開・Webhookを提供する前に�
 
 ```mermaid
 flowchart LR
-  subgraph App["AgentContext"]
+  subgraph App["agentblume"]
     AN["AuthenticationProvider"]
     PM["PrincipalMapper"]
     PR["内部Principal<br/>subject / tenant / displayName<br/>groups / claims / authenticationMethod"]

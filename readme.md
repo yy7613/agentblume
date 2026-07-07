@@ -1,4 +1,4 @@
-# AgentContext
+# agentblume
 
 ノーコードでAIエージェントを組み立て・実行・検証するためのローカルIDE。ETLツールエンジンを中心に、エージェント／スキル／ツールの定義、動作確認、検証を1つのUIから行える。
 
@@ -38,3 +38,4 @@ npm run build
 ## ライセンス
 
 [MIT License](LICENSE) © 2026 yy7613
+
