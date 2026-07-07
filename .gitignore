@@ -1,9 +1,25 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+*.tsbuildinfo
+
+# Test & coverage artifacts
 coverage/
-*.log
-.DS_Store
 .vitest/
 playwright-report/
 test-results/
+
+# Logs
+*.log
+
+# Environment & local secrets
+.env
+.env.*
 scripts/lm-studio.local.ps1
+
+# Editor & OS
+.DS_Store
+Thumbs.db
+.idea/
