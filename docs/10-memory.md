@@ -1,6 +1,6 @@
 # 10. 長期記憶（LLM Wiki + Skillsベース）
 
-> 参照: [`ideas-v3.md`](../ideas/ideas-v3.md)（本ドキュメントの出典） / [`ideas-v2.md` §13 保留](../ideas/ideas-v2.md) / [03-domain-model.md](./03-domain-model.md) / [07-execution-model.md](./07-execution-model.md)
+> 参照: [03-domain-model.md](./03-domain-model.md) / [07-execution-model.md](./07-execution-model.md)
 >
 > **凡例**: ✅ = `ideas-v3.md` に明記 / 🔷 = 本仕様書が補う提案
 

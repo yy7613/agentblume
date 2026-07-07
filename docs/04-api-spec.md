@@ -1,6 +1,6 @@
 # 04. API仕様
 
-> 参照: [`ideas-v2.md` §8 SDK境界, §10 拡張インターフェース](../ideas/ideas-v2.md) / [01-architecture.md](./01-architecture.md)
+> 参照: [01-architecture.md](./01-architecture.md)
 
 APIは3層に分かれる。
 1. **Portインターフェース** — アプリケーションが所有する外部SDK境界（内部契約）。

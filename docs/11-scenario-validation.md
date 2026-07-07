@@ -1,6 +1,6 @@
 # 11. シナリオ検証（種別疑似ユーザー × 複数ターン会話 × アンケート）
 
-> 参照: [`ideas.md` 機能節・検証節](../ideas/ideas.md)（「疑似ユーザーエージェントに実際に利用させるフロー」「フィードバック、アンケート、感想などの定性的評価」）/ [`ideas-v2.md` §2, §11](../ideas/ideas-v2.md) / [03-domain-model.md §6](./03-domain-model.md) / [07-execution-model.md §4](./07-execution-model.md)
+> 参照: [03-domain-model.md §6](./03-domain-model.md) / [07-execution-model.md §4](./07-execution-model.md)
 >
 > **凡例**: ✅ = ideasに明記 / 🔷 = 本仕様書が補う具体化
 

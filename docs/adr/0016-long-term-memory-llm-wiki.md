@@ -2,7 +2,7 @@
 
 - Status: **Proposed**（Phase 4 実装。方向性の合意のみ先行）
 - Date: 2026-07-05
-- Context doc: [docs/10-memory.md](../10-memory.md), [`ideas-v3.md`](../../ideas/ideas-v3.md)
+- Context doc: [docs/10-memory.md](../10-memory.md)
 
 ## Context
 

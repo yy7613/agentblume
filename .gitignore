@@ -23,3 +23,6 @@ scripts/lm-studio.local.ps1
 .DS_Store
 Thumbs.db
 .idea/
+
+# Private brainstorming notes (not for publication)
+ideas/

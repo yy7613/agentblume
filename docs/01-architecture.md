@@ -1,6 +1,6 @@
 # 01. アーキテクチャ
 
-> 参照: [`ideas-v2.md` §0, §8, §10](../ideas/ideas-v2.md) / [README.md](./README.md)
+> 参照: [README.md](./README.md)
 
 本製品のアーキテクチャは **クリーンアーキテクチャ + ヘキサゴナル（Ports & Adapters）** を基調とする。原則は次の2点に集約される。
 

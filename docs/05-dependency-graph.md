@@ -1,6 +1,6 @@
 # 05. 依存グラフとレイヤ依存ルール
 
-> 参照: [`ideas-v2.md` §0(原則5), §8 SDK境界ルール](../ideas/ideas-v2.md) / [01-architecture.md](./01-architecture.md)
+> 参照: [01-architecture.md](./01-architecture.md)
 
 SOLID原則（特にDIP: 依存性逆転）を機構として強制するための、パッケージ依存と `import` 制約を定義する。**依存は常に内側（ドメイン）へ向かう。**
 

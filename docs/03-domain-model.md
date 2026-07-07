@@ -1,7 +1,5 @@
 # 03. ドメインモデル
 
-> 参照: [`ideas.md` 機能節](../ideas/ideas.md) / [`ideas-v2.md` §1〜§3](../ideas/ideas-v2.md)
-
 ドメイン層は外部SDKに非依存（[01-architecture.md](./01-architecture.md)）。ここではエンティティ・値オブジェクト・状態遷移を定義する。
 
 ---

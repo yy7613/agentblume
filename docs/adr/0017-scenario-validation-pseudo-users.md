@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-05
-- Context doc: [docs/11-scenario-validation.md](../11-scenario-validation.md), [`ideas.md` 検証節](../../ideas/ideas.md)
+- Context doc: [docs/11-scenario-validation.md](../11-scenario-validation.md)
 
 ## Context
 

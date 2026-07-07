@@ -1,6 +1,6 @@
 # 07. 実行モデル・データフロー
 
-> 参照: [`ideas-v2.md` §8 実行モデル](../ideas/ideas-v2.md) / [01-architecture.md](./01-architecture.md#4-実行エンジンの三分割)
+> 参照: [01-architecture.md](./01-architecture.md#4-実行エンジンの三分割)
 
 3つの実行規則（Tool / Workflow / Agent）ごとにデータフローを示す。共通原則は「プレビューは副作用を実行しない」「LLMへ渡すコンテキストは最小限」。
 

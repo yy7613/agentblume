@@ -1,6 +1,6 @@
 # 12. マルチエージェント（サブエージェント委譲）
 
-> 参照: [`ideas-v2.md` §13 保留（マルチエージェント）](../ideas/ideas-v2.md) / [03-domain-model.md](./03-domain-model.md) / [07-execution-model.md](./07-execution-model.md) / [11-scenario-validation.md](./11-scenario-validation.md)
+> 参照: [03-domain-model.md](./03-domain-model.md) / [07-execution-model.md](./07-execution-model.md) / [11-scenario-validation.md](./11-scenario-validation.md)
 >
 > **凡例**: 🔷 = 本仕様書による設計（`ideas-v2.md §13` で保留だった「マルチエージェント」の具体化）
 

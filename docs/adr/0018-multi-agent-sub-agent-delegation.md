@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-05
-- Context doc: [docs/12-multi-agent.md](../12-multi-agent.md), [`ideas-v2.md` §13](../../ideas/ideas-v2.md)
+- Context doc: [docs/12-multi-agent.md](../12-multi-agent.md)
 
 ## Context
 
