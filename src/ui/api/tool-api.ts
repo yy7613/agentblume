@@ -112,6 +112,12 @@ export class ToolApiClient {
     return (await this.request<{ agents: AgentSummaryDto[] }>(`/agents?${query}`)).agents;
   }
 
+  async getAgent(internalId: string, scope: TenantScopeDto, version?: string, signal?: AbortSignal): Promise<SerializedAgentDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (version !== undefined) query.set('version', version);
+    return (await this.request<{ agent: SerializedAgentDto }>(`/agents/${encodeURIComponent(internalId)}?${query}`, { signal })).agent;
+  }
+
   async generateAgentPrompt(input: { readonly scope: TenantScopeDto; readonly displayName: string; readonly kind: AgentKindDto; readonly skills?: readonly AgentToolRefDto[]; readonly tools: readonly AgentToolRefDto[]; readonly output?: StructuredOutputDto }): Promise<AgentPromptDraftDto> {
     return (await this.request<{ draft: AgentPromptDraftDto }>('/agent-drafts/generate-prompt', {
       method: 'POST', body: JSON.stringify(input),

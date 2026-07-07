@@ -33,6 +33,9 @@ export function FlowCanvas() {
         onPaneClick={() => selectNode(undefined)}
         fitView
         deleteKeyCode={['Backspace', 'Delete']}
+        // クリック選択を安定させる: 微小な手ぶれをノードのドラッグ移動や誤接続として扱わない閾値(px)。
+        nodeDragThreshold={4}
+        connectionDragThreshold={4}
       >
         <Background gap={24} size={1} />
         <Controls />
