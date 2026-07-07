@@ -1,5 +1,10 @@
 # AgentContext
 
+ノーコードでAIエージェントを組み立て・実行・検証するためのローカルIDE。ETLツールエンジンを中心に、エージェント／スキル／ツールの定義、動作確認、検証を1つのUIから行える。
+
+- **スタック**: TypeScript / React 19 / Fastify / Vite / Vitest / Playwright
+- **状態**: プレビュー（ローカル実行向け）
+
 ## ローカル開発
 
 PowerShellからAPIとUIをまとめて起動する。
@@ -29,3 +34,7 @@ npm run test:e2e
 npm run typecheck
 npm run build
 ```
+
+## ライセンス
+
+[MIT License](LICENSE) © 2026 yy7613
