@@ -105,7 +105,7 @@ test('Skill Builderで固定Tool参照からprompt生成・編集・保存まで
   expect(skill.tools).toEqual([{ internalId: 'e2e-skill-tool', version: '1.0.0' }]);
 });
 
-test('Chat・MCP・Validation・Settingsの全ナビが実操作できる', async ({ page }) => {
+test('Chat・MCP・Validation・Memory・Settingsの全ナビが実操作できる', async ({ page }) => {
   const tool = await page.request.post('/tools', { data: {
     scope, internalId: 'screen-tool', workingName: 'Screen tool', displayName: 'Screen Tool', publishName: 'screen_tool', owner: 'e2e', sideEffect: 'read-only',
     graph: { nodes: [{ id: 'input', type: 'agent-input', config: { schema: { columns: [] }, sample: {} } }], edges: [] }, inputSchema: { columns: [] }, outputSchema: { columns: [] },
@@ -144,6 +144,16 @@ test('Chat・MCP・Validation・Settingsの全ナビが実操作できる', asyn
   await expect(page.getByRole('tab', { name: 'Scenarios' })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: 'Runs' }).click();
   await expect(page.getByRole('tab', { name: 'Runs' })).toHaveAttribute('aria-selected', 'true');
+
+  await page.getByRole('button', { name: 'Memory', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Long-term memory' })).toBeVisible();
+  await page.getByLabel('Title').fill('E2E note');
+  await page.getByLabel('Body').fill('E2E memory body.');
+  await page.getByRole('button', { name: 'Save page' }).click();
+  await expect(page.getByRole('button', { name: /E2E note/ })).toBeVisible();
+  await page.getByRole('tab', { name: 'Proposals' }).click();
+  await page.getByRole('button', { name: 'Approved' }).click();
+  await expect(page.getByRole('button', { name: 'Approved' })).toHaveClass(/active/);
 
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Runtime settings' })).toBeVisible();
