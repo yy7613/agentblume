@@ -177,6 +177,8 @@ export const runAgentBodySchema = z.union([z.object({
     internalId: z.string().min(1),
     version: z.string().optional(),
   }),
+  /** 手動アタッチする Wiki ページ id（指定時のみ最小注入する・v21 M1）。 */
+  memoryPageIds: z.array(z.string().min(1)).optional(),
 })]);
 
 export const runListQuerySchema = z.object({

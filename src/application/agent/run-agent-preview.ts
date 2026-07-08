@@ -48,6 +48,8 @@ export interface RunSavedAgentPreviewInput {
   readonly history?: readonly AgentHistoryMessage[];
   /** サブエージェント委譲のツリー共有バジェット（既定値で補完・上限超は既定へクランプ）。 */
   readonly budget?: Partial<RunBudget>;
+  /** 手動アタッチした長期記憶（Wiki）の要約。指定時のみ system prompt 先頭へ最小注入する（v21 M1）。 */
+  readonly memoryContext?: string;
 }
 
 /** サブエージェント委譲のツリー共有バジェット。remaining系は実行中に減算される。 */
@@ -110,6 +112,13 @@ function subAgentToolDefinition(sub: ResolvedSubAgent): ModelToolDefinition {
 
 function summarize(text: string, max = 200): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/** 手動アタッチした記憶を system prompt 先頭へ最小注入する（字数制限つき・空/未指定は素通し）。 */
+function withMemoryContext(systemPrompt: string, memoryContext?: string): string {
+  const trimmed = memoryContext?.trim() ?? '';
+  if (trimmed.length === 0) return systemPrompt;
+  return `# Memory (retrieved knowledge; use if relevant)\n${summarize(trimmed, 1200)}\n\n${systemPrompt}`;
 }
 
 function mergeUsage(...completions: readonly ModelCompletion[]): ModelUsage {
@@ -189,7 +198,8 @@ export class RunAgentPreviewUseCase {
         }
         const resolved = await resolveAgentCapabilities(input.scope, agent.skills, agent.tools, this.repo, this.skills, agent.agents, agentRepo);
         const ctx: NodeContext = { scope: input.scope, mode: input.mode, budget, depth: 0, subAgents: resolved.subAgents };
-        return this.perform(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), input.message, resolved.tools, trace, ctx, signal, this.agentRef(agent), agent.output, input.history);
+        const systemPrompt = withMemoryContext(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), input.memoryContext);
+        return this.perform(systemPrompt, input.message, resolved.tools, trace, ctx, signal, this.agentRef(agent), agent.output, input.history);
       },
     );
   }

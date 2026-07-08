@@ -27,12 +27,13 @@ const run: AgentPreviewRunDto = {
   ],
 };
 
-function makeClient(overrides: Partial<Record<'runSavedAgent' | 'getAgent' | 'listAgents' | 'evaluate' | 'reflectRun', unknown>> = {}) {
+function makeClient(overrides: Partial<Record<'runSavedAgent' | 'getAgent' | 'listAgents' | 'evaluate' | 'reflectRun' | 'listWiki', unknown>> = {}) {
   return {
     listAgents: vi.fn().mockResolvedValue([{ internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '1.2.0', kind: 'normal', state: 'draft' }]),
     getAgent: vi.fn().mockResolvedValue(definition),
     runSavedAgent: vi.fn().mockResolvedValue(run),
     reflectRun: vi.fn().mockResolvedValue([{ id: 'm1' }, { id: 'm2' }]),
+    listWiki: vi.fn().mockResolvedValue([]),
     ...overrides,
   } as unknown as ToolApiClient;
 }
@@ -106,6 +107,18 @@ describe('AgentInspectorPage', () => {
     );
   });
 
+  it('Wiki ページをアタッチして実行すると memoryPageIds を渡す（v21 M1）', async () => {
+    const runSavedAgent = vi.fn().mockResolvedValue(run);
+    const listWiki = vi.fn().mockResolvedValue([{ id: 'w1', title: 'Cohort SQL', tags: ['sql'], version: 2, updatedAt: 't' }]);
+    const client = makeClient({ runSavedAgent, listWiki });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.click(await screen.findByText('Attach memory'));
+    await userEvent.click(screen.getByRole('checkbox', { name: /Cohort SQL/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ memoryPageIds: ['w1'] })));
+  });
+
   it('ツール未使用の実行では「呼ばれたツールなし」を示す', async () => {
     const noTools: AgentPreviewRunDto = {
       runId: 'run-x', mode: 'preview', response: 'no tools here', usage: {},
@@ -160,7 +173,7 @@ describe('AgentInspectorPage', () => {
 
   it('Agentが無い場合は保存を促し、getAgentを呼ばない', async () => {
     const getAgent = vi.fn();
-    const client = { listAgents: vi.fn().mockResolvedValue([]), getAgent, runSavedAgent: vi.fn() } as unknown as ToolApiClient;
+    const client = { listAgents: vi.fn().mockResolvedValue([]), getAgent, runSavedAgent: vi.fn(), listWiki: vi.fn().mockResolvedValue([]) } as unknown as ToolApiClient;
     render(<AgentInspectorPage client={client} />);
     expect(await screen.findByText('Save an Agent in Agent Builder first.')).toBeTruthy();
     expect(getAgent).not.toHaveBeenCalled();

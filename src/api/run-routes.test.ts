@@ -208,6 +208,29 @@ describe('POST /runs', () => {
     expect(missing.statusCode).toBe(404);
   });
 
+  it('memoryPageIds で Wiki を注入し system prompt 先頭に # Memory を前置する（v21 M1）', async () => {
+    await app.saveAgent.execute({
+      scope, internalId: 'memo-agent', workingName: 'agent', displayName: 'Memo Agent', publishName: 'memo_agent', owner: 'owner', kind: 'normal', systemPrompt: 'Answer succinctly.',
+      tools: [{ internalId: 'score-tool', version: SemVer.parse('1.0.0') }],
+    });
+    const wiki = await app.saveWikiPage.execute({ scope, title: 'Cohort rule', tags: ['sql'], body: 'Adults are age>=18.' });
+    model.enqueue({ message: { role: 'assistant', content: 'ok' }, finishReason: 'stop' });
+    const response = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, agent: { internalId: 'memo-agent' }, message: 'hi', mode: 'preview', memoryPageIds: [wiki.id],
+    } });
+    expect(response.statusCode).toBe(200);
+    const systemPrompt = model.requests[0]?.messages[0]?.content ?? '';
+    expect(systemPrompt).toContain('# Memory');
+    expect(systemPrompt).toContain('Adults are age>=18.');
+    // 未存在 id は黙って除外し、注入なしでも実行できる。
+    model.enqueue({ message: { role: 'assistant', content: 'ok2' }, finishReason: 'stop' });
+    const none = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, agent: { internalId: 'memo-agent' }, message: 'hi', mode: 'preview', memoryPageIds: ['ghost'],
+    } });
+    expect(none.statusCode).toBe(200);
+    expect(model.requests[1]?.messages[0]?.content ?? '').not.toContain('# Memory');
+  });
+
   it('write Toolを403で拒否する', async () => {
     await app.saveTool.execute({
       scope, internalId: 'write-tool', workingName: 'draft', displayName: 'Write', publishName: 'write_tool', owner: 'owner', sideEffect: 'write',

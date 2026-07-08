@@ -120,12 +120,12 @@ interface MemoryProposalRepository {
 - `vite.config.ts` proxy に `/wiki`, `/memory` を追加。
 - `styles.css`: `.mem-*` クラス。
 
-## 7. 手動アタッチ（M1 読み出し / Stage F, 予算許せば）
+## 7. 手動アタッチ（M1 読み出し / Stage F — 実装済み）
 
-- `RunAgentPreviewUseCase` に任意 `memoryContext?: string` を追加し、指定時のみ system prompt 先頭へ `# Memory\n<要約>` を字数制限（例 1200 字）で前置。
-- api の saved-agent 実行 body に任意 `memoryPageIds?: string[]` を追加、ルートで `WikiRepository` から本文を読み最小要約に整形して `memoryContext` を渡す。
-- UI Inspector に Wiki ページ選択（任意）を追加。
-- 予算・DoD 圧迫時は Stage F を切り離し「即時 follow-up」とし、log で明示。
+- `RunSavedAgentPreviewInput` に任意 `memoryContext?: string` を追加し、指定時のみ system prompt 先頭へ `# Memory (retrieved knowledge; use if relevant)\n<要約>` を字数制限（1200 字）で前置（`withMemoryContext`）。
+- `POST /runs`（saved-agent 変種）body に任意 `memoryPageIds?: string[]` を追加。ルートは `QueryWikiUseCase` で各ページを読み `## title\n<本文600字>` に整形して `memoryContext` を組み立てる。未存在 id は黙って除外。
+- UI Inspector に Wiki ページのチェックボックス選択（`Attach memory`）を追加し、選択時のみ `memoryPageIds` を送る。
+- テスト: run-agent-preview 経由の注入（run-routes 統合）、Inspector 選択→送信で `memoryPageIds` 付与。
 
 ## 8. DoD
 

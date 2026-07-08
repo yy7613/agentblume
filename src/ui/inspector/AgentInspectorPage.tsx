@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, EvaluationResultDto, RunTraceEventDto, SerializedAgentDto } from '../api/types';
+import type { AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, EvaluationResultDto, RunTraceEventDto, SerializedAgentDto, WikiPageSummaryDto } from '../api/types';
 import { useI18n } from '../i18n';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
@@ -38,6 +38,8 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   const [turns, setTurns] = useState<readonly Turn[]>([]);
   const [evaluations, setEvaluations] = useState<ReadonlyMap<number, EvaluationResultDto | 'loading' | 'error'>>(new Map());
   const [distillations, setDistillations] = useState<ReadonlyMap<number, DistillState>>(new Map());
+  const [wikiPages, setWikiPages] = useState<readonly WikiPageSummaryDto[]>([]);
+  const [attached, setAttached] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string>();
   const threadRef = useRef<HTMLDivElement>(null);
@@ -62,6 +64,13 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
     return () => controller.abort();
   }, [client, selectedId]);
 
+  // 手動アタッチ用の Wiki ページ一覧を読み込む（記憶の読み出し・M1）。失敗は静かに空のまま。
+  useEffect(() => {
+    let active = true;
+    void client.listWiki(scope).then((pages) => { if (active) setWikiPages(pages); }).catch(() => { if (active) setWikiPages([]); });
+    return () => { active = false; };
+  }, [client]);
+
   const agent = useMemo(() => agents.find((item) => item.internalId === selectedId), [agents, selectedId]);
   const agentName = agent?.displayName ?? text('Agent', 'エージェント');
 
@@ -76,7 +85,8 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
     setMessage('');
     const startedAt = performance.now();
     try {
-      const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview' });
+      const memoryPageIds = [...attached];
+      const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview', ...(memoryPageIds.length > 0 ? { memoryPageIds } : {}) });
       setTurns((prev) => [...prev, { role: 'assistant', run, elapsedMs: performance.now() - startedAt }]);
     } catch (cause) {
       setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt }]);
@@ -178,6 +188,23 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
           )}
         </div>
       </div>
+
+      {wikiPages.length > 0 && (
+        <details className="ins-attach">
+          <summary>{text('Attach memory', '記憶をアタッチ')} {attached.size > 0 ? `· ${attached.size}` : ''}</summary>
+          <div className="ins-attach-list">
+            {wikiPages.map((page) => (
+              <label key={page.id} className="ins-attach-item">
+                <input type="checkbox" checked={attached.has(page.id)} onChange={(event) => {
+                  setAttached((prev) => { const next = new Set(prev); if (event.target.checked) next.add(page.id); else next.delete(page.id); return next; });
+                }} />
+                <span>{page.title}</span>
+                <small>v{page.version}</small>
+              </label>
+            ))}
+          </div>
+        </details>
+      )}
 
       <form className="cc-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
         <div className="cc-input">

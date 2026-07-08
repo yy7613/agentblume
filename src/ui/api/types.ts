@@ -195,6 +195,8 @@ export interface RunSavedAgentDto {
   readonly agent: { readonly internalId: string; readonly version?: string };
   readonly message: string;
   readonly mode: 'preview' | 'test';
+  /** 手動アタッチする Wiki ページ id（v21 M1）。 */
+  readonly memoryPageIds?: readonly string[];
 }
 
 export interface RunSummaryDto {

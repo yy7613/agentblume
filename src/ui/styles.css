@@ -392,3 +392,10 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 .mem-preview strong { display: block; margin-bottom: 4px; color: #23304d; }
 .mem-preview pre { margin: 0; max-height: 160px; overflow: auto; white-space: pre-wrap; background: #f6f8fc; border-radius: 8px; padding: 8px 10px; font-size: 12px; }
 .mem-actions { display: flex; gap: 8px; }
+
+/* Inspector: 記憶アタッチ（v21 M1 読み出し） */
+.ins-attach { margin: 0 auto 8px; max-width: 760px; width: 100%; border: 1px solid #e2e7f0; border-radius: 10px; background: white; font-size: 12px; }
+.ins-attach > summary { cursor: pointer; padding: 8px 12px; font-weight: 700; color: #4a5878; }
+.ins-attach-list { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 4px 12px 12px; }
+.ins-attach-item { display: inline-flex; align-items: center; gap: 6px; color: #29344f; }
+.ins-attach-item small { color: #8390a8; }
