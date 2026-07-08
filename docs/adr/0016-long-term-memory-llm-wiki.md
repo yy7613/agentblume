@@ -1,7 +1,7 @@
 # ADR-0016: 長期記憶を LLM Wiki + Skill蒸留の二本柱で設計する
 
-- Status: **Proposed**（Phase 4 実装。方向性の合意のみ先行）
-- Date: 2026-07-05
+- Status: **Accepted**（v21 で M1〜M3 を実装。M4 埋め込みは future）
+- Date: 2026-07-05（Accepted: 2026-07-08 / v21 実装契約）
 - Context doc: [docs/10-memory.md](../10-memory.md)
 
 ## Context
