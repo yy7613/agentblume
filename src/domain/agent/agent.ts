@@ -35,6 +35,11 @@ export interface AgentSubAgentRef {
   readonly usage: string;
 }
 
+export interface AgentPersonaRef {
+  readonly personaId: string;
+  readonly version: SemVer;
+}
+
 export interface Agent {
   readonly metadata: AgentMetadata;
   readonly kind: AgentKind;
@@ -42,6 +47,8 @@ export interface Agent {
   readonly skills: readonly AgentSkillRef[];
   readonly tools: readonly AgentToolRef[];
   readonly agents: readonly AgentSubAgentRef[];
+  /** kind==='pseudo-user' のときのみ許可。由来Personaを指す（v18）。 */
+  readonly persona?: AgentPersonaRef;
   readonly output?: StructuredOutputDefinition;
 }
 
@@ -52,6 +59,7 @@ export interface CreateAgentProps {
   readonly skills?: readonly AgentSkillRef[];
   readonly tools: readonly AgentToolRef[];
   readonly agents?: readonly AgentSubAgentRef[];
+  readonly persona?: AgentPersonaRef;
   readonly output?: StructuredOutputDefinition;
 }
 
@@ -131,6 +139,20 @@ export function createAgent(props: CreateAgentProps): Agent {
     return { internalId: sub.internalId, version: sub.version, usage: sub.usage };
   });
 
+  // v18: Persona由来の疑似ユーザーAgentは persona 参照を持ち、能力（tools/skills/agents）を持たない。
+  if (props.persona !== undefined) {
+    nonEmpty(props.persona.personaId, 'persona.personaId');
+    if (!(props.persona.version instanceof SemVer)) {
+      throw new AgentValidationError('createAgent: persona.version must be a SemVer instance');
+    }
+    if (props.kind !== 'pseudo-user') {
+      throw new AgentValidationError('createAgent: persona is only allowed for kind "pseudo-user"');
+    }
+  }
+  if (props.kind === 'pseudo-user' && (skills.length > 0 || tools.length > 0 || agents.length > 0)) {
+    throw new AgentValidationError('createAgent: pseudo-user agents must have no skills, tools, or sub-agents (v18 constraint)');
+  }
+
   return {
     metadata: {
       internalId: metadata.internalId,
@@ -147,6 +169,7 @@ export function createAgent(props: CreateAgentProps): Agent {
     skills,
     tools,
     agents,
+    ...(props.persona !== undefined ? { persona: { personaId: props.persona.personaId, version: props.persona.version } } : {}),
     ...(props.output !== undefined ? { output: createStructuredOutput(props.output) } : {}),
   };
 }

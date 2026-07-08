@@ -57,13 +57,30 @@ describe('ValidationPage', () => {
     expect(await screen.findByText('saved 1.1.0')).toBeTruthy();
   });
 
+  it('保存済みPersonaを疑似ユーザーAgentとして登録する（v18）', async () => {
+    const savePersona = vi.fn().mockResolvedValue({ metadata: { internalId: 'novice-user', version: '1.0.0' } });
+    const registerPseudoUserAgent = vi.fn().mockResolvedValue({ metadata: { internalId: 'pseudo-novice-user', version: '1.0.0' } });
+    const client = stubClient({ savePersona, registerPseudoUserAgent });
+    render(<ValidationPage client={client} />);
+    await screen.findByText('No saved personas.');
+    // 保存前は登録ボタンは無効。
+    expect((screen.getByRole('button', { name: 'Register pseudo-user agent' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+    await screen.findByText('saved 1.0.0');
+    await userEvent.click(screen.getByRole('button', { name: 'Register pseudo-user agent' }));
+    await waitFor(() => expect(registerPseudoUserAgent).toHaveBeenCalledWith('novice-user', { scope }));
+    expect(await screen.findByText(/pseudo-novice-user@1\.0\.0/)).toBeTruthy();
+  });
+
   it('Scenarioフォーム（survey編集含む）を保存DTOへ写像し、実行でRunsタブへ遷移する', async () => {
     const saveScenario = vi.fn().mockResolvedValue({ metadata: { internalId: 'sales-summary-scenario', version: '1.0.0' } });
     const runScenario = vi.fn().mockResolvedValue({ id: 'srun-1', status: 'completed' });
     const client = stubClient({
-      listAgents: vi.fn().mockResolvedValue([{ internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '2.0.0', kind: 'normal', state: 'draft' }]),
+      listAgents: vi.fn().mockResolvedValue([
+        { internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '2.0.0', kind: 'normal', state: 'draft' },
+        { internalId: 'pseudo-novice', displayName: 'Pseudo Novice', publishName: 'novice_pseudo', latestVersion: '1.0.0', kind: 'pseudo-user', state: 'draft' },
+      ]),
       listAgentVersions: vi.fn().mockResolvedValue(['1.0.0', '2.0.0']),
-      listPersonas: vi.fn().mockResolvedValue([{ internalId: 'novice-user', displayName: 'Novice user', publishName: 'novice_user', latestVersion: '1.2.0', archetype: 'novice', state: 'draft' }]),
       saveScenario, runScenario,
     });
     render(<ValidationPage client={client} />);
@@ -72,7 +89,7 @@ describe('ValidationPage', () => {
     await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Scenario target agent' }), 'agent');
     await waitFor(() => expect((screen.getByRole('combobox', { name: 'Scenario agent version' }) as HTMLSelectElement).value).toBe('2.0.0'));
     await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Scenario agent version' }), '1.0.0');
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Scenario persona' }), 'novice-user');
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Scenario pseudo-user agent' }), 'pseudo-novice');
     await userEvent.type(screen.getByRole('textbox', { name: 'Scenario goal' }), 'Get the monthly sales summary.');
     await userEvent.type(screen.getByRole('textbox', { name: 'Scenario context' }), 'Before the accounting deadline.');
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Scenario max user turns' }), { target: { value: '3' } });
@@ -86,13 +103,13 @@ describe('ValidationPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
     await waitFor(() => expect(saveScenario).toHaveBeenCalledTimes(1));
     const dto = saveScenario.mock.calls[0]?.[0] as {
-      target: unknown; persona: unknown; goal: string; context: string; maxUserTurns: number;
+      target: unknown; pseudoUser: unknown; goal: string; context: string; maxUserTurns: number;
       expectedTools: string[]; survey: { id: string }[]; bump: string;
     };
     expect(dto).toMatchObject({
       scope, internalId: 'sales-summary-scenario', publishName: 'sales_summary_scenario', owner: 'local-user',
       target: { agentId: 'agent', version: '1.0.0' },
-      persona: { personaId: 'novice-user', version: '1.2.0' },
+      pseudoUser: { agentId: 'pseudo-novice', version: '1.0.0' },
       goal: 'Get the monthly sales summary.', context: 'Before the accounting deadline.',
       maxUserTurns: 3, expectedTools: ['summary_tool', 'score_tool'], bump: 'patch',
     });

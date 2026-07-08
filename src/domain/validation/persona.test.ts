@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SemVer } from '../tool/semver';
 import { ValidationDomainError } from './errors';
-import { buildPersonaSystemPrompt, createPersona, type CreatePersonaProps, type Persona } from './persona';
+import { buildPersonaBasePrompt, buildPersonaSystemPrompt, composeScenarioPrompt, createPersona, type CreatePersonaProps, type Persona } from './persona';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
 
@@ -84,5 +84,21 @@ describe('buildPersonaSystemPrompt', () => {
     const prompt = buildPersonaSystemPrompt(persona, 'goal');
     expect(prompt).not.toContain('初心者');
     expect(prompt.split('\n').every((line) => line.length > 0)).toBe(true);
+  });
+
+  it('base+compose の合成は buildPersonaSystemPrompt と厳密一致する（v18分割の等価性）', () => {
+    const cases = [props({ extraInstructions: '経理部所属。' }), props({ language: 'en', archetype: 'skeptical', tone: 'formal' }), props({ promptOverride: 'カスタム人物。' }), props({ archetype: 'custom' })];
+    for (const raw of cases) {
+      const persona = createPersona(raw);
+      expect(composeScenarioPrompt(buildPersonaBasePrompt(persona), 'G', 'C', persona.language)).toBe(buildPersonaSystemPrompt(persona, 'G', 'C'));
+      expect(composeScenarioPrompt(buildPersonaBasePrompt(persona), 'G', undefined, persona.language)).toBe(buildPersonaSystemPrompt(persona, 'G'));
+    }
+  });
+
+  it('buildPersonaBasePrompt は goal/context を含まず人物設定・出力規律のみを持つ', () => {
+    const base = buildPersonaBasePrompt(createPersona(props()));
+    expect(base).not.toContain('目標:');
+    expect(base).not.toContain('状況:');
+    expect(base).toContain('あなたはユーザーとして振る舞う');
   });
 });

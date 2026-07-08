@@ -12,7 +12,9 @@ export interface SaveScenarioInput {
   readonly scope: TenantScope; readonly internalId: string; readonly workingName: string; readonly displayName: string;
   readonly publishName: string; readonly owner: string;
   readonly target: { readonly agentId: string; readonly version: SemVer };
-  readonly persona: { readonly personaId: string; readonly version: SemVer };
+  /** persona と pseudoUser は排他かつどちらか必須（v18）。 */
+  readonly persona?: { readonly personaId: string; readonly version: SemVer };
+  readonly pseudoUser?: { readonly agentId: string; readonly version: SemVer };
   readonly goal: string;
   readonly context?: string;
   readonly maxUserTurns: number;
@@ -30,12 +32,22 @@ export class SaveScenarioUseCase {
   ) {}
 
   async execute(input: SaveScenarioInput): Promise<Scenario> {
-    // 参照整合: 対象Agent版と Persona 版の存在を保存前に確認する。
+    // 参照整合: 対象Agent版と疑似ユーザー（persona または pseudo-user Agent）の存在を保存前に確認する。
     if (await this.agents.findVersion(input.scope, input.target.agentId, input.target.version) === null) {
       throw new ValidationDomainError(`SaveScenario: target agent not found: ${input.target.agentId}@${input.target.version.toString()}`);
     }
-    if (await this.personas.findVersion(input.scope, input.persona.personaId, input.persona.version) === null) {
-      throw new ValidationDomainError(`SaveScenario: persona not found: ${input.persona.personaId}@${input.persona.version.toString()}`);
+    if (input.pseudoUser !== undefined) {
+      const agent = await this.agents.findVersion(input.scope, input.pseudoUser.agentId, input.pseudoUser.version);
+      if (agent === null) {
+        throw new ValidationDomainError(`SaveScenario: pseudo-user agent not found: ${input.pseudoUser.agentId}@${input.pseudoUser.version.toString()}`);
+      }
+      if (agent.kind !== 'pseudo-user') {
+        throw new ValidationDomainError(`SaveScenario: agent '${input.pseudoUser.agentId}' is not a pseudo-user agent`);
+      }
+    } else if (input.persona !== undefined) {
+      if (await this.personas.findVersion(input.scope, input.persona.personaId, input.persona.version) === null) {
+        throw new ValidationDomainError(`SaveScenario: persona not found: ${input.persona.personaId}@${input.persona.version.toString()}`);
+      }
     }
     const versions = await this.scenarios.listVersions(input.scope, input.internalId);
     const version = versions.length === 0
@@ -47,7 +59,8 @@ export class SaveScenarioUseCase {
         publishName: input.publishName, version, owner: input.owner, state: input.state ?? 'draft', tenant: input.scope,
       },
       target: { agentId: input.target.agentId, version: input.target.version },
-      persona: { personaId: input.persona.personaId, version: input.persona.version },
+      ...(input.persona !== undefined ? { persona: { personaId: input.persona.personaId, version: input.persona.version } } : {}),
+      ...(input.pseudoUser !== undefined ? { pseudoUser: { agentId: input.pseudoUser.agentId, version: input.pseudoUser.version } } : {}),
       goal: input.goal,
       ...(input.context !== undefined ? { context: input.context } : {}),
       maxUserTurns: input.maxUserTurns,

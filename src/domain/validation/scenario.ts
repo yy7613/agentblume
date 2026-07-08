@@ -22,12 +22,19 @@ export interface ScenarioPersonaRef {
   readonly version: SemVer;
 }
 
+export interface ScenarioPseudoUserRef {
+  readonly agentId: string;
+  readonly version: SemVer;
+}
+
 export interface Scenario {
   readonly metadata: ScenarioMetadata;
   /** 検証対象Agent（バージョン固定）。 */
   readonly target: ScenarioTargetRef;
-  /** 疑似ユーザーPersona（バージョン固定）。 */
-  readonly persona: ScenarioPersonaRef;
+  /** 疑似ユーザーPersona（バージョン固定）。v18: deprecated、pseudoUser を推奨。persona と排他。 */
+  readonly persona?: ScenarioPersonaRef;
+  /** 疑似ユーザーAgent（kind==='pseudo-user'・バージョン固定）。persona と排他（v18）。 */
+  readonly pseudoUser?: ScenarioPseudoUserRef;
   /** 疑似ユーザーが達成したいこと。非空。 */
   readonly goal: string;
   /** 状況設定。 */
@@ -45,12 +52,26 @@ export type CreateScenarioProps = Scenario;
 export function createScenario(props: CreateScenarioProps): Scenario {
   const metadata = validateMetadata(props.metadata, 'createScenario');
   nonEmpty(props.target?.agentId, 'createScenario: target.agentId');
-  nonEmpty(props.persona?.personaId, 'createScenario: persona.personaId');
   if (!(props.target.version instanceof SemVer)) {
     throw new ValidationDomainError('createScenario: target.version must be a SemVer instance');
   }
-  if (!(props.persona.version instanceof SemVer)) {
-    throw new ValidationDomainError('createScenario: persona.version must be a SemVer instance');
+  // 疑似ユーザーは persona か pseudoUser のどちらか一方を必須とする（排他）。
+  const persona = props.persona;
+  const pseudoUser = props.pseudoUser;
+  if ((persona === undefined) === (pseudoUser === undefined)) {
+    throw new ValidationDomainError('createScenario: exactly one of persona or pseudoUser must be specified');
+  }
+  if (persona !== undefined) {
+    nonEmpty(persona.personaId, 'createScenario: persona.personaId');
+    if (!(persona.version instanceof SemVer)) {
+      throw new ValidationDomainError('createScenario: persona.version must be a SemVer instance');
+    }
+  }
+  if (pseudoUser !== undefined) {
+    nonEmpty(pseudoUser.agentId, 'createScenario: pseudoUser.agentId');
+    if (!(pseudoUser.version instanceof SemVer)) {
+      throw new ValidationDomainError('createScenario: pseudoUser.version must be a SemVer instance');
+    }
   }
   nonEmpty(props.goal, 'createScenario: goal');
   if (props.context !== undefined && typeof props.context !== 'string') {
@@ -75,7 +96,8 @@ export function createScenario(props: CreateScenarioProps): Scenario {
   return {
     metadata,
     target: { agentId: props.target.agentId, version: props.target.version },
-    persona: { personaId: props.persona.personaId, version: props.persona.version },
+    ...(persona !== undefined ? { persona: { personaId: persona.personaId, version: persona.version } } : {}),
+    ...(pseudoUser !== undefined ? { pseudoUser: { agentId: pseudoUser.agentId, version: pseudoUser.version } } : {}),
     goal: props.goal,
     ...(props.context !== undefined ? { context: props.context } : {}),
     maxUserTurns: props.maxUserTurns,

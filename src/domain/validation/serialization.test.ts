@@ -49,9 +49,17 @@ describe('Scenario serialization', () => {
   it('JSON往復で等価（SemVerは文字列化される）', () => {
     const serialized = serializeScenario(scenario);
     expect(serialized.target.version).toBe('2.0.0');
-    expect(serialized.persona.version).toBe('1.0.0');
+    expect(serialized.persona?.version).toBe('1.0.0');
     const roundTripped = deserializeScenario(JSON.parse(JSON.stringify(serialized)));
     expect(roundTripped).toEqual(scenario);
+  });
+
+  it('pseudoUser参照のScenarioもJSON往復で等価（v18）', () => {
+    const withAgent = createScenario({ ...scenario, persona: undefined, pseudoUser: { agentId: 'pseudo-agent', version: SemVer.of(1, 0, 0) } });
+    const serialized = serializeScenario(withAgent);
+    expect(serialized.pseudoUser?.version).toBe('1.0.0');
+    expect('persona' in serialized).toBe(false);
+    expect(deserializeScenario(JSON.parse(JSON.stringify(serialized)))).toEqual(withAgent);
   });
 
   it('形の壊れた入力・不変条件違反を拒否する', () => {

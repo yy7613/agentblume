@@ -10,12 +10,13 @@ import { randomUUID } from 'node:crypto';
 import type { RunUsage } from '../../domain/run/run';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
+import type { AgentRepository } from '../../domain/agent/agent-repository';
 import { PersonaNotFoundError, ScenarioNotFoundError, ValidationDomainError } from '../../domain/validation/errors';
-import { buildPersonaSystemPrompt, type Persona } from '../../domain/validation/persona';
+import { buildPersonaSystemPrompt, composeScenarioPrompt, type PersonaLanguage } from '../../domain/validation/persona';
 import type { PersonaRepository } from '../../domain/validation/persona-repository';
 import type { Scenario } from '../../domain/validation/scenario';
 import type { ScenarioRepository } from '../../domain/validation/scenario-repository';
-import { createScenarioRun, type ExpectedToolHit, type ScenarioRun, type ScenarioRunStatus, type Turn } from '../../domain/validation/scenario-run';
+import { createScenarioRun, type ExpectedToolHit, type ScenarioRun, type ScenarioRunPseudoUserRef, type ScenarioRunStatus, type Turn } from '../../domain/validation/scenario-run';
 import type { ScenarioRunRepository } from '../../domain/validation/scenario-run-repository';
 import { buildSurveySchema, validateSurveyAnswers, type SurveyAnswer } from '../../domain/validation/survey';
 import type { AgentHistoryMessage, AgentPreviewRun, RunAgentPreviewUseCase } from '../agent/run-agent-preview';
@@ -79,6 +80,8 @@ export class RunScenarioUseCase {
     /** 疑似ユーザー（発話・アンケート）用。 */
     private readonly model: ModelProviderPort,
     private readonly scenarioRuns: ScenarioRunRepository,
+    /** 疑似ユーザーAgent（kind==='pseudo-user'）解決用（v18）。 */
+    private readonly agents: AgentRepository,
     private readonly makeId: () => string = randomUUID,
     private readonly now: () => Date = () => new Date(),
   ) {}
@@ -90,12 +93,7 @@ export class RunScenarioUseCase {
     if (scenario === null) {
       throw new ScenarioNotFoundError(`RunScenario: scenario not found: ${input.scenarioId}${input.version === undefined ? '' : `@${input.version.toString()}`}`);
     }
-    const persona = await this.personas.findVersion(input.scope, scenario.persona.personaId, scenario.persona.version);
-    if (persona === null) {
-      throw new PersonaNotFoundError(`RunScenario: persona not found: ${scenario.persona.personaId}@${scenario.persona.version.toString()}`);
-    }
-
-    const systemPrompt = buildPersonaSystemPrompt(persona, scenario.goal, scenario.context);
+    const { systemPrompt, language, ref } = await this.resolvePseudoUser(input.scope, scenario);
     const startedAt = this.now();
     const state: ConversationState = { transcript: [], usage: {}, agentRuns: 0, totalToolCalls: 0, calledTools: new Set(), goalAchieved: null };
     let status: ScenarioRunStatus = 'max-turns';
@@ -127,7 +125,7 @@ export class RunScenarioUseCase {
         state.transcript.push({ speaker: 'agent', message: run.response, runId: run.runId });
       }
       // アンケートは completed / max-turns の双方で実施する。
-      survey = await this.surveyTurn(systemPrompt, persona, scenario, state, signal);
+      survey = await this.surveyTurn(systemPrompt, language, scenario, state, signal);
     } catch {
       // エラー時も途中経過（会話まで）を status:'error' で記録する。
       status = 'error';
@@ -140,6 +138,7 @@ export class RunScenarioUseCase {
       id: this.makeId(),
       scope: input.scope,
       scenario: { id: scenario.metadata.internalId, version: scenario.metadata.version },
+      pseudoUserRef: ref,
       status,
       goalAchieved: state.goalAchieved,
       transcript: state.transcript,
@@ -179,9 +178,39 @@ export class RunScenarioUseCase {
     throw new ValidationDomainError('RunScenario: pseudo user returned invalid JSON twice');
   }
 
-  /** 会話終了後のアンケート回答（Persona として self-report）。検証失敗は1回だけ再試行。 */
-  private async surveyTurn(systemPrompt: string, persona: Persona, scenario: Scenario, state: ConversationState, signal?: AbortSignal): Promise<SurveyAnswer[]> {
-    const ja = persona.language === 'ja';
+  /** 疑似ユーザー（persona または pseudo-user Agent）を解決し、system prompt・ラベル言語・参照を返す。 */
+  private async resolvePseudoUser(scope: TenantScope, scenario: Scenario): Promise<{ systemPrompt: string; language: PersonaLanguage; ref: ScenarioRunPseudoUserRef }> {
+    if (scenario.pseudoUser !== undefined) {
+      const agent = await this.agents.findVersion(scope, scenario.pseudoUser.agentId, scenario.pseudoUser.version);
+      if (agent === null) {
+        throw new ValidationDomainError(`RunScenario: pseudo-user agent not found: ${scenario.pseudoUser.agentId}@${scenario.pseudoUser.version.toString()}`);
+      }
+      if (agent.kind !== 'pseudo-user') {
+        throw new ValidationDomainError(`RunScenario: agent '${agent.metadata.internalId}' is not a pseudo-user agent`);
+      }
+      return {
+        systemPrompt: composeScenarioPrompt(agent.systemPrompt, scenario.goal, scenario.context),
+        language: 'ja',
+        ref: { type: 'agent', id: agent.metadata.internalId, version: agent.metadata.version.toString() },
+      };
+    }
+    if (scenario.persona !== undefined) {
+      const persona = await this.personas.findVersion(scope, scenario.persona.personaId, scenario.persona.version);
+      if (persona === null) {
+        throw new PersonaNotFoundError(`RunScenario: persona not found: ${scenario.persona.personaId}@${scenario.persona.version.toString()}`);
+      }
+      return {
+        systemPrompt: buildPersonaSystemPrompt(persona, scenario.goal, scenario.context),
+        language: persona.language,
+        ref: { type: 'persona', id: persona.metadata.internalId, version: persona.metadata.version.toString() },
+      };
+    }
+    throw new ValidationDomainError('RunScenario: scenario has neither persona nor pseudoUser');
+  }
+
+  /** 会話終了後のアンケート回答（疑似ユーザーとして self-report）。検証失敗は1回だけ再試行。 */
+  private async surveyTurn(systemPrompt: string, language: PersonaLanguage, scenario: Scenario, state: ConversationState, signal?: AbortSignal): Promise<SurveyAnswer[]> {
+    const ja = language === 'ja';
     const conversation = state.transcript.length === 0
       ? (ja ? '（会話なし）' : '(no conversation)')
       : state.transcript.map((entry) => `${entry.speaker}: ${entry.message}`).join('\n');

@@ -1,12 +1,15 @@
 import type { AgentRepository, AgentSummary } from '../../domain/agent/agent-repository';
 import { AgentNotFoundError } from '../../domain/agent/errors';
-import type { Agent } from '../../domain/agent/agent';
+import type { Agent, AgentKind } from '../../domain/agent/agent';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 
 export class QueryAgentsUseCase {
   constructor(private readonly repo: AgentRepository) {}
-  list(scope: TenantScope): Promise<AgentSummary[]> { return this.repo.list(scope); }
+  async list(scope: TenantScope, kind?: AgentKind): Promise<AgentSummary[]> {
+    const agents = await this.repo.list(scope);
+    return kind === undefined ? agents : agents.filter((agent) => agent.kind === kind);
+  }
   versions(scope: TenantScope, internalId: string): Promise<SemVer[]> { return this.repo.listVersions(scope, internalId); }
   async get(scope: TenantScope, internalId: string, version?: SemVer): Promise<Agent> {
     const agent = version === undefined

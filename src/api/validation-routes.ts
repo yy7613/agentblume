@@ -10,19 +10,22 @@ import type { QueryPersonasUseCase } from '../application/validation/query-perso
 import type { QueryScenarioRunsUseCase } from '../application/validation/query-scenario-runs';
 import type { QueryScenariosUseCase } from '../application/validation/query-scenarios';
 import type { RunScenarioUseCase } from '../application/validation/run-scenario';
+import type { RegisterPseudoUserAgentUseCase } from '../application/validation/register-pseudo-user-agent';
 import type { SavePersonaUseCase } from '../application/validation/save-persona';
 import type { SaveScenarioUseCase } from '../application/validation/save-scenario';
+import { serializeAgent } from '../domain/agent/serialization';
 import { serializePersona, serializeScenario, serializeScenarioRun } from '../domain/validation/serialization';
 import { SemVer } from '../domain/tool/semver';
 import { BadRequestError } from './error-mapping';
 import {
-  runScenarioBodySchema, savePersonaBodySchema, saveScenarioBodySchema,
+  registerPseudoUserAgentBodySchema, runScenarioBodySchema, savePersonaBodySchema, saveScenarioBodySchema,
   scenarioRunListQuerySchema, scopeQuerySchema, versionQuerySchema,
 } from './schemas';
 
 export interface ValidationRouteDeps {
   readonly savePersona: SavePersonaUseCase;
   readonly queryPersonas: QueryPersonasUseCase;
+  readonly registerPseudoUserAgent: RegisterPseudoUserAgentUseCase;
   readonly saveScenario: SaveScenarioUseCase;
   readonly queryScenarios: QueryScenariosUseCase;
   readonly runScenario: RunScenarioUseCase;
@@ -66,14 +69,29 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
     const query = parse(scopeQuerySchema, request.query);
     return { versions: (await deps.queryPersonas.versions(query, request.params.internalId)).map(String) };
   });
+  // Persona → 疑似ユーザーAgent 登録（v18）。
+  app.post<{ Params: IdParams }>('/personas/:internalId/register-agent', async (request, reply) => {
+    const body = parse(registerPseudoUserAgentBodySchema, request.body);
+    const agent = await deps.registerPseudoUserAgent.execute({
+      scope: body.scope,
+      personaId: request.params.internalId,
+      ...(body.personaVersion !== undefined ? { personaVersion: version(body.personaVersion) as SemVer } : {}),
+      ...(body.agentInternalId !== undefined ? { agentInternalId: body.agentInternalId } : {}),
+      ...(body.bump !== undefined ? { bump: body.bump } : {}),
+      ...(body.promptOverride !== undefined ? { promptOverride: body.promptOverride } : {}),
+    });
+    return reply.status(201).send({ agent: serializeAgent(agent) });
+  });
 
   // Scenario: Save（参照整合検証はユースケース側）/ 一覧 / 取得 / バージョン列挙。
   app.post('/scenarios', async (request, reply) => {
     const body = parse(saveScenarioBodySchema, request.body);
+    const { persona, pseudoUser, ...rest } = body;
     const scenario = await deps.saveScenario.execute({
-      ...body,
+      ...rest,
       target: { agentId: body.target.agentId, version: version(body.target.version) as SemVer },
-      persona: { personaId: body.persona.personaId, version: version(body.persona.version) as SemVer },
+      ...(persona !== undefined ? { persona: { personaId: persona.personaId, version: version(persona.version) as SemVer } } : {}),
+      ...(pseudoUser !== undefined ? { pseudoUser: { agentId: pseudoUser.agentId, version: version(pseudoUser.version) as SemVer } } : {}),
     });
     return reply.status(201).send({ scenario: serializeScenario(scenario) });
   });

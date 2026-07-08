@@ -1,4 +1,4 @@
-import { createAgent, type Agent, type AgentKind, type AgentSubAgentRef } from '../../domain/agent/agent';
+import { createAgent, type Agent, type AgentKind, type AgentPersonaRef, type AgentSubAgentRef } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
 import { AgentValidationError } from '../../domain/agent/errors';
@@ -21,6 +21,7 @@ export interface SaveAgentInput {
   readonly skills?: readonly { readonly internalId: string; readonly version: SemVer }[];
   readonly tools: readonly { readonly internalId: string; readonly version: SemVer }[];
   readonly agents?: readonly AgentSubAgentRef[];
+  readonly persona?: AgentPersonaRef;
   readonly bump?: 'major' | 'minor' | 'patch';
   readonly state?: PublishState;
   readonly output?: StructuredOutputDefinition;
@@ -47,6 +48,7 @@ export class SaveAgentUseCase {
       skills: input.skills ?? [],
       tools: input.tools,
       agents: subAgents,
+      ...(input.persona !== undefined ? { persona: input.persona } : {}),
       ...(input.output !== undefined ? { output: input.output } : {}),
     });
     // 実効副作用が深さ上限内で算出できることを確認（循環・過深の委譲を保存時に弾く）。

@@ -108,8 +108,9 @@ export class ToolApiClient {
     })).agent;
   }
 
-  async listAgents(scope: TenantScopeDto): Promise<readonly AgentSummaryDto[]> {
+  async listAgents(scope: TenantScopeDto, kind?: AgentKindDto): Promise<readonly AgentSummaryDto[]> {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (kind !== undefined) query.set('kind', kind);
     return (await this.request<{ agents: AgentSummaryDto[] }>(`/agents?${query}`)).agents;
   }
 
@@ -177,6 +178,12 @@ export class ToolApiClient {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     if (version !== undefined) query.set('version', version);
     return (await this.request<{ persona: SerializedPersonaDto }>(`/personas/${encodeURIComponent(internalId)}?${query}`)).persona;
+  }
+
+  async registerPseudoUserAgent(internalId: string, input: { readonly scope: TenantScopeDto; readonly personaVersion?: string; readonly agentInternalId?: string; readonly bump?: 'major' | 'minor' | 'patch'; readonly promptOverride?: string }): Promise<SerializedAgentDto> {
+    return (await this.request<{ agent: SerializedAgentDto }>(`/personas/${encodeURIComponent(internalId)}/register-agent`, {
+      method: 'POST', body: JSON.stringify(input),
+    })).agent;
   }
 
   async saveScenario(input: SaveScenarioDto): Promise<SerializedScenarioDto> {

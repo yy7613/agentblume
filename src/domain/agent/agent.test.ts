@@ -61,4 +61,21 @@ describe('Agent aggregate', () => {
   it('subAgentToolNameはask_接頭辞のツール名を返す', () => {
     expect(subAgentToolName('sales_scorer')).toBe('ask_sales_scorer');
   });
+
+  it('pseudo-user Agentはpersona参照を保持し能力を持てない（v18）', () => {
+    const persona = { personaId: 'novice', version: SemVer.of(1, 0, 0) };
+    const agent = createAgent({ ...valid(), kind: 'pseudo-user', skills: [], tools: [], persona });
+    expect(agent.persona).toEqual(persona);
+    expect(serializeAgent(deserializeAgent(serializeAgent(agent)))).toEqual(serializeAgent(agent));
+    // persona は kind==='pseudo-user' のときのみ許可。
+    expect(() => createAgent({ ...valid(), kind: 'normal', persona })).toThrow(/only allowed for kind/);
+    // pseudo-user は tools/skills/agents 空必須。
+    expect(() => createAgent({ ...valid(), kind: 'pseudo-user', skills: [], tools: [{ internalId: 'tool-1', version: SemVer.of(2, 1, 0) }] })).toThrow(/v18 constraint/);
+  });
+
+  it('persona無しの旧serializedデータをundefinedとして復元する（後方互換）', () => {
+    const legacy = serializeAgent(createAgent(valid())) as unknown as Record<string, unknown>;
+    delete legacy['persona'];
+    expect(deserializeAgent(legacy).persona).toBeUndefined();
+  });
 });

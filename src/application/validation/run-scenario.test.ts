@@ -49,6 +49,14 @@ function makeAgent(withTool: boolean): Agent {
   });
 }
 
+function makePseudoUserAgent(): Agent {
+  return createAgent({
+    metadata: { internalId: 'pseudo-1', workingName: 'pu', displayName: 'Pseudo User', publishName: 'pseudo_one', version: v1, owner: 'owner', state: 'draft', tenant: scope },
+    kind: 'pseudo-user', systemPrompt: 'あなたは疑似ユーザーである。', tools: [], skills: [], agents: [],
+    persona: { personaId: 'persona-1', version: v1 },
+  });
+}
+
 const SURVEY: readonly SurveyQuestion[] = [
   { id: 'q1', textJa: '目的達成?', textEn: 'Achieved?', kind: 'boolean' },
   { id: 'q2', textJa: '満足度', textEn: 'Satisfaction', kind: 'scale', min: 1, max: 5 },
@@ -159,7 +167,7 @@ interface Harness {
 }
 
 function harness(options: {
-  scenario?: Scenario | null; persona?: Persona | null;
+  scenario?: Scenario | null; persona?: Persona | null; pseudoUserAgent?: Agent | null;
   pu: ModelCompletion[]; agent: ModelCompletion[]; withTool?: boolean;
 }): Harness {
   const puModel = new QueueModel(options.pu);
@@ -176,6 +184,7 @@ function harness(options: {
     scenarios,
     new StaticPersonas(options.persona === undefined ? makePersona() : options.persona),
     runAgent, puModel, scenarioRuns,
+    new StaticAgents(options.pseudoUserAgent ?? null),
     () => 'scenario-run-1',
     () => new Date(Date.UTC(2026, 6, 1, 0, 0, 0, 0) + (tick += 1) * 1000),
   );
@@ -238,6 +247,33 @@ describe('RunScenarioUseCase', () => {
     expect(surveyRequest?.messages).toHaveLength(1);
     expect(surveyRequest?.messages[0]?.content).toContain('質問1');
     expect(surveyRequest?.messages[0]?.content).toContain('回答2');
+  });
+
+  it('pseudoUser Agent経路: agentのsystemPromptを基底に合成しpseudoUserRefを記録する（v18）', async () => {
+    const scenario = makeScenario({ persona: undefined, pseudoUser: { agentId: 'pseudo-1', version: v1 } });
+    const h = harness({
+      scenario, persona: null, pseudoUserAgent: makePseudoUserAgent(),
+      pu: [puTurn('質問', false, false), puTurn('done', true, true), surveyOk()],
+      agent: [agentSay('回答')],
+    });
+    const run = await h.useCase.execute(input);
+    expect(run.status).toBe('completed');
+    expect(run.pseudoUserRef).toEqual({ type: 'agent', id: 'pseudo-1', version: '1.0.0' });
+    const puSystem = h.puModel.requests[0]?.messages[0]?.content;
+    expect(puSystem).toContain('あなたは疑似ユーザーである。');
+    expect(puSystem).toContain('目標: 先月の売上サマリを得る');
+  });
+
+  it('pseudoUser Agentがkind不一致なら実行を拒否する（v18）', async () => {
+    const scenario = makeScenario({ persona: undefined, pseudoUser: { agentId: 'agent-1', version: v1 } });
+    const h = harness({ scenario, persona: null, pseudoUserAgent: makeAgent(false), pu: [], agent: [] });
+    await expect(h.useCase.execute(input)).rejects.toThrow(/not a pseudo-user/);
+  });
+
+  it('persona経路でも pseudoUserRef(type:persona) を記録する（v18）', async () => {
+    const h = harness({ pu: [puTurn('done', true, true), surveyOk()], agent: [] });
+    const run = await h.useCase.execute(input);
+    expect(run.pseudoUserRef).toEqual({ type: 'persona', id: 'persona-1', version: '1.0.0' });
   });
 
   it('maxUserTurns 到達 → max-turns（アンケートは実施する）', async () => {

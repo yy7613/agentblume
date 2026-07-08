@@ -6,7 +6,7 @@ import type { SaveAgentUseCase } from '../application/agent/save-agent';
 import { serializeAgent } from '../domain/agent/serialization';
 import { SemVer } from '../domain/tool/semver';
 import { BadRequestError } from './error-mapping';
-import { agentDraftPromptBodySchema, agentPromptBodySchema, saveAgentBodySchema, scopeQuerySchema, versionQuerySchema } from './schemas';
+import { agentDraftPromptBodySchema, agentListQuerySchema, agentPromptBodySchema, saveAgentBodySchema, scopeQuerySchema, versionQuerySchema } from './schemas';
 
 export interface AgentRouteDeps {
   readonly saveAgent: SaveAgentUseCase;
@@ -44,8 +44,8 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
   });
 
   app.get('/agents', async (request) => {
-    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
-    const agents = await deps.queryAgents.list({ tenantId: query.tenantId, workspaceId: query.workspaceId });
+    const query = parseWith(agentListQuerySchema, request.query, 'invalid query');
+    const agents = await deps.queryAgents.list({ tenantId: query.tenantId, workspaceId: query.workspaceId }, query.kind);
     return { agents: agents.map((agent) => ({ ...agent, latestVersion: agent.latestVersion.toString() })) };
   });
 

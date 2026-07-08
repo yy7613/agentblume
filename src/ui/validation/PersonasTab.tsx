@@ -29,6 +29,7 @@ export function PersonasTab({ client, scope }: { readonly client: ToolApiClient;
   const [promptOverride, setPromptOverride] = useState('');
   const [bump, setBump] = useState<'major' | 'minor' | 'patch'>('patch');
   const [savedVersion, setSavedVersion] = useState<string>();
+  const [registeredAgent, setRegisteredAgent] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -76,6 +77,16 @@ export function PersonasTab({ client, scope }: { readonly client: ToolApiClient;
     finally { setBusy(false); }
   }
 
+  async function registerAgent(): Promise<void> {
+    if (editingId === undefined) return;
+    setBusy(true); setError(undefined); setRegisteredAgent(undefined);
+    try {
+      const agent = await client.registerPseudoUserAgent(editingId, { scope, ...(promptOverride.trim() !== '' ? { promptOverride } : {}) });
+      setRegisteredAgent(`${agent.metadata.internalId}@${agent.metadata.version}`);
+    } catch (cause) { setError(message(cause)); }
+    finally { setBusy(false); }
+  }
+
   const valid = internalId.trim() !== '' && workingName.trim() !== '' && displayName.trim() !== '' && publishName.trim() !== '' && owner.trim() !== '' && tone.trim() !== '';
 
   return <>
@@ -93,6 +104,8 @@ export function PersonasTab({ client, scope }: { readonly client: ToolApiClient;
     <section className="workspace-card" aria-label={text('Persona form', 'ペルソナフォーム')}>
       <div className="panel-title"><h2>{editingId === undefined ? text('New persona', '新規ペルソナ') : text('Edit persona', 'ペルソナを編集')}</h2><div className="save-actions">
         {savedVersion !== undefined && <span className="version-chip">{text('saved', '保存済み')} {savedVersion}</span>}
+        {registeredAgent !== undefined && <span className="version-chip">{text('pseudo-user agent', '疑似ユーザーAgent')} {registeredAgent}</span>}
+        <button type="button" className="secondary" disabled={busy || editingId === undefined} title={editingId === undefined ? text('Save the persona first', '先にペルソナを保存してください') : undefined} onClick={() => void registerAgent()}>{text('Register pseudo-user agent', '疑似ユーザーAgentとして登録')}</button>
         <select aria-label={text('Persona version bump', 'ペルソナのバージョン更新種別')} value={bump} onChange={(event) => setBump(event.target.value as typeof bump)}><option value="patch">patch</option><option value="minor">minor</option><option value="major">major</option></select>
         <button type="button" className="primary" disabled={busy || !valid} onClick={() => void save()}>{busy ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
       </div></div>

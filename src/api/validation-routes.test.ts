@@ -166,6 +166,34 @@ describe('validation routes', () => {
     expect(detail.json().run).toEqual(run);
   });
 
+  it('Persona登録→pseudoUser Scenario→実行でpseudoUserRef(agent)を記録し、kindで一覧する（v18）', async () => {
+    await server.inject({ method: 'POST', url: '/personas', payload: personaBody() });
+    // Persona を疑似ユーザーAgentとして登録する。
+    const registered = await server.inject({ method: 'POST', url: '/personas/novice-user/register-agent', payload: { scope } });
+    expect(registered.statusCode).toBe(201);
+    expect(registered.json().agent).toMatchObject({ kind: 'pseudo-user', metadata: { internalId: 'pseudo-novice-user', version: '1.0.0' }, persona: { personaId: 'novice-user', version: '1.0.0' }, tools: [] });
+
+    // kind フィルタは pseudo-user のみ返す（normal の sales-agent は除外）。
+    const filtered = await server.inject({ method: 'GET', url: '/agents', query: { ...scope, kind: 'pseudo-user' } });
+    expect(filtered.json().agents.map((agent: { internalId: string }) => agent.internalId)).toEqual(['pseudo-novice-user']);
+
+    // pseudoUser 参照の Scenario を保存する（persona ではなく agent）。
+    const saved = await server.inject({ method: 'POST', url: '/scenarios', payload: scenarioBody({ persona: undefined, pseudoUser: { agentId: 'pseudo-novice-user', version: '1.0.0' } }) });
+    expect(saved.statusCode).toBe(201);
+    expect(saved.json().scenario.pseudoUser).toEqual({ agentId: 'pseudo-novice-user', version: '1.0.0' });
+    expect('persona' in saved.json().scenario).toBe(false);
+
+    model.enqueue(
+      { message: { role: 'assistant', content: JSON.stringify({ message: '売上は？', endConversation: false, goalAchieved: false }) }, finishReason: 'stop', usage: { totalTokens: 3 } },
+      { message: { role: 'assistant', content: '42です。' }, finishReason: 'stop', usage: { totalTokens: 3 } },
+      { message: { role: 'assistant', content: JSON.stringify({ message: 'ありがとう', endConversation: true, goalAchieved: true }) }, finishReason: 'stop', usage: { totalTokens: 3 } },
+      { message: { role: 'assistant', content: JSON.stringify({ q1: true, q2: 4, impressions: 'ok' }) }, finishReason: 'stop', usage: { totalTokens: 3 } },
+    );
+    const executed = await server.inject({ method: 'POST', url: '/scenarios/sales-check/run', payload: { scope, mode: 'preview' } });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json().run).toMatchObject({ status: 'completed', pseudoUserRef: { type: 'agent', id: 'pseudo-novice-user', version: '1.0.0' } });
+  });
+
   it('実行の未存在Scenarioは404、未存在ScenarioRunは404', async () => {
     const missingScenario = await server.inject({ method: 'POST', url: '/scenarios/missing/run', payload: { scope } });
     expect(missingScenario.statusCode).toBe(404);

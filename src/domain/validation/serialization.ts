@@ -45,7 +45,8 @@ export interface SerializedPersona {
 export interface SerializedScenario {
   readonly metadata: SerializedMetadata;
   readonly target: { readonly agentId: string; readonly version: string };
-  readonly persona: { readonly personaId: string; readonly version: string };
+  readonly persona?: { readonly personaId: string; readonly version: string };
+  readonly pseudoUser?: { readonly agentId: string; readonly version: string };
   readonly goal: string;
   readonly context?: string;
   readonly maxUserTurns: number;
@@ -57,6 +58,7 @@ export interface SerializedScenarioRun {
   readonly id: string;
   readonly scope: { readonly tenantId: string; readonly workspaceId: string };
   readonly scenario: { readonly id: string; readonly version: string };
+  readonly pseudoUserRef?: { readonly type: 'persona' | 'agent'; readonly id: string; readonly version: string };
   readonly status: ScenarioRunStatus;
   readonly goalAchieved: boolean | null;
   readonly transcript: readonly { readonly speaker: 'user' | 'agent'; readonly message: string; readonly runId?: string }[];
@@ -99,7 +101,8 @@ const personaSchema = z.object({
 const scenarioSchema = z.object({
   metadata: metadataSchema,
   target: z.object({ agentId: z.string(), version: z.string() }),
-  persona: z.object({ personaId: z.string(), version: z.string() }),
+  persona: z.object({ personaId: z.string(), version: z.string() }).optional(),
+  pseudoUser: z.object({ agentId: z.string(), version: z.string() }).optional(),
   goal: z.string(),
   context: z.string().optional(),
   maxUserTurns: z.number(),
@@ -111,6 +114,7 @@ const scenarioRunSchema = z.object({
   id: z.string(),
   scope: z.object({ tenantId: z.string(), workspaceId: z.string() }),
   scenario: z.object({ id: z.string(), version: z.string() }),
+  pseudoUserRef: z.object({ type: z.enum(['persona', 'agent']), id: z.string(), version: z.string() }).optional(),
   status: z.enum(SCENARIO_RUN_STATUSES),
   goalAchieved: z.boolean().nullable(),
   transcript: z.array(z.object({ speaker: z.enum(['user', 'agent']), message: z.string(), runId: z.string().optional() })),
@@ -164,7 +168,8 @@ export function serializeScenario(scenario: Scenario): SerializedScenario {
   return {
     metadata: serializeMetadata(scenario.metadata),
     target: { agentId: scenario.target.agentId, version: scenario.target.version.toString() },
-    persona: { personaId: scenario.persona.personaId, version: scenario.persona.version.toString() },
+    ...(scenario.persona !== undefined ? { persona: { personaId: scenario.persona.personaId, version: scenario.persona.version.toString() } } : {}),
+    ...(scenario.pseudoUser !== undefined ? { pseudoUser: { agentId: scenario.pseudoUser.agentId, version: scenario.pseudoUser.version.toString() } } : {}),
     goal: scenario.goal,
     ...(scenario.context !== undefined ? { context: scenario.context } : {}),
     maxUserTurns: scenario.maxUserTurns,
@@ -177,11 +182,13 @@ export function deserializeScenario(value: unknown): Scenario {
   const parsed = scenarioSchema.safeParse(value);
   if (!parsed.success) throw new ValidationDomainError(`deserializeScenario: ${issues(parsed.error)}`);
   const scenario = parsed.data;
+  const { persona, pseudoUser, ...rest } = scenario;
   return createScenario({
-    ...scenario,
+    ...rest,
     metadata: { ...scenario.metadata, version: SemVer.parse(scenario.metadata.version), tenant: { ...scenario.metadata.tenant } },
     target: { agentId: scenario.target.agentId, version: SemVer.parse(scenario.target.version) },
-    persona: { personaId: scenario.persona.personaId, version: SemVer.parse(scenario.persona.version) },
+    ...(persona !== undefined ? { persona: { personaId: persona.personaId, version: SemVer.parse(persona.version) } } : {}),
+    ...(pseudoUser !== undefined ? { pseudoUser: { agentId: pseudoUser.agentId, version: SemVer.parse(pseudoUser.version) } } : {}),
   });
 }
 
@@ -190,6 +197,7 @@ export function serializeScenarioRun(run: ScenarioRun): SerializedScenarioRun {
     id: run.id,
     scope: { ...run.scope },
     scenario: { id: run.scenario.id, version: run.scenario.version.toString() },
+    ...(run.pseudoUserRef !== undefined ? { pseudoUserRef: { ...run.pseudoUserRef } } : {}),
     status: run.status,
     goalAchieved: run.goalAchieved,
     transcript: run.transcript.map((turn) => ({ ...turn })),

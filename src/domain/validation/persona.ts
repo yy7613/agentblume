@@ -139,14 +139,19 @@ const EN: PromptTexts = {
  * promptOverride があればそれを基底にし、goal/context のみを末尾へ合成する。
  */
 export function buildPersonaSystemPrompt(persona: Persona, goal: string, context?: string): string {
-  const texts = persona.language === 'ja' ? JA : EN;
-  const tail = [
-    `${texts.goalLabel}: ${goal}`,
-    ...(context !== undefined && context.trim().length > 0 ? [`${texts.contextLabel}: ${context}`] : []),
-  ];
+  return composeScenarioPrompt(buildPersonaBasePrompt(persona), goal, context, persona.language);
+}
+
+/**
+ * Persona から人物設定・出力規律のみの基底プロンプトを生成する（goal/context は含めない）。
+ * v18: 疑似ユーザーAgentの systemPrompt として保存し、実行時に composeScenarioPrompt で goal/context を合成する。
+ * promptOverride 時は末尾に空行区切りを含め、composeScenarioPrompt と合成したとき従来の出力と一致させる。
+ */
+export function buildPersonaBasePrompt(persona: Persona): string {
   if (persona.promptOverride !== undefined) {
-    return [persona.promptOverride, '', ...tail].join('\n');
+    return [persona.promptOverride, ''].join('\n');
   }
+  const texts = persona.language === 'ja' ? JA : EN;
   const lines = [
     texts.intro,
     texts.archetype[persona.archetype],
@@ -156,7 +161,16 @@ export function buildPersonaSystemPrompt(persona: Persona, goal: string, context
       : []),
     texts.role,
     texts.discipline(texts.patienceHint[persona.patience]),
-    ...tail,
   ];
   return lines.filter((line) => line.length > 0).join('\n');
+}
+
+/** 基底プロンプトへ goal/context を合成する（ラベル言語は既定 ja）。 */
+export function composeScenarioPrompt(basePrompt: string, goal: string, context?: string, language: PersonaLanguage = 'ja'): string {
+  const texts = language === 'ja' ? JA : EN;
+  const tail = [
+    `${texts.goalLabel}: ${goal}`,
+    ...(context !== undefined && context.trim().length > 0 ? [`${texts.contextLabel}: ${context}`] : []),
+  ];
+  return [basePrompt, ...tail].join('\n');
 }

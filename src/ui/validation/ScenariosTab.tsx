@@ -26,7 +26,6 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
   const { text } = useI18n();
   const [scenarios, setScenarios] = useState<readonly ScenarioSummaryDto[]>([]);
   const [agents, setAgents] = useState<readonly AgentSummaryDto[]>([]);
-  const [personas, setPersonas] = useState<readonly PersonaSummaryDto[]>([]);
   const [agentVersions, setAgentVersions] = useState<readonly string[]>([]);
   const [editingId, setEditingId] = useState<string>();
   const [internalId, setInternalId] = useState('sales-summary-scenario');
@@ -36,8 +35,9 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
   const [owner, setOwner] = useState('local-user');
   const [agentId, setAgentId] = useState('');
   const [agentVersion, setAgentVersion] = useState('');
-  const [personaId, setPersonaId] = useState('');
-  const [personaVersion, setPersonaVersion] = useState('');
+  const [pseudoAgentId, setPseudoAgentId] = useState('');
+  const [pseudoAgentVersion, setPseudoAgentVersion] = useState('');
+  const [legacyPersona, setLegacyPersona] = useState<string>();
   const [goal, setGoal] = useState('');
   const [context, setContext] = useState('');
   const [maxUserTurns, setMaxUserTurns] = useState(4);
@@ -50,11 +50,14 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([client.listScenarios(scope), client.listAgents(scope), client.listPersonas(scope)])
-      .then(([scenarioItems, agentItems, personaItems]) => { if (active) { setScenarios(scenarioItems); setAgents(agentItems); setPersonas(personaItems); } })
+    void Promise.all([client.listScenarios(scope), client.listAgents(scope)])
+      .then(([scenarioItems, agentItems]) => { if (active) { setScenarios(scenarioItems); setAgents(agentItems); } })
       .catch((cause: unknown) => { if (active) setError(message(cause)); });
     return () => { active = false; };
   }, [client, scope]);
+
+  const targetAgents = agents.filter((agent) => agent.kind !== 'pseudo-user');
+  const pseudoAgents = agents.filter((agent) => agent.kind === 'pseudo-user');
 
   async function selectAgent(nextAgentId: string): Promise<void> {
     setAgentId(nextAgentId); setAgentVersions([]); setAgentVersion('');
@@ -67,9 +70,10 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
     } catch (cause) { setError(message(cause)); }
   }
 
-  function selectPersona(nextPersonaId: string): void {
-    setPersonaId(nextPersonaId);
-    setPersonaVersion(personas.find((persona) => persona.internalId === nextPersonaId)?.latestVersion ?? '');
+  function selectPseudoAgent(nextAgentId: string): void {
+    setPseudoAgentId(nextAgentId);
+    setPseudoAgentVersion(pseudoAgents.find((agent) => agent.internalId === nextAgentId)?.latestVersion ?? '');
+    setLegacyPersona(undefined);
   }
 
   async function edit(summary: ScenarioSummaryDto): Promise<void> {
@@ -80,7 +84,13 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
       setInternalId(scenario.metadata.internalId); setWorkingName(scenario.metadata.workingName);
       setDisplayName(scenario.metadata.displayName); setPublishName(scenario.metadata.publishName); setOwner(scenario.metadata.owner);
       setAgentId(scenario.target.agentId); setAgentVersion(scenario.target.version);
-      setPersonaId(scenario.persona.personaId); setPersonaVersion(scenario.persona.version);
+      if (scenario.pseudoUser !== undefined) {
+        setPseudoAgentId(scenario.pseudoUser.agentId); setPseudoAgentVersion(scenario.pseudoUser.version); setLegacyPersona(undefined);
+      } else {
+        // 旧 persona 参照は読み取り表示し、保存時は疑似ユーザーAgentの選択を要求する。
+        setPseudoAgentId(''); setPseudoAgentVersion('');
+        setLegacyPersona(scenario.persona !== undefined ? `${scenario.persona.personaId}@${scenario.persona.version}` : undefined);
+      }
       setGoal(scenario.goal); setContext(scenario.context ?? '');
       setMaxUserTurns(scenario.maxUserTurns); setExpectedTools((scenario.expectedTools ?? []).join(', '));
       setSurvey(scenario.survey.map((question) => ({ ...question })));
@@ -92,7 +102,7 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
   function startNew(): void {
     setEditingId(undefined); setSavedVersion(undefined);
     setInternalId(''); setWorkingName(''); setDisplayName(''); setPublishName(''); setOwner('local-user');
-    setAgentId(''); setAgentVersion(''); setAgentVersions([]); setPersonaId(''); setPersonaVersion('');
+    setAgentId(''); setAgentVersion(''); setAgentVersions([]); setPseudoAgentId(''); setPseudoAgentVersion(''); setLegacyPersona(undefined);
     setGoal(''); setContext(''); setMaxUserTurns(4); setExpectedTools('');
     setSurvey(DEFAULT_SURVEY_TEMPLATE.map((question) => ({ ...question })));
   }
@@ -115,7 +125,7 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
   const surveyValid = survey.length > 0 && survey.every((question) => question.id.trim() !== '' && question.textJa.trim() !== '' && question.textEn.trim() !== '')
     && new Set(survey.map((question) => question.id)).size === survey.length;
   const valid = internalId.trim() !== '' && workingName.trim() !== '' && displayName.trim() !== '' && publishName.trim() !== ''
-    && owner.trim() !== '' && agentId !== '' && agentVersion !== '' && personaId !== '' && personaVersion !== ''
+    && owner.trim() !== '' && agentId !== '' && agentVersion !== '' && pseudoAgentId !== '' && pseudoAgentVersion !== ''
     && goal.trim() !== '' && turnsValid && surveyValid;
 
   async function save(): Promise<void> {
@@ -124,7 +134,7 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
       const scenario = await client.saveScenario({
         scope, internalId, workingName, displayName, publishName, owner,
         target: { agentId, version: agentVersion },
-        persona: { personaId, version: personaVersion },
+        pseudoUser: { agentId: pseudoAgentId, version: pseudoAgentVersion },
         goal,
         ...(context.trim() !== '' ? { context } : {}),
         maxUserTurns,
@@ -174,12 +184,14 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
         <label>{text('Display name', '表示名')}<input aria-label={text('Scenario display name', 'シナリオ表示名')} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
         <label>{text('Publish name', '公開名')}<input aria-label={text('Scenario publish name', 'シナリオ公開名')} value={publishName} onChange={(event) => setPublishName(event.target.value)} /></label>
         <label>{text('Owner', '所有者')}<input aria-label={text('Scenario owner', 'シナリオ所有者')} value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
-        <label>{text('Target agent', '対象エージェント')}<select aria-label={text('Scenario target agent', 'シナリオ対象エージェント')} value={agentId} onChange={(event) => void selectAgent(event.target.value)}><option value="">{text('Select an agent', 'エージェントを選択')}</option>{agents.map((agent) => <option key={agent.internalId} value={agent.internalId}>{agent.displayName} · {agent.latestVersion}</option>)}</select></label>
+        <label>{text('Target agent', '対象エージェント')}<select aria-label={text('Scenario target agent', 'シナリオ対象エージェント')} value={agentId} onChange={(event) => void selectAgent(event.target.value)}><option value="">{text('Select an agent', 'エージェントを選択')}</option>{targetAgents.map((agent) => <option key={agent.internalId} value={agent.internalId}>{agent.displayName} · {agent.latestVersion}</option>)}</select></label>
         <label>{text('Agent version', 'エージェントバージョン')}<select aria-label={text('Scenario agent version', 'シナリオ対象エージェントバージョン')} value={agentVersion} disabled={agentVersions.length === 0} onChange={(event) => setAgentVersion(event.target.value)}>{agentVersions.length === 0 && <option value="">{text('Select an agent first', '先にエージェントを選択')}</option>}{agentVersions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-        <label>{text('Persona', 'ペルソナ')}<select aria-label={text('Scenario persona', 'シナリオペルソナ')} value={personaId} onChange={(event) => selectPersona(event.target.value)}><option value="">{text('Select a persona', 'ペルソナを選択')}</option>{personas.map((persona) => <option key={persona.internalId} value={persona.internalId}>{persona.displayName} · {persona.latestVersion}</option>)}</select></label>
+        <label>{text('Pseudo-user agent', '疑似ユーザーAgent')}<select aria-label={text('Scenario pseudo-user agent', 'シナリオ疑似ユーザーAgent')} value={pseudoAgentId} onChange={(event) => selectPseudoAgent(event.target.value)}><option value="">{text('Select a pseudo-user agent', '疑似ユーザーAgentを選択')}</option>{pseudoAgents.map((agent) => <option key={agent.internalId} value={agent.internalId}>{agent.displayName} · {agent.latestVersion}</option>)}</select></label>
         <label>{text('Max user turns (1-8)', '上限ユーザーターン (1-8)')}<input aria-label={text('Scenario max user turns', 'シナリオ上限ユーザーターン')} type="number" min={1} max={8} value={maxUserTurns} onChange={(event) => setMaxUserTurns(Number(event.target.value))} /></label>
         <label>{text('Expected tools (comma separated)', '期待するツール（カンマ区切り）')}<input aria-label={text('Scenario expected tools', 'シナリオ期待ツール')} placeholder={text('Optional publish names', '公開名・任意')} value={expectedTools} onChange={(event) => setExpectedTools(event.target.value)} /></label>
       </div>
+      {pseudoAgents.length === 0 && <p className="empty-state">{text('No pseudo-user agents yet — register a persona as a pseudo-user agent in the Personas tab.', '疑似ユーザーAgentがありません。Personasタブでペルソナを疑似ユーザーAgentとして登録してください。')}</p>}
+      {legacyPersona !== undefined && <p className="field-error">{text('Legacy persona reference', '旧ペルソナ参照')} ({legacyPersona}) — {text('select a pseudo-user agent to save.', '保存には疑似ユーザーAgentを選択してください。')}</p>}
       <label>{text('Goal', '目標')}<textarea aria-label={text('Scenario goal', 'シナリオ目標')} rows={2} value={goal} onChange={(event) => setGoal(event.target.value)} /></label>
       <label>{text('Context', '状況設定')}<textarea aria-label={text('Scenario context', 'シナリオ状況設定')} rows={2} placeholder={text('Optional', '任意')} value={context} onChange={(event) => setContext(event.target.value)} /></label>
       {!turnsValid && <p className="field-error">{text('Max user turns must be an integer between 1 and 8.', '上限ユーザーターンは1〜8の整数で指定してください。')}</p>}

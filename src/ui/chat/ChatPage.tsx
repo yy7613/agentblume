@@ -43,7 +43,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
     let active = true;
     setBusy(true);
     void client.listAgents(scope)
-      .then((items) => { if (!active) return; setAgents(items); setSelectedId((current) => current || items[0]?.internalId || ''); })
+      .then((all) => { if (!active) return; const items = all.filter((agent) => agent.kind !== 'pseudo-user'); setAgents(items); setSelectedId((current) => current || items[0]?.internalId || ''); })
       .catch((cause: unknown) => { if (active) setLoadError(messageOf(cause)); })
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };

@@ -108,6 +108,7 @@ export interface SerializedAgentDto {
   readonly skills: readonly AgentToolRefDto[];
   readonly tools: readonly AgentToolRefDto[];
   readonly agents: readonly AgentSubAgentRefDto[];
+  readonly persona?: { readonly personaId: string; readonly version: string };
   readonly output?: StructuredOutputDto;
 }
 export interface SaveAgentDto {
@@ -263,7 +264,8 @@ export interface SurveyQuestionDto {
 export interface SerializedScenarioDto {
   readonly metadata: SerializedAgentDto['metadata'];
   readonly target: { readonly agentId: string; readonly version: string };
-  readonly persona: { readonly personaId: string; readonly version: string };
+  readonly persona?: { readonly personaId: string; readonly version: string };
+  readonly pseudoUser?: { readonly agentId: string; readonly version: string };
   readonly goal: string;
   readonly context?: string;
   readonly maxUserTurns: number;
@@ -274,7 +276,8 @@ export interface SaveScenarioDto {
   readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string;
   readonly publishName: string; readonly owner: string;
   readonly target: { readonly agentId: string; readonly version: string };
-  readonly persona: { readonly personaId: string; readonly version: string };
+  readonly persona?: { readonly personaId: string; readonly version: string };
+  readonly pseudoUser?: { readonly agentId: string; readonly version: string };
   readonly goal: string;
   readonly context?: string;
   readonly maxUserTurns: number;
@@ -296,6 +299,7 @@ export interface ScenarioRunDto {
   readonly id: string;
   readonly scope: TenantScopeDto;
   readonly scenario: { readonly id: string; readonly version: string };
+  readonly pseudoUserRef?: { readonly type: 'persona' | 'agent'; readonly id: string; readonly version: string };
   readonly status: ScenarioRunStatusDto;
   readonly goalAchieved: boolean | null;
   readonly transcript: readonly ScenarioTurnDto[];

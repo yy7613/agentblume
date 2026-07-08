@@ -36,11 +36,19 @@ export interface ScenarioRunMetrics {
   readonly usage: RunUsage;
 }
 
+export interface ScenarioRunPseudoUserRef {
+  readonly type: 'persona' | 'agent';
+  readonly id: string;
+  readonly version: string;
+}
+
 export interface ScenarioRun {
   readonly id: string;
   readonly scope: TenantScope;
   /** 実行時点の固定参照。 */
   readonly scenario: { readonly id: string; readonly version: SemVer };
+  /** 使用した疑似ユーザーの参照（persona@version または agent@version）。v18。 */
+  readonly pseudoUserRef?: ScenarioRunPseudoUserRef;
   readonly status: ScenarioRunStatus;
   /** 疑似ユーザー申告（未申告は null）。 */
   readonly goalAchieved: boolean | null;
@@ -113,10 +121,20 @@ export function createScenarioRun(props: CreateScenarioRunProps): ScenarioRun {
   }
   nonEmpty(props.startedAt, 'createScenarioRun: startedAt');
   nonEmpty(props.finishedAt, 'createScenarioRun: finishedAt');
+  let pseudoUserRef: ScenarioRunPseudoUserRef | undefined;
+  if (props.pseudoUserRef !== undefined) {
+    if (props.pseudoUserRef.type !== 'persona' && props.pseudoUserRef.type !== 'agent') {
+      throw new ValidationDomainError('createScenarioRun: pseudoUserRef.type must be "persona" or "agent"');
+    }
+    nonEmpty(props.pseudoUserRef.id, 'createScenarioRun: pseudoUserRef.id');
+    nonEmpty(props.pseudoUserRef.version, 'createScenarioRun: pseudoUserRef.version');
+    pseudoUserRef = { type: props.pseudoUserRef.type, id: props.pseudoUserRef.id, version: props.pseudoUserRef.version };
+  }
   return {
     id: props.id,
     scope: { ...props.scope },
     scenario: { id: props.scenario.id, version: props.scenario.version },
+    ...(pseudoUserRef !== undefined ? { pseudoUserRef } : {}),
     status: props.status,
     goalAchieved: props.goalAchieved,
     transcript,

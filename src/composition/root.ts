@@ -49,6 +49,7 @@ import { QueryPersonasUseCase } from '../application/validation/query-personas';
 import { QueryScenarioRunsUseCase } from '../application/validation/query-scenario-runs';
 import { QueryScenariosUseCase } from '../application/validation/query-scenarios';
 import { RunScenarioUseCase } from '../application/validation/run-scenario';
+import { RegisterPseudoUserAgentUseCase } from '../application/validation/register-pseudo-user-agent';
 import { SavePersonaUseCase } from '../application/validation/save-persona';
 import { SaveScenarioUseCase } from '../application/validation/save-scenario';
 import type { PersonaRepository } from '../domain/validation/persona-repository';
@@ -92,6 +93,7 @@ export interface App {
   readonly querySkills: QuerySkillsUseCase;
   readonly generateSkillPrompt: GenerateSkillPromptUseCase;
   readonly savePersona: SavePersonaUseCase;
+  readonly registerPseudoUserAgent: RegisterPseudoUserAgentUseCase;
   readonly queryPersonas: QueryPersonasUseCase;
   readonly saveScenario: SaveScenarioUseCase;
   readonly queryScenarios: QueryScenariosUseCase;
@@ -204,9 +206,10 @@ export function createApp(options?: AppOptions): App {
     generateSkillPrompt: new GenerateSkillPromptUseCase(repo),
     savePersona: new SavePersonaUseCase(personaAdapter.repo),
     queryPersonas: new QueryPersonasUseCase(personaAdapter.repo),
+    registerPseudoUserAgent: new RegisterPseudoUserAgentUseCase(personaAdapter.repo, new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo)),
     saveScenario: new SaveScenarioUseCase(scenarioAdapter.repo, agentAdapter.repo, personaAdapter.repo),
     queryScenarios: new QueryScenariosUseCase(scenarioAdapter.repo),
-    runScenario: new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo),
+    runScenario: new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo),
     queryScenarioRuns: new QueryScenarioRunsUseCase(scenarioRunAdapter.repo),
     draftTool: new DraftToolUseCase(engine),
     saveTool: new SaveToolUseCase(repo, engine),

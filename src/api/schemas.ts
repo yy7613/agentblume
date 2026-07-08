@@ -223,7 +223,8 @@ export const saveScenarioBodySchema = z.object({
   internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1),
   publishName: z.string().min(1), owner: z.string().min(1),
   target: z.object({ agentId: z.string().min(1), version: z.string().min(1) }),
-  persona: z.object({ personaId: z.string().min(1), version: z.string().min(1) }),
+  persona: z.object({ personaId: z.string().min(1), version: z.string().min(1) }).optional(),
+  pseudoUser: z.object({ agentId: z.string().min(1), version: z.string().min(1) }).optional(),
   goal: z.string().min(1),
   context: z.string().optional(),
   maxUserTurns: z.number().int(),
@@ -257,4 +258,18 @@ export const versionQuerySchema = z.object({
 export const scopeQuerySchema = z.object({
   tenantId: z.string().min(1),
   workspaceId: z.string().min(1),
+});
+
+/** GET /agents のクエリ（任意で kind フィルタ）。 */
+export const agentListQuerySchema = scopeQuerySchema.extend({
+  kind: z.enum(AGENT_KINDS).optional(),
+});
+
+/** POST /personas/:id/register-agent の body（v18）。 */
+export const registerPseudoUserAgentBodySchema = z.object({
+  scope: tenantScopeSchema,
+  personaVersion: z.string().min(1).optional(),
+  agentInternalId: z.string().min(1).optional(),
+  bump: z.enum(['major', 'minor', 'patch']).optional(),
+  promptOverride: z.string().min(1).optional(),
 });
