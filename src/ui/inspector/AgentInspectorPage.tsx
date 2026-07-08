@@ -311,6 +311,8 @@ function traceDetail(event: RunTraceEventDto, text: Translate): string {
       return `${event.name} · ${event.nodes.map((node) => `${node.nodeId}:${node.rowCount}${node.truncated ? '+' : ''}`).join(', ')}`;
     case 'model-response':
       return event.content === '' ? text('(empty)', '（空）') : event.content;
+    case 'agent_call':
+      return `${event.toolName} → ${event.agentRef.internalId}@${event.agentRef.version}${event.ok ? '' : ` (${text('failed', '失敗')})`} · ${event.summary}`;
     case 'error':
       return `${event.code}: ${event.message}`;
   }

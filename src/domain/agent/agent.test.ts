@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SemVer } from '../tool/semver';
-import { createAgent } from './agent';
+import { createAgent, subAgentToolName } from './agent';
 import { AgentValidationError } from './errors';
 import { deserializeAgent, serializeAgent } from './serialization';
 
@@ -36,5 +36,29 @@ describe('Agent aggregate', () => {
     const skill = { internalId: 'skill-1', version: SemVer.of(1, 0, 0) };
     expect(() => createAgent({ ...valid(), skills: [skill, skill] })).toThrow(/duplicate skill/);
     expect(() => deserializeAgent({ nope: true })).toThrow(AgentValidationError);
+  });
+
+  it('sub-agent参照を保持し、自己参照・重複internalId・usage空を拒否する', () => {
+    const sub = { internalId: 'sub-1', version: SemVer.of(1, 0, 0), usage: 'delegate scoring' };
+    const agent = createAgent({ ...valid(), agents: [sub] });
+    expect(agent.agents).toEqual([sub]);
+    // 直列化往復で agents を維持する。
+    expect(serializeAgent(deserializeAgent(serializeAgent(agent)))).toEqual(serializeAgent(agent));
+    // 自己参照（自 internalId = 'agent-1'）は拒否。
+    expect(() => createAgent({ ...valid(), agents: [{ internalId: 'agent-1', version: SemVer.of(1, 0, 0), usage: 'self' }] })).toThrow(/itself/);
+    // 同一 internalId はバージョン違いでも重複。
+    expect(() => createAgent({ ...valid(), agents: [sub, { ...sub, version: SemVer.of(2, 0, 0) }] })).toThrow(/duplicate sub-agent/);
+    // usage 空は拒否。
+    expect(() => createAgent({ ...valid(), agents: [{ ...sub, usage: ' ' }] })).toThrow(AgentValidationError);
+  });
+
+  it('agents無しの旧serializedデータを空配列として復元する（後方互換）', () => {
+    const legacy = serializeAgent(createAgent(valid())) as unknown as Record<string, unknown>;
+    delete legacy['agents'];
+    expect(deserializeAgent(legacy).agents).toEqual([]);
+  });
+
+  it('subAgentToolNameはask_接頭辞のツール名を返す', () => {
+    expect(subAgentToolName('sales_scorer')).toBe('ask_sales_scorer');
   });
 });

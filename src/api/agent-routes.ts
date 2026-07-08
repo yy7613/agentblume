@@ -38,6 +38,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
       ...body,
       skills: body.skills.map((skill) => ({ internalId: skill.internalId, version: version(skill.version) as SemVer })),
       tools: body.tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer })),
+      agents: body.agents.map((sub) => ({ internalId: sub.internalId, version: version(sub.version) as SemVer, usage: sub.usage })),
     });
     return reply.status(201).send({ agent: serializeAgent(agent) });
   });
@@ -70,6 +71,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
       ...body,
       skills: body.skills.map((skill) => ({ internalId: skill.internalId, version: version(skill.version) as SemVer })),
       tools: body.tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer })),
+      agents: body.agents.map((sub) => ({ internalId: sub.internalId, version: version(sub.version) as SemVer, usage: sub.usage })),
     });
     return { draft };
   });
@@ -83,6 +85,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
       kind: agent.kind,
       skills: agent.skills,
       tools: agent.tools,
+      agents: agent.agents,
       ...(agent.output !== undefined ? { output: agent.output } : {}),
     });
     return { draft };

@@ -4,6 +4,8 @@ import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
 import { createTool, type Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
+import { createAgent } from '../../domain/agent/agent';
+import type { AgentRepository, AgentSummary } from '../../domain/agent/agent-repository';
 import { AgentValidationError } from '../../domain/agent/errors';
 import { GenerateAgentPromptUseCase } from './generate-agent-prompt';
 
@@ -37,5 +39,23 @@ describe('GenerateAgentPromptUseCase', () => {
     const usecase = new GenerateAgentPromptUseCase(new FakeTools());
     await expect(usecase.execute({ scope, displayName: ' ', kind: 'normal', tools: [] })).rejects.toBeInstanceOf(AgentValidationError);
     await expect(usecase.execute({ scope, displayName: 'Agent', kind: 'normal', tools: [{ internalId: 'missing', version: SemVer.of(1, 0, 0) }] })).rejects.toThrow(/not found/);
+  });
+
+  it('サブエージェントの委譲基準を協働者ガイドとsourcesへ含める', async () => {
+    const sub = createAgent({ metadata: { internalId: 'scorer', workingName: 'scorer', displayName: 'Scorer', publishName: 'scorer', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope }, kind: 'normal', systemPrompt: 'Score.', tools: [] });
+    const agents = { findVersion: async (_s: TenantScope, id: string) => id === 'scorer' ? sub : null, findLatest: async () => null, save: async () => {}, listVersions: async () => [], list: async (): Promise<AgentSummary[]> => [] } as unknown as AgentRepository;
+    const result = await new GenerateAgentPromptUseCase(new FakeTools(), undefined, agents).execute({
+      scope, displayName: 'Coordinator', kind: 'normal', tools: [], agents: [{ internalId: 'scorer', version: SemVer.of(1, 0, 0), usage: 'delegate numeric scoring' }],
+    });
+    expect(result.sections.collaboratorGuide).toContain('ask_scorer');
+    expect(result.systemPromptDraft).toContain('協働者ガイド');
+    expect(result.systemPromptDraft).toContain('delegate numeric scoring');
+    expect(result.sources).toContain('agent:scorer@1.0.0 の委譲基準');
+  });
+
+  it('サブエージェント未指定なら協働者ガイドはなしと明記しsourcesを増やさない', async () => {
+    const result = await new GenerateAgentPromptUseCase(new FakeTools()).execute({ scope, displayName: 'Solo', kind: 'normal', tools: [{ internalId: 'scores', version: SemVer.of(2, 0, 0) }] });
+    expect(result.sections.collaboratorGuide).toContain('ありません');
+    expect(result.sources).toEqual(['tool:filter_scores@2.0.0 の入出力・副作用']);
   });
 });

@@ -1,4 +1,5 @@
-import type { AgentKind } from '../../domain/agent/agent';
+import type { AgentKind, AgentSubAgentRef } from '../../domain/agent/agent';
+import type { AgentRepository } from '../../domain/agent/agent-repository';
 import { AgentValidationError } from '../../domain/agent/errors';
 import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
 import type { Schema } from '../../domain/data/types';
@@ -12,7 +13,7 @@ import { resolveAgentCapabilities } from './resolve-agent-capabilities';
 export interface PromptToolRef { readonly internalId: string; readonly version: SemVer }
 export interface AgentPromptDraft {
   readonly systemPromptDraft: string;
-  readonly sections: { readonly role: string; readonly skillGuide: string; readonly toolUsageGuide: string; readonly rules: string };
+  readonly sections: { readonly role: string; readonly skillGuide: string; readonly toolUsageGuide: string; readonly collaboratorGuide: string; readonly rules: string };
   readonly editable: true;
   readonly sources: readonly string[];
 }
@@ -24,12 +25,12 @@ const KIND_GUIDE: Record<AgentKind, string> = {
 };
 
 export class GenerateAgentPromptUseCase {
-  constructor(private readonly tools: ToolRepository, private readonly skills?: SkillRepository) {}
+  constructor(private readonly tools: ToolRepository, private readonly skills?: SkillRepository, private readonly agents?: AgentRepository) {}
 
-  async execute(input: { readonly scope: TenantScope; readonly displayName: string; readonly kind: AgentKind; readonly skills?: readonly PromptToolRef[]; readonly tools: readonly PromptToolRef[]; readonly output?: StructuredOutputDefinition }): Promise<AgentPromptDraft> {
+  async execute(input: { readonly scope: TenantScope; readonly displayName: string; readonly kind: AgentKind; readonly skills?: readonly PromptToolRef[]; readonly tools: readonly PromptToolRef[]; readonly agents?: readonly AgentSubAgentRef[]; readonly output?: StructuredOutputDefinition }): Promise<AgentPromptDraft> {
     if (input.displayName.trim().length === 0) throw new AgentValidationError('GenerateAgentPrompt: displayName is required');
     let resolved;
-    try { resolved = await resolveAgentCapabilities(input.scope, input.skills ?? [], input.tools, this.tools, this.skills); }
+    try { resolved = await resolveAgentCapabilities(input.scope, input.skills ?? [], input.tools, this.tools, this.skills, input.agents ?? [], this.agents); }
     catch (error) { throw error instanceof AgentValidationError ? new AgentValidationError(`GenerateAgentPrompt: ${error.message}`) : error; }
     const loaded = resolved.tools;
     const role = `# 役割\nあなたは「${input.displayName}」です。${KIND_GUIDE[input.kind]}`;
@@ -39,17 +40,21 @@ export class GenerateAgentPromptUseCase {
     const toolUsageGuide = loaded.length === 0
       ? '# Tool使用ガイド\n利用可能なToolはありません。'
       : `# Tool使用ガイド\n${loaded.map(toolGuide).join('\n')}`;
+    const collaboratorGuide = resolved.subAgents.length === 0
+      ? '# 協働者ガイド\n委譲できるサブエージェントはありません。'
+      : `# 協働者ガイド\n委譲は ${resolved.subAgents.map((sub) => sub.toolName).join(' / ')} ツールで行う。\n${resolved.subAgents.map((sub) => `- ${sub.toolName}（${sub.agent.metadata.displayName}@${sub.agent.metadata.version.toString()}）: ${sub.ref.usage}`).join('\n')}`;
     const outputRule = input.output === undefined
       ? ''
       : `\n- 最終応答はJSON objectとし、次のfield契約を満たす: ${input.output.fields.map((field) => `${field.name}:${field.type}${field.required ? '' : '?'}`).join(', ')}。`;
-    const rules = `# 実行規則\n- Tool名は公開名をそのまま使用する。\n- Toolの入力スキーマを満たす引数だけを渡す。\n- Tool結果を推測で補完せず、回答に使用した事実を区別する。\n- writeまたはexternal-actionのToolは明示的な承認なしに実行しない。${outputRule}`;
+    const rules = `# 実行規則\n- Tool名は公開名をそのまま使用する。\n- Toolの入力スキーマを満たす引数だけを渡す。\n- Tool結果を推測で補完せず、回答に使用した事実を区別する。\n- writeまたはexternal-actionのToolは明示的な承認なしに実行しない。\n- サブエージェントへの委譲は上記の協働者ガイドの基準に従い、messageに具体的な指示を渡す。${outputRule}`;
     return {
-      systemPromptDraft: [role, skillGuide, toolUsageGuide, rules].join('\n\n'),
-      sections: { role, skillGuide, toolUsageGuide, rules },
+      systemPromptDraft: [role, skillGuide, toolUsageGuide, collaboratorGuide, rules].join('\n\n'),
+      sections: { role, skillGuide, toolUsageGuide, collaboratorGuide, rules },
       editable: true,
       sources: [
         ...resolved.skills.map((skill) => `skill:${skill.metadata.publishName}@${skill.metadata.version.toString()} の責務・発火条件・instructions`),
         ...loaded.map((tool) => `tool:${tool.metadata.publishName}@${tool.metadata.version.toString()} の入出力・副作用`),
+        ...resolved.subAgents.map((sub) => `agent:${sub.agent.metadata.publishName}@${sub.agent.metadata.version.toString()} の委譲基準`),
       ],
     };
   }

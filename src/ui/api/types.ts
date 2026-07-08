@@ -75,6 +75,7 @@ export interface ToolSummaryDto {
   readonly displayName: string;
   readonly latestVersion: string;
   readonly state: SerializedToolDto['metadata']['state'];
+  readonly sideEffect: SideEffectDto;
 }
 
 export type AgentKindDto = 'normal' | 'pseudo-user' | 'evaluator';
@@ -90,6 +91,7 @@ export interface StructuredOutputDto {
   readonly fields: readonly StructuredOutputFieldDto[];
 }
 export interface AgentToolRefDto { readonly internalId: string; readonly version: string }
+export interface AgentSubAgentRefDto { readonly internalId: string; readonly version: string; readonly usage: string }
 export interface SerializedAgentDto {
   readonly metadata: {
     readonly internalId: string;
@@ -105,6 +107,7 @@ export interface SerializedAgentDto {
   readonly systemPrompt: string;
   readonly skills: readonly AgentToolRefDto[];
   readonly tools: readonly AgentToolRefDto[];
+  readonly agents: readonly AgentSubAgentRefDto[];
   readonly output?: StructuredOutputDto;
 }
 export interface SaveAgentDto {
@@ -118,6 +121,7 @@ export interface SaveAgentDto {
   readonly systemPrompt: string;
   readonly skills?: readonly AgentToolRefDto[];
   readonly tools: readonly AgentToolRefDto[];
+  readonly agents?: readonly AgentSubAgentRefDto[];
   readonly output?: StructuredOutputDto;
   readonly bump?: 'major' | 'minor' | 'patch';
 }
@@ -131,7 +135,7 @@ export interface AgentSummaryDto {
 }
 export interface AgentPromptDraftDto {
   readonly systemPromptDraft: string;
-  readonly sections: { readonly role: string; readonly skillGuide: string; readonly toolUsageGuide: string; readonly rules: string };
+  readonly sections: { readonly role: string; readonly skillGuide: string; readonly toolUsageGuide: string; readonly collaboratorGuide: string; readonly rules: string };
   readonly editable: true;
   readonly sources: readonly string[];
 }
@@ -159,6 +163,7 @@ export type RunTraceEventDto =
   | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }
   | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: string; readonly nodes: readonly { readonly nodeId: string; readonly rowCount: number; readonly truncated: boolean }[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[] }
   | { readonly sequence: number; readonly kind: 'model-response'; readonly content: string }
+  | { readonly sequence: number; readonly kind: 'agent_call'; readonly toolName: string; readonly agentRef: { readonly internalId: string; readonly version: string }; readonly childRunId: string; readonly ok: boolean; readonly summary: string }
   | { readonly sequence: number; readonly kind: 'error'; readonly code: string; readonly message: string };
 
 export interface AgentPreviewRunDto {

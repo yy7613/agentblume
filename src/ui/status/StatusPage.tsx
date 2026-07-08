@@ -41,16 +41,17 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
           <div className="run-detail-title"><div><span className={`run-status ${selected.status}`}>{selected.status}</span><h2>{selected.runId}</h2></div><code>{selected.agent?.internalId ?? selected.tool?.internalId ?? 'unknown'}@{selected.agent?.version ?? selected.tool?.version ?? 'latest'}</code></div>
           {selected.response !== undefined && <div className="chat-response"><span>{text('Response', '応答')}</span>{selected.structuredResponse === undefined ? <p>{selected.response}</p> : <pre>{JSON.stringify(selected.structuredResponse, null, 2)}</pre>}</div>}
           {selected.failure !== undefined && <div className="api-error"><strong>{selected.failure.code}</strong> {selected.failure.message}</div>}
-          <div className="trace-list">{selected.trace.map((event) => <StatusTraceEvent key={event.sequence} event={event} />)}</div>
+          <div className="trace-list">{selected.trace.map((event) => <StatusTraceEvent key={event.sequence} event={event} onOpenChild={(runId) => void select(runId)} />)}</div>
         </>}
       </section>
     </div>
   </main>;
 }
-function StatusTraceEvent({ event }: { readonly event: RunTraceEventDto }) {
+function StatusTraceEvent({ event, onOpenChild }: { readonly event: RunTraceEventDto; readonly onOpenChild: (runId: string) => void }) {
   if (event.kind === 'model-request') return <div className="trace-event"><span>{event.sequence}</span><p>Model request · step {event.step}</p></div>;
   if (event.kind === 'tool-call') return <div className="trace-event tool"><span>{event.sequence}</span><p><strong>{event.name}</strong> {JSON.stringify(event.arguments)}</p></div>;
   if (event.kind === 'tool-result') return <div className="trace-event tool"><span>{event.sequence}</span><div><strong>{event.name}</strong>{event.nodes.map((node) => <code key={node.nodeId}>{node.nodeId}: {node.rowCount} row(s){node.truncated ? ' · truncated' : ''}</code>)}</div></div>;
+  if (event.kind === 'agent_call') return <div className={`trace-event agent ${event.ok ? '' : 'error'}`}><span>{event.sequence}</span><div><strong>{event.toolName}</strong> → {event.agentRef.internalId}@{event.agentRef.version} {event.ok ? '✓' : '✗'}<small>{event.summary}</small>{event.childRunId !== '' && <button type="button" className="run-link secondary" onClick={() => onOpenChild(event.childRunId)}>child run</button>}</div></div>;
   if (event.kind === 'error') return <div className="trace-event error"><span>{event.sequence}</span><p><strong>{event.code}</strong> {event.message}</p></div>;
   return <div className="trace-event"><span>{event.sequence}</span><p>{event.content}</p></div>;
 }

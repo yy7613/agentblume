@@ -7,6 +7,7 @@ const traceSchema = z.discriminatedUnion('kind', [
   z.object({ sequence: z.number().int().positive(), kind: z.literal('tool-call'), name: z.string(), arguments: z.record(z.string(), z.unknown()) }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('tool-result'), name: z.string(), terminalId: z.string(), nodes: z.array(nodeOutputSchema), outputPreview: z.array(z.record(z.string(), z.unknown())) }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('model-response'), content: z.string() }),
+  z.object({ sequence: z.number().int().positive(), kind: z.literal('agent_call'), toolName: z.string(), agentRef: z.object({ internalId: z.string(), version: z.string() }), childRunId: z.string(), ok: z.boolean(), summary: z.string() }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('error'), code: z.string(), message: z.string() }),
 ]);
 

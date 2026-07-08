@@ -15,6 +15,7 @@ import type {
   AgentPromptDraftDto,
   AgentKindDto,
   AgentToolRefDto,
+  AgentSubAgentRefDto,
   AgentSummaryDto,
   RunSavedAgentDto,
   StructuredOutputDto,
@@ -118,7 +119,7 @@ export class ToolApiClient {
     return (await this.request<{ agent: SerializedAgentDto }>(`/agents/${encodeURIComponent(internalId)}?${query}`, { signal })).agent;
   }
 
-  async generateAgentPrompt(input: { readonly scope: TenantScopeDto; readonly displayName: string; readonly kind: AgentKindDto; readonly skills?: readonly AgentToolRefDto[]; readonly tools: readonly AgentToolRefDto[]; readonly output?: StructuredOutputDto }): Promise<AgentPromptDraftDto> {
+  async generateAgentPrompt(input: { readonly scope: TenantScopeDto; readonly displayName: string; readonly kind: AgentKindDto; readonly skills?: readonly AgentToolRefDto[]; readonly tools: readonly AgentToolRefDto[]; readonly agents?: readonly AgentSubAgentRefDto[]; readonly output?: StructuredOutputDto }): Promise<AgentPromptDraftDto> {
     return (await this.request<{ draft: AgentPromptDraftDto }>('/agent-drafts/generate-prompt', {
       method: 'POST', body: JSON.stringify(input),
     })).draft;

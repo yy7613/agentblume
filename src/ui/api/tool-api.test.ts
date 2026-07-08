@@ -129,4 +129,23 @@ describe('ToolApiClient', () => {
     const savedBody = JSON.parse(String((fetcher.mock.calls[1]?.[1] as RequestInit | undefined)?.body));
     expect(savedBody).toMatchObject({ internalId: 'analysis', instructions: 'draft', tools: [{ internalId: 'tool', version: '1.0.0' }] });
   });
+
+  it('getAgentをURLエンコード済みidとscope/versionクエリ・AbortSignalで取得する', async () => {
+    const agent = { metadata: { internalId: 'a/b', version: '2.0.0' }, kind: 'normal', skills: [], tools: [] };
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ agent }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    const controller = new AbortController();
+    await expect(client.getAgent('a/b', scope, '2.0.0', controller.signal)).resolves.toMatchObject({ kind: 'normal' });
+    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/api/agents/a%2Fb?');
+    expect(url).toContain('version=2.0.0');
+    expect(init.signal).toBe(controller.signal);
+  });
+
+  it('getAgentはversion未指定ならversionクエリを付けない', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ agent: { kind: 'normal', skills: [], tools: [] } }));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    await client.getAgent('agent', scope);
+    expect(String(fetcher.mock.calls[0]?.[0])).not.toContain('version=');
+  });
 });

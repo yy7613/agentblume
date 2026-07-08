@@ -198,7 +198,7 @@ export function createApp(options?: AppOptions): App {
     queryRuns: new QueryRunsUseCase(runAdapter.repo),
     saveAgent: new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo),
     queryAgents: new QueryAgentsUseCase(agentAdapter.repo),
-    generateAgentPrompt: new GenerateAgentPromptUseCase(repo, skillAdapter.repo),
+    generateAgentPrompt: new GenerateAgentPromptUseCase(repo, skillAdapter.repo, agentAdapter.repo),
     saveSkill: new SaveSkillUseCase(skillAdapter.repo, repo),
     querySkills: new QuerySkillsUseCase(skillAdapter.repo),
     generateSkillPrompt: new GenerateSkillPromptUseCase(repo),

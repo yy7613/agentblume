@@ -15,12 +15,12 @@ import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
 import { EtlEngine } from '../etl/engine';
-import type { ModelCompletion, ModelMessage, ModelProviderPort, ModelToolCall, ModelUsage } from '../model/model-provider';
+import type { ModelCompletion, ModelMessage, ModelProviderPort, ModelToolCall, ModelToolDefinition, ModelUsage } from '../model/model-provider';
 import { AgentRunError, RunFailedError, UnsafeToolError } from './errors';
 import { failureFrom, sanitizeRunTrace } from './run-trace';
 import { assertOutputMatchesSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
 import { toModelResponseFormat, validateStructuredResponse } from './structured-output';
-import { composeAgentSystemPrompt, resolveAgentCapabilities } from './resolve-agent-capabilities';
+import { HARD_MAX_DEPTH, composeAgentSystemPrompt, resolveAgentCapabilities, resolveEffectiveSideEffect, type ResolvedSubAgent } from './resolve-agent-capabilities';
 
 export type AgentRunMode = RunMode;
 
@@ -46,6 +46,15 @@ export interface RunSavedAgentPreviewInput {
   readonly message: string;
   readonly mode: AgentRunMode;
   readonly history?: readonly AgentHistoryMessage[];
+  /** サブエージェント委譲のツリー共有バジェット（既定値で補完・上限超は既定へクランプ）。 */
+  readonly budget?: Partial<RunBudget>;
+}
+
+/** サブエージェント委譲のツリー共有バジェット。remaining系は実行中に減算される。 */
+export interface RunBudget {
+  maxDelegationDepth: number;   // 既定2・絶対上限 HARD_MAX_DEPTH(3)
+  remainingModelRounds: number; // ツリー共有・既定12
+  remainingToolCalls: number;   // ツリー共有・既定16
 }
 
 export interface AgentPreviewRun {
@@ -64,6 +73,44 @@ type RunResult = Omit<AgentPreviewRun, 'runId' | 'mode' | 'trace'>;
 
 export const MAX_TOOL_CALLS = 4;
 export const MAX_MODEL_ROUNDS = 5;
+export const DEFAULT_MAX_DELEGATION_DEPTH = 2;
+export const DEFAULT_MODEL_ROUNDS_BUDGET = 12;
+export const DEFAULT_TOOL_CALLS_BUDGET = 16;
+
+/** バジェットを既定値で補完し、上限超の値は既定（深さは HARD_MAX_DEPTH）へクランプする。 */
+function makeBudget(partial?: Partial<RunBudget>): RunBudget {
+  return {
+    maxDelegationDepth: Math.min(partial?.maxDelegationDepth ?? DEFAULT_MAX_DELEGATION_DEPTH, HARD_MAX_DEPTH),
+    remainingModelRounds: Math.min(partial?.remainingModelRounds ?? DEFAULT_MODEL_ROUNDS_BUDGET, DEFAULT_MODEL_ROUNDS_BUDGET),
+    remainingToolCalls: Math.min(partial?.remainingToolCalls ?? DEFAULT_TOOL_CALLS_BUDGET, DEFAULT_TOOL_CALLS_BUDGET),
+  };
+}
+
+/** 1ノード（1エージェント実行）の委譲コンテキスト。budget はツリーで共有する同一参照。 */
+interface NodeContext {
+  readonly scope: TenantScope;
+  readonly mode: AgentRunMode;
+  readonly budget: RunBudget;
+  readonly depth: number;
+  readonly subAgents: readonly ResolvedSubAgent[];
+}
+
+function subAgentToolDefinition(sub: ResolvedSubAgent): ModelToolDefinition {
+  return {
+    name: sub.toolName,
+    description: `${sub.ref.usage}\n(delegates to agent: ${sub.agent.metadata.displayName}@${sub.agent.metadata.version.toString()})`,
+    parameters: {
+      type: 'object',
+      properties: { message: { type: 'string', description: 'Instruction or question to delegate to the sub-agent.' } },
+      required: ['message'],
+      additionalProperties: false,
+    },
+  };
+}
+
+function summarize(text: string, max = 200): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
 
 function mergeUsage(...completions: readonly ModelCompletion[]): ModelUsage {
   const sum = (select: (usage: ModelUsage) => number | undefined): number | undefined => {
@@ -118,23 +165,42 @@ export class RunAgentPreviewUseCase {
       { tool: { internalId: input.toolId, ...(input.version !== undefined ? { version: input.version.toString() } : {}) } },
       async (trace) => {
         const tool = await this.loadTool(input.scope, input.toolId, input.version);
-        const result = await this.perform(input.systemPrompt, input.message, [tool], trace, signal);
+        const ctx: NodeContext = { scope: input.scope, mode: input.mode, budget: makeBudget(), depth: 0, subAgents: [] };
+        const result = await this.perform(input.systemPrompt, input.message, [tool], trace, ctx, signal);
         return result.tool === undefined ? { ...result, tool: this.toolRef(tool) } : result;
       },
     );
   }
 
   async executeSaved(input: RunSavedAgentPreviewInput, signal?: AbortSignal): Promise<AgentPreviewRun> {
+    const agentRepo = this.agents;
+    if (agentRepo === undefined) throw new AgentRunError('saved Agent execution is not configured');
+    const budget = makeBudget(input.budget);
     return this.executeRun(
       input.scope,
       input.mode,
       { agent: { internalId: input.agentId, ...(input.version !== undefined ? { version: input.version.toString() } : {}) } },
       async (trace) => {
         const agent = await this.loadAgent(input.scope, input.agentId, input.version);
-        const resolved = await resolveAgentCapabilities(input.scope, agent.skills, agent.tools, this.repo, this.skills);
-        return this.perform(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), input.message, resolved.tools, trace, signal, this.agentRef(agent), agent.output, input.history);
+        // 実効副作用（自Tool + 全サブの推移的最大）が read-only でなければ実行前に拒否する。
+        const effect = await resolveEffectiveSideEffect(input.scope, agent, { tools: this.repo, agents: agentRepo, skills: this.skills });
+        if (effect !== 'read-only') {
+          throw new UnsafeToolError(`Agent preview refuses ${effect} effective side-effect for agent '${agent.metadata.internalId}'`);
+        }
+        const resolved = await resolveAgentCapabilities(input.scope, agent.skills, agent.tools, this.repo, this.skills, agent.agents, agentRepo);
+        const ctx: NodeContext = { scope: input.scope, mode: input.mode, budget, depth: 0, subAgents: resolved.subAgents };
+        return this.perform(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), input.message, resolved.tools, trace, ctx, signal, this.agentRef(agent), agent.output, input.history);
       },
     );
+  }
+
+  /** サブエージェントを子Runとして入れ子実行する（ツリー共有 budget・depth+1・history なし）。 */
+  private async runChildAgent(scope: TenantScope, agent: Agent, message: string, mode: AgentRunMode, budget: RunBudget, depth: number, signal?: AbortSignal): Promise<AgentPreviewRun> {
+    return this.executeRun(scope, mode, { agent: this.agentRef(agent) }, async (trace) => {
+      const resolved = await resolveAgentCapabilities(scope, agent.skills, agent.tools, this.repo, this.skills, agent.agents, this.agents);
+      const ctx: NodeContext = { scope, mode, budget, depth, subAgents: resolved.subAgents };
+      return this.perform(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), message, resolved.tools, trace, ctx, signal, this.agentRef(agent), agent.output);
+    });
   }
 
   private async executeRun(
@@ -173,6 +239,7 @@ export class RunAgentPreviewUseCase {
     userMessage: string,
     tools: readonly Tool[],
     trace: RunTraceEvent[],
+    ctx: NodeContext,
     signal?: AbortSignal,
     agent?: RunRecord['agent'],
     output?: StructuredOutputDefinition,
@@ -183,14 +250,16 @@ export class RunAgentPreviewUseCase {
         throw new UnsafeToolError(`Agent preview refuses ${tool.sideEffect} tool '${tool.metadata.internalId}'`);
       }
     }
-    if (tools.length > 0 && !this.model.capabilities().includes('tool-calling')) {
+    const hasCallables = tools.length > 0 || ctx.subAgents.length > 0;
+    if (hasCallables && !this.model.capabilities().includes('tool-calling')) {
       throw new AgentRunError('configured model provider does not support tool-calling');
     }
     if (output !== undefined && !this.model.capabilities().includes('structured-output')) {
       throw new AgentRunError('configured model provider does not support structured output');
     }
 
-    const definitions = tools.map(toolToModelDefinition);
+    const toolDefinitions = tools.map(toolToModelDefinition);
+    const definitions = [...toolDefinitions, ...ctx.subAgents.map(subAgentToolDefinition)];
     const messages: ModelMessage[] = [
       { role: 'system', content: systemPrompt },
       // v16: 会話履歴（シナリオ検証の複数ターン）を system 直後へ注入する（後方互換: 省略時は従来どおり）。
@@ -202,6 +271,10 @@ export class RunAgentPreviewUseCase {
     const responseFormat = output === undefined ? undefined : toModelResponseFormat(output);
 
     for (let step = 1; step <= MAX_MODEL_ROUNDS; step += 1) {
+      // ツリー共有バジェット: model round 発行前に減算し、枯渇でこのノードのRunを失敗させる。
+      if ((ctx.budget.remainingModelRounds -= 1) < 0) {
+        throw new AgentRunError('run budget exhausted: model rounds');
+      }
       trace.push({ sequence: trace.length + 1, kind: 'model-request', step, toolNames: definitions.map((definition) => definition.name) });
       const completion = await this.model.complete({
         messages,
@@ -232,7 +305,16 @@ export class RunAgentPreviewUseCase {
 
       messages.push({ role: 'assistant', content: completion.message.content, toolCalls: calls });
       for (const call of calls) {
-        const selectedIndex = definitions.findIndex((definition) => definition.name === call.name);
+        // ツール呼び出し（委譲含む）発行前に共有バジェットを減算する。
+        if ((ctx.budget.remainingToolCalls -= 1) < 0) {
+          throw new AgentRunError('run budget exhausted: tool calls');
+        }
+        const sub = ctx.subAgents.find((candidate) => candidate.toolName === call.name);
+        if (sub !== undefined) {
+          messages.push(await this.delegate(sub, call, trace, ctx, signal));
+          continue;
+        }
+        const selectedIndex = toolDefinitions.findIndex((definition) => definition.name === call.name);
         const tool = selectedIndex < 0 ? undefined : tools[selectedIndex];
         if (tool === undefined) throw new AgentRunError(`model requested unknown tool: ${call.name}`);
         messages.push(this.executeTool(tool, call, trace));
@@ -240,6 +322,34 @@ export class RunAgentPreviewUseCase {
       }
     }
     throw new AgentRunError(`model round limit exceeded: maximum ${MAX_MODEL_ROUNDS}`);
+  }
+
+  /** サブエージェント委譲。子Runを入れ子実行し、親トレースへ agent_call を記録してツール結果を返す。 */
+  private async delegate(sub: ResolvedSubAgent, call: ModelToolCall, trace: RunTraceEvent[], ctx: NodeContext, signal?: AbortSignal): Promise<ModelMessage> {
+    trace.push({ sequence: trace.length + 1, kind: 'tool-call', name: call.name, arguments: call.arguments });
+    const agentRef = { internalId: sub.agent.metadata.internalId, version: sub.agent.metadata.version.toString() };
+    const record = (childRunId: string, ok: boolean, summary: string): ModelMessage => {
+      trace.push({ sequence: trace.length + 1, kind: 'agent_call', toolName: sub.toolName, agentRef, childRunId, ok, summary });
+      return { role: 'tool', content: summary, toolCallId: call.id };
+    };
+
+    const message = call.arguments['message'];
+    if (typeof message !== 'string' || message.trim() === '') {
+      return record('', false, "[delegation failed: 'message' must be a non-empty string]");
+    }
+    if (ctx.depth >= ctx.budget.maxDelegationDepth) {
+      return record('', false, `[delegation failed: max delegation depth ${ctx.budget.maxDelegationDepth} reached]`);
+    }
+    try {
+      const child = await this.runChildAgent(ctx.scope, sub.agent, message, ctx.mode, ctx.budget, ctx.depth + 1, signal);
+      const content = child.structuredResponse !== undefined ? JSON.stringify(child.structuredResponse) : child.response;
+      trace.push({ sequence: trace.length + 1, kind: 'agent_call', toolName: sub.toolName, agentRef, childRunId: child.runId, ok: true, summary: summarize(content) });
+      return { role: 'tool', content, toolCallId: call.id };
+    } catch (error) {
+      const childRunId = error instanceof RunFailedError ? error.runId : '';
+      const detail = error instanceof Error ? error.message : 'delegation failed';
+      return record(childRunId, false, `[delegation failed: ${detail}]`);
+    }
   }
 
   private executeTool(tool: Tool, call: ModelToolCall, trace: RunTraceEvent[]): ModelMessage {

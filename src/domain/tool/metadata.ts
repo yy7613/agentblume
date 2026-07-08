@@ -29,6 +29,7 @@ export interface ToolSummary {
   readonly displayName: string;
   readonly latestVersion: SemVer;
   readonly state: PublishState;
+  readonly sideEffect: SideEffect;
 }
 
 /** 有効な PublishState の集合（実行時検証用）。 */

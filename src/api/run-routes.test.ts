@@ -86,6 +86,39 @@ describe('POST /runs', () => {
     expect(list.json().runs[0]).toMatchObject({ agent: { internalId: 'score-agent', version: '1.0.0' }, tools: [{ internalId: 'other-tool' }, { internalId: 'score-tool' }] });
   });
 
+  it('サブエージェント委譲を入れ子実行し、親traceのagent_callから子Runを辿れる', async () => {
+    await app.saveAgent.execute({
+      scope, internalId: 'scorer', workingName: 'scorer', displayName: 'Scorer', publishName: 'scorer', owner: 'owner', kind: 'normal', systemPrompt: 'Score with the tool.',
+      tools: [{ internalId: 'score-tool', version: SemVer.parse('1.0.0') }],
+    });
+    await app.saveAgent.execute({
+      scope, internalId: 'coordinator', workingName: 'coord', displayName: 'Coordinator', publishName: 'coordinator', owner: 'owner', kind: 'normal', systemPrompt: 'Delegate scoring.',
+      tools: [], agents: [{ internalId: 'scorer', version: SemVer.parse('1.0.0'), usage: 'delegate scoring requests' }],
+    });
+    model.enqueue(
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'd1', name: 'ask_scorer', arguments: { message: 'score Alice' } }] }, finishReason: 'tool_calls' },
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 't1', name: 'score_lookup', arguments: { name: 'Alice', score: 42 } }] }, finishReason: 'tool_calls' },
+      { message: { role: 'assistant', content: 'Alice scored 42.' }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: 'Final: Alice 42.' }, finishReason: 'stop' },
+    );
+
+    const response = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, agent: { internalId: 'coordinator', version: '1.0.0' }, message: 'Score Alice', mode: 'preview',
+    } });
+    expect(response.statusCode).toBe(200);
+    const run = response.json().run;
+    expect(run.response).toBe('Final: Alice 42.');
+    // ルートには委譲ツール ask_scorer が提示される。
+    expect(model.requests[0]?.tools?.map((tool: { name: string }) => tool.name)).toEqual(['ask_scorer']);
+    // 親traceの agent_call から子Runへ辿れる。
+    const agentCall = run.trace.find((event: { kind: string }) => event.kind === 'agent_call');
+    expect(agentCall).toMatchObject({ toolName: 'ask_scorer', ok: true, agentRef: { internalId: 'scorer', version: '1.0.0' } });
+    const childTrace = await server.inject({ method: 'GET', url: `/runs/${agentCall.childRunId}/trace?tenantId=tenant&workspaceId=workspace` });
+    expect(childTrace.statusCode).toBe(200);
+    expect(childTrace.json().run).toMatchObject({ status: 'succeeded', agent: { internalId: 'scorer', version: '1.0.0' } });
+    expect(childTrace.json().run.trace.some((event: { kind: string }) => event.kind === 'tool-result')).toBe(true);
+  });
+
   it('Toolを持たない保存済みAgentの直接応答を記録する', async () => {
     await app.saveAgent.execute({
       scope, internalId: 'chat-agent', workingName: 'chat', displayName: 'Chat Agent', publishName: 'chat_agent', owner: 'owner', kind: 'normal', systemPrompt: 'Answer directly.', tools: [],

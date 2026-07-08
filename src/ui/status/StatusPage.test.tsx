@@ -32,4 +32,21 @@ describe('StatusPage', () => {
     await userEvent.click(await screen.findByRole('button', { name: /agent/ }));
     expect(await screen.findByText(/"answer": "done"/)).toBeTruthy();
   });
+
+  it('agent_callイベントのchild runボタンから子Runトレースへ辿る', async () => {
+    const parentSummary = { runId: 'run-parent', status: 'succeeded', mode: 'preview', agent: { internalId: 'coordinator', version: '1.0.0' }, startedAt: '2026-07-03T00:00:00Z', response: 'ok', traceEventCount: 2 };
+    const parent = { ...parentSummary, scope: { tenantId: 'local', workspaceId: 'default' }, trace: [
+      { sequence: 1, kind: 'agent_call', toolName: 'ask_scorer', agentRef: { internalId: 'scorer', version: '1.0.0' }, childRunId: 'run-child', ok: true, summary: 'scored 42' },
+      { sequence: 2, kind: 'model-response', content: 'ok' },
+    ] };
+    const child = { runId: 'run-child', status: 'succeeded', mode: 'preview', scope: { tenantId: 'local', workspaceId: 'default' }, agent: { internalId: 'scorer', version: '1.0.0' }, startedAt: '2026-07-03T00:00:00Z', response: 'scored 42', trace: [{ sequence: 1, kind: 'model-response', content: 'scored 42' }] };
+    const getRunTrace = vi.fn().mockResolvedValueOnce(parent).mockResolvedValueOnce(child);
+    const client = { listRuns: vi.fn().mockResolvedValue([parentSummary]), getRunTrace } as unknown as ToolApiClient;
+    render(<StatusPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /coordinator/ }));
+    expect(await screen.findByText(/ask_scorer/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'child run' }));
+    await waitFor(() => expect(getRunTrace).toHaveBeenLastCalledWith('run-child', { tenantId: 'local', workspaceId: 'default' }));
+    expect(await screen.findByText('run-child')).toBeTruthy();
+  });
 });

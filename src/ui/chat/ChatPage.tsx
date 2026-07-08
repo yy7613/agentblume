@@ -219,6 +219,8 @@ function traceLabel(event: RunTraceEventDto, text: Translate): string {
       return `${text('Result', '結果')} ${event.name} · ${event.nodes.map((node) => `${node.nodeId}:${node.rowCount}`).join(', ')}`;
     case 'model-response':
       return text('Model response', 'モデル応答');
+    case 'agent_call':
+      return `${text('Delegated', '委譲')} ${event.toolName} → ${event.agentRef.internalId}@${event.agentRef.version}${event.ok ? '' : ` · ${text('failed', '失敗')}`}`;
     case 'error':
       return `${event.code}: ${event.message}`;
   }

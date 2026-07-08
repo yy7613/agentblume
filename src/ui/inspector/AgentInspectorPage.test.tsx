@@ -13,6 +13,7 @@ const definition = {
   kind: 'normal', systemPrompt: 'Use tools.',
   skills: [{ internalId: 'skill-a', version: '1.0.0' }],
   tools: [{ internalId: 'tool-x', version: '2.0.0' }],
+  agents: [],
 } as SerializedAgentDto;
 
 const run: AgentPreviewRunDto = {
@@ -88,5 +89,58 @@ describe('AgentInspectorPage', () => {
     await screen.findByRole('option', { name: /Agent/ });
     await userEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect(await screen.findByText('No tools were called.')).toBeTruthy();
+  });
+
+  it('実行失敗をエラー吹き出しと所要時間で表示する（非Error理由）', async () => {
+    const client = makeClient({ runSavedAgent: vi.fn().mockRejectedValue('kaboom') });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText('Request failed')).toBeTruthy();
+    expect(screen.getByText('Error')).toBeTruthy();
+  });
+
+  it('トレース詳細でerror・空応答を整形し、長い引数を切り詰める', async () => {
+    const run: AgentPreviewRunDto = {
+      runId: 'run-t', mode: 'preview', response: '', usage: {},
+      trace: [
+        { sequence: 1, kind: 'model-request', step: 1, toolNames: ['t'] },
+        { sequence: 2, kind: 'tool-call', name: 't', arguments: { q: 'x'.repeat(200) } },
+        { sequence: 3, kind: 'model-response', content: '' },
+        { sequence: 4, kind: 'error', code: 'E_Y', message: 'boom' },
+      ],
+    };
+    const client = makeClient({ runSavedAgent: vi.fn().mockResolvedValue(run) });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText('E_Y: boom')).toBeTruthy();
+    expect(screen.getByText('(empty)')).toBeTruthy();
+    expect(screen.getAllByText(/…/).length).toBeGreaterThan(0);
+  });
+
+  it('構造化出力あり・Skill/Tool未設定の能力バーを表示する', async () => {
+    const def = { ...definition, skills: [], tools: [], output: { name: 'result', fields: [] } } as SerializedAgentDto;
+    const client = makeClient({ getAgent: vi.fn().mockResolvedValue(def) });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    expect(await screen.findByText(/Structured output/)).toBeTruthy();
+    expect(screen.getAllByText('none').length).toBe(2);
+  });
+
+  it('Agentが無い場合は保存を促し、getAgentを呼ばない', async () => {
+    const getAgent = vi.fn();
+    const client = { listAgents: vi.fn().mockResolvedValue([]), getAgent, runSavedAgent: vi.fn() } as unknown as ToolApiClient;
+    render(<AgentInspectorPage client={client} />);
+    expect(await screen.findByText('Save an Agent in Agent Builder first.')).toBeTruthy();
+    expect(getAgent).not.toHaveBeenCalled();
+  });
+
+  it('getAgent失敗時は能力バーを出さずに動作する', async () => {
+    const client = makeClient({ getAgent: vi.fn().mockRejectedValue(new Error('nope')) });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    expect(screen.queryByText('skill-a')).toBeNull();
+    expect(screen.queryByText(/Structured output/)).toBeNull();
   });
 });

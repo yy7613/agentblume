@@ -76,6 +76,7 @@ export class InMemoryToolRepository implements ToolRepository {
       displayName: data.metadata.displayName,
       latestVersion: version,
       state: data.metadata.state,
+      sideEffect: data.sideEffect,
     }));
   }
 

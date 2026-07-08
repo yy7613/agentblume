@@ -97,6 +97,9 @@ textarea { resize: vertical; font-family: "SFMono-Regular", Consolas, monospace;
 .trace-event > span { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: #dce2ee; color: #536078; font-weight: 800; }
 .trace-event p { margin: 3px 0; overflow-wrap: anywhere; }
 .trace-event.tool { background: #e8f4f0; }
+.trace-event.agent { background: #eef0ff; color: #37417f; }
+.trace-event.agent small { display: block; color: #6a72a8; margin-top: 3px; }
+.trace-event .run-link { margin-top: 6px; font-size: 10px; padding: 3px 8px; height: auto; }
 .trace-event.error { background: #fce8ea; color: #9f3040; }
 .trace-event code { display: block; margin-top: 4px; color: #326554; }
 .panel-title { display: flex; justify-content: space-between; align-items: center; }
@@ -153,6 +156,11 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .agent-tool-option span, .agent-tool-option strong, .agent-tool-option code { display: block; }
 .agent-tool-option code { color: #758198; font-size: 9px; margin-top: 3px; }
 .agent-tool-option small { color: #68758f; }
+.agent-subagent-hint { color: #8490a5; font-size: 10px; margin: -6px 0 8px; line-height: 1.4; }
+.agent-subagent-option { display: grid; gap: 6px; }
+.subagent-usage { width: 100%; font-size: 12px; }
+.agent-effect { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 11px; color: #56617a; margin: -2px 0 10px; }
+.agent-effect small { color: #8a94a8; }
 .prompt-editor-card textarea { width: 100%; min-height: 520px; }
 .prompt-editor-card > p { color: #758198; font-size: 11px; line-height: 1.5; }
 .agent-run-panel { border-top: 1px solid #e3e7ef; margin-top: 18px; padding-top: 17px; }

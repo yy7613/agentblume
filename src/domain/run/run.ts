@@ -13,6 +13,7 @@ export type RunTraceEvent =
   | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }
   | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: string; readonly nodes: readonly RunNodeOutput[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[] }
   | { readonly sequence: number; readonly kind: 'model-response'; readonly content: string }
+  | { readonly sequence: number; readonly kind: 'agent_call'; readonly toolName: string; readonly agentRef: { readonly internalId: string; readonly version: string }; readonly childRunId: string; readonly ok: boolean; readonly summary: string }
   | { readonly sequence: number; readonly kind: 'error'; readonly code: string; readonly message: string };
 
 export interface RunUsage {

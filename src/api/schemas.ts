@@ -69,6 +69,12 @@ const agentToolRefSchema = z.object({
   version: z.string().min(1),
 });
 
+const agentSubAgentRefSchema = z.object({
+  internalId: z.string().min(1),
+  version: z.string().min(1),
+  usage: z.string().min(1),
+});
+
 const structuredOutputSchema = z.object({
   name: z.string().min(1).max(64),
   fields: z.array(z.object({
@@ -91,6 +97,7 @@ export const saveAgentBodySchema = z.object({
   systemPrompt: z.string().min(1),
   skills: z.array(agentToolRefSchema).default([]),
   tools: z.array(agentToolRefSchema),
+  agents: z.array(agentSubAgentRefSchema).default([]),
   output: structuredOutputSchema.optional(),
   bump: z.enum(['major', 'minor', 'patch']).optional(),
   state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
@@ -103,6 +110,7 @@ export const agentDraftPromptBodySchema = z.object({
   kind: z.enum(AGENT_KINDS),
   skills: z.array(agentToolRefSchema).default([]),
   tools: z.array(agentToolRefSchema),
+  agents: z.array(agentSubAgentRefSchema).default([]),
   output: structuredOutputSchema.optional(),
 });
 

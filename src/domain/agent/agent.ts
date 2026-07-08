@@ -28,12 +28,20 @@ export interface AgentSkillRef {
   readonly version: SemVer;
 }
 
+export interface AgentSubAgentRef {
+  readonly internalId: string;
+  readonly version: SemVer;
+  /** 委譲基準（非空）。LLMへ提示するサブエージェント委譲ツールの説明文になる。 */
+  readonly usage: string;
+}
+
 export interface Agent {
   readonly metadata: AgentMetadata;
   readonly kind: AgentKind;
   readonly systemPrompt: string;
   readonly skills: readonly AgentSkillRef[];
   readonly tools: readonly AgentToolRef[];
+  readonly agents: readonly AgentSubAgentRef[];
   readonly output?: StructuredOutputDefinition;
 }
 
@@ -43,7 +51,13 @@ export interface CreateAgentProps {
   readonly systemPrompt: string;
   readonly skills?: readonly AgentSkillRef[];
   readonly tools: readonly AgentToolRef[];
+  readonly agents?: readonly AgentSubAgentRef[];
   readonly output?: StructuredOutputDefinition;
+}
+
+/** サブエージェント委譲ツールの名前。LLMへは ask_{publishName} として提示する。 */
+export function subAgentToolName(publishName: string): string {
+  return `ask_${publishName}`;
 }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
@@ -99,6 +113,24 @@ export function createAgent(props: CreateAgentProps): Agent {
     return { internalId: tool.internalId, version: tool.version };
   });
 
+  const seenSubAgents = new Set<string>();
+  const agents = (props.agents ?? []).map((sub, index) => {
+    nonEmpty(sub.internalId, `agents.${index}.internalId`);
+    if (!(sub.version instanceof SemVer)) {
+      throw new AgentValidationError(`createAgent: agents.${index}.version must be a SemVer instance`);
+    }
+    nonEmpty(sub.usage, `agents.${index}.usage`);
+    if (sub.internalId === metadata.internalId) {
+      throw new AgentValidationError(`createAgent: agent cannot reference itself as a sub-agent: ${sub.internalId}`);
+    }
+    // 同一 internalId は（バージョン違いでも）1参照に限る。
+    if (seenSubAgents.has(sub.internalId)) {
+      throw new AgentValidationError(`createAgent: duplicate sub-agent reference: ${sub.internalId}`);
+    }
+    seenSubAgents.add(sub.internalId);
+    return { internalId: sub.internalId, version: sub.version, usage: sub.usage };
+  });
+
   return {
     metadata: {
       internalId: metadata.internalId,
@@ -114,6 +146,7 @@ export function createAgent(props: CreateAgentProps): Agent {
     systemPrompt: props.systemPrompt,
     skills,
     tools,
+    agents,
     ...(props.output !== undefined ? { output: createStructuredOutput(props.output) } : {}),
   };
 }

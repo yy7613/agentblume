@@ -127,6 +127,7 @@ export class SqliteToolRepository implements ToolRepository {
         displayName: tool.metadata.displayName,
         latestVersion: tool.metadata.version,
         state: tool.metadata.state,
+        sideEffect: tool.sideEffect,
       };
     });
   }
