@@ -27,7 +27,7 @@ const run: AgentPreviewRunDto = {
   ],
 };
 
-function makeClient(overrides: Partial<Record<'runSavedAgent' | 'getAgent' | 'listAgents', unknown>> = {}) {
+function makeClient(overrides: Partial<Record<'runSavedAgent' | 'getAgent' | 'listAgents' | 'evaluate', unknown>> = {}) {
   return {
     listAgents: vi.fn().mockResolvedValue([{ internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '1.2.0', kind: 'normal', state: 'draft' }]),
     getAgent: vi.fn().mockResolvedValue(definition),
@@ -45,6 +45,22 @@ describe('AgentInspectorPage', () => {
     expect(await screen.findByText('skill-a')).toBeTruthy();
     expect(screen.getByText('tool-x')).toBeTruthy();
     await waitFor(() => expect(client.getAgent).toHaveBeenCalledWith('agent', expect.anything(), undefined, expect.any(AbortSignal)));
+  });
+
+  it('応答をMastra Evalsで評価しスコアバーを表示する（v20）', async () => {
+    const evaluate = vi.fn().mockResolvedValue({ scores: [{ metric: 'keyword-coverage', score: 0.83 }, { metric: 'completeness', score: 0.66 }], average: 0.75 });
+    const client = makeClient({ evaluate });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    const evalButton = await screen.findByRole('button', { name: 'Evaluate response' });
+    await userEvent.click(evalButton);
+    await waitFor(() => expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({ output: '42 rows matched' })));
+    // 直前のユーザー発話が input として渡る。
+    expect((evaluate.mock.calls[0]?.[0] as { input: string }).input).toContain('Call your tools');
+    expect(await screen.findByText('keyword-coverage')).toBeTruthy();
+    expect(screen.getByText('completeness')).toBeTruthy();
+    expect(screen.getByText(/Average 75%/)).toBeTruthy();
   });
 
   it('実行するとトークン・所要時間・呼ばれたTool・トレースを観測表示する', async () => {

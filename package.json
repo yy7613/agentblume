@@ -36,6 +36,8 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
+    "@mastra/core": "^1.50.1",
+    "@mastra/evals": "^1.5.1",
     "@xyflow/react": "^12.11.1",
     "fastify": "^5.9.0",
     "react": "^19.2.7",

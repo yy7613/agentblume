@@ -337,3 +337,13 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .ins-trace-item.error .ins-kind, .ins-trace-item.error .ins-detail { color: #b23548; }
 .ins-detail { color: #64708b; }
 @media (max-width: 1050px) { .ins-metrics { grid-template-columns: repeat(2, 1fr); } }
+
+/* Mastra Evals による応答評価スコア表示 */
+.ins-eval-btn { height: auto; padding: 6px 12px; font-size: 11px; }
+.ins-eval-scores { display: grid; gap: 5px; }
+.ins-eval-avg { font-size: 11px; font-weight: 750; color: #37417f; margin-bottom: 2px; }
+.ins-eval-row { display: grid; grid-template-columns: 130px 1fr 38px; align-items: center; gap: 8px; font-size: 11px; color: #5c6880; }
+.ins-eval-metric { font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; color: #48557a; overflow-wrap: anywhere; }
+.ins-eval-bar { height: 7px; border-radius: 99px; background: #e8ebf3; overflow: hidden; }
+.ins-eval-bar > i { display: block; height: 100%; background: linear-gradient(90deg, #6474ff, #4557d6); border-radius: 99px; }
+.ins-eval-val { text-align: right; font-weight: 700; color: #48557a; }

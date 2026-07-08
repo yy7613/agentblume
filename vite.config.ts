@@ -20,6 +20,7 @@ export default defineConfig({
       '/personas': apiTarget,
       '/scenarios': apiTarget,
       '/scenario-runs': apiTarget,
+      '/evaluations': apiTarget,
     },
   },
   build: { outDir: 'dist/ui', emptyOutDir: true },

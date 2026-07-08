@@ -8,6 +8,9 @@
 import { buildServer } from './api/server';
 import { createApp } from './composition/root';
 
+// Mastra Evals(@mastra/core)同梱の外部テレメトリを無効化する（オフラインファースト）。
+process.env['MASTRA_TELEMETRY_DISABLED'] ??= 'true';
+
 const app = createApp();
 const server = buildServer(app, { logger: true });
 const port = Number(process.env['AGENTCONTEXT_PORT'] ?? 3030);

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, RunTraceEventDto, SerializedAgentDto } from '../api/types';
+import type { AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, EvaluationResultDto, RunTraceEventDto, SerializedAgentDto } from '../api/types';
 import { useI18n } from '../i18n';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
@@ -34,6 +34,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   const [definition, setDefinition] = useState<SerializedAgentDto>();
   const [message, setMessage] = useState('Call your tools if useful, then explain the result.');
   const [turns, setTurns] = useState<readonly Turn[]>([]);
+  const [evaluations, setEvaluations] = useState<ReadonlyMap<number, EvaluationResultDto | 'loading' | 'error'>>(new Map());
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string>();
   const threadRef = useRef<HTMLDivElement>(null);
@@ -81,6 +82,18 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
     }
   }
 
+  // 応答をMastra Evalsで採点する（turn単位・入力は直前のユーザー発話）。
+  async function evaluate(index: number, inputText: string, outputText: string): Promise<void> {
+    if (inputText.trim() === '' || outputText.trim() === '') return;
+    setEvaluations((prev) => new Map(prev).set(index, 'loading'));
+    try {
+      const result = await client.evaluate({ scope, input: inputText, output: outputText });
+      setEvaluations((prev) => new Map(prev).set(index, result));
+    } catch {
+      setEvaluations((prev) => new Map(prev).set(index, 'error'));
+    }
+  }
+
   const suggestions = [
     text('Which tools do you call for this request?', 'この要求ではどのツールを呼ぶ？'),
     text('Run the tool and summarize each column.', 'ツールを実行して各列を要約して。'),
@@ -97,7 +110,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
             <p>{text('Run an agent and watch tools, tokens, and timing.', 'エージェントを実行し、ツール・トークン・所要時間を観測します。')}</p>
           </div>
         </div>
-        <button type="button" className="cc-new" onClick={() => setTurns([])} disabled={turns.length === 0}>
+        <button type="button" className="cc-new" onClick={() => { setTurns([]); setEvaluations(new Map()); }} disabled={turns.length === 0}>
           {text('New chat', '新しいチャット')}
         </button>
       </header>
@@ -128,7 +141,13 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
               )}
             </div>
           ) : (
-            turns.map((turn, index) => <TurnView key={index} turn={turn} agentName={agentName} text={text} />)
+            turns.map((turn, index) => {
+              const inputText = turn.role === 'assistant' ? lastUserBefore(turns, index) : '';
+              return <TurnView key={index} turn={turn} agentName={agentName} text={text}
+                inputText={inputText}
+                evaluation={evaluations.get(index)}
+                onEvaluate={() => { if (turn.role === 'assistant') void evaluate(index, inputText, turn.run.response); }} />;
+            })
           )}
           {busy && turns.length > 0 && (
             <div className="cc-msg assistant">
@@ -186,7 +205,20 @@ function CapGroup({ label, tone, items, text }: { readonly label: string; readon
   );
 }
 
-function TurnView({ turn, agentName, text }: { readonly turn: Turn; readonly agentName: string; readonly text: Translate }) {
+function lastUserBefore(turns: readonly Turn[], index: number): string {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const turn = turns[i];
+    if (turn?.role === 'user') return turn.text;
+  }
+  return '';
+}
+
+function TurnView({ turn, agentName, text, inputText, evaluation, onEvaluate }: {
+  readonly turn: Turn; readonly agentName: string; readonly text: Translate;
+  readonly inputText: string;
+  readonly evaluation: EvaluationResultDto | 'loading' | 'error' | undefined;
+  readonly onEvaluate: () => void;
+}) {
   if (turn.role === 'user') {
     return (
       <div className="cc-msg user">
@@ -256,6 +288,27 @@ function TurnView({ turn, agentName, text }: { readonly turn: Turn; readonly age
             ))}
           </ol>
         </details>
+
+        <div className="ins-section ins-eval">
+          <h4>{text('Evaluation', '評価')} <small>Mastra Evals</small></h4>
+          {evaluation === undefined && (
+            <button type="button" className="secondary ins-eval-btn" disabled={inputText === ''} onClick={onEvaluate}>{text('Evaluate response', '応答を評価')}</button>
+          )}
+          {evaluation === 'loading' && <p className="ins-none">{text('Scoring…', '採点中…')}</p>}
+          {evaluation === 'error' && <p className="ins-none">{text('Evaluation failed.', '評価に失敗しました。')}</p>}
+          {typeof evaluation === 'object' && (
+            <div className="ins-eval-scores">
+              <div className="ins-eval-avg">{text('Average', '平均')} {Math.round(evaluation.average * 100)}%</div>
+              {evaluation.scores.map((score) => (
+                <div className="ins-eval-row" key={score.metric} title={score.reason}>
+                  <span className="ins-eval-metric">{score.metric}</span>
+                  <span className="ins-eval-bar"><i style={{ width: `${Math.round(score.score * 100)}%` }} /></span>
+                  <span className="ins-eval-val">{Math.round(score.score * 100)}%</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

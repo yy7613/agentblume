@@ -16,6 +16,7 @@ import type {
   AgentKindDto,
   AgentToolRefDto,
   AgentSubAgentRefDto,
+  EvaluationResultDto,
   AgentSummaryDto,
   RunSavedAgentDto,
   StructuredOutputDto,
@@ -184,6 +185,12 @@ export class ToolApiClient {
     return (await this.request<{ agent: SerializedAgentDto }>(`/personas/${encodeURIComponent(internalId)}/register-agent`, {
       method: 'POST', body: JSON.stringify(input),
     })).agent;
+  }
+
+  async evaluate(input: { readonly scope: TenantScopeDto; readonly input: string; readonly output: string; readonly reference?: string }, signal?: AbortSignal): Promise<EvaluationResultDto> {
+    return (await this.request<{ evaluation: EvaluationResultDto }>('/evaluations', {
+      method: 'POST', body: JSON.stringify(input), signal,
+    })).evaluation;
   }
 
   async saveScenario(input: SaveScenarioDto): Promise<SerializedScenarioDto> {

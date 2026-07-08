@@ -50,6 +50,8 @@ import { QueryScenarioRunsUseCase } from '../application/validation/query-scenar
 import { QueryScenariosUseCase } from '../application/validation/query-scenarios';
 import { RunScenarioUseCase } from '../application/validation/run-scenario';
 import { RegisterPseudoUserAgentUseCase } from '../application/validation/register-pseudo-user-agent';
+import { EvaluateAgentRunUseCase } from '../application/evaluation/evaluate-agent-run';
+import { MastraEvalsEvaluator } from '../adapters/evaluation/mastra-evals-evaluator';
 import { SavePersonaUseCase } from '../application/validation/save-persona';
 import { SaveScenarioUseCase } from '../application/validation/save-scenario';
 import type { PersonaRepository } from '../domain/validation/persona-repository';
@@ -99,6 +101,7 @@ export interface App {
   readonly queryScenarios: QueryScenariosUseCase;
   readonly runScenario: RunScenarioUseCase;
   readonly queryScenarioRuns: QueryScenarioRunsUseCase;
+  readonly evaluateAgentRun: EvaluateAgentRunUseCase;
   readonly draftTool: DraftToolUseCase;
   readonly saveTool: SaveToolUseCase;
   readonly getTool: GetToolUseCase;
@@ -211,6 +214,8 @@ export function createApp(options?: AppOptions): App {
     queryScenarios: new QueryScenariosUseCase(scenarioAdapter.repo),
     runScenario: new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo),
     queryScenarioRuns: new QueryScenarioRunsUseCase(scenarioRunAdapter.repo),
+    // 評価は決定的（Mastra code系スコアラー・オフライン）でスコープ非依存のため profile 非依存に配線する。
+    evaluateAgentRun: new EvaluateAgentRunUseCase(new MastraEvalsEvaluator()),
     draftTool: new DraftToolUseCase(engine),
     saveTool: new SaveToolUseCase(repo, engine),
     getTool: new GetToolUseCase(repo),

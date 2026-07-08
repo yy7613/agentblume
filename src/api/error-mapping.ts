@@ -19,6 +19,7 @@ import { RunNotFoundError } from '../domain/run/errors';
 import { AgentNotFoundError, AgentValidationError, AgentVersionConflictError } from '../domain/agent/errors';
 import { SkillNotFoundError, SkillValidationError, SkillVersionConflictError } from '../domain/skill/errors';
 import { PersonaNotFoundError, ScenarioNotFoundError, ScenarioRunNotFoundError, ValidationDomainError } from '../domain/validation/errors';
+import { EvaluationDomainError } from '../domain/evaluation/errors';
 
 /** HTTP エラーレスポンス表現。 */
 export interface HttpError {
@@ -87,6 +88,9 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof ScenarioNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof ScenarioRunNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof ValidationDomainError) return httpError(400, err.code, err.message);
+
+  // 評価ドメイン: 入力不正など不変条件違反は 400。
+  if (err instanceof EvaluationDomainError) return httpError(400, err.code, err.message);
 
   if (err instanceof UnsafeToolError) return httpError(403, err.code, err.message);
   if (err instanceof ToolArgumentsError) return httpError(422, err.code, err.message);

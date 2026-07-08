@@ -90,6 +90,9 @@ export interface StructuredOutputDto {
   readonly name: string;
   readonly fields: readonly StructuredOutputFieldDto[];
 }
+export interface EvaluationScoreDto { readonly metric: string; readonly score: number; readonly reason?: string }
+export interface EvaluationResultDto { readonly scores: readonly EvaluationScoreDto[]; readonly average: number }
+
 export interface AgentToolRefDto { readonly internalId: string; readonly version: string }
 export interface AgentSubAgentRefDto { readonly internalId: string; readonly version: string; readonly usage: string }
 export interface SerializedAgentDto {

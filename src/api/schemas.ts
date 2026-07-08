@@ -265,6 +265,14 @@ export const agentListQuerySchema = scopeQuerySchema.extend({
   kind: z.enum(AGENT_KINDS).optional(),
 });
 
+/** POST /evaluations の body（v20）。 */
+export const evaluateBodySchema = z.object({
+  scope: tenantScopeSchema.optional(),
+  input: z.string().min(1),
+  output: z.string().min(1),
+  reference: z.string().optional(),
+});
+
 /** POST /personas/:id/register-agent の body（v18）。 */
 export const registerPseudoUserAgentBodySchema = z.object({
   scope: tenantScopeSchema,
