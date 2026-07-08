@@ -52,6 +52,17 @@ import { RunScenarioUseCase } from '../application/validation/run-scenario';
 import { RegisterPseudoUserAgentUseCase } from '../application/validation/register-pseudo-user-agent';
 import { EvaluateAgentRunUseCase } from '../application/evaluation/evaluate-agent-run';
 import { MastraEvalsEvaluator } from '../adapters/evaluation/mastra-evals-evaluator';
+import { InMemoryWikiRepository } from '../adapters/storage/in-memory-wiki-repository';
+import { SqliteWikiRepository } from '../adapters/storage/sqlite-wiki-repository';
+import { InMemoryMemoryProposalRepository } from '../adapters/storage/in-memory-memory-proposal-repository';
+import { SqliteMemoryProposalRepository } from '../adapters/storage/sqlite-memory-proposal-repository';
+import { SaveWikiPageUseCase } from '../application/memory/save-wiki-page';
+import { QueryWikiUseCase } from '../application/memory/query-wiki';
+import { ReflectRunUseCase } from '../application/memory/reflect-run';
+import { ListProposalsUseCase } from '../application/memory/list-proposals';
+import { ReviewProposalUseCase } from '../application/memory/review-proposal';
+import type { WikiRepository } from '../domain/memory/wiki-repository';
+import type { MemoryProposalRepository } from '../domain/memory/memory-proposal-repository';
 import { SavePersonaUseCase } from '../application/validation/save-persona';
 import { SaveScenarioUseCase } from '../application/validation/save-scenario';
 import type { PersonaRepository } from '../domain/validation/persona-repository';
@@ -86,6 +97,8 @@ export interface App {
   readonly personaRepo: PersonaRepository;
   readonly scenarioRepo: ScenarioRepository;
   readonly scenarioRunRepo: ScenarioRunRepository;
+  readonly wikiRepo: WikiRepository;
+  readonly memoryProposalRepo: MemoryProposalRepository;
   readonly runAgentPreview: RunAgentPreviewUseCase;
   readonly queryRuns: QueryRunsUseCase;
   readonly saveAgent: SaveAgentUseCase;
@@ -102,6 +115,11 @@ export interface App {
   readonly runScenario: RunScenarioUseCase;
   readonly queryScenarioRuns: QueryScenarioRunsUseCase;
   readonly evaluateAgentRun: EvaluateAgentRunUseCase;
+  readonly saveWikiPage: SaveWikiPageUseCase;
+  readonly queryWiki: QueryWikiUseCase;
+  readonly reflectRun: ReflectRunUseCase;
+  readonly listProposals: ListProposalsUseCase;
+  readonly reviewProposal: ReviewProposalUseCase;
   readonly draftTool: DraftToolUseCase;
   readonly saveTool: SaveToolUseCase;
   readonly getTool: GetToolUseCase;
@@ -175,6 +193,12 @@ export function createApp(options?: AppOptions): App {
   const scenarioRunAdapter = profile === 'local'
     ? (() => { const sqlite = new SqliteScenarioRunRepository(path ?? ':memory:'); return { repo: sqlite as ScenarioRunRepository, close: () => sqlite.close() }; })()
     : { repo: new InMemoryScenarioRunRepository() as ScenarioRunRepository, close: () => {} };
+  const wikiAdapter = profile === 'local'
+    ? (() => { const sqlite = new SqliteWikiRepository(path ?? ':memory:'); return { repo: sqlite as WikiRepository, close: () => sqlite.close() }; })()
+    : { repo: new InMemoryWikiRepository() as WikiRepository, close: () => {} };
+  const memoryProposalAdapter = profile === 'local'
+    ? (() => { const sqlite = new SqliteMemoryProposalRepository(path ?? ':memory:'); return { repo: sqlite as MemoryProposalRepository, close: () => sqlite.close() }; })()
+    : { repo: new InMemoryMemoryProposalRepository() as MemoryProposalRepository, close: () => {} };
 
   const engine = new EtlEngine(createDefaultRegistry());
   const modelProvider = options?.modelProvider ?? (profile === 'test'
@@ -187,6 +211,8 @@ export function createApp(options?: AppOptions): App {
       }));
 
   const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo);
+  const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);
+  const saveWikiPage = new SaveWikiPageUseCase(wikiAdapter.repo);
 
   return {
     profile,
@@ -199,12 +225,14 @@ export function createApp(options?: AppOptions): App {
     personaRepo: personaAdapter.repo,
     scenarioRepo: scenarioAdapter.repo,
     scenarioRunRepo: scenarioRunAdapter.repo,
+    wikiRepo: wikiAdapter.repo,
+    memoryProposalRepo: memoryProposalAdapter.repo,
     runAgentPreview,
     queryRuns: new QueryRunsUseCase(runAdapter.repo),
     saveAgent: new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo),
     queryAgents: new QueryAgentsUseCase(agentAdapter.repo),
     generateAgentPrompt: new GenerateAgentPromptUseCase(repo, skillAdapter.repo, agentAdapter.repo),
-    saveSkill: new SaveSkillUseCase(skillAdapter.repo, repo),
+    saveSkill,
     querySkills: new QuerySkillsUseCase(skillAdapter.repo),
     generateSkillPrompt: new GenerateSkillPromptUseCase(repo),
     savePersona: new SavePersonaUseCase(personaAdapter.repo),
@@ -216,6 +244,12 @@ export function createApp(options?: AppOptions): App {
     queryScenarioRuns: new QueryScenarioRunsUseCase(scenarioRunAdapter.repo),
     // 評価は決定的（Mastra code系スコアラー・オフライン）でスコープ非依存のため profile 非依存に配線する。
     evaluateAgentRun: new EvaluateAgentRunUseCase(new MastraEvalsEvaluator()),
+    // 長期記憶（v21）。reflectRun は modelProvider（振り返り）を使用。承認は Wiki 保存 / Skill 蒸留へ委譲。
+    saveWikiPage,
+    queryWiki: new QueryWikiUseCase(wikiAdapter.repo),
+    reflectRun: new ReflectRunUseCase(modelProvider, memoryProposalAdapter.repo, wikiAdapter.repo, skillAdapter.repo),
+    listProposals: new ListProposalsUseCase(memoryProposalAdapter.repo),
+    reviewProposal: new ReviewProposalUseCase(memoryProposalAdapter.repo, saveWikiPage, skillAdapter.repo, saveSkill),
     draftTool: new DraftToolUseCase(engine),
     saveTool: new SaveToolUseCase(repo, engine),
     getTool: new GetToolUseCase(repo),
@@ -234,7 +268,13 @@ export function createApp(options?: AppOptions): App {
               try { personaAdapter.close(); }
               finally {
                 try { scenarioAdapter.close(); }
-                finally { scenarioRunAdapter.close(); }
+                finally {
+                  try { scenarioRunAdapter.close(); }
+                  finally {
+                    try { wikiAdapter.close(); }
+                    finally { memoryProposalAdapter.close(); }
+                  }
+                }
               }
             }
           }

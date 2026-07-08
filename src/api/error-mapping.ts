@@ -20,6 +20,7 @@ import { AgentNotFoundError, AgentValidationError, AgentVersionConflictError } f
 import { SkillNotFoundError, SkillValidationError, SkillVersionConflictError } from '../domain/skill/errors';
 import { PersonaNotFoundError, ScenarioNotFoundError, ScenarioRunNotFoundError, ValidationDomainError } from '../domain/validation/errors';
 import { EvaluationDomainError } from '../domain/evaluation/errors';
+import { MemoryDomainError, MemoryProposalNotFoundError, WikiPageNotFoundError } from '../domain/memory/errors';
 
 /** HTTP エラーレスポンス表現。 */
 export interface HttpError {
@@ -91,6 +92,11 @@ export function toHttpError(err: unknown): HttpError {
 
   // 評価ドメイン: 入力不正など不変条件違反は 400。
   if (err instanceof EvaluationDomainError) return httpError(400, err.code, err.message);
+
+  // 記憶ドメイン: NotFound系は404、不変条件違反（入力不正・不正な状態遷移）は400。
+  if (err instanceof WikiPageNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof MemoryProposalNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof MemoryDomainError) return httpError(400, err.code, err.message);
 
   if (err instanceof UnsafeToolError) return httpError(403, err.code, err.message);
   if (err instanceof ToolArgumentsError) return httpError(422, err.code, err.message);

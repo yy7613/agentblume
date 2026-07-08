@@ -273,6 +273,40 @@ export const evaluateBodySchema = z.object({
   reference: z.string().optional(),
 });
 
+/** POST /wiki の body（v21・長期記憶 M1）。id 省略で新規、既存 id で改訂。 */
+export const saveWikiBodySchema = z.object({
+  scope: tenantScopeSchema,
+  id: z.string().min(1).optional(),
+  title: z.string().min(1),
+  tags: z.array(z.string()).default([]),
+  body: z.string().min(1),
+  sourceRunId: z.string().min(1).optional(),
+});
+
+/** GET /wiki のクエリ（q 省略で全件、limit 既定 10）。 */
+export const wikiSearchQuerySchema = scopeQuerySchema.extend({
+  q: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).optional(),
+});
+
+/** POST /memory/reflect の body（v21・長期記憶 M2）。 */
+export const reflectRunBodySchema = z.object({
+  scope: tenantScopeSchema,
+  input: z.string().min(1),
+  output: z.string().min(1),
+  sourceRunId: z.string().min(1).optional(),
+  targetSkillId: z.string().min(1).optional(),
+  existingWikiPageId: z.string().min(1).optional(),
+});
+
+/** GET /memory/proposals のクエリ（state 省略で全件）。 */
+export const proposalListQuerySchema = scopeQuerySchema.extend({
+  state: z.enum(['draft', 'approved', 'rejected']).optional(),
+});
+
+/** 記憶提案の承認・却下・スコープ限定操作の body。 */
+export const proposalDecisionBodySchema = z.object({ scope: tenantScopeSchema });
+
 /** POST /personas/:id/register-agent の body（v18）。 */
 export const registerPseudoUserAgentBodySchema = z.object({
   scope: tenantScopeSchema,

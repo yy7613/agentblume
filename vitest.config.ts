@@ -9,8 +9,8 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      // *.contract.ts は共有テストスイート（テストコード）なので計測対象外
-      exclude: ['src/**/*.test.ts', 'src/**/*.contract.ts', 'src/demo.ts', 'src/**/index.ts'],
+      // *.contract.ts / *.fixtures.ts は共有テストスイート・フィクスチャ（テストコード）なので計測対象外
+      exclude: ['src/**/*.test.ts', 'src/**/*.contract.ts', 'src/**/*.fixtures.ts', 'src/demo.ts', 'src/**/index.ts'],
       thresholds: {
         lines: 90,
         functions: 90,

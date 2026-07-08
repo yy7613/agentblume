@@ -1,0 +1,54 @@
+import { expect } from 'vitest';
+import type { TenantScope } from '../../domain/tool/ids';
+import type { WikiRepository } from '../../domain/memory/wiki-repository';
+import { createWikiPage, reviseWikiPage, type WikiPage } from '../../domain/memory/wiki-page';
+
+const scope: TenantScope = { tenantId: 'tenant', workspaceId: 'workspace' };
+const other: TenantScope = { tenantId: 'tenant', workspaceId: 'other' };
+
+function page(id: string, title: string, tags: readonly string[], body: string, updatedAt: string): WikiPage {
+  return createWikiPage({ id, tenant: scope, title, tags, body, sourceRuns: ['run-0'], updatedAt });
+}
+
+export async function wikiRepositoryContract(repo: WikiRepository): Promise<void> {
+  await repo.save(page('cohort', 'Cohort SQL', ['sql', 'analytics'], 'Filter adults by age>=18.', '2026-07-01T00:00:00.000Z'));
+  await repo.save(page('etl', 'ETL joins', ['etl'], 'Join orders with users.', '2026-07-02T00:00:00.000Z'));
+
+  // find は本文・sourceRuns まで復元する。
+  const found = await repo.find(scope, 'cohort');
+  expect(found?.title).toBe('Cohort SQL');
+  expect(found?.body).toContain('age>=18');
+  expect(found?.sourceRuns).toEqual(['run-0']);
+  expect(await repo.find(scope, 'missing')).toBeNull();
+  expect(await repo.find(other, 'cohort')).toBeNull();
+
+  // list は要約を返す（本文なし）。
+  const summaries = await repo.list(scope);
+  expect(summaries.map((s) => s.id).sort()).toEqual(['cohort', 'etl']);
+  expect(await repo.list(other)).toEqual([]);
+
+  // upsert: 改訂で version が上がり本文が置換される（重複行にならない）。
+  const revised = reviseWikiPage(found as WikiPage, { body: 'Filter adults by age>=21.', addSourceRun: 'run-1', updatedAt: '2026-07-03T00:00:00.000Z' });
+  await repo.save(revised);
+  expect((await repo.list(scope)).length).toBe(2);
+  const after = await repo.find(scope, 'cohort');
+  expect(after?.version).toBe(2);
+  expect(after?.body).toContain('age>=21');
+  expect(after?.sourceRuns).toEqual(['run-0', 'run-1']);
+
+  // search: タイトル一致・本文一致・タグ一致・多語 AND・非一致。
+  expect((await repo.search(scope, 'cohort', 10)).map((s) => s.id)).toEqual(['cohort']);
+  expect((await repo.search(scope, 'orders', 10)).map((s) => s.id)).toEqual(['etl']);
+  expect((await repo.search(scope, 'analytics', 10)).map((s) => s.id)).toEqual(['cohort']);
+  expect((await repo.search(scope, 'join USERS', 10)).map((s) => s.id)).toEqual(['etl']);
+  expect(await repo.search(scope, 'nonexistent', 10)).toEqual([]);
+  expect(await repo.search(other, 'cohort', 10)).toEqual([]);
+
+  // 複数一致は updatedAt DESC・limit 準拠（cohort=07-03 > etl=07-02）。
+  const both = await repo.search(scope, 'sql etl analytics orders', 10);
+  // 空 query は全件（updatedAt DESC）。
+  const all = await repo.search(scope, '   ', 10);
+  expect(all.map((s) => s.id)).toEqual(['cohort', 'etl']);
+  expect(both).toEqual([]);
+  expect((await repo.search(scope, '', 1)).length).toBe(1);
+}
