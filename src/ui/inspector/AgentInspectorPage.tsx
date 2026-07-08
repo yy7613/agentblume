@@ -7,6 +7,8 @@ const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
 type Translate = (english: string, japanese: string) => string;
 
+type DistillState = 'loading' | 'error' | { readonly count: number };
+
 type Turn =
   | { readonly role: 'user'; readonly text: string }
   | { readonly role: 'assistant'; readonly run: AgentPreviewRunDto; readonly elapsedMs: number }
@@ -35,6 +37,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   const [message, setMessage] = useState('Call your tools if useful, then explain the result.');
   const [turns, setTurns] = useState<readonly Turn[]>([]);
   const [evaluations, setEvaluations] = useState<ReadonlyMap<number, EvaluationResultDto | 'loading' | 'error'>>(new Map());
+  const [distillations, setDistillations] = useState<ReadonlyMap<number, DistillState>>(new Map());
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string>();
   const threadRef = useRef<HTMLDivElement>(null);
@@ -94,6 +97,19 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
     }
   }
 
+  // 応答から記憶提案を蒸留する（Run→振り返り→draft提案）。対象Skillがあれば instructions 改訂も対象にする。
+  async function distill(index: number, inputText: string, outputText: string, runId: string): Promise<void> {
+    if (inputText.trim() === '' || outputText.trim() === '') return;
+    const targetSkillId = definition?.skills[0]?.internalId;
+    setDistillations((prev) => new Map(prev).set(index, 'loading'));
+    try {
+      const proposals = await client.reflectRun({ scope, input: inputText, output: outputText, sourceRunId: runId, ...(targetSkillId !== undefined ? { targetSkillId } : {}) });
+      setDistillations((prev) => new Map(prev).set(index, { count: proposals.length }));
+    } catch {
+      setDistillations((prev) => new Map(prev).set(index, 'error'));
+    }
+  }
+
   const suggestions = [
     text('Which tools do you call for this request?', 'この要求ではどのツールを呼ぶ？'),
     text('Run the tool and summarize each column.', 'ツールを実行して各列を要約して。'),
@@ -110,7 +126,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
             <p>{text('Run an agent and watch tools, tokens, and timing.', 'エージェントを実行し、ツール・トークン・所要時間を観測します。')}</p>
           </div>
         </div>
-        <button type="button" className="cc-new" onClick={() => { setTurns([]); setEvaluations(new Map()); }} disabled={turns.length === 0}>
+        <button type="button" className="cc-new" onClick={() => { setTurns([]); setEvaluations(new Map()); setDistillations(new Map()); }} disabled={turns.length === 0}>
           {text('New chat', '新しいチャット')}
         </button>
       </header>
@@ -146,7 +162,9 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
               return <TurnView key={index} turn={turn} agentName={agentName} text={text}
                 inputText={inputText}
                 evaluation={evaluations.get(index)}
-                onEvaluate={() => { if (turn.role === 'assistant') void evaluate(index, inputText, turn.run.response); }} />;
+                onEvaluate={() => { if (turn.role === 'assistant') void evaluate(index, inputText, turn.run.response); }}
+                distillation={distillations.get(index)}
+                onDistill={() => { if (turn.role === 'assistant') void distill(index, inputText, turn.run.response, turn.run.runId); }} />;
             })
           )}
           {busy && turns.length > 0 && (
@@ -213,11 +231,13 @@ function lastUserBefore(turns: readonly Turn[], index: number): string {
   return '';
 }
 
-function TurnView({ turn, agentName, text, inputText, evaluation, onEvaluate }: {
+function TurnView({ turn, agentName, text, inputText, evaluation, onEvaluate, distillation, onDistill }: {
   readonly turn: Turn; readonly agentName: string; readonly text: Translate;
   readonly inputText: string;
   readonly evaluation: EvaluationResultDto | 'loading' | 'error' | undefined;
   readonly onEvaluate: () => void;
+  readonly distillation: DistillState | undefined;
+  readonly onDistill: () => void;
 }) {
   if (turn.role === 'user') {
     return (
@@ -307,6 +327,20 @@ function TurnView({ turn, agentName, text, inputText, evaluation, onEvaluate }: 
                 </div>
               ))}
             </div>
+          )}
+        </div>
+
+        <div className="ins-section ins-distill">
+          <h4>{text('Memory', '記憶')} <small>{text('distillation', '蒸留')}</small></h4>
+          {distillation === undefined && (
+            <button type="button" className="secondary ins-eval-btn" disabled={inputText === ''} onClick={onDistill}>{text('Distill to memory', '記憶へ蒸留')}</button>
+          )}
+          {distillation === 'loading' && <p className="ins-none">{text('Reflecting…', '振り返り中…')}</p>}
+          {distillation === 'error' && <p className="ins-none">{text('Distillation failed.', '蒸留に失敗しました。')}</p>}
+          {typeof distillation === 'object' && (
+            <p className="ins-distill-result">{distillation.count === 0
+              ? text('No memory worth proposing.', '提案する記憶はありませんでした。')
+              : text(`${distillation.count} proposal(s) drafted — review in Memory.`, `${distillation.count} 件の提案を作成しました — 記憶タブで確認してください。`)}</p>
           )}
         </div>
       </div>

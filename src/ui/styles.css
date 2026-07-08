@@ -347,3 +347,48 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .ins-eval-bar { height: 7px; border-radius: 99px; background: #e8ebf3; overflow: hidden; }
 .ins-eval-bar > i { display: block; height: 100%; background: linear-gradient(90deg, #6474ff, #4557d6); border-radius: 99px; }
 .ins-eval-val { text-align: right; font-weight: 700; color: #48557a; }
+
+/* 長期記憶（v21・Memory ページ / Inspector 蒸留） */
+.ins-distill-result { font-size: 12px; color: #48557a; margin: 6px 0 0; }
+.mem-layout { display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 16px; align-items: start; }
+.mem-list-pane { display: flex; flex-direction: column; gap: 10px; }
+.mem-search { display: flex; gap: 6px; }
+.mem-search input { flex: 1; border: 1px solid #ccd3e0; border-radius: 8px; padding: 7px 10px; font-size: 12px; }
+.mem-search button { border: 1px solid #5365ed; background: #5365ed; color: white; border-radius: 8px; padding: 7px 12px; font-size: 12px; font-weight: 700; }
+.mem-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.mem-list > li > button { width: 100%; text-align: left; border: 1px solid #d9dfea; background: white; border-radius: 10px; padding: 9px 11px; display: grid; gap: 4px; cursor: pointer; }
+.mem-list > li > button.active { border-color: #5365ed; box-shadow: 0 0 0 2px rgba(83, 101, 237, .15); }
+.mem-list > li > button strong { font-size: 13px; color: #23304d; }
+.mem-list > li > button small { color: #8390a8; font-size: 10px; }
+.mem-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.mem-tag { background: #eef1f9; color: #4a5878; border-radius: 99px; padding: 1px 8px; font-size: 10px; font-weight: 600; }
+.mem-empty { color: #8390a8; font-size: 12px; padding: 8px 2px; }
+.mem-editor { display: flex; flex-direction: column; gap: 10px; border: 1px solid #e2e7f0; border-radius: 12px; padding: 16px; background: white; }
+.mem-editor-head { display: flex; align-items: center; justify-content: space-between; }
+.mem-editor-head h2 { margin: 0; font-size: 14px; color: #23304d; }
+.mem-editor label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 700; color: #55617e; text-transform: uppercase; letter-spacing: .05em; }
+.mem-editor input, .mem-editor textarea { border: 1px solid #ccd3e0; border-radius: 8px; padding: 8px 10px; font-size: 13px; font-weight: 400; text-transform: none; letter-spacing: 0; color: #23304d; font-family: inherit; }
+.mem-editor textarea { resize: vertical; }
+.mem-error { color: #c0392b; font-size: 12px; margin: 0; }
+.mem-editor button.primary, .mem-actions button.primary { border: 1px solid #5365ed; background: #5365ed; color: white; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 700; align-self: flex-start; }
+.mem-editor button.primary:disabled { opacity: .5; }
+button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 700; }
+.mem-proposals { display: flex; flex-direction: column; gap: 12px; }
+.mem-filter { display: flex; gap: 6px; }
+.mem-filter button { border: 1px solid #ccd3e0; background: white; color: #55617e; border-radius: 99px; padding: 5px 13px; font-size: 11px; font-weight: 700; }
+.mem-filter button.active { background: #5365ed; border-color: #5365ed; color: white; }
+.mem-proposal-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.mem-card { border: 1px solid #e2e7f0; border-left-width: 3px; border-radius: 12px; padding: 12px 14px; background: white; display: flex; flex-direction: column; gap: 8px; }
+.mem-card-approved { border-left-color: #2e9e6b; }
+.mem-card-rejected { border-left-color: #b0b8c8; opacity: .8; }
+.mem-card-draft { border-left-color: #5365ed; }
+.mem-card-head { display: flex; align-items: center; gap: 8px; }
+.mem-kind { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; border-radius: 99px; padding: 2px 9px; }
+.mem-kind-wiki { background: #eaf1ff; color: #2f52c8; }
+.mem-kind-skill { background: #fff0e6; color: #c26a25; }
+.mem-state { margin-left: auto; font-size: 10px; font-weight: 700; color: #8390a8; text-transform: uppercase; letter-spacing: .05em; }
+.mem-summary { margin: 0; font-size: 13px; color: #29344f; }
+.mem-preview { font-size: 12px; color: #48557a; }
+.mem-preview strong { display: block; margin-bottom: 4px; color: #23304d; }
+.mem-preview pre { margin: 0; max-height: 160px; overflow: auto; white-space: pre-wrap; background: #f6f8fc; border-radius: 8px; padding: 8px 10px; font-size: 12px; }
+.mem-actions { display: flex; gap: 8px; }

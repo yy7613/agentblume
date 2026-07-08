@@ -322,3 +322,46 @@ export interface RunScenarioDto {
   readonly version?: string;
   readonly mode: 'preview' | 'test';
 }
+
+// 長期記憶（v21・ADR-0016）
+export interface WikiPageSummaryDto {
+  readonly id: string;
+  readonly title: string;
+  readonly tags: readonly string[];
+  readonly version: number;
+  readonly updatedAt: string;
+}
+export interface WikiPageDto extends WikiPageSummaryDto {
+  readonly tenant: TenantScopeDto;
+  readonly body: string;
+  readonly sourceRuns: readonly string[];
+}
+export interface SaveWikiDto {
+  readonly scope: TenantScopeDto;
+  readonly id?: string;
+  readonly title: string;
+  readonly tags: readonly string[];
+  readonly body: string;
+  readonly sourceRunId?: string;
+}
+export type MemoryProposalStateDto = 'draft' | 'approved' | 'rejected';
+export type MemoryProposalTargetDto =
+  | { readonly kind: 'wiki'; readonly pageId: string; readonly isNewPage: boolean; readonly title: string; readonly tags: readonly string[]; readonly body: string }
+  | { readonly kind: 'skill'; readonly skillId: string; readonly instructions: string };
+export interface MemoryProposalDto {
+  readonly id: string;
+  readonly tenant: TenantScopeDto;
+  readonly target: MemoryProposalTargetDto;
+  readonly summary: string;
+  readonly state: MemoryProposalStateDto;
+  readonly sourceRun?: string;
+  readonly createdAt: string;
+}
+export interface ReflectRunDto {
+  readonly scope: TenantScopeDto;
+  readonly input: string;
+  readonly output: string;
+  readonly sourceRunId?: string;
+  readonly targetSkillId?: string;
+  readonly existingWikiPageId?: string;
+}

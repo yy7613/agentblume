@@ -21,6 +21,8 @@ export default defineConfig({
       '/scenarios': apiTarget,
       '/scenario-runs': apiTarget,
       '/evaluations': apiTarget,
+      '/wiki': apiTarget,
+      '/memory': apiTarget,
     },
   },
   build: { outDir: 'dist/ui', emptyOutDir: true },

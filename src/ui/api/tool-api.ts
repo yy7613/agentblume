@@ -32,6 +32,12 @@ import type {
   ScenarioSummaryDto,
   ScenarioRunDto,
   RunScenarioDto,
+  WikiPageDto,
+  WikiPageSummaryDto,
+  SaveWikiDto,
+  MemoryProposalDto,
+  MemoryProposalStateDto,
+  ReflectRunDto,
 } from './types';
 
 export class ApiError extends Error {
@@ -230,6 +236,40 @@ export class ToolApiClient {
   async getRunTrace(runId: string, scope: TenantScopeDto): Promise<RunRecordDto> {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     return (await this.request<{ run: RunRecordDto }>(`/runs/${encodeURIComponent(runId)}/trace?${query}`)).run;
+  }
+
+  // 長期記憶（v21）
+  async listWiki(scope: TenantScopeDto, query?: string, signal?: AbortSignal): Promise<readonly WikiPageSummaryDto[]> {
+    const params = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (query !== undefined && query.trim().length > 0) params.set('q', query);
+    return (await this.request<{ pages: WikiPageSummaryDto[] }>(`/wiki?${params}`, { signal })).pages;
+  }
+
+  async getWiki(id: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<WikiPageDto> {
+    const params = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ page: WikiPageDto }>(`/wiki/${encodeURIComponent(id)}?${params}`, { signal })).page;
+  }
+
+  async saveWiki(input: SaveWikiDto, signal?: AbortSignal): Promise<WikiPageDto> {
+    return (await this.request<{ page: WikiPageDto }>('/wiki', { method: 'POST', body: JSON.stringify(input), signal })).page;
+  }
+
+  async reflectRun(input: ReflectRunDto, signal?: AbortSignal): Promise<readonly MemoryProposalDto[]> {
+    return (await this.request<{ proposals: MemoryProposalDto[] }>('/memory/reflect', { method: 'POST', body: JSON.stringify(input), signal })).proposals;
+  }
+
+  async listProposals(scope: TenantScopeDto, state?: MemoryProposalStateDto, signal?: AbortSignal): Promise<readonly MemoryProposalDto[]> {
+    const params = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (state !== undefined) params.set('state', state);
+    return (await this.request<{ proposals: MemoryProposalDto[] }>(`/memory/proposals?${params}`, { signal })).proposals;
+  }
+
+  async approveProposal(id: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<MemoryProposalDto> {
+    return (await this.request<{ proposal: MemoryProposalDto }>(`/memory/proposals/${encodeURIComponent(id)}/approve`, { method: 'POST', body: JSON.stringify({ scope }), signal })).proposal;
+  }
+
+  async rejectProposal(id: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<MemoryProposalDto> {
+    return (await this.request<{ proposal: MemoryProposalDto }>(`/memory/proposals/${encodeURIComponent(id)}/reject`, { method: 'POST', body: JSON.stringify({ scope }), signal })).proposal;
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

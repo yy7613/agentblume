@@ -27,11 +27,12 @@ const run: AgentPreviewRunDto = {
   ],
 };
 
-function makeClient(overrides: Partial<Record<'runSavedAgent' | 'getAgent' | 'listAgents' | 'evaluate', unknown>> = {}) {
+function makeClient(overrides: Partial<Record<'runSavedAgent' | 'getAgent' | 'listAgents' | 'evaluate' | 'reflectRun', unknown>> = {}) {
   return {
     listAgents: vi.fn().mockResolvedValue([{ internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '1.2.0', kind: 'normal', state: 'draft' }]),
     getAgent: vi.fn().mockResolvedValue(definition),
     runSavedAgent: vi.fn().mockResolvedValue(run),
+    reflectRun: vi.fn().mockResolvedValue([{ id: 'm1' }, { id: 'm2' }]),
     ...overrides,
   } as unknown as ToolApiClient;
 }
@@ -61,6 +62,19 @@ describe('AgentInspectorPage', () => {
     expect(await screen.findByText('keyword-coverage')).toBeTruthy();
     expect(screen.getByText('completeness')).toBeTruthy();
     expect(screen.getByText(/Average 75%/)).toBeTruthy();
+  });
+
+  it('応答を記憶へ蒸留し、生成された提案数を表示する（v21）', async () => {
+    const reflectRun = vi.fn().mockResolvedValue([{ id: 'm1' }, { id: 'm2' }]);
+    const client = makeClient({ reflectRun });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    const distillButton = await screen.findByRole('button', { name: 'Distill to memory' });
+    await userEvent.click(distillButton);
+    // 直前ユーザー発話・応答・runId、対象Skill(先頭)を渡す。
+    await waitFor(() => expect(reflectRun).toHaveBeenCalledWith(expect.objectContaining({ output: '42 rows matched', sourceRunId: 'run-123', targetSkillId: 'skill-a' })));
+    expect(await screen.findByText(/2 proposal\(s\) drafted/)).toBeTruthy();
   });
 
   it('実行するとトークン・所要時間・呼ばれたTool・トレースを観測表示する', async () => {
