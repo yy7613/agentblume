@@ -1,4 +1,4 @@
-export const NODE_TYPES = ['agent-input', 'json-source', 'csv-source', 'select', 'filter', 'rename', 'cast', 'join', 'union', 'sort', 'distinct', 'fill-null', 'replace', 'agent-output', 'workspace-output'] as const;
+export const NODE_TYPES = ['agent-input', 'json-source', 'csv-source', 'database-source', 'select', 'filter', 'rename', 'cast', 'join', 'union', 'sort', 'distinct', 'fill-null', 'replace', 'agent-output', 'workspace-output'] as const;
 export type ToolNodeType = (typeof NODE_TYPES)[number];
 
 export interface NodeCatalogItem {
@@ -29,6 +29,10 @@ export const NODE_CATALOG: readonly NodeCatalogItem[] = [
   {
     type: 'csv-source', label: 'CSV source', labelJa: 'CSV入力', kind: 'source', inputArity: 0,
     description: 'Load fixed CSV text.', descriptionJa: '固定CSVテキストを読み込みます。', defaultConfig: { text: 'id,name,age\n1,Alice,30\n2,Bob,17', delimiter: ',', header: true, inferTypes: true },
+  },
+  {
+    type: 'database-source', label: 'Database source', labelJa: 'データベース入力', kind: 'source', inputArity: 0,
+    description: 'Read an allowlisted table or view through a backend-managed connection.', descriptionJa: 'バックエンド管理接続から、許可済みtable/viewだけを読み込みます。', defaultConfig: { dataSourceId: '', table: '', limit: 1000 },
   },
   { type: 'select', label: 'Select', labelJa: '列選択', kind: 'transform', inputArity: 1, description: 'Keep only selected columns.', descriptionJa: '必要な列だけを残します。', defaultConfig: { columns: [] } },
   { type: 'filter', label: 'Filter', labelJa: '行フィルター', kind: 'transform', inputArity: 1, description: 'Keep only rows matching a condition.', descriptionJa: '条件に合う行だけを残します。', defaultConfig: { column: '', op: 'eq', value: '' } },

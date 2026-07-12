@@ -112,7 +112,7 @@ describe('ToolBuilder preview integration', () => {
       { from: 'left-1', to: 'join-1', toInput: 0 },
       { from: 'right-1', to: 'join-1', toInput: 1 },
     ]);
-    expect(previewDraft).toHaveBeenCalledWith(sentGraph, 100, expect.any(AbortSignal));
+    expect(previewDraft).toHaveBeenCalledWith(sentGraph, 100, expect.any(AbortSignal), { tenantId: 't', workspaceId: 'w' });
 
     // join結果の期待行が描画される。
     expect(screen.getByRole('cell', { name: 'Alice' })).toBeTruthy();

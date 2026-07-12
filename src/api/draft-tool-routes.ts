@@ -23,14 +23,15 @@ function parseWith<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
 export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRouteDeps): void {
   app.post('/tool-drafts/infer-schema', async (request) => {
     const body = parseWith(draftInspectBodySchema, request.body);
-    return { propagation: deps.draftTool.inspect(body.graph) };
+    return { propagation: await deps.draftTool.inspect(body.graph, body.scope) };
   });
 
   app.post('/tool-drafts/preview', async (request) => {
     const body = parseWith(draftPreviewBodySchema, request.body);
-    const result = deps.draftTool.preview(
+    const result = await deps.draftTool.preview(
       body.graph,
       body.rowLimit === undefined ? undefined : { rowLimit: body.rowLimit },
+      body.scope,
     );
     return { result };
   });

@@ -15,6 +15,7 @@ import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import { EtlEngine } from '../etl/engine';
 import type { PropagationResult, PreviewResult } from '../etl/engine';
+import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 
 /** inspect / preview 共通のオプション。 */
 export interface PreviewToolOptions {
@@ -41,6 +42,7 @@ export class PreviewToolUseCase {
   constructor(
     private readonly repo: ToolRepository,
     private readonly engine: EtlEngine,
+    private readonly resolveDataSources?: ResolveDataSourceGraphUseCase,
   ) {}
 
   /** 保存済み Tool のスキーマ点検（実行なし）。未存在→ToolNotFoundError。 */
@@ -50,7 +52,8 @@ export class PreviewToolUseCase {
     options?: PreviewToolOptions,
   ): Promise<ToolInspection> {
     const tool = await this.load(scope, internalId, options?.version);
-    return { tool, propagation: this.engine.propagateSchemas(tool.graph) };
+    const graph = this.resolveDataSources === undefined ? tool.graph : await this.resolveDataSources.execute(scope, tool.graph);
+    return { tool, propagation: this.engine.propagateSchemas(graph) };
   }
 
   /** 保存済み Tool のプレビュー実行（行数制限つき）。未存在→ToolNotFoundError。 */
@@ -60,10 +63,11 @@ export class PreviewToolUseCase {
     options?: PreviewToolOptions,
   ): Promise<ToolPreview> {
     const tool = await this.load(scope, internalId, options?.version);
+    const graph = this.resolveDataSources === undefined ? tool.graph : await this.resolveDataSources.execute(scope, tool.graph);
     const result =
       options?.rowLimit !== undefined
-        ? this.engine.preview(tool.graph, { rowLimit: options.rowLimit })
-        : this.engine.preview(tool.graph);
+        ? this.engine.preview(graph, { rowLimit: options.rowLimit })
+        : this.engine.preview(graph);
     return { tool, result };
   }
 

@@ -5,6 +5,8 @@ import { flowToGraph, useToolBuilderStore } from './store';
 export function useDraftPreview(client: ToolApiClient, delayMs = 300): void {
   const nodes = useToolBuilderStore((state) => state.nodes);
   const edges = useToolBuilderStore((state) => state.edges);
+  const metadata = useToolBuilderStore((state) => state.metadata);
+  const scope = { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId };
   const requestSequence = useRef(0);
 
   useEffect(() => {
@@ -16,12 +18,12 @@ export function useDraftPreview(client: ToolApiClient, delayMs = 300): void {
       store.setPreviewLoading(true);
       store.setError(undefined);
 
-      void client.inferDraft(graph, controller.signal)
+      void client.inferDraft(graph, controller.signal, scope)
         .then(async (propagation) => {
           if (sequence !== requestSequence.current) return;
           useToolBuilderStore.getState().setPropagation(propagation);
           if (propagation.hasErrors) return;
-          const preview = await client.previewDraft(graph, 100, controller.signal);
+          const preview = await client.previewDraft(graph, 100, controller.signal, scope);
           if (sequence === requestSequence.current) {
             useToolBuilderStore.getState().setPreview(preview);
           }
@@ -43,5 +45,5 @@ export function useDraftPreview(client: ToolApiClient, delayMs = 300): void {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [client, delayMs, edges, nodes]);
+  }, [client, delayMs, edges, metadata.tenantId, metadata.workspaceId, nodes]);
 }

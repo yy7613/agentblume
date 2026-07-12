@@ -119,6 +119,12 @@ import { SqliteSessionArtifactRepository } from '../adapters/storage/sqlite-sess
 import type { AgentSessionRepository, SessionArtifactRepository } from '../domain/session/session-repository';
 import { CreateAgentSessionUseCase, QueryAgentSessionUseCase } from '../application/session/agent-sessions';
 import { QuerySessionArtifactsUseCase } from '../application/session/session-artifacts';
+import { InMemoryDataSourceRepository } from '../adapters/storage/in-memory-data-source-repository';
+import { SqliteDataSourceRepository } from '../adapters/storage/sqlite-data-source-repository';
+import type { DataSourceRepository } from '../domain/data-source/data-source-repository';
+import { EnvironmentPostgresConnectionCatalog } from '../adapters/database/environment-postgres';
+import { DeleteDataSourceUseCase, QueryDataSourcesUseCase, QueryDatabaseConnectionsUseCase, RegisterDatabaseDataSourceUseCase, SaveFileDataSourceUseCase } from '../application/data-source/manage-data-sources';
+import { ResolveDataSourceGraphUseCase } from '../application/data-source/resolve-data-source-graph';
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
@@ -169,6 +175,7 @@ export interface App {
   readonly operationsRepo: OperationsRepository;
   readonly sessionRepo: AgentSessionRepository;
   readonly sessionArtifactRepo: SessionArtifactRepository;
+  readonly dataSourceRepo: DataSourceRepository;
   readonly telemetry: TelemetryPort;
   readonly pricing: PricingPort;
   readonly runAgentPreview: RunAgentPreviewUseCase;
@@ -176,6 +183,11 @@ export interface App {
   readonly createAgentSession: CreateAgentSessionUseCase;
   readonly queryAgentSession: QueryAgentSessionUseCase;
   readonly querySessionArtifacts: QuerySessionArtifactsUseCase;
+  readonly saveFileDataSource: SaveFileDataSourceUseCase;
+  readonly registerDatabaseDataSource: RegisterDatabaseDataSourceUseCase;
+  readonly queryDataSources: QueryDataSourcesUseCase;
+  readonly deleteDataSource: DeleteDataSourceUseCase;
+  readonly queryDatabaseConnections: QueryDatabaseConnectionsUseCase;
   readonly saveAgent: SaveAgentUseCase;
   readonly queryAgents: QueryAgentsUseCase;
   readonly generateAgentPrompt: GenerateAgentPromptUseCase;
@@ -301,6 +313,9 @@ export function createApp(options?: AppOptions): App {
   const sessionArtifactAdapter = profile === 'local'
     ? (() => { const sqlite = new SqliteSessionArtifactRepository(path ?? ':memory:'); return { repo: sqlite as SessionArtifactRepository, close: () => sqlite.close() }; })()
     : { repo: new InMemorySessionArtifactRepository() as SessionArtifactRepository, close: () => {} };
+  const dataSourceAdapter = profile === 'local'
+    ? (() => { const sqlite = new SqliteDataSourceRepository(path ?? ':memory:'); return { repo: sqlite as DataSourceRepository, close: () => sqlite.close() }; })()
+    : { repo: new InMemoryDataSourceRepository() as DataSourceRepository, close: () => {} };
   const skillAdapter = options?.skillRepository !== undefined
     ? { repo: options.skillRepository, close: () => {} }
     : profile === 'local'
@@ -371,8 +386,10 @@ export function createApp(options?: AppOptions): App {
     : { provider: 'lm-studio', model: process.env['LM_STUDIO_MODEL'] ?? '', modelConfigHash: hashConfig({ baseUrl: process.env['LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['LM_STUDIO_MODEL'] ?? '' }), ...(process.env['AGENTCONTEXT_SOURCE_REVISION'] !== undefined ? { sourceRevision: process.env['AGENTCONTEXT_SOURCE_REVISION'] } : {}) });
   const telemetry = options?.telemetry ?? (process.env['AGENTCONTEXT_OTEL_ENABLED'] === 'true' ? new OpenTelemetryAdapter() : new NoopTelemetryAdapter());
   const pricing = options?.pricing ?? new StaticPricingAdapter(resolvePricingCatalog(profile));
+  const databaseConnections = new EnvironmentPostgresConnectionCatalog();
+  const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections);
 
-  const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo);
+  const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources);
   const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);
   const saveWikiPage = new SaveWikiPageUseCase(wikiAdapter.repo);
   const runScenario = new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo);
@@ -404,6 +421,7 @@ export function createApp(options?: AppOptions): App {
     operationsRepo: operationsAdapter.repo,
     sessionRepo: sessionAdapter.repo,
     sessionArtifactRepo: sessionArtifactAdapter.repo,
+    dataSourceRepo: dataSourceAdapter.repo,
     telemetry,
     pricing,
     runAgentPreview,
@@ -411,6 +429,11 @@ export function createApp(options?: AppOptions): App {
     createAgentSession: new CreateAgentSessionUseCase(sessionAdapter.repo, agentAdapter.repo),
     queryAgentSession: new QueryAgentSessionUseCase(sessionAdapter.repo),
     querySessionArtifacts: new QuerySessionArtifactsUseCase(new QueryAgentSessionUseCase(sessionAdapter.repo), sessionArtifactAdapter.repo),
+    saveFileDataSource: new SaveFileDataSourceUseCase(dataSourceAdapter.repo),
+    registerDatabaseDataSource: new RegisterDatabaseDataSourceUseCase(dataSourceAdapter.repo, databaseConnections),
+    queryDataSources: new QueryDataSourcesUseCase(dataSourceAdapter.repo),
+    deleteDataSource: new DeleteDataSourceUseCase(dataSourceAdapter.repo),
+    queryDatabaseConnections: new QueryDatabaseConnectionsUseCase(databaseConnections),
     saveAgent: new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo, wikiAdapter.repo),
     queryAgents: new QueryAgentsUseCase(agentAdapter.repo),
     generateAgentPrompt: new GenerateAgentPromptUseCase(repo, skillAdapter.repo, agentAdapter.repo),
@@ -458,12 +481,12 @@ export function createApp(options?: AppOptions): App {
     reviewProposal: new ReviewProposalUseCase(memoryProposalAdapter.repo, saveWikiPage, skillAdapter.repo, saveSkill),
     saveWikiSpace: new SaveWikiSpaceUseCase(wikiAdapter.repo),
     queryWikiSpaces: new QueryWikiSpacesUseCase(wikiAdapter.repo),
-    draftTool: new DraftToolUseCase(engine),
-    saveTool: new SaveToolUseCase(repo, engine),
+    draftTool: new DraftToolUseCase(engine, resolveDataSources),
+    saveTool: new SaveToolUseCase(repo, engine, resolveDataSources),
     getTool: new GetToolUseCase(repo),
     listToolVersions: new ListToolVersionsUseCase(repo),
     listTools: new ListToolsUseCase(repo),
-    previewTool: new PreviewToolUseCase(repo, engine),
+    previewTool: new PreviewToolUseCase(repo, engine, resolveDataSources),
     close: () => {
       experimentWorker.shutdown();
       try { closeTools(); }
@@ -476,28 +499,31 @@ export function createApp(options?: AppOptions): App {
             finally {
               try { sessionArtifactAdapter.close(); }
               finally {
-                try { skillAdapter.close(); }
+                try { dataSourceAdapter.close(); }
                 finally {
-                  try { personaAdapter.close(); }
+                  try { skillAdapter.close(); }
                   finally {
-                    try { scenarioAdapter.close(); }
+                    try { personaAdapter.close(); }
                     finally {
-                      try { scenarioRunAdapter.close(); }
+                      try { scenarioAdapter.close(); }
                       finally {
-                        try { wikiAdapter.close(); }
+                        try { scenarioRunAdapter.close(); }
                         finally {
-                          try { memoryProposalAdapter.close(); }
+                          try { wikiAdapter.close(); }
                           finally {
-                            try { evaluationDatasetAdapter.close(); }
+                            try { memoryProposalAdapter.close(); }
                             finally {
-                              try { evaluatorProfileAdapter.close(); }
+                              try { evaluationDatasetAdapter.close(); }
                               finally {
-                                try { experimentAdapter.close(); }
+                                try { evaluatorProfileAdapter.close(); }
                                 finally {
-                                  try { qualityGateAdapter.close(); }
+                                  try { experimentAdapter.close(); }
                                   finally {
-                                    try { judgeRubricAdapter.close(); }
-                                    finally { operationsAdapter.close(); }
+                                    try { qualityGateAdapter.close(); }
+                                    finally {
+                                      try { judgeRubricAdapter.close(); }
+                                      finally { operationsAdapter.close(); }
+                                    }
                                   }
                                 }
                               }

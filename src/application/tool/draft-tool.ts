@@ -3,22 +3,26 @@
  * repository や Tool version には触れず、Tool Builder の編集ループ専用とする。
  */
 import type { ToolGraph } from '../../domain/etl/graph';
+import type { TenantScope } from '../../domain/tool/ids';
 import type { EtlEngine, PreviewResult, PropagationResult } from '../etl/engine';
+import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 
 export interface DraftPreviewOptions {
   readonly rowLimit?: number;
 }
 
 export class DraftToolUseCase {
-  constructor(private readonly engine: EtlEngine) {}
+  constructor(private readonly engine: EtlEngine, private readonly resolveDataSources?: ResolveDataSourceGraphUseCase) {}
 
-  inspect(graph: ToolGraph): PropagationResult {
-    return this.engine.propagateSchemas(graph);
+  async inspect(graph: ToolGraph, scope?: TenantScope): Promise<PropagationResult> {
+    const executableGraph = this.resolveDataSources === undefined || scope === undefined ? graph : await this.resolveDataSources.execute(scope, graph);
+    return this.engine.propagateSchemas(executableGraph);
   }
 
-  preview(graph: ToolGraph, options?: DraftPreviewOptions): PreviewResult {
+  async preview(graph: ToolGraph, options?: DraftPreviewOptions, scope?: TenantScope): Promise<PreviewResult> {
+    const executableGraph = this.resolveDataSources === undefined || scope === undefined ? graph : await this.resolveDataSources.execute(scope, graph);
     return options?.rowLimit === undefined
-      ? this.engine.preview(graph)
-      : this.engine.preview(graph, { rowLimit: options.rowLimit });
+      ? this.engine.preview(executableGraph)
+      : this.engine.preview(executableGraph, { rowLimit: options.rowLimit });
   }
 }

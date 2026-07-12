@@ -21,6 +21,7 @@ import { createTool } from '../../domain/tool/tool';
 import type { AgentToolContract, Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import type { EtlEngine } from '../etl/engine';
+import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 
 /** SaveToolUseCase の入力。 */
 export interface SaveToolInput {
@@ -46,6 +47,7 @@ export class SaveToolUseCase {
   constructor(
     private readonly repo: ToolRepository,
     private readonly engine: EtlEngine,
+    private readonly resolveDataSources?: ResolveDataSourceGraphUseCase,
   ) {}
 
   async execute(input: SaveToolInput): Promise<Tool> {
@@ -55,7 +57,10 @@ export class SaveToolUseCase {
     }
     validateAgentInputBindings(input.graph, input.inputSchema);
     // 1. 保存前グラフ検証（GraphError 等はそのまま伝播）。
-    const propagation = this.engine.propagateSchemas(input.graph);
+    const executableGraph = this.resolveDataSources === undefined
+      ? input.graph
+      : await this.resolveDataSources.execute(input.scope, input.graph);
+    const propagation = this.engine.propagateSchemas(executableGraph);
     if (propagation.hasErrors) {
       const messages = Object.values(propagation.nodes)
         .flatMap((node) =>

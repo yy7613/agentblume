@@ -192,6 +192,17 @@ control対応、Dialog layout、accessibility、node別配置は [ADR-0028](./ad
 
 新規作成フォームには実運用の値や英語サンプルを初期入力しない。値は空欄とし、入力例だけをプレースホルダーで示す。プレースホルダーはUIの言語設定に従い、日本語では日本語の例示へ切り替える。既存の保存済み定義を読み込んだ場合だけ、保存されている実値をフォームへ表示する。
 
+### 3.10 再利用データソース
+
+サイドバーの「データソース」でCSV/JSONファイルとDB接続を管理する。Tool Builderのsourceノードでは、インライン編集に加えて登録済みソースを選択できる。
+
+- CSV/JSON: Tool定義には`dataSourceId`だけを保存する。本文はbackendのpayload storeにあり、未保存preview・保存時検証・保存済みTool実行の直前にだけ展開する。
+- DB: `database-source`は登録済みのDBデータソース、環境変数で許可したtable/view、最大行数を指定する。任意SQL・書き込み・allowlist外のtable/viewは許可しない。
+- DBクエリはbackendが読み取り専用トランザクションで実行し、行数を1〜10,000へ制限する。接続文字列とパスワードはブラウザ、Tool定義、Run traceへ含めない。
+- DB資格情報は`AGENTCONTEXT_DB_CONNECTIONS`と`passwordEnv`でbackendだけが解決する。設定例はリポジトリ直下の[.env.example](../.env.example)を参照する。
+
+詳細な安全境界は[ADR-0029](./adr/0029-data-source-registry.md)を参照。
+
 ---
 
 ## 4. I/O 契約化（検証可能な境界）

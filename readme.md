@@ -35,7 +35,16 @@ npm run typecheck
 npm run build
 ```
 
+## データソースとDB接続
+
+CSV/JSONは「データソース」画面で登録し、Tool Builderのsourceノードから選択できる。DB接続情報とパスワードはbrowserに入力せず、backend環境変数で管理する。
+
+- 設定例: [.env.example](.env.example)
+- DBはPostgreSQLの読み取り専用sourceに対応する。`allowedTables`に列挙したtable/viewだけを、行数上限付きで読み取る。
+- 任意SQL、書き込み、資格情報のUI入力・API返却は提供しない。
+
+設計上の安全境界は[ADR-0029](docs/adr/0029-data-source-registry.md)を参照。
+
 ## ライセンス
 
 [MIT License](LICENSE) © 2026 yy7613
-

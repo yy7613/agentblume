@@ -32,6 +32,7 @@ import { createAgentSession, expireAgentSession, type AgentSession } from '../..
 import { AgentSessionClosedError, AgentSessionExpiredError, AgentSessionNotFoundError } from '../../domain/session/errors';
 import type { AgentSessionRepository, SessionArtifactRepository } from '../../domain/session/session-repository';
 import { ToolOutputDispatcher } from '../tool/tool-output-dispatcher';
+import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 
 export type AgentRunMode = RunMode;
 
@@ -212,6 +213,7 @@ export class RunAgentPreviewUseCase {
     private readonly wiki?: WikiRepository,
     private readonly sessions?: AgentSessionRepository,
     private readonly artifacts?: SessionArtifactRepository,
+    private readonly resolveDataSources?: ResolveDataSourceGraphUseCase,
   ) { this.output = new ToolOutputDispatcher(artifacts, now); }
 
   private readonly output: ToolOutputDispatcher;
@@ -473,7 +475,9 @@ export class RunAgentPreviewUseCase {
   private async executeTool(tool: Tool, call: ModelToolCall, trace: RunTraceEvent[], ctx: NodeContext, agent?: RunRecord['agent']): Promise<ModelMessage> {
     trace.push({ sequence: trace.length + 1, kind: 'tool-call', name: call.name, arguments: call.arguments });
     const args = validateToolArguments(tool.inputSchema, call.arguments);
-    const preview = this.engine.preview(graphWithArguments(tool, args), { rowLimit: tool.graph.nodes.some((node) => node.type === 'workspace-output' || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference')) ? 10_000 : 100 });
+    const graph = graphWithArguments(tool, args);
+    const executableGraph = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(ctx.scope, graph);
+    const preview = this.engine.preview(executableGraph, { rowLimit: tool.graph.nodes.some((node) => node.type === 'workspace-output' || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference')) ? 10_000 : 100 });
     assertOutputMatchesSchema(preview.output, tool.outputSchema);
     const delivery = await this.output.dispatch({ tool, table: preview.output, session: ctx.session, runId: ctx.runId, toolCallId: call.id, ...(agent?.internalId === undefined ? {} : { agentId: agent.internalId }) });
     trace.push({

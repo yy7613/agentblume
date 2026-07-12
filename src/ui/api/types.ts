@@ -192,6 +192,30 @@ export interface AgentPreviewRunDto {
   readonly estimatedCost?: RunEstimatedCostDto;
 }
 
+/** payloadや接続資格情報を含まない、Tool用データソースのカタログ表現。 */
+export type DataSourceDto = FileDataSourceDto | DatabaseDataSourceDto;
+export interface DataSourceBaseDto {
+  readonly id: string;
+  readonly tenant: TenantScopeDto;
+  readonly name: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+export interface FileDataSourceDto extends DataSourceBaseDto {
+  readonly kind: 'file';
+  readonly format: 'csv' | 'json';
+  readonly contentType: 'text/csv' | 'application/json';
+  readonly sizeBytes: number;
+}
+export interface DatabaseDataSourceDto extends DataSourceBaseDto {
+  readonly kind: 'database';
+  readonly connectionId: string;
+  readonly driver: 'postgresql';
+  readonly defaultSchema?: string;
+}
+export interface DatabaseConnectionDto { readonly id: string; readonly driver: 'postgresql' }
+export interface DatabaseConnectionStatusDto extends DatabaseConnectionDto { readonly available: boolean; readonly error?: string }
+
 export type RunPurposeDto = 'interactive' | 'scenario' | 'evaluation' | 'delegation';
 export interface RunModelSnapshotDto { readonly provider: string; readonly model: string; readonly modelConfigHash: string }
 export interface RunLatencyDto { readonly totalMs: number; readonly modelMs: number; readonly toolMs: number }

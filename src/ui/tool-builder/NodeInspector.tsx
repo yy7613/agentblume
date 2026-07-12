@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import type { ColumnDto, DataType, JsonCell, SchemaDto } from '../api/types';
+import type { ToolApiClient } from '../api/tool-api';
+import type { ColumnDto, DataSourceDto, DataType, JsonCell, SchemaDto } from '../api/types';
 import { catalogItem, toInputOf, type ToolNodeType } from './node-catalog';
 import { useToolBuilderStore } from './store';
 import { useI18n } from '../i18n';
@@ -59,9 +60,9 @@ function parsePairs(
 }
 
 const EMPTY_COLUMNS: readonly ColumnDto[] = [];
-const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'rename', 'cast', 'join', 'sort', 'fill-null', 'replace', 'agent-output', 'workspace-output']);
+const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'database-source', 'rename', 'cast', 'join', 'sort', 'fill-null', 'replace', 'agent-output', 'workspace-output']);
 
-export function NodeInspector() {
+export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
   const selectedNodeId = useToolBuilderStore((state) => state.selectedNodeId);
   const node = useToolBuilderStore((state) => state.nodes.find((candidate) => candidate.id === selectedNodeId));
   const update = useToolBuilderStore((state) => state.updateNodeConfig);
@@ -91,6 +92,7 @@ export function NodeInspector() {
   const [jsonError, setJsonError] = useState<string>();
   const [dialogDraft, setDialogDraft] = useState<Readonly<Record<string, unknown>>>();
   const [dialogNodeId, setDialogNodeId] = useState<string>();
+  const [dataSources, setDataSources] = useState<readonly DataSourceDto[]>([]);
   const { text } = useI18n();
 
   useEffect(() => {
@@ -99,6 +101,10 @@ export function NodeInspector() {
       setJsonError(undefined);
     }
   }, [node?.id, node?.data.config]);
+  useEffect(() => {
+    if (client === undefined || typeof client.listDataSources !== 'function') return;
+    void client.listDataSources({ tenantId: 'local', workspaceId: 'default' }).then(setDataSources).catch(() => setDataSources([]));
+  }, [client]);
 
   if (node === undefined) return <aside className="inspector empty"><h2>{text('Inspector', 'インスペクター')}</h2><p>{text('Select a node.', 'ノードを選択してください。')}</p></aside>;
   const config = node.data.config;
@@ -143,7 +149,7 @@ export function NodeInspector() {
             {rightColumns.length > 0 && <div className="column-hints"><strong>{text('Right input columns', '右入力の列')}</strong>{rightColumns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
           </>
         : columns.length > 0 && <div className="column-hints"><strong>{text('Upstream columns', '上流の列')}</strong>{columns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
-      {dialogNodeId === node.id && dialogDraft !== undefined && <NodeConfigDialog type={type} initial={dialogDraft} columns={columns} leftColumns={leftColumns} rightColumns={rightColumns} onCancel={closeDialog} onApply={(next) => { update(node.id, next); closeDialog(); }} />}
+      {dialogNodeId === node.id && dialogDraft !== undefined && <NodeConfigDialog type={type} initial={dialogDraft} columns={columns} leftColumns={leftColumns} rightColumns={rightColumns} dataSources={dataSources} onCancel={closeDialog} onApply={(next) => { update(node.id, next); closeDialog(); }} />}
     </aside>
   );
 }
@@ -194,7 +200,7 @@ function GraphMappingFields({ config, setConfig, columns }: { readonly config: R
   </section>;
 }
 
-function NodeConfigDialog({ type, initial, columns, leftColumns, rightColumns, onCancel, onApply }: { readonly type: ToolNodeType; readonly initial: Readonly<Record<string, unknown>>; readonly columns: readonly ColumnDto[]; readonly leftColumns: readonly ColumnDto[]; readonly rightColumns: readonly ColumnDto[]; readonly onCancel: () => void; readonly onApply: (config: Readonly<Record<string, unknown>>) => void }) {
+function NodeConfigDialog({ type, initial, columns, leftColumns, rightColumns, dataSources, onCancel, onApply }: { readonly type: ToolNodeType; readonly initial: Readonly<Record<string, unknown>>; readonly columns: readonly ColumnDto[]; readonly leftColumns: readonly ColumnDto[]; readonly rightColumns: readonly ColumnDto[]; readonly dataSources: readonly DataSourceDto[]; readonly onCancel: () => void; readonly onApply: (config: Readonly<Record<string, unknown>>) => void }) {
   const [draft, setDraft] = useState<Readonly<Record<string, unknown>>>(initial);
   const { text } = useI18n();
   const patch = (next: Record<string, unknown>) => setDraft((current) => ({ ...current, ...next }));
@@ -211,7 +217,7 @@ function NodeConfigDialog({ type, initial, columns, leftColumns, rightColumns, o
         {type === 'agent-input' && <SchemaTableEditor config={draft} setConfig={patch} />}
         {type === 'join' && <JoinFields config={draft} setConfig={patch} leftColumns={leftColumns} rightColumns={rightColumns} />}
         {type === 'fill-null' && <FillNullFields config={draft} setConfig={patch} columns={columns} />}
-        {(type === 'json-source' || type === 'csv-source') && <SourceDialogEditor type={type} config={draft} setConfig={patch} />}
+        {(type === 'json-source' || type === 'csv-source' || type === 'database-source') && <SourceDialogEditor type={type} config={draft} setConfig={patch} dataSources={dataSources} />}
       </div>
       <footer><button type="button" className="secondary" onClick={onCancel}>{text('Cancel', 'キャンセル')}</button><button type="button" className="primary" onClick={() => onApply(draft)}>{text('Apply settings', '設定を適用')}</button></footer>
     </section>
@@ -251,11 +257,16 @@ function SchemaTableEditor({ config, setConfig }: { readonly config: Readonly<Re
   return <RuleEditor title={text('Input schema', '入力スキーマ')} addLabel={text('Add column', '列を追加')} onAdd={() => setConfig({ schema: { columns: [...columns, { name: '', type: 'string', nullable: false }] } })}>{columns.map((column, index) => <div className="rule-row" key={index}><input aria-label={text('Column name', '列名')} value={column.name} onChange={(event) => update(index, { name: event.target.value })} /><select aria-label={text('Column type', '列型')} value={column.type} onChange={(event) => update(index, { type: event.target.value as DataType })}>{DATA_TYPES.map((value) => <option key={value} value={value}>{value}</option>)}</select><label className="check"><input type="checkbox" checked={column.nullable} onChange={(event) => update(index, { nullable: event.target.checked })} />{text('Optional', '任意')}</label><button type="button" aria-label={text('Remove column', '列を削除')} onClick={() => setConfig({ schema: { columns: columns.filter((_, i) => i !== index) } })}>×</button></div>)}<details><summary>{text('Advanced sample JSON', '詳細サンプルJSON')}</summary><textarea aria-label={text('Sample arguments', 'サンプル引数')} rows={7} value={JSON.stringify(sample, null, 2)} onChange={(event) => { try { const value = JSON.parse(event.target.value) as unknown; if (value !== null && typeof value === 'object' && !Array.isArray(value)) setConfig({ sample: value }); } catch {} }} /></details></RuleEditor>;
 }
 
-function SourceDialogEditor({ type, config, setConfig }: { readonly type: 'json-source' | 'csv-source'; readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void }) {
+function SourceDialogEditor({ type, config, setConfig, dataSources }: { readonly type: 'json-source' | 'csv-source' | 'database-source'; readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly dataSources: readonly DataSourceDto[] }) {
   const { text } = useI18n();
-  if (type === 'csv-source') return <CsvFields config={config} setConfig={setConfig} />;
+  const sourceId = typeof config['dataSourceId'] === 'string' ? config['dataSourceId'] : '';
+  const matching = dataSources.filter((source) => type === 'database-source' ? source.kind === 'database' : source.kind === 'file' && source.format === (type === 'csv-source' ? 'csv' : 'json'));
+  const picker = <label>{text('Registered data source', '登録済みデータソース')}<select aria-label={text('Registered data source', '登録済みデータソース')} value={sourceId} onChange={(event) => setConfig({ dataSourceId: event.target.value === '' ? undefined : event.target.value })}><option value="">{text('Inline editor', 'インライン編集')}</option>{matching.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label>;
+  if (type === 'database-source') return <>{picker}<label>{text('Allowed table or view', '許可済みtable/view')}<input aria-label={text('Allowed table or view', '許可済みtable/view')} placeholder={text('e.g. reporting.sales_daily', '例: reporting.sales_daily')} value={String(config['table'] ?? '')} onChange={(event) => setConfig({ table: event.target.value })} /></label><label>{text('Maximum rows', '最大行数')}<input aria-label={text('Maximum rows', '最大行数')} type="number" min={1} max={10000} value={Number(config['limit'] ?? 1000)} onChange={(event) => setConfig({ limit: Number(event.target.value) })} /></label><p>{text('The backend rejects tables outside the configured allowlist and executes a read-only bounded query.', 'バックエンドは構成済みallowlist外のtableを拒否し、読み取り専用・上限付きで実行します。')}</p></>;
+  if (sourceId !== '') return <>{picker}<p>{text('This source is resolved by the backend at preview and runtime. Its file body is never copied into the Tool definition.', 'プレビュー・実行時にバックエンドがこのソースを解決します。ファイル本文はTool定義に複製されません。')}</p></>;
+  if (type === 'csv-source') return <>{picker}<CsvFields config={config} setConfig={setConfig} /></>;
   const rows = config['rows'] as readonly Readonly<Record<string, unknown>>[] | undefined ?? [];
-  return <><p>{text(`${rows.length} rows. Use Advanced JSON for bulk editing.`, `${rows.length}行です。大量編集は詳細JSONを使います。`)}</p><details><summary>{text('Advanced JSON', '詳細JSON')}</summary><textarea aria-label={text('JSON rows', 'JSON行')} rows={16} value={JSON.stringify(rows, null, 2)} onChange={(event) => { try { const value = JSON.parse(event.target.value) as unknown; if (Array.isArray(value)) setConfig({ rows: value }); } catch {} }} /></details></>;
+  return <>{picker}<p>{text(`${rows.length} rows. Use Advanced JSON for bulk editing.`, `${rows.length}行です。大量編集は詳細JSONを使います。`)}</p><details><summary>{text('Advanced JSON', '詳細JSON')}</summary><textarea aria-label={text('JSON rows', 'JSON行')} rows={16} value={JSON.stringify(rows, null, 2)} onChange={(event) => { try { const value = JSON.parse(event.target.value) as unknown; if (Array.isArray(value)) setConfig({ rows: value }); } catch {} }} /></details></>;
 }
 
 const DATA_TYPES: readonly DataType[] = ['string', 'number', 'boolean', 'date', 'null', 'unknown'];

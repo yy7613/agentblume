@@ -68,6 +68,9 @@ import type {
   OperationsStatusDto,
   RetentionPolicyDto,
   RetentionApplyResultDto,
+  DataSourceDto,
+  DatabaseConnectionDto,
+  DatabaseConnectionStatusDto,
 } from './types';
 
 export class ApiError extends Error {
@@ -100,18 +103,18 @@ export class ToolApiClient {
     return this.request<{ status: string }>('/health');
   }
 
-  async inferDraft(graph: ToolGraphDto, signal?: AbortSignal): Promise<PropagationResultDto> {
+  async inferDraft(graph: ToolGraphDto, signal?: AbortSignal, scope?: TenantScopeDto): Promise<PropagationResultDto> {
     const body = await this.request<{ propagation: PropagationResultDto }>(
       '/tool-drafts/infer-schema',
-      { method: 'POST', body: JSON.stringify({ graph }), signal },
+      { method: 'POST', body: JSON.stringify({ graph, ...(scope === undefined ? {} : { scope }) }), signal },
     );
     return body.propagation;
   }
 
-  async previewDraft(graph: ToolGraphDto, rowLimit = 100, signal?: AbortSignal): Promise<PreviewResultDto> {
+  async previewDraft(graph: ToolGraphDto, rowLimit = 100, signal?: AbortSignal, scope?: TenantScopeDto): Promise<PreviewResultDto> {
     const body = await this.request<{ result: PreviewResultDto }>(
       '/tool-drafts/preview',
-      { method: 'POST', body: JSON.stringify({ graph, rowLimit }), signal },
+      { method: 'POST', body: JSON.stringify({ graph, rowLimit, ...(scope === undefined ? {} : { scope }) }), signal },
     );
     return body.result;
   }
@@ -186,6 +189,32 @@ export class ToolApiClient {
     return (await this.request<{ run: AgentPreviewRunDto }>('/runs', {
       method: 'POST', body: JSON.stringify(input), signal,
     })).run;
+  }
+
+  async listDataSources(scope: TenantScopeDto): Promise<readonly DataSourceDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ sources: DataSourceDto[] }>(`/data-sources?${query}`)).sources;
+  }
+
+  async uploadDataSourceFile(input: { readonly scope: TenantScopeDto; readonly name: string; readonly format: 'csv' | 'json'; readonly content: string }): Promise<DataSourceDto> {
+    return (await this.request<{ source: DataSourceDto }>('/data-sources/files', { method: 'POST', body: JSON.stringify(input) })).source;
+  }
+
+  async registerDatabaseDataSource(input: { readonly scope: TenantScopeDto; readonly name: string; readonly connectionId: string; readonly defaultSchema?: string }): Promise<DataSourceDto> {
+    return (await this.request<{ source: DataSourceDto }>('/data-sources/databases', { method: 'POST', body: JSON.stringify(input) })).source;
+  }
+
+  async listDatabaseConnections(): Promise<readonly DatabaseConnectionDto[]> {
+    return (await this.request<{ connections: DatabaseConnectionDto[] }>('/data-sources/connections')).connections;
+  }
+
+  async testDatabaseConnection(connectionId: string, scope: TenantScopeDto): Promise<DatabaseConnectionStatusDto> {
+    return (await this.request<{ connection: DatabaseConnectionStatusDto }>(`/data-sources/connections/${encodeURIComponent(connectionId)}/test`, { method: 'POST', body: JSON.stringify({ scope }) })).connection;
+  }
+
+  async deleteDataSource(id: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/data-sources/${encodeURIComponent(id)}?${query}`, { method: 'DELETE' });
   }
 
   async createAgentSession(input: { readonly scope: TenantScopeDto; readonly agent: { readonly internalId: string; readonly version?: string } }): Promise<AgentSessionDto> {

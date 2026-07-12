@@ -9,6 +9,54 @@
 
 ---
 
+## 0. 現行実装の全体像
+
+この図は、現在ローカルで実装済みの構成だけを示す。将来構想を含む後続のレイヤ図とは区別し、初見の読者が「ブラウザ操作がどの経路で保存・実行・外部データ読取へ至るか」を把握するための入口とする。
+
+```mermaid
+flowchart LR
+  USER["利用者"] --> UI["React / Vite UI\nChat・Agent・Skill・Data Sources・Tool Builder"]
+  UI -->|"JSON over HTTP"| API["Fastify API"]
+
+  subgraph Core["アプリケーション中核"]
+    direction TB
+    UC["Use cases\nTool・Agent・Skill・Session・Data Source"]
+    ETL["ETL Engine\n決定的なノード実行"]
+    UC --> ETL
+  end
+
+  API --> UC
+  UC --> DOMAIN["Domain\nTool Graph・Schema・Version・Policy"]
+
+  subgraph Adapters["Adapter / 永続化"]
+    SQLITE["SQLite\n定義・Run・データソースカタログ"]
+    FILES["Backend payload store\nCSV / JSON本文"]
+    SESSION["Session workspace\n一時Artifact"]
+  end
+  UC --> SQLITE
+  UC --> FILES
+  UC --> SESSION
+
+  UC --> MODEL["Model provider\nLM Studio / OpenAI互換"]
+  UC --> DB["PostgreSQL read adapter\nallowlist + read-only + row limit"]
+  ENV["Backend environment\nDB接続情報・passwordEnv・allowedTables"] --> DB
+
+  classDef boundary fill:#e8f0fe,stroke:#5167d6,color:#182a6b;
+  classDef core fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
+  classDef store fill:#fff4e5,stroke:#b56b00,color:#6b4000;
+  class UI,API boundary;
+  class UC,ETL,DOMAIN core;
+  class SQLITE,FILES,SESSION,DB,MODEL store;
+```
+
+要点は次のとおり。
+
+- UIはHTTP APIだけを呼び、資格情報・ファイル本文・DB接続文字列を保持しない。
+- Tool実行時は、保存された`dataSourceId`をbackendが解決する。CSV/JSON本文とDB接続情報はTool定義へ複製しない。
+- DB読取はPostgreSQL adapterに限定し、環境変数の`allowedTables`に一致するtable/viewを読み取り専用・行数上限付きで取得する。詳細は[ADR-0029](./adr/0029-data-source-registry.md)。
+
+---
+
 ## 1. レイヤ構成
 
 ```mermaid

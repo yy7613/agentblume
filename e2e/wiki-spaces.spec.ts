@@ -26,6 +26,11 @@ test('複数Wikiを作成しAgentごとに利用Wikiを指定できる', async (
 
   await page.getByRole('button', { name: 'Agent', exact: true }).click();
   await page.getByLabel('Agent internal ID').fill('customer-a-agent');
+  await page.getByLabel('Working name').fill('Customer A agent draft');
+  await page.getByLabel('Agent display name').fill('Customer A Agent');
+  await page.getByLabel('Publish name').fill('customer_a_agent');
+  await page.getByLabel('Owner').fill('e2e@example.com');
+  await page.getByLabel('System prompt').fill('Answer from Customer A knowledge only.');
   await page.getByRole('checkbox', { name: 'Use wiki Customer A' }).check();
   await expect(page.getByRole('checkbox', { name: 'Use wiki Customer B' })).not.toBeChecked();
   await page.getByRole('button', { name: 'Save version' }).click();

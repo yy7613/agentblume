@@ -32,7 +32,9 @@ export function MetadataBar({ client }: { readonly client: ToolApiClient }) {
         owner: metadata.owner,
         sideEffect: metadata.sideEffect,
         graph: currentGraph(),
-        agentTool: { name: metadata.agentName, description: metadata.agentDescription },
+        ...(metadata.agentName.trim() !== '' && metadata.agentDescription.trim() !== ''
+          ? { agentTool: { name: metadata.agentName, description: metadata.agentDescription } }
+          : {}),
         ...(inputSchema() !== undefined ? { inputSchema: inputSchema() } : {}),
         ...(outputSchema() !== undefined ? { outputSchema: outputSchema() } : {}),
       });

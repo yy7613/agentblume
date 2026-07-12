@@ -88,6 +88,29 @@ describe('ToolApiClient', () => {
     expect(error).toMatchObject({ code: 'MODEL_PROVIDER', runId: 'run-2' });
   });
 
+  it('data sourceの一覧・ファイル登録・DB登録・接続テスト・削除のwire contractを扱う', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ sources: [] }))
+      .mockResolvedValueOnce(jsonResponse({ source: { id: 'file-1' } }))
+      .mockResolvedValueOnce(jsonResponse({ source: { id: 'db-1' } }))
+      .mockResolvedValueOnce(jsonResponse({ connections: [{ id: 'sales', driver: 'postgresql' }] }))
+      .mockResolvedValueOnce(jsonResponse({ connection: { id: 'sales', driver: 'postgresql', available: true } }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    await client.listDataSources(scope);
+    await client.uploadDataSourceFile({ scope, name: 'rows.csv', format: 'csv', content: 'a\n1' });
+    await client.registerDatabaseDataSource({ scope, name: 'Sales', connectionId: 'sales' });
+    await client.listDatabaseConnections();
+    await client.testDatabaseConnection('sales', scope);
+    await client.deleteDataSource('file/1', scope);
+    expect(fetcher.mock.calls[0]?.[0]).toContain('/api/data-sources?');
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({ method: 'POST', body: JSON.stringify({ scope, name: 'rows.csv', format: 'csv', content: 'a\n1' }) });
+    expect(fetcher.mock.calls[2]?.[0]).toBe('/api/data-sources/databases');
+    expect(fetcher.mock.calls[3]?.[0]).toBe('/api/data-sources/connections');
+    expect(fetcher.mock.calls[4]?.[0]).toContain('/connections/sales/test');
+    expect(fetcher.mock.calls[5]?.[0]).toContain('/data-sources/file%2F1?');
+  });
+
   it('Agent SessionとArtifactのwire contractを扱う', async () => {
     const session = { id: 'session-1', status: 'active' };
     const artifact = { id: 'artifact-1', sessionId: 'session-1', name: 'result', kind: 'table' };

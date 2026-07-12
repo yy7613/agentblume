@@ -15,21 +15,21 @@ const graph: ToolGraph = {
 describe('DraftToolUseCase', () => {
   const useCase = new DraftToolUseCase(new EtlEngine(createDefaultRegistry()));
 
-  it('未保存 graph のスキーマを検査する', () => {
-    const propagation = useCase.inspect(graph);
+  it('未保存 graph のスキーマを検査する', async () => {
+    const propagation = await useCase.inspect(graph);
     expect(propagation.order).toEqual(['source', 'adult']);
     expect(propagation.nodes['adult']?.schema.columns[0]?.name).toBe('age');
     expect(propagation.hasErrors).toBe(false);
   });
 
-  it('未保存 graph を行数制限付きでプレビューする', () => {
-    const result = useCase.preview(graph, { rowLimit: 1 });
+  it('未保存 graph を行数制限付きでプレビューする', async () => {
+    const result = await useCase.preview(graph, { rowLimit: 1 });
     expect(result.output.rows).toEqual([]);
     expect(result.nodes['source']?.truncated).toBe(true);
   });
 
-  it('option省略時は engine の既定行数を使う', () => {
-    const result = useCase.preview(graph);
+  it('option省略時は engine の既定行数を使う', async () => {
+    const result = await useCase.preview(graph);
     expect(result.output.rows).toEqual([{ age: 20 }]);
   });
 });

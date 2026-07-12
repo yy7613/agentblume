@@ -13,6 +13,12 @@ test('Tool BuilderでWorkspace graph outputを構造化Dialogから設定して�
   await dialog.getByLabel('Source column').selectOption('id');
   await dialog.getByLabel('Target column').selectOption('name');
   await dialog.getByRole('button', { name: 'Apply settings' }).click();
+  await page.getByLabel('Display name').fill('Customer filter');
+  await page.getByText('Metadata', { exact: true }).click();
+  await page.getByLabel('Internal ID').fill('customer-filter');
+  await page.getByLabel('Working name').fill('Customer filter draft');
+  await page.getByLabel('Publish name').fill('adult_customers');
+  await page.getByLabel('Owner').fill('e2e@example.com');
   await page.getByRole('button', { name: 'Save version' }).click();
   const response = await page.request.get('/tools/customer-filter', { params: scope });
   expect(response.status()).toBe(200);

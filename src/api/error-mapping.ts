@@ -23,6 +23,7 @@ import { EvaluationAssetVersionConflictError, EvaluationDatasetNotFoundError, Ev
 import { MemoryDomainError, MemoryProposalNotFoundError, WikiPageNotFoundError, WikiSpaceNotFoundError } from '../domain/memory/errors';
 import { FeedbackValidationError } from '../domain/operations/errors';
 import { AgentSessionClosedError, AgentSessionExpiredError, AgentSessionNotFoundError, SessionArtifactNotFoundError, SessionDomainError, SessionQuotaExceededError } from '../domain/session/errors';
+import { DataSourceValidationError } from '../application/data-source/manage-data-sources';
 
 /** HTTP エラーレスポンス表現。 */
 export interface HttpError {
@@ -116,6 +117,7 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof AgentSessionExpiredError) return httpError(410, err.code, err.message);
   if (err instanceof SessionQuotaExceededError) return httpError(413, err.code, err.message);
   if (err instanceof SessionDomainError) return httpError(400, err.code, err.message);
+  if (err instanceof DataSourceValidationError) return httpError(400, err.code, err.message);
 
   if (err instanceof UnsafeToolError) return httpError(403, err.code, err.message);
   if (err instanceof ToolArgumentsError) return httpError(422, err.code, err.message);

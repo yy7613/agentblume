@@ -2,6 +2,35 @@ import { expect, test } from '@playwright/test';
 
 const scope = { tenantId: 'local', workspaceId: 'default' };
 
+async function fillToolMetadata(page: import('@playwright/test').Page, values: { readonly internalId: string; readonly displayName: string; readonly publishName: string }) {
+  await page.getByLabel('Display name').fill(values.displayName);
+  await page.getByText('Metadata', { exact: true }).click();
+  await page.getByLabel('Internal ID').fill(values.internalId);
+  await page.getByLabel('Working name').fill(`${values.displayName} draft`);
+  await page.getByLabel('Publish name').fill(values.publishName);
+  await page.getByLabel('Owner').fill('e2e@example.com');
+}
+
+async function fillAgentDefinition(page: import('@playwright/test').Page, internalId: string, displayName: string, publishName: string) {
+  await page.getByLabel('Agent internal ID').fill(internalId);
+  await page.getByLabel('Working name').fill(`${displayName} draft`);
+  await page.getByLabel('Agent display name').fill(displayName);
+  await page.getByLabel('Publish name').fill(publishName);
+  await page.getByLabel('Owner').fill('e2e@example.com');
+}
+
+async function fillSkillDefinition(page: import('@playwright/test').Page, internalId: string, displayName: string, publishName: string) {
+  await page.getByLabel('Skill internal ID').fill(internalId);
+  await page.getByLabel('Working name').fill(`${displayName} draft`);
+  await page.getByLabel('Skill display name').fill(displayName);
+  await page.getByLabel('Publish name').fill(publishName);
+  await page.getByLabel('Owner').fill('e2e@example.com');
+  await page.getByLabel('Skill responsibility').fill('Analyze the given value.');
+  await page.getByLabel('Skill activation condition').fill('Use when analysis is requested.');
+  await page.getByLabel('Input description').fill('A numeric value to analyze.');
+  await page.getByLabel('Output description').fill('A concise analysis result.');
+}
+
 test('Tool Builderでpreviewを確認してversion保存できる', async ({ page }) => {
   await page.goto('/');
 
@@ -9,6 +38,7 @@ test('Tool Builderでpreviewを確認してversion保存できる', async ({ pag
   const preview = page.locator('section[aria-label="Preview"]');
   await expect(preview.getByText('Alice')).toBeVisible();
   await expect(preview.getByText('Bob')).toHaveCount(0);
+  await fillToolMetadata(page, { internalId: 'customer-filter', displayName: 'Customer filter', publishName: 'adult_customers' });
 
   await page.getByRole('button', { name: 'Save version' }).click();
   await expect(page.getByLabel('Version history')).toHaveValue('1.0.0');
@@ -46,9 +76,10 @@ test('Agent BuilderでTool選択からprompt生成・編集・保存まで完了
   await page.goto('/');
   await page.getByRole('button', { name: 'Agent', exact: true }).click();
   await expect(page.getByText('Agent Builder', { exact: true })).toBeVisible();
-  await page.getByLabel('Agent internal ID').fill('e2e-agent');
+  await fillAgentDefinition(page, 'e2e-agent', 'E2E Agent', 'e2e_agent');
   await page.getByRole('checkbox', { name: /E2E Score Tool/ }).check();
   await page.getByRole('checkbox', { name: 'Enable structured output' }).check();
+  await page.getByLabel('Output field 1 name').fill('answer');
 
   await page.getByRole('button', { name: 'Generate draft' }).click();
   const prompt = page.getByLabel('System prompt');
@@ -62,7 +93,7 @@ test('Agent BuilderでTool選択からprompt生成・編集・保存まで完了
   const agent = (await agentResponse.json()).agent;
   expect(agent.systemPrompt).toBe('Reviewed E2E system prompt.');
   expect(agent.tools).toEqual([{ internalId: 'e2e-score-tool', version: '1.0.0' }]);
-  expect(agent.output).toEqual({ name: 'assistant_agent_response', fields: [{ name: 'answer', type: 'string', required: true }] });
+  expect(agent.output).toEqual({ name: 'e2e_agent_response', fields: [{ name: 'answer', type: 'string', required: true }] });
 
   await page.route('**/runs', async (route) => {
     const request = route.request();
@@ -72,6 +103,7 @@ test('Agent BuilderでTool選択からprompt生成・編集・保存まで完了
       trace: [{ sequence: 1, kind: 'model-response', content: '{"answer":"E2E agent response"}' }],
     } }) });
   });
+  await page.getByLabel('Agent chat message').fill('Run the saved agent.');
   await page.getByRole('button', { name: 'Run saved agent' }).click();
   await expect(page.getByText('E2E agent response')).toBeVisible();
 });
@@ -89,7 +121,7 @@ test('Skill Builderで固定Tool参照からprompt生成・編集・保存まで
   await page.goto('/');
   await page.getByRole('button', { name: 'Skill', exact: true }).click();
   await expect(page.getByText('Skill Builder', { exact: true })).toBeVisible();
-  await page.getByLabel('Skill internal ID').fill('e2e-analysis-skill');
+  await fillSkillDefinition(page, 'e2e-analysis-skill', 'E2E Analysis Skill', 'e2e_analysis_skill');
   await page.getByRole('checkbox', { name: /E2E Skill Tool/ }).check();
   await page.getByRole('button', { name: 'Generate draft' }).click();
   const instructions = page.getByLabel('Skill instructions');
@@ -129,6 +161,7 @@ test('Chat・MCP・Validation・Memory・Settingsの全ナビが実操作でき�
   await page.goto('/');
   await page.getByRole('button', { name: 'Chat', exact: true }).click();
   await page.getByLabel('Chat agent').selectOption('screen-agent');
+  await page.getByLabel('Chat message').fill('Screen test message');
   await page.getByRole('button', { name: 'Send' }).click();
   await expect(page.getByText('screen response')).toBeVisible();
 

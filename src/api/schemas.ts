@@ -154,11 +154,13 @@ export const previewBodySchema = z.object({
 /** 未保存 graph のスキーマ点検 body。 */
 export const draftInspectBodySchema = z.object({
   graph: graphSchema,
+  scope: tenantScopeSchema.optional(),
 });
 
 /** 未保存 graph のプレビュー body。 */
 export const draftPreviewBodySchema = z.object({
   graph: graphSchema,
+  scope: tenantScopeSchema.optional(),
   rowLimit: z.number().int().min(1).max(10000).optional(),
 });
 
@@ -307,6 +309,21 @@ export const wikiSearchQuerySchema = scopeQuerySchema.extend({
   limit: z.coerce.number().int().positive().max(100).optional(),
   wikiId: z.string().min(1).optional(),
 });
+/** データソース: file本文はAPI上限5MiBに加え、JSON文字列の上限を早期に絞る。 */
+export const dataSourceListQuerySchema = scopeQuerySchema;
+export const saveFileDataSourceBodySchema = z.object({
+  scope: tenantScopeSchema,
+  name: z.string().min(1).max(255),
+  format: z.enum(['csv', 'json']),
+  content: z.string().min(1).max(5 * 1024 * 1024),
+});
+export const registerDatabaseDataSourceBodySchema = z.object({
+  scope: tenantScopeSchema,
+  name: z.string().min(1).max(255),
+  connectionId: z.string().min(1).max(128),
+  defaultSchema: z.string().min(1).max(128).optional(),
+});
+export const databaseConnectionTestBodySchema = z.object({ scope: tenantScopeSchema });
 
 export const saveWikiSpaceBodySchema = z.object({
   scope: tenantScopeSchema,

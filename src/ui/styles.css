@@ -227,6 +227,21 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .workspace-card { background: white; border: 1px solid #dce1eb; border-radius: 12px; padding: 18px; min-width: 0; }
 .workspace-card h2 { margin: 2px 0 14px; font-size: 16px; }
 .workspace-card > label { margin-bottom: 14px; }
+.data-sources-grid { display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.data-source-hint { min-height: 34px; margin: -4px 0 14px; color: #758198; font-size: 11px; line-height: 1.45; }
+.data-sources-page .workspace-card > .primary { min-height: 36px; }
+.data-source-list { max-width: 980px; }
+.data-source-rows { display: grid; gap: 8px; }
+.data-source-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; border-top: 1px solid #e5e9f1; }
+.data-source-row strong, .data-source-row code, .data-source-row small { display: block; }
+.data-source-row strong { font-size: 13px; }
+.data-source-row code { margin-top: 4px; color: #68758f; font-size: 10px; }
+.data-source-row small { margin-top: 5px; font-size: 10px; }
+.data-source-actions { display: flex; flex: none; gap: 7px; }
+.danger { color: #aa3444; border-color: #e7b6be; }
+.connection-ready { color: #137058; }
+.connection-unavailable { color: #b43a46; }
+@media (max-width: 980px) { .data-sources-grid { grid-template-columns: 1fr; } }
 .manifest-preview { min-height: 260px; overflow: auto; padding: 12px; border-radius: 8px; background: #172033; color: #dce5ff; font-size: 11px; }
 .notice-card { margin: 12px 0; padding: 12px; border: 1px solid #efd39d; border-radius: 8px; background: #fff8e8; color: #6e5218; }
 .notice-card p { margin: 5px 0 0; font-size: 11px; line-height: 1.5; }
