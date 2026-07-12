@@ -1,0 +1,41 @@
+import { describe, expect, it } from 'vitest';
+import { ConfigError } from '../errors';
+import { agentOutputNode } from './agent-output';
+import { workspaceOutputNode } from './workspace-output';
+
+const table = { schema: { columns: [{ name: 'id', type: 'number' as const, nullable: false }] }, rows: [{ id: 1 }] };
+
+describe('output sink nodes', () => {
+  it('agent-output validates a bounded direct result configuration and passes input through', () => {
+    const config = agentOutputNode.validateConfig({ shape: 'single-value', format: 'json', valueColumn: 'id', maxRows: 10, maxBytes: 1024, overflow: 'error' });
+    expect(agentOutputNode.execute([table], config)).toEqual(table);
+    expect(agentOutputNode.inferSchema([table.schema], config).schema).toEqual(table.schema);
+  });
+
+  it('agent-output rejects single-value without a value column', () => {
+    expect(() => agentOutputNode.validateConfig({ shape: 'single-value', format: 'json', maxRows: 10, maxBytes: 1024, overflow: 'error' })).toThrow(ConfigError);
+  });
+
+  it('reports a missing input and rejects unsupported output settings', () => {
+    const config = agentOutputNode.validateConfig({ shape: 'rows', format: 'chartjs', maxRows: 1, maxBytes: 1024, overflow: 'store-and-reference' });
+    expect(agentOutputNode.inferSchema([], config)).toMatchObject({ state: 'unknown', issues: [{ severity: 'error' }] });
+    expect(() => agentOutputNode.execute([], config)).toThrow(ConfigError);
+    expect(() => agentOutputNode.validateConfig({ shape: 'rows', format: 'xml', maxRows: 1, maxBytes: 1024, overflow: 'error' })).toThrow(ConfigError);
+  });
+
+  it('workspace-output validates its session artifact policy and passes input through', () => {
+    const config = workspaceOutputNode.validateConfig({ name: 'sales', artifactKind: 'table', writeMode: 'create', onConflict: 'new-revision', previewRows: 5 });
+    expect(workspaceOutputNode.execute([table], config)).toEqual(table);
+    expect(workspaceOutputNode.inferSchema([table.schema], config)).toMatchObject({ state: 'confirmed', schema: table.schema });
+    expect(workspaceOutputNode.inferSchema([], config)).toMatchObject({ state: 'unknown', issues: [{ severity: 'error' }] });
+    expect(() => workspaceOutputNode.execute([], config)).toThrow(ConfigError);
+    expect(() => workspaceOutputNode.validateConfig({ name: '', artifactKind: 'table', writeMode: 'append', onConflict: 'fail', previewRows: 101 })).toThrow(ConfigError);
+  });
+
+  it('requires distinct source and target column mappings for graph artifacts', () => {
+    const config = workspaceOutputNode.validateConfig({ name: 'network', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 5, graph: { sourceColumn: 'from', targetColumn: 'to', edgeLabelColumn: 'kind' } });
+    expect(config.graph).toMatchObject({ sourceColumn: 'from', targetColumn: 'to' });
+    expect(() => workspaceOutputNode.validateConfig({ name: 'network', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 5 })).toThrow(ConfigError);
+    expect(() => workspaceOutputNode.validateConfig({ name: 'network', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 5, graph: { sourceColumn: 'id', targetColumn: 'id' } })).toThrow(ConfigError);
+  });
+});

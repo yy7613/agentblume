@@ -23,7 +23,7 @@
 
 | 柱 | 記憶の種類 | 器 | 内容 |
 |---|---|---|---|
-| **LLM Wiki** | 宣言的知識（事実・文脈） | `WikiPage`（新規エンティティ） | ワークスペースの業務知識・用語・データの意味・過去の判断理由をMarkdownページとして蓄積 |
+| **LLM Wiki** | 宣言的知識（事実・文脈） | `WikiSpace` + `WikiPage` | 顧客・業務・環境ごとに分離した名前付きWikiへ、業務知識・用語・判断理由をMarkdownページとして蓄積 |
 | **Skillsベース** | 手続き的知識（やり方） | 既存 `Skill.instructions` | 実行経験から得た手順・コツ・注意点を、該当Skillの `instructions` への**改訂提案**として蒸留 |
 
 > 既存の `Skill` は責務・発火条件・編集可能な `instructions` を持ち依存Toolをバージョン固定する（[03-domain-model.md §2](./03-domain-model.md)）。Skillsベースの長期記憶は**新しい仕組みを作らず、この Skill 資産を成長させる**アプローチを取る。
@@ -77,23 +77,36 @@ sequenceDiagram
 
 ```mermaid
 erDiagram
-  WORKSPACE ||--o{ WIKI_PAGE : contains
+  WORKSPACE ||--o{ WIKI_SPACE : contains
+  WIKI_SPACE ||--o{ WIKI_PAGE : contains
   WIKI_PAGE ||--o{ WIKI_REVISION : "versioned as"
   RUN ||--o{ MEMORY_PROPOSAL : "distilled into"
   MEMORY_PROPOSAL }o--|| WIKI_PAGE : "proposes update"
   MEMORY_PROPOSAL }o--|| SKILL : "proposes instructions change"
-  AGENT }o--o{ WIKI_PAGE : "reads via search"
+  AGENT }o--o{ WIKI_SPACE : "allowed to search"
 ```
 
 ```typescript
+interface WikiSpace {
+  readonly id: string;
+  readonly tenant: TenantScope;
+  readonly name: string;
+  readonly description: string;
+}
+
 interface WikiPage {
   readonly id: WikiPageId;
   readonly tenant: TenantScope;        // テナント境界必須
+  readonly wikiId: string;             // 1つの名前付きWikiへ所属
   readonly title: string;
   readonly tags: readonly string[];
   readonly body: string;               // Markdown
   readonly version: number;            // 改訂番号（SemVer不要・単調増加）
   readonly sourceRuns: readonly RunId[]; // 出典Run（監査・出所追跡）
+}
+
+interface Agent {
+  readonly wikis: readonly { wikiId: string }[]; // 実行時検索のallowlist
 }
 
 type MemoryProposalState = 'draft' | 'approved' | 'rejected';
@@ -130,6 +143,7 @@ interface MemoryPort {
 | 段階 | 内容 |
 |---|---|
 | **M1**（Phase 4 前半） | WikiPage CRUD + タグ/キーワード検索 + 手動編集UI。Agent実行時の手動アタッチ（ページ指定注入） |
+| **M1b** | 複数`WikiSpace`、AgentごとのWiki allowlist、allowlist内の自動検索・最小context注入 |
 | **M2** | Run からの抽出（振り返りAgent）→ MemoryProposal → 差分レビューUI → 承認保存 |
 | **M3** | Skill.instructions への蒸留提案（Skill新バージョン発行フローに接続） |
 | **M4** | 埋め込み検索（`embed` capability）+ 自動関連ページ注入（最小コンテキスト制限つき） |

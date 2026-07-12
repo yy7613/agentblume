@@ -12,6 +12,7 @@ export type MemoryProposalState = 'draft' | 'approved' | 'rejected';
 export type MemoryProposalTarget =
   | {
       readonly kind: 'wiki';
+      readonly wikiId?: string;
       readonly pageId: string;
       readonly isNewPage: boolean;
       readonly title: string;
@@ -54,10 +55,11 @@ function normalizeTags(tags: readonly string[]): readonly string[] {
 
 function normalizeTarget(target: MemoryProposalTarget): MemoryProposalTarget {
   if (target.kind === 'wiki') {
+    if (target.wikiId !== undefined) nonEmpty(target.wikiId, 'target.wikiId');
     nonEmpty(target.pageId, 'target.pageId');
     nonEmpty(target.title, 'target.title');
     nonEmpty(target.body, 'target.body');
-    return { kind: 'wiki', pageId: target.pageId, isNewPage: target.isNewPage, title: target.title, tags: normalizeTags(target.tags), body: target.body };
+    return { kind: 'wiki', ...(target.wikiId !== undefined ? { wikiId: target.wikiId } : {}), pageId: target.pageId, isNewPage: target.isNewPage, title: target.title, tags: normalizeTags(target.tags), body: target.body };
   }
   nonEmpty(target.skillId, 'target.skillId');
   nonEmpty(target.instructions, 'target.instructions');

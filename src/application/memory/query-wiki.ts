@@ -15,12 +15,12 @@ export class QueryWikiUseCase {
     return page;
   }
 
-  async list(scope: TenantScope): Promise<WikiPageSummary[]> {
-    return this.wiki.list(scope);
+  async list(scope: TenantScope, wikiId?: string): Promise<WikiPageSummary[]> {
+    return this.wiki.list(scope, wikiId);
   }
 
   /** query 空なら全件（updatedAt DESC）。 */
-  async search(scope: TenantScope, query: string, limit = 10): Promise<WikiPageSummary[]> {
-    return this.wiki.search(scope, query, limit);
+  async search(scope: TenantScope, query: string, limit = 10, wikiIds?: readonly string[]): Promise<WikiPageSummary[]> {
+    return this.wiki.search(scope, query, limit, wikiIds);
   }
 }

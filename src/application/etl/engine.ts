@@ -274,8 +274,12 @@ export class EtlEngine {
       graph.edges.map((e) => ({ from: e.from, to: e.to })),
     );
 
-    // 5. 終端（出次数0）がちょうど1つ。
-    const terminals = graph.nodes.filter((gn) => (outdegree.get(gn.id) ?? 0) === 0);
+    // 5. 終端（出次数0）がちょうど1つ。未接続の agent-input はTool引数の宣言として
+    //    使えるため、他の実行終端がある場合だけ終端候補から外す。
+    const rawTerminals = graph.nodes.filter((gn) => (outdegree.get(gn.id) ?? 0) === 0);
+    const terminals = rawTerminals.length > 1
+      ? rawTerminals.filter((gn) => gn.type !== 'agent-input')
+      : rawTerminals;
     if (terminals.length === 0) {
       throw new GraphError('graph has no terminal node (out-degree 0)');
     }

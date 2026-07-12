@@ -39,6 +39,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
       skills: body.skills.map((skill) => ({ internalId: skill.internalId, version: version(skill.version) as SemVer })),
       tools: body.tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer })),
       agents: body.agents.map((sub) => ({ internalId: sub.internalId, version: version(sub.version) as SemVer, usage: sub.usage })),
+      wikis: body.wikis,
     });
     return reply.status(201).send({ agent: serializeAgent(agent) });
   });

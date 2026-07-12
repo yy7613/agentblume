@@ -38,6 +38,10 @@ describe('filter: validateConfig', () => {
     expect(cfg).toEqual({ column: 'age', op: 'gte', value: 18 });
   });
 
+  it('accepts an Agent input binding while retaining a design-time sample value', () => {
+    expect(filterNode.validateConfig({ column: 'age', op: 'gte', value: 18, valueBinding: { source: 'agent-input', field: 'minimumAge' } })).toMatchObject({ valueBinding: { source: 'agent-input', field: 'minimumAge' } });
+  });
+
   it('accepts a config without value (isNull)', () => {
     const cfg = filterNode.validateConfig({ column: 'name', op: 'isNull' });
     expect(cfg.value).toBeUndefined();

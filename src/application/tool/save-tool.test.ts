@@ -117,6 +117,20 @@ describe('SaveToolUseCase', () => {
     expect(saved?.metadata.publishName).toBe('publish_name');
   });
 
+  it('FilterのAgent input bindingは宣言済みinputSchemaだけを参照できる', async () => {
+    const { usecase } = makeSut();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42 }] } },
+        { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: 'minimumScore' } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: { columns: [{ name: 'minimumScore', type: 'number', nullable: false }] }, sample: { minimumScore: 0 } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph, inputSchema: { columns: [{ name: 'minimumScore', type: 'number', nullable: false }] } }))).resolves.toMatchObject({ inputSchema: { columns: [{ name: 'minimumScore' }] } });
+    await expect(usecase.execute(makeInput({ internalId: 'invalid-binding', graph, inputSchema: { columns: [{ name: 'other', type: 'number', nullable: false }] } }))).rejects.toThrow(/unknown field 'minimumScore'/);
+  });
+
   it('2回目の保存は既定 patch で 1.0.1', async () => {
     const { usecase } = makeSut();
 

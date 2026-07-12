@@ -2,6 +2,7 @@ import { expect } from 'vitest';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';
 import { createWikiPage, reviseWikiPage, type WikiPage } from '../../domain/memory/wiki-page';
+import { createWikiSpace } from '../../domain/memory/wiki-space';
 
 const scope: TenantScope = { tenantId: 'tenant', workspaceId: 'workspace' };
 const other: TenantScope = { tenantId: 'tenant', workspaceId: 'other' };
@@ -51,4 +52,14 @@ export async function wikiRepositoryContract(repo: WikiRepository): Promise<void
   expect(all.map((s) => s.id)).toEqual(['cohort', 'etl']);
   expect(both).toEqual([]);
   expect((await repo.search(scope, '', 1)).length).toBe(1);
+
+  const customerA = createWikiSpace({ id: 'customer-a', tenant: scope, name: 'Customer A', createdAt: '2026-07-04T00:00:00.000Z' });
+  const customerB = createWikiSpace({ id: 'customer-b', tenant: scope, name: 'Customer B', createdAt: '2026-07-04T00:00:00.000Z' });
+  await repo.saveSpace(customerA); await repo.saveSpace(customerB);
+  await repo.save(createWikiPage({ id: 'policy-a', wikiId: 'customer-a', tenant: scope, title: 'Policy', body: 'refund policy alpha', updatedAt: '2026-07-04T00:00:00.000Z' }));
+  await repo.save(createWikiPage({ id: 'policy-b', wikiId: 'customer-b', tenant: scope, title: 'Policy', body: 'refund policy beta', updatedAt: '2026-07-04T00:00:00.000Z' }));
+  expect((await repo.listSpaces(scope)).map((space) => space.id)).toEqual(expect.arrayContaining(['default', 'customer-a', 'customer-b']));
+  expect((await repo.list(scope, 'customer-a')).map((item) => item.id)).toEqual(['policy-a']);
+  expect((await repo.search(scope, 'refund policy', 10, ['customer-b'])).map((item) => item.id)).toEqual(['policy-b']);
+  expect(await repo.findSpace(other, 'customer-a')).toBeNull();
 }

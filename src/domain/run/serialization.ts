@@ -14,8 +14,11 @@ const traceSchema = z.discriminatedUnion('kind', [
 const runSchema = z.object({
   runId: z.string().min(1),
   scope: z.object({ tenantId: z.string().min(1), workspaceId: z.string().min(1) }),
+  sessionId: z.string().min(1).optional(),
   status: z.enum(['running', 'succeeded', 'failed'] as [RunStatus, ...RunStatus[]]),
   mode: z.enum(['preview', 'test']),
+  purpose: z.enum(['interactive', 'scenario', 'evaluation', 'delegation']).optional(),
+  model: z.object({ provider: z.string(), model: z.string(), modelConfigHash: z.string() }).optional(),
   tool: z.object({ internalId: z.string().min(1), version: z.string().optional(), publishName: z.string().optional() }).optional(),
   tools: z.array(z.object({ internalId: z.string().min(1), version: z.string().optional(), publishName: z.string().optional() })).optional(),
   agent: z.object({ internalId: z.string().min(1), version: z.string().optional(), publishName: z.string().optional() }).optional(),
@@ -23,6 +26,11 @@ const runSchema = z.object({
   structuredResponse: z.record(z.string(), z.unknown()).optional(),
   trace: z.array(traceSchema),
   usage: z.object({ promptTokens: z.number().int().nonnegative().optional(), completionTokens: z.number().int().nonnegative().optional(), totalTokens: z.number().int().nonnegative().optional() }).optional(),
+  latency: z.object({ totalMs: z.number().nonnegative(), modelMs: z.number().nonnegative(), toolMs: z.number().nonnegative() }).optional(),
+  estimatedCost: z.object({
+    kind: z.literal('estimated'), amount: z.number().nonnegative(), currency: z.literal('USD'),
+    price: z.object({ currency: z.literal('USD'), inputPerMillionTokens: z.number().nonnegative(), outputPerMillionTokens: z.number().nonnegative(), effectiveAt: z.string().min(1) }),
+  }).optional(),
   failure: z.object({ code: z.string(), message: z.string() }).optional(),
 }).refine((record) => record.tool !== undefined || record.agent !== undefined, {
   message: 'run requires a tool or agent reference',

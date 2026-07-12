@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { MemoryProposalDto, MemoryProposalStateDto, WikiPageSummaryDto } from '../api/types';
+import type { MemoryProposalDto, MemoryProposalStateDto, WikiPageSummaryDto, WikiSpaceSummaryDto } from '../api/types';
 import { useI18n } from '../i18n';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
@@ -32,48 +32,85 @@ export function MemoryPage({ client }: { readonly client: ToolApiClient }) {
 function WikiTab({ client }: { readonly client: ToolApiClient }) {
   const { text } = useI18n();
   const [query, setQuery] = useState('');
+  const [wikis, setWikis] = useState<readonly WikiSpaceSummaryDto[]>([]);
+  const [selectedWikiId, setSelectedWikiId] = useState('');
+  const [wikiDraft, setWikiDraft] = useState({ id: '', name: '', description: '' });
   const [pages, setPages] = useState<readonly WikiPageSummaryDto[]>([]);
   const [editor, setEditor] = useState<EditorState>(EMPTY_EDITOR);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const refresh = useCallback(async (q: string) => {
+  const refreshWikis = useCallback(async (preferId?: string) => {
     setError(null);
-    try { setPages(await client.listWiki(scope, q)); }
+    try {
+      const items = typeof client.listWikis === 'function' ? await client.listWikis(scope) : [{ id: 'default', name: 'Default Wiki', description: '', updatedAt: '' }]; setWikis(items);
+      const nextId = (preferId ?? selectedWikiId) || items[0]?.id || '';
+      setSelectedWikiId(nextId);
+      const selected = items.find((item) => item.id === nextId);
+      if (selected !== undefined) setWikiDraft({ id: selected.id, name: selected.name, description: selected.description });
+    }
     catch (err) { setError(err instanceof Error ? err.message : 'load failed'); }
-  }, [client]);
+  }, [client, selectedWikiId]);
 
-  useEffect(() => { void refresh(''); }, [refresh]);
+  const refresh = useCallback(async (q: string, wikiId = selectedWikiId) => {
+    setError(null);
+    if (wikiId === '') { setPages([]); return; }
+    try { setPages(typeof client.listWikiPages === 'function' ? await client.listWikiPages(wikiId, scope, q) : await client.listWiki(scope, q)); }
+    catch (err) { setError(err instanceof Error ? err.message : 'load failed'); }
+  }, [client, selectedWikiId]);
+
+  useEffect(() => { void refreshWikis(); }, [client]);
+  useEffect(() => { void refresh('', selectedWikiId); setEditor(EMPTY_EDITOR); }, [selectedWikiId, refresh]);
 
   const open = useCallback(async (id: string) => {
     setError(null);
     try {
-      const page = await client.getWiki(id, scope);
+      const page = typeof client.getWikiPage === 'function' ? await client.getWikiPage(selectedWikiId, id, scope) : await client.getWiki(id, scope);
       setEditor({ id: page.id, title: page.title, tags: page.tags.join(', '), body: page.body, version: page.version });
     } catch (err) { setError(err instanceof Error ? err.message : 'open failed'); }
-  }, [client]);
+  }, [client, selectedWikiId]);
 
   const save = useCallback(async () => {
     setBusy(true); setError(null);
     try {
       const tags = editor.tags.split(',').map((t) => t.trim()).filter((t) => t.length > 0);
-      const page = await client.saveWiki({ scope, ...(editor.id !== undefined ? { id: editor.id } : {}), title: editor.title, tags, body: editor.body });
+      const input = { scope, ...(editor.id !== undefined ? { id: editor.id } : {}), title: editor.title, tags, body: editor.body };
+      const page = typeof client.saveWikiPage === 'function' ? await client.saveWikiPage(selectedWikiId, { ...input, wikiId: selectedWikiId }) : await client.saveWiki(input);
       setEditor({ id: page.id, title: page.title, tags: page.tags.join(', '), body: page.body, version: page.version });
       await refresh(query);
     } catch (err) { setError(err instanceof Error ? err.message : 'save failed'); }
     finally { setBusy(false); }
   }, [client, editor, query, refresh]);
 
-  const canSave = editor.title.trim().length > 0 && editor.body.trim().length > 0 && !busy;
+  const saveSpace = useCallback(async () => {
+    setBusy(true); setError(null);
+    try {
+      const saved = await client.saveWikiSpace({ scope, id: wikiDraft.id.trim(), name: wikiDraft.name.trim(), ...(wikiDraft.description.trim() !== '' ? { description: wikiDraft.description.trim() } : {}) });
+      await refreshWikis(saved.id);
+    } catch (err) { setError(err instanceof Error ? err.message : 'wiki save failed'); }
+    finally { setBusy(false); }
+  }, [client, refreshWikis, wikiDraft]);
 
-  return <div className="mem-layout">
+  const selectWiki = (id: string) => {
+    setSelectedWikiId(id);
+    const selected = wikis.find((item) => item.id === id);
+    if (selected !== undefined) setWikiDraft({ id: selected.id, name: selected.name, description: selected.description });
+  };
+  const newWiki = () => { setWikiDraft({ id: '', name: '', description: '' }); };
+  const canSave = selectedWikiId !== '' && editor.title.trim().length > 0 && editor.body.trim().length > 0 && !busy;
+  const canSaveWiki = wikiDraft.id.trim() !== '' && wikiDraft.name.trim() !== '' && !busy;
+
+  return <><section className="wiki-space-manager" aria-label={text('Wiki spaces', 'Wiki一覧')}>
+    <div><label>{text('Active wiki', '選択中のWiki')}<select value={selectedWikiId} onChange={(event) => selectWiki(event.target.value)}><option value="">{text('Select a wiki', 'Wikiを選択')}</option>{wikis.map((wiki) => <option key={wiki.id} value={wiki.id}>{wiki.name}</option>)}</select></label><button type="button" className="ghost" onClick={newWiki}>{text('New wiki', '新しいWiki')}</button></div>
+    <div className="wiki-space-editor"><label>{text('Wiki ID', 'Wiki ID')}<input value={wikiDraft.id} disabled={wikis.some((wiki) => wiki.id === wikiDraft.id)} onChange={(event) => setWikiDraft((current) => ({ ...current, id: event.target.value }))} /></label><label>{text('Wiki name', 'Wiki名')}<input value={wikiDraft.name} onChange={(event) => setWikiDraft((current) => ({ ...current, name: event.target.value }))} /></label><label>{text('Description', '説明')}<input value={wikiDraft.description} onChange={(event) => setWikiDraft((current) => ({ ...current, description: event.target.value }))} /></label><button type="button" className="primary" disabled={!canSaveWiki} onClick={() => void saveSpace()}>{text('Save wiki', 'Wikiを保存')}</button></div>
+  </section><div className="mem-layout">
     <section className="mem-list-pane">
       <form className="mem-search" onSubmit={(e) => { e.preventDefault(); void refresh(query); }}>
         <input aria-label={text('Search wiki', 'Wiki を検索')} placeholder={text('Search wiki…', 'Wiki を検索…')} value={query} onChange={(e) => setQuery(e.target.value)} />
         <button type="submit">{text('Search', '検索')}</button>
       </form>
       <ul className="mem-list">
-        {pages.length === 0 ? <li className="mem-empty">{text('No wiki pages yet.', 'Wiki ページはまだありません。')}</li>
+        {selectedWikiId === '' ? <li className="mem-empty">{text('Create or select a wiki first.', '先にWikiを作成または選択してください。')}</li> : pages.length === 0 ? <li className="mem-empty">{text('No wiki pages yet.', 'Wiki ページはまだありません。')}</li>
           : pages.map((page) => <li key={page.id}>
             <button type="button" className={editor.id === page.id ? 'active' : ''} onClick={() => void open(page.id)}>
               <strong>{page.title}</strong>
@@ -94,7 +131,7 @@ function WikiTab({ client }: { readonly client: ToolApiClient }) {
       {error !== null ? <p className="mem-error" role="alert">{error}</p> : null}
       <button type="button" className="primary" disabled={!canSave} onClick={() => void save()}>{busy ? text('Saving…', '保存中…') : text('Save page', 'ページを保存')}</button>
     </section>
-  </div>;
+  </div></>;
 }
 
 const STATES: readonly (MemoryProposalStateDto | 'all')[] = ['draft', 'approved', 'rejected', 'all'];
@@ -140,7 +177,7 @@ function ProposalsTab({ client }: { readonly client: ToolApiClient }) {
           </div>
           <p className="mem-summary">{proposal.summary}</p>
           {proposal.target.kind === 'wiki'
-            ? <div className="mem-preview"><strong>{proposal.target.isNewPage ? text('New page', '新規ページ') : text('Revision', '改訂')}: {proposal.target.title}</strong><pre>{proposal.target.body}</pre></div>
+            ? <div className="mem-preview"><strong>{proposal.target.isNewPage ? text('New page', '新規ページ') : text('Revision', '改訂')}: {proposal.target.title} · Wiki {proposal.target.wikiId ?? 'default'}</strong><pre>{proposal.target.body}</pre></div>
             : <div className="mem-preview"><strong>{text('Skill', 'Skill')}: {proposal.target.skillId}</strong><pre>{proposal.target.instructions}</pre></div>}
           {proposal.state === 'draft' ? <div className="mem-actions">
             <button type="button" className="primary" disabled={busyId === proposal.id} onClick={() => void decide(proposal.id, 'approve')}>{text('Approve', '承認')}</button>

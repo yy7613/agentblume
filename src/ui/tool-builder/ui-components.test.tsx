@@ -209,6 +209,22 @@ describe('PreviewPanel', () => {
 });
 
 describe('MetadataBar', () => {
+  it('updates editable metadata, including the session-write side-effect selector', () => {
+    render(<MetadataBar client={{} as ToolApiClient} />);
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Workspace output' } });
+    fireEvent.change(screen.getByLabelText('Internal ID'), { target: { value: 'workspace-output' } });
+    fireEvent.change(screen.getByLabelText('Working name'), { target: { value: 'workspace-output-draft' } });
+    fireEvent.change(screen.getByLabelText('Publish name'), { target: { value: 'workspace_output' } });
+    fireEvent.change(screen.getByLabelText('Owner'), { target: { value: 'owner@example.com' } });
+    fireEvent.change(screen.getByLabelText('Tenant'), { target: { value: 'tenant-b' } });
+    fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: 'workspace-b' } });
+    fireEvent.change(screen.getByLabelText('Side effect'), { target: { value: 'session-write' } });
+    expect(useToolBuilderStore.getState().metadata).toMatchObject({
+      displayName: 'Workspace output', internalId: 'workspace-output', workingName: 'workspace-output-draft',
+      publishName: 'workspace_output', owner: 'owner@example.com', tenantId: 'tenant-b', workspaceId: 'workspace-b', sideEffect: 'session-write',
+    });
+  });
+
   it('明示Saveだけが保存APIを呼びversion履歴を更新する', async () => {
     useToolBuilderStore.getState().setPropagation(propagation);
     const metadata = useToolBuilderStore.getState().metadata;
@@ -275,10 +291,12 @@ describe('AgentChatPanel', () => {
       ],
     };
     const client = { runAgent: vi.fn().mockResolvedValue(run) } as unknown as ToolApiClient;
+    useToolBuilderStore.getState().setMetadata('internalId', 'customer-filter');
     const { rerender } = render(<AgentChatPanel client={client} />);
     expect((screen.getByRole('button', { name: 'Run agent' }) as HTMLButtonElement).disabled).toBe(true);
     useToolBuilderStore.getState().setSavedVersion('1.0.0', ['1.0.0']);
     rerender(<AgentChatPanel client={client} />);
+    await userEvent.type(screen.getByLabelText('Chat message'), 'Use the tool');
     await userEvent.click(screen.getByRole('button', { name: 'Run agent' }));
     await waitFor(() => expect(client.runAgent).toHaveBeenCalled());
     expect(await screen.findByText('Alice is included.')).toBeTruthy();
@@ -297,6 +315,7 @@ describe('AgentChatPanel', () => {
       getRunTrace: vi.fn().mockResolvedValue(failed),
     } as unknown as ToolApiClient;
     render(<AgentChatPanel client={client} />);
+    await userEvent.type(screen.getByLabelText('Chat message'), 'Use the tool');
     await userEvent.click(screen.getByRole('button', { name: 'Run agent' }));
     expect(await screen.findByText(/Failed trace · run-f/)).toBeTruthy();
     expect(screen.getByText(/MODEL_PROVIDER/)).toBeTruthy();

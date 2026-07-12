@@ -2,6 +2,7 @@
 
 - ADR: [ADR-0016](../docs/adr/0016-long-term-memory-llm-wiki.md)（Accepted）
 - 設計: [docs/10-memory.md](../docs/10-memory.md)
+- 複数Wiki拡張: [v21b-agent-scoped-wikis.md](./v21b-agent-scoped-wikis.md) / [ADR-0026](../docs/adr/0026-agent-scoped-wiki-spaces.md)
 - スコープ: M1（Wiki CRUD + キーワード/タグ検索 + 手動アタッチ）+ M2（Run抽出→提案）+ M3（承認→Wiki改訂 / Skill蒸留）
 - 非対象: M4 埋め込み検索（`ModelProviderPort.embed` は未追加）、cross-workspace 共有、無承認の自動書き込み
 

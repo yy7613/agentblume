@@ -5,6 +5,8 @@ import { AgentVersionConflictError } from '../../domain/agent/errors';
 import { deserializeAgent, serializeAgent } from '../../domain/agent/serialization';
 import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
+import type { PublishState } from '../../domain/tool/metadata';
+import { AgentNotFoundError } from '../../domain/agent/errors';
 
 const CREATE_TABLE = `
   CREATE TABLE IF NOT EXISTS agents (
@@ -33,6 +35,16 @@ export class SqliteAgentRepository implements AgentRepository {
       }
       throw error;
     }
+  }
+
+  async updateState(scope: TenantScope, internalId: string, version: SemVer, state: PublishState): Promise<Agent> {
+    const current = await this.findVersion(scope, internalId, version);
+    if (current === null) throw new AgentNotFoundError(`Agent not found: ${internalId}@${version.toString()}`);
+    const serialized = serializeAgent(current);
+    const updated = deserializeAgent({ ...serialized, metadata: { ...serialized.metadata, state } });
+    this.db.prepare(`UPDATE agents SET definition_json = ? WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ? AND version = ?`)
+      .run(JSON.stringify(serializeAgent(updated)), scope.tenantId, scope.workspaceId, internalId, version.toString());
+    return updated;
   }
 
   async findVersion(scope: TenantScope, internalId: string, version: SemVer): Promise<Agent | null> {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AgentPreviewRunDto, AgentSummaryDto, RunTraceEventDto } from '../api/types';
+import type { AgentPreviewRunDto, AgentSummaryDto, RunTraceEventDto, SessionArtifactDto } from '../api/types';
 import { useI18n } from '../i18n';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
@@ -31,10 +31,12 @@ const sendIcon = (
 export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const [agents, setAgents] = useState<readonly AgentSummaryDto[]>([]);
   const [selectedId, setSelectedId] = useState('');
-  const [message, setMessage] = useState('Use the available capabilities and explain the result.');
+  const [message, setMessage] = useState('');
   const [turns, setTurns] = useState<readonly ChatTurn[]>([]);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string>();
+  const [sessionId, setSessionId] = useState<string>();
+  const [artifacts, setArtifacts] = useState<readonly SessionArtifactDto[]>([]);
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { text } = useI18n();
@@ -52,6 +54,13 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const agent = useMemo(() => agents.find((item) => item.internalId === selectedId), [agents, selectedId]);
   const agentName = agent?.displayName ?? text('Agent', 'エージェント');
 
+  useEffect(() => {
+    if (sessionId === undefined || typeof (client as Partial<ToolApiClient>).listSessionArtifacts !== 'function') { setArtifacts([]); return; }
+    let active = true;
+    void client.listSessionArtifacts(sessionId, scope).then((items) => { if (active) setArtifacts(items); }).catch(() => { if (active) setArtifacts([]); });
+    return () => { active = false; };
+  }, [client, sessionId]);
+
   // 会話が伸びたら常に最新のメッセージが見えるよう最下部へスクロールする。
   useEffect(() => { const node = threadRef.current; if (node !== null) node.scrollTop = node.scrollHeight; }, [turns, busy]);
   // コンポーザーを入力量に合わせて自動で高さ調整する（Copilot風の伸縮入力欄）。
@@ -64,13 +73,33 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
     setTurns((prev) => [...prev, { role: 'user', text: content }]);
     setMessage('');
     try {
-      const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview' });
+      let activeSessionId = sessionId;
+      const sessions = client as Partial<ToolApiClient>;
+      if (activeSessionId === undefined && typeof sessions.createAgentSession === 'function') {
+        const session = await client.createAgentSession({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion } });
+        activeSessionId = session.id;
+        setSessionId(activeSessionId);
+      }
+      const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview', sessionId: activeSessionId });
       setTurns((prev) => [...prev, { role: 'assistant', run }]);
+      if (activeSessionId !== undefined && typeof sessions.listSessionArtifacts === 'function') void sessions.listSessionArtifacts(activeSessionId, scope).then(setArtifacts).catch(() => {});
     } catch (cause) {
       setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause) }]);
     } finally {
       setBusy(false);
     }
+  }
+
+  function newChat(): void {
+    const closing = sessionId;
+    setTurns([]); setSessionId(undefined); setArtifacts([]);
+    if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
+  }
+
+  function selectAgent(next: string): void {
+    const closing = sessionId;
+    setSelectedId(next); setSessionId(undefined); setArtifacts([]); setTurns([]);
+    if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
   }
 
   const suggestions = [
@@ -89,7 +118,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
             <p>{text('Preview a saved Agent version in chat.', '保存済みエージェントのバージョンを固定してチャットで実行します。')}</p>
           </div>
         </div>
-        <button type="button" className="cc-new" onClick={() => setTurns([])} disabled={turns.length === 0}>
+        <button type="button" className="cc-new" onClick={newChat} disabled={turns.length === 0}>
           {text('New chat', '新しいチャット')}
         </button>
       </header>
@@ -142,7 +171,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
               aria-label={text('Chat agent', 'チャット対象エージェント')}
               value={selectedId}
               disabled={busy || agents.length === 0}
-              onChange={(event) => setSelectedId(event.target.value)}
+              onChange={(event) => selectAgent(event.target.value)}
             >
               <option value="">{text('Select an agent', 'エージェントを選択')}</option>
               {agents.map((item) => <option key={item.internalId} value={item.internalId}>{item.displayName} · {item.latestVersion}</option>)}
@@ -154,6 +183,10 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
         </div>
         <p className="cc-hint">{text('Enter to send · Shift+Enter for a new line · preview mode', 'Enterで送信 · Shift+Enterで改行 · プレビュー実行')}</p>
       </form>
+      {sessionId !== undefined && <aside className="session-workspace" aria-label={text('Session workspace', 'セッションワークスペース')}>
+        <strong>{text('Session workspace', 'セッションワークスペース')}</strong><small>{text(`${artifacts.length} temporary artifacts`, `一時Artifact ${artifacts.length}件`)}</small>
+        {artifacts.map((artifact) => <span key={artifact.id} title={artifact.id}>{artifact.name} · {artifact.kind} · {formatBytes(artifact.sizeBytes)}</span>)}
+      </aside>}
     </main>
   );
 }
@@ -237,3 +270,5 @@ function usageLabel(run: AgentPreviewRunDto): string {
 }
 
 function messageOf(cause: unknown) { return cause instanceof Error ? cause.message : 'Request failed'; }
+
+function formatBytes(bytes: number): string { return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`; }

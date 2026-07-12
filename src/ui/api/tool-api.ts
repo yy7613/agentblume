@@ -19,6 +19,8 @@ import type {
   EvaluationResultDto,
   AgentSummaryDto,
   RunSavedAgentDto,
+  AgentSessionDto,
+  SessionArtifactDto,
   StructuredOutputDto,
   SaveSkillDto,
   SerializedSkillDto,
@@ -38,6 +40,34 @@ import type {
   MemoryProposalDto,
   MemoryProposalStateDto,
   ReflectRunDto,
+  SaveEvaluationDatasetDto,
+  SerializedEvaluationDatasetDto,
+  EvaluationDatasetSummaryDto,
+  EvaluationCaseDto,
+  SaveEvaluatorProfileDto,
+  SerializedEvaluatorProfileDto,
+  EvaluatorProfileSummaryDto,
+  CreateExperimentDto,
+  ExperimentDto,
+  ExperimentCaseResultDto,
+  ExperimentStatusDto,
+  ExperimentComparisonDto,
+  SaveGatePolicyDto,
+  SerializedGatePolicyDto,
+  GatePolicySummaryDto,
+  GateReportDto,
+  PromotionRequestDto,
+  SaveJudgeRubricDto,
+  SerializedJudgeRubricDto,
+  JudgeRubricSummaryDto,
+  WikiSpaceDto,
+  WikiSpaceSummaryDto,
+  SaveWikiSpaceDto,
+  RunFeedbackDto,
+  SubmitRunFeedbackDto,
+  OperationsStatusDto,
+  RetentionPolicyDto,
+  RetentionApplyResultDto,
 } from './types';
 
 export class ApiError extends Error {
@@ -158,6 +188,32 @@ export class ToolApiClient {
     })).run;
   }
 
+  async createAgentSession(input: { readonly scope: TenantScopeDto; readonly agent: { readonly internalId: string; readonly version?: string } }): Promise<AgentSessionDto> {
+    return (await this.request<{ session: AgentSessionDto }>('/agent-sessions', { method: 'POST', body: JSON.stringify(input) })).session;
+  }
+
+  async closeAgentSession(sessionId: string, scope: TenantScopeDto): Promise<AgentSessionDto> {
+    return (await this.request<{ session: AgentSessionDto }>(`/agent-sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST', body: JSON.stringify({ scope }) })).session;
+  }
+
+  async listSessionArtifacts(sessionId: string, scope: TenantScopeDto): Promise<readonly SessionArtifactDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ artifacts: SessionArtifactDto[] }>(`/agent-sessions/${encodeURIComponent(sessionId)}/artifacts?${query}`)).artifacts;
+  }
+
+  async getSessionArtifact(sessionId: string, artifactId: string, scope: TenantScopeDto, limit = 100, offset = 0, section?: 'nodes' | 'edges'): Promise<{ readonly artifact: SessionArtifactDto; readonly payload: unknown }> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    query.set('limit', String(limit));
+    query.set('offset', String(offset));
+    if (section !== undefined) query.set('section', section);
+    return this.request<{ artifact: SessionArtifactDto; payload: unknown }>(`/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}?${query}`);
+  }
+
+  async deleteSessionArtifact(sessionId: string, artifactId: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request<unknown>(`/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}?${query}`, { method: 'DELETE' });
+  }
+
   async listRuns(scope: TenantScopeDto, options?: { readonly limit?: number; readonly status?: 'running' | 'succeeded' | 'failed' }): Promise<readonly RunSummaryDto[]> {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     if (options?.limit !== undefined) query.set('limit', String(options.limit));
@@ -233,9 +289,166 @@ export class ToolApiClient {
     return (await this.request<{ run: ScenarioRunDto }>(`/scenario-runs/${encodeURIComponent(id)}?${query}`)).run;
   }
 
+  async saveEvaluationDataset(input: SaveEvaluationDatasetDto): Promise<SerializedEvaluationDatasetDto> {
+    return (await this.request<{ dataset: SerializedEvaluationDatasetDto }>('/evaluation-datasets', { method: 'POST', body: JSON.stringify(input) })).dataset;
+  }
+
+  async listEvaluationDatasets(scope: TenantScopeDto): Promise<readonly EvaluationDatasetSummaryDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ datasets: EvaluationDatasetSummaryDto[] }>(`/evaluation-datasets?${query}`)).datasets;
+  }
+
+  async getEvaluationDataset(internalId: string, scope: TenantScopeDto, version?: string): Promise<SerializedEvaluationDatasetDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (version !== undefined) query.set('version', version);
+    return (await this.request<{ dataset: SerializedEvaluationDatasetDto }>(`/evaluation-datasets/${encodeURIComponent(internalId)}?${query}`)).dataset;
+  }
+
+  async listEvaluationDatasetVersions(internalId: string, scope: TenantScopeDto): Promise<readonly string[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ versions: string[] }>(`/evaluation-datasets/${encodeURIComponent(internalId)}/versions?${query}`)).versions;
+  }
+
+  async importEvaluationCases(scope: TenantScopeDto, format: 'json' | 'csv', content: string): Promise<readonly EvaluationCaseDto[]> {
+    return (await this.request<{ cases: EvaluationCaseDto[] }>('/evaluation-datasets/import', { method: 'POST', body: JSON.stringify({ scope, format, content }) })).cases;
+  }
+
+  async exportEvaluationDataset(internalId: string, scope: TenantScopeDto, format: 'json' | 'csv', version?: string): Promise<string> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId, format });
+    if (version !== undefined) query.set('version', version);
+    return (await this.request<{ format: string; content: string }>(`/evaluation-datasets/${encodeURIComponent(internalId)}/export?${query}`)).content;
+  }
+
+  async saveEvaluatorProfile(input: SaveEvaluatorProfileDto): Promise<SerializedEvaluatorProfileDto> {
+    return (await this.request<{ profile: SerializedEvaluatorProfileDto }>('/evaluator-profiles', { method: 'POST', body: JSON.stringify(input) })).profile;
+  }
+
+  async listEvaluatorProfiles(scope: TenantScopeDto): Promise<readonly EvaluatorProfileSummaryDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ profiles: EvaluatorProfileSummaryDto[] }>(`/evaluator-profiles?${query}`)).profiles;
+  }
+
+  async getEvaluatorProfile(internalId: string, scope: TenantScopeDto, version?: string): Promise<SerializedEvaluatorProfileDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (version !== undefined) query.set('version', version);
+    return (await this.request<{ profile: SerializedEvaluatorProfileDto }>(`/evaluator-profiles/${encodeURIComponent(internalId)}?${query}`)).profile;
+  }
+
+  async listEvaluatorProfileVersions(internalId: string, scope: TenantScopeDto): Promise<readonly string[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ versions: string[] }>(`/evaluator-profiles/${encodeURIComponent(internalId)}/versions?${query}`)).versions;
+  }
+
+  async saveJudgeRubric(input: SaveJudgeRubricDto): Promise<SerializedJudgeRubricDto> {
+    return (await this.request<{ rubric: SerializedJudgeRubricDto }>('/judge-rubrics', { method: 'POST', body: JSON.stringify(input) })).rubric;
+  }
+
+  async listJudgeRubrics(scope: TenantScopeDto): Promise<readonly JudgeRubricSummaryDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId }); return (await this.request<{ rubrics: JudgeRubricSummaryDto[] }>(`/judge-rubrics?${query}`)).rubrics;
+  }
+
+  async getJudgeRubric(internalId: string, scope: TenantScopeDto, version?: string): Promise<SerializedJudgeRubricDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId }); if (version !== undefined) query.set('version', version); return (await this.request<{ rubric: SerializedJudgeRubricDto }>(`/judge-rubrics/${encodeURIComponent(internalId)}?${query}`)).rubric;
+  }
+
+  async listJudgeRubricVersions(internalId: string, scope: TenantScopeDto): Promise<readonly string[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId }); return (await this.request<{ versions: string[] }>(`/judge-rubrics/${encodeURIComponent(internalId)}/versions?${query}`)).versions;
+  }
+
+  async createExperiment(input: CreateExperimentDto): Promise<ExperimentDto> {
+    return (await this.request<{ experiment: ExperimentDto }>('/experiments', { method: 'POST', body: JSON.stringify(input) })).experiment;
+  }
+
+  async listExperiments(scope: TenantScopeDto, status?: ExperimentStatusDto): Promise<readonly ExperimentDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (status !== undefined) query.set('status', status);
+    return (await this.request<{ experiments: ExperimentDto[] }>(`/experiments?${query}`)).experiments;
+  }
+
+  async getExperiment(id: string, scope: TenantScopeDto): Promise<ExperimentDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ experiment: ExperimentDto }>(`/experiments/${encodeURIComponent(id)}?${query}`)).experiment;
+  }
+
+  async listExperimentResults(id: string, scope: TenantScopeDto): Promise<readonly ExperimentCaseResultDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ results: ExperimentCaseResultDto[] }>(`/experiments/${encodeURIComponent(id)}/results?${query}`)).results;
+  }
+
+  async cancelExperiment(id: string, scope: TenantScopeDto): Promise<ExperimentDto> {
+    return (await this.request<{ experiment: ExperimentDto }>(`/experiments/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: JSON.stringify({ scope }) })).experiment;
+  }
+
+  async resumeExperiment(id: string, scope: TenantScopeDto): Promise<ExperimentDto> {
+    return (await this.request<{ experiment: ExperimentDto }>(`/experiments/${encodeURIComponent(id)}/resume`, { method: 'POST', body: JSON.stringify({ scope }) })).experiment;
+  }
+
+  async compareExperiments(scope: TenantScopeDto, baselineExperimentId: string, candidateExperimentId: string): Promise<ExperimentComparisonDto> {
+    return (await this.request<{ comparison: ExperimentComparisonDto }>('/experiment-comparisons', { method: 'POST', body: JSON.stringify({ scope, baselineExperimentId, candidateExperimentId }) })).comparison;
+  }
+
+  async saveGatePolicy(input: SaveGatePolicyDto): Promise<SerializedGatePolicyDto> {
+    return (await this.request<{ policy: SerializedGatePolicyDto }>('/gate-policies', { method: 'POST', body: JSON.stringify(input) })).policy;
+  }
+
+  async listGatePolicies(scope: TenantScopeDto): Promise<readonly GatePolicySummaryDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId }); return (await this.request<{ policies: GatePolicySummaryDto[] }>(`/gate-policies?${query}`)).policies;
+  }
+
+  async getGatePolicy(id: string, scope: TenantScopeDto, version?: string): Promise<SerializedGatePolicyDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId }); if (version !== undefined) query.set('version', version); return (await this.request<{ policy: SerializedGatePolicyDto }>(`/gate-policies/${encodeURIComponent(id)}?${query}`)).policy;
+  }
+
+  async evaluateGate(scope: TenantScopeDto, policy: { readonly id: string; readonly version: string }, candidateExperimentId: string, baselineExperimentId?: string): Promise<GateReportDto> {
+    return (await this.request<{ report: GateReportDto }>('/gate-reports', { method: 'POST', body: JSON.stringify({ scope, policy, candidateExperimentId, ...(baselineExperimentId !== undefined ? { baselineExperimentId } : {}) }) })).report;
+  }
+
+  async listGateReports(scope: TenantScopeDto, candidateExperimentId?: string): Promise<readonly GateReportDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId }); if (candidateExperimentId !== undefined) query.set('candidateExperimentId', candidateExperimentId); return (await this.request<{ reports: GateReportDto[] }>(`/gate-reports?${query}`)).reports;
+  }
+
+  async requestPromotion(agentId: string, version: string, scope: TenantScopeDto, gateReportId: string, requestedBy: string): Promise<PromotionRequestDto> {
+    return (await this.request<{ promotion: PromotionRequestDto }>(`/agents/${encodeURIComponent(agentId)}/versions/${encodeURIComponent(version)}/promotion-requests`, { method: 'POST', body: JSON.stringify({ scope, gateReportId, requestedBy }) })).promotion;
+  }
+
+  async listPromotionRequests(scope: TenantScopeDto, agentId?: string): Promise<readonly PromotionRequestDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId }); if (agentId !== undefined) query.set('agentId', agentId); return (await this.request<{ promotions: PromotionRequestDto[] }>(`/promotion-requests?${query}`)).promotions;
+  }
+
+  async decidePromotion(id: string, decision: 'approve' | 'reject', scope: TenantScopeDto, decidedBy: string, reason?: string): Promise<PromotionRequestDto> {
+    return (await this.request<{ promotion: PromotionRequestDto }>(`/promotion-requests/${encodeURIComponent(id)}/${decision}`, { method: 'POST', body: JSON.stringify({ scope, decidedBy, ...(reason !== undefined ? { reason } : {}) }) })).promotion;
+  }
+
   async getRunTrace(runId: string, scope: TenantScopeDto): Promise<RunRecordDto> {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     return (await this.request<{ run: RunRecordDto }>(`/runs/${encodeURIComponent(runId)}/trace?${query}`)).run;
+  }
+
+  async getRunFeedback(runId: string, scope: TenantScopeDto): Promise<RunFeedbackDto | null> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ feedback: RunFeedbackDto | null }>(`/runs/${encodeURIComponent(runId)}/feedback?${query}`)).feedback;
+  }
+
+  async submitRunFeedback(runId: string, input: SubmitRunFeedbackDto): Promise<RunFeedbackDto> {
+    return (await this.request<{ feedback: RunFeedbackDto }>(`/runs/${encodeURIComponent(runId)}/feedback`, { method: 'PUT', body: JSON.stringify(input) })).feedback;
+  }
+
+  async getOperationsStatus(scope: TenantScopeDto, days = 30): Promise<OperationsStatusDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId, days: String(days) });
+    return (await this.request<{ status: OperationsStatusDto }>(`/operations/status?${query}`)).status;
+  }
+
+  async getRetentionPolicy(scope: TenantScopeDto): Promise<RetentionPolicyDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ policy: RetentionPolicyDto }>(`/operations/retention?${query}`)).policy;
+  }
+
+  async saveRetentionPolicy(input: Omit<RetentionPolicyDto, 'updatedAt'>): Promise<RetentionPolicyDto> {
+    return (await this.request<{ policy: RetentionPolicyDto }>('/operations/retention', { method: 'PUT', body: JSON.stringify(input) })).policy;
+  }
+
+  async applyRetention(scope: TenantScopeDto): Promise<RetentionApplyResultDto> {
+    return (await this.request<{ result: RetentionApplyResultDto }>('/operations/retention/apply', { method: 'POST', body: JSON.stringify({ scope }) })).result;
   }
 
   // 長期記憶（v21）
@@ -252,6 +465,35 @@ export class ToolApiClient {
 
   async saveWiki(input: SaveWikiDto, signal?: AbortSignal): Promise<WikiPageDto> {
     return (await this.request<{ page: WikiPageDto }>('/wiki', { method: 'POST', body: JSON.stringify(input), signal })).page;
+  }
+
+  async listWikis(scope: TenantScopeDto, signal?: AbortSignal): Promise<readonly WikiSpaceSummaryDto[]> {
+    const params = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ wikis: WikiSpaceSummaryDto[] }>(`/wikis?${params}`, { signal })).wikis;
+  }
+
+  async getWikiSpace(id: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<WikiSpaceDto> {
+    const params = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ wiki: WikiSpaceDto }>(`/wikis/${encodeURIComponent(id)}?${params}`, { signal })).wiki;
+  }
+
+  async saveWikiSpace(input: SaveWikiSpaceDto, signal?: AbortSignal): Promise<WikiSpaceDto> {
+    return (await this.request<{ wiki: WikiSpaceDto }>('/wikis', { method: 'POST', body: JSON.stringify(input), signal })).wiki;
+  }
+
+  async listWikiPages(wikiId: string, scope: TenantScopeDto, query?: string, signal?: AbortSignal): Promise<readonly WikiPageSummaryDto[]> {
+    const params = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (query !== undefined && query.trim() !== '') params.set('q', query);
+    return (await this.request<{ pages: WikiPageSummaryDto[] }>(`/wikis/${encodeURIComponent(wikiId)}/pages?${params}`, { signal })).pages;
+  }
+
+  async getWikiPage(wikiId: string, id: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<WikiPageDto> {
+    const params = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ page: WikiPageDto }>(`/wikis/${encodeURIComponent(wikiId)}/pages/${encodeURIComponent(id)}?${params}`, { signal })).page;
+  }
+
+  async saveWikiPage(wikiId: string, input: SaveWikiDto, signal?: AbortSignal): Promise<WikiPageDto> {
+    return (await this.request<{ page: WikiPageDto }>(`/wikis/${encodeURIComponent(wikiId)}/pages`, { method: 'POST', body: JSON.stringify(input), signal })).page;
   }
 
   async reflectRun(input: ReflectRunDto, signal?: AbortSignal): Promise<readonly MemoryProposalDto[]> {
@@ -277,7 +519,7 @@ export class ToolApiClient {
       ...init,
       headers: { 'content-type': 'application/json', ...init.headers },
     });
-    const body = (await response.json()) as unknown;
+    const body = response.status === 204 ? {} : await response.json() as unknown;
     if (!response.ok) {
       const error = body as { error?: { code?: string; message?: string; runId?: string } };
       throw new ApiError(

@@ -12,6 +12,7 @@
     "depcruise": "depcruise src --config .dependency-cruiser.cjs",
     "demo": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx src/demo.ts",
     "serve": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx src/server.ts",
+    "llmops:gate": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx src/llmops-gate.ts",
     "dev:ui": "vite",
     "build": "vite build",
     "test:e2e": "playwright test",
@@ -38,6 +39,7 @@
   "dependencies": {
     "@mastra/core": "^1.50.1",
     "@mastra/evals": "^1.5.1",
+    "@opentelemetry/api": "^1.9.1",
     "@xyflow/react": "^12.11.1",
     "fastify": "^5.9.0",
     "react": "^19.2.7",

@@ -8,6 +8,12 @@ export interface JsonSchemaProperty {
   readonly description?: string;
   readonly enum?: readonly JsonPrimitive[];
   readonly anyOf?: readonly JsonSchemaProperty[];
+  readonly items?: JsonSchemaProperty;
+  readonly properties?: Readonly<Record<string, JsonSchemaProperty>>;
+  readonly required?: readonly string[];
+  readonly additionalProperties?: boolean;
+  readonly minimum?: number;
+  readonly maximum?: number;
 }
 
 export interface JsonSchemaObject {

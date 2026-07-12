@@ -12,6 +12,9 @@ import { AGENT_KINDS } from '../domain/agent/agent';
 import { STRUCTURED_OUTPUT_TYPES } from '../domain/agent/structured-output';
 import { PERSONA_ARCHETYPES, PERSONA_LANGUAGES, PERSONA_LEVELS, PERSONA_VERBOSITIES } from '../domain/validation/persona';
 import { SURVEY_QUESTION_KINDS } from '../domain/validation/survey';
+import { CODE_SCORERS } from '../domain/evaluation/evaluator-profile';
+import { EVALUATION_CASE_SOURCES } from '../domain/evaluation/evaluation-dataset';
+import { JUDGE_REFERENCE_POLICIES } from '../domain/evaluation/judge-rubric';
 
 /** テナントスコープ（tenantId / workspaceId 非空）。 */
 export const tenantScopeSchema = z.object({
@@ -60,6 +63,7 @@ export const saveToolBodySchema = z.object({
   graph: graphSchema,
   inputSchema: dataSchemaSchema.optional(),
   outputSchema: dataSchemaSchema.optional(),
+  agentTool: z.object({ name: z.string().min(1).max(64), description: z.string().min(1).max(2_000) }).optional(),
   bump: z.enum(['major', 'minor', 'patch']).optional(),
   state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
 });
@@ -98,6 +102,7 @@ export const saveAgentBodySchema = z.object({
   skills: z.array(agentToolRefSchema).default([]),
   tools: z.array(agentToolRefSchema),
   agents: z.array(agentSubAgentRefSchema).default([]),
+  wikis: z.array(z.object({ wikiId: z.string().min(1) })).default([]),
   output: structuredOutputSchema.optional(),
   bump: z.enum(['major', 'minor', 'patch']).optional(),
   state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
@@ -171,6 +176,7 @@ export const runAgentBodySchema = z.union([z.object({
     version: z.string().optional(),
   }),
   systemPrompt: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
 }), z.object({
   ...runBaseSchema,
   agent: z.object({
@@ -179,7 +185,16 @@ export const runAgentBodySchema = z.union([z.object({
   }),
   /** 手動アタッチする Wiki ページ id（指定時のみ最小注入する・v21 M1）。 */
   memoryPageIds: z.array(z.string().min(1)).optional(),
+  sessionId: z.string().min(1).optional(),
 })]);
+
+export const createAgentSessionBodySchema = z.object({
+  scope: tenantScopeSchema,
+  agent: z.object({ internalId: z.string().min(1), version: z.string().optional() }),
+});
+export const closeAgentSessionBodySchema = z.object({ scope: tenantScopeSchema });
+export const sessionScopeQuerySchema = tenantScopeSchema;
+export const sessionArtifactQuerySchema = tenantScopeSchema.extend({ limit: z.coerce.number().int().min(1).max(100).optional(), offset: z.coerce.number().int().min(0).max(1_000_000).optional(), section: z.enum(['nodes', 'edges']).optional() });
 
 export const runListQuerySchema = z.object({
   tenantId: z.string().min(1),
@@ -279,6 +294,7 @@ export const evaluateBodySchema = z.object({
 export const saveWikiBodySchema = z.object({
   scope: tenantScopeSchema,
   id: z.string().min(1).optional(),
+  wikiId: z.string().min(1).optional(),
   title: z.string().min(1),
   tags: z.array(z.string()).default([]),
   body: z.string().min(1),
@@ -289,6 +305,14 @@ export const saveWikiBodySchema = z.object({
 export const wikiSearchQuerySchema = scopeQuerySchema.extend({
   q: z.string().optional(),
   limit: z.coerce.number().int().positive().max(100).optional(),
+  wikiId: z.string().min(1).optional(),
+});
+
+export const saveWikiSpaceBodySchema = z.object({
+  scope: tenantScopeSchema,
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().optional(),
 });
 
 /** POST /memory/reflect の body（v21・長期記憶 M2）。 */
@@ -299,6 +323,7 @@ export const reflectRunBodySchema = z.object({
   sourceRunId: z.string().min(1).optional(),
   targetSkillId: z.string().min(1).optional(),
   existingWikiPageId: z.string().min(1).optional(),
+  targetWikiId: z.string().min(1).optional(),
 });
 
 /** GET /memory/proposals のクエリ（state 省略で全件）。 */
@@ -317,3 +342,73 @@ export const registerPseudoUserAgentBodySchema = z.object({
   bump: z.enum(['major', 'minor', 'patch']).optional(),
   promptOverride: z.string().min(1).optional(),
 });
+
+const evaluationCaseSchema = z.discriminatedUnion('kind', [
+  z.object({
+    id: z.string().min(1), kind: z.literal('turn'), input: z.string().min(1), reference: z.string().optional(),
+    expectedTools: z.array(z.string()).optional(), tags: z.array(z.string()), source: z.enum(EVALUATION_CASE_SOURCES).default('manual'),
+  }),
+  z.object({
+    id: z.string().min(1), kind: z.literal('scenario'), scenario: z.object({ id: z.string().min(1), version: z.string().min(1) }),
+    tags: z.array(z.string()), source: z.enum(EVALUATION_CASE_SOURCES).default('manual'),
+  }),
+]);
+
+export const saveEvaluationDatasetBodySchema = z.object({
+  scope: tenantScopeSchema,
+  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: z.string().min(1),
+  cases: z.array(evaluationCaseSchema).min(1), bump: z.enum(['major', 'minor', 'patch']).optional(),
+  state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
+});
+
+export const importEvaluationDatasetBodySchema = z.object({
+  scope: tenantScopeSchema,
+  format: z.enum(['json', 'csv']),
+  content: z.string().min(1),
+});
+
+export const evaluationDatasetExportQuerySchema = versionQuerySchema.extend({ format: z.enum(['json', 'csv']).default('json') });
+
+export const saveEvaluatorProfileBodySchema = z.object({
+  scope: tenantScopeSchema,
+  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: z.string().min(1),
+  metrics: z.array(z.discriminatedUnion('kind', [
+    z.object({ id: z.string().min(1), kind: z.literal('code'), weight: z.number().positive(), required: z.boolean(), scorer: z.enum(CODE_SCORERS) }),
+    z.object({ id: z.string().min(1), kind: z.literal('judge'), weight: z.number().positive(), required: z.boolean(), rubric: z.object({ id: z.string().min(1), version: z.string().min(1) }) }),
+  ])).min(1),
+  bump: z.enum(['major', 'minor', 'patch']).optional(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
+});
+
+export const saveJudgeRubricBodySchema = z.object({
+  scope: tenantScopeSchema,
+  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: z.string().min(1), instructions: z.string().min(1),
+  criteria: z.array(z.object({ id: z.string().min(1), label: z.string().min(1), description: z.string().min(1), weight: z.number().positive(), levels: z.array(z.object({ score: z.number().min(0).max(1), label: z.string().min(1), description: z.string().min(1) })).min(2) })).min(1),
+  referencePolicy: z.enum(JUDGE_REFERENCE_POLICIES), bump: z.enum(['major', 'minor', 'patch']).optional(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
+});
+
+export const createExperimentBodySchema = z.object({
+  scope: tenantScopeSchema,
+  target: z.object({ agentId: z.string().min(1), version: z.string().min(1) }),
+  dataset: z.object({ id: z.string().min(1), version: z.string().min(1) }),
+  evaluatorProfile: z.object({ id: z.string().min(1), version: z.string().min(1) }),
+  repetitions: z.number().int().min(1).max(10).optional(),
+});
+
+export const experimentListQuerySchema = scopeQuerySchema.extend({ status: z.enum(['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted']).optional() });
+export const experimentActionBodySchema = z.object({ scope: tenantScopeSchema });
+
+const gateRuleSchema = z.discriminatedUnion('kind', [
+  z.object({ id: z.string().min(1), kind: z.literal('metric-threshold'), metric: z.string().min(1), operator: z.enum(['gte', 'lte']), threshold: z.number().finite() }),
+  z.object({ id: z.string().min(1), kind: z.literal('max-regression'), metric: z.string().min(1), maxRegression: z.number().finite().nonnegative() }),
+  z.object({ id: z.string().min(1), kind: z.literal('required-case-pass'), tags: z.array(z.string().min(1)).default([]) }),
+]);
+export const saveGatePolicyBodySchema = z.object({
+  scope: tenantScopeSchema, internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: z.string().min(1),
+  rules: z.array(gateRuleSchema).min(1), reportTtlHours: z.number().int().min(1).max(2160).optional(), bump: z.enum(['major', 'minor', 'patch']).optional(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
+});
+export const experimentComparisonBodySchema = z.object({ scope: tenantScopeSchema, baselineExperimentId: z.string().min(1), candidateExperimentId: z.string().min(1) });
+export const evaluateGateBodySchema = z.object({ scope: tenantScopeSchema, policy: z.object({ id: z.string().min(1), version: z.string().min(1) }), candidateExperimentId: z.string().min(1), baselineExperimentId: z.string().min(1).optional() });
+export const gateReportListQuerySchema = scopeQuerySchema.extend({ candidateExperimentId: z.string().min(1).optional() });
+export const promotionListQuerySchema = scopeQuerySchema.extend({ agentId: z.string().min(1).optional() });
+export const requestPromotionBodySchema = z.object({ scope: tenantScopeSchema, gateReportId: z.string().min(1), requestedBy: z.string().min(1) });
+export const decidePromotionBodySchema = z.object({ scope: tenantScopeSchema, decidedBy: z.string().min(1), reason: z.string().optional() });

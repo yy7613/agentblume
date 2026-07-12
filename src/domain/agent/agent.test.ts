@@ -58,6 +58,14 @@ describe('Agent aggregate', () => {
     expect(deserializeAgent(legacy).agents).toEqual([]);
   });
 
+  it('Wiki allowlistを直列化し重複を拒否、旧dataは未設定として読む', () => {
+    const agent = createAgent({ ...valid(), wikis: [{ wikiId: 'customer-a' }, { wikiId: 'customer-b' }] });
+    expect(deserializeAgent(serializeAgent(agent)).wikis).toEqual([{ wikiId: 'customer-a' }, { wikiId: 'customer-b' }]);
+    expect(() => createAgent({ ...valid(), wikis: [{ wikiId: 'customer-a' }, { wikiId: 'customer-a' }] })).toThrow(/duplicate wiki/);
+    const legacy = serializeAgent(createAgent(valid())) as unknown as Record<string, unknown>; delete legacy['wikis'];
+    expect(deserializeAgent(legacy).wikis).toBeUndefined();
+  });
+
   it('subAgentToolNameはask_接頭辞のツール名を返す', () => {
     expect(subAgentToolName('sales_scorer')).toBe('ask_sales_scorer');
   });

@@ -1,6 +1,6 @@
 import type { TenantScope } from '../../domain/tool/ids';
-import type { ListRunsOptions, RunRepository } from '../../domain/run/run-repository';
-import type { RunRecord } from '../../domain/run/run';
+import type { ListRunsOptions, RunRepository, RunRetentionOptions, RunRetentionResult } from '../../domain/run/run-repository';
+import { redactRun, type RunRecord } from '../../domain/run/run';
 import { deserializeRun, serializeRun } from '../../domain/run/serialization';
 
 function key(scope: TenantScope, runId: string): string {
@@ -25,5 +25,21 @@ export class InMemoryRunRepository implements RunRepository {
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
       .slice(0, limit)
       .map(deserializeRun);
+  }
+
+  async applyRetention(scope: TenantScope, options: RunRetentionOptions): Promise<RunRetentionResult> {
+    let payloadRedacted = 0; let traceRedacted = 0; let deleted = 0;
+    for (const [recordKey, record] of this.records) {
+      if (record.scope.tenantId !== scope.tenantId || record.scope.workspaceId !== scope.workspaceId) continue;
+      if (record.startedAt <= options.deleteBefore) { this.records.delete(recordKey); deleted += 1; continue; }
+      const payload = record.startedAt <= options.payloadBefore && (record.response !== undefined || record.structuredResponse !== undefined || (record.failure !== undefined && record.failure.message !== '[redacted]'));
+      const trace = record.startedAt <= options.traceBefore && record.trace.length > 0;
+      if (payload || trace) {
+        this.records.set(recordKey, serializeRun(redactRun(record, { payload, trace })));
+        if (payload) payloadRedacted += 1;
+        if (trace) traceRedacted += 1;
+      }
+    }
+    return { payloadRedacted, traceRedacted, deleted };
   }
 }

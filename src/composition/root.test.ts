@@ -63,6 +63,9 @@ describe('createApp', () => {
     expect(app.profile).toBe('test');
     expect(app.repo).toBeInstanceOf(InMemoryToolRepository);
     expect(app.modelProvider).toBeInstanceOf(ScriptedModelProvider);
+    expect(app.judgeModelProvider).toBeInstanceOf(ScriptedModelProvider);
+    expect(app.judgeModelProvider).not.toBe(app.modelProvider);
+    expect(app.judgeEvaluator.snapshot()).toMatchObject({ provider: 'scripted-judge', model: 'scripted-judge' });
     expect(app.runRepo).toBeInstanceOf(InMemoryRunRepository);
     await roundTrip(app);
     app.close(); // InMemory は no-op（例外なし）。

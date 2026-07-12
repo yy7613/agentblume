@@ -15,6 +15,7 @@ import type { WikiPage } from '../../domain/memory/wiki-page';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
 import type { Skill } from '../../domain/skill/skill';
 import type { JsonSchemaObject, ModelMessage, ModelProviderPort } from '../model/model-provider';
+import { DEFAULT_WIKI_ID } from '../../domain/memory/wiki-space';
 
 export interface ReflectRunInput {
   readonly scope: TenantScope;
@@ -25,6 +26,7 @@ export interface ReflectRunInput {
   readonly targetSkillId?: string;
   /** 指定時、その既存 Wiki ページの改訂案にする（未指定は新規ページ案）。 */
   readonly existingWikiPageId?: string;
+  readonly targetWikiId?: string;
 }
 
 /** 反省の構造化出力（flat・required 全部・additionalProperties:false）。 */
@@ -91,6 +93,9 @@ export class ReflectRunUseCase {
     if (!filled(input.output)) throw new MemoryDomainError('ReflectRun: output must be non-empty');
 
     const existingWiki = input.existingWikiPageId !== undefined ? await this.wiki.find(input.scope, input.existingWikiPageId) : null;
+    const targetWikiId = existingWiki?.wikiId ?? input.targetWikiId ?? DEFAULT_WIKI_ID;
+    if (input.targetWikiId !== undefined && existingWiki !== null && (existingWiki.wikiId ?? DEFAULT_WIKI_ID) !== input.targetWikiId) throw new MemoryDomainError('ReflectRun: existing page does not belong to target wiki');
+    if (input.targetWikiId !== undefined && await this.wiki.findSpace(input.scope, input.targetWikiId) === null) throw new MemoryDomainError(`ReflectRun: target wiki not found: ${input.targetWikiId}`);
     const skill = input.targetSkillId !== undefined ? await this.skills.findLatest(input.scope, input.targetSkillId) : null;
 
     const reflection = await this.reflect(input, existingWiki, skill, signal);
@@ -104,6 +109,7 @@ export class ReflectRunUseCase {
         tenant: input.scope,
         target: {
           kind: 'wiki',
+          wikiId: targetWikiId,
           pageId: existingWiki?.id ?? this.makeId(),
           isNewPage: existingWiki === null,
           title: reflection.wikiTitle,

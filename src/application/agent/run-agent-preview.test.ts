@@ -13,7 +13,12 @@ import type { RunRepository } from '../../domain/run/run-repository';
 import { EtlEngine } from '../etl/engine';
 import type { JsonObject, ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../model/model-provider';
 import { AgentRunError, RunFailedError, UnsafeToolError } from './errors';
-import { RunAgentPreviewUseCase } from './run-agent-preview';
+import { queryWorkspaceTable, RunAgentPreviewUseCase } from './run-agent-preview';
+import { FakeWikiRepository } from '../memory/memory-repositories.fixtures';
+import { createWikiSpace } from '../../domain/memory/wiki-space';
+import { createWikiPage } from '../../domain/memory/wiki-page';
+import { InMemoryAgentSessionRepository } from '../../adapters/storage/in-memory-agent-session-repository';
+import { InMemorySessionArtifactRepository } from '../../adapters/storage/in-memory-session-artifact-repository';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
 const inputSchema: Schema = { columns: [
@@ -77,6 +82,142 @@ function useCase(tool: Tool | null, model: ModelProviderPort): RunAgentPreviewUs
 const input = { scope, toolId: 'score-tool', systemPrompt: 'Use tools.', message: 'Alice score?', mode: 'preview' as const };
 
 describe('RunAgentPreviewUseCase', () => {
+  it('Agent Inputを未接続の引数宣言としてFilter条件へ束縛できる', async () => {
+    const minimumSchema: Schema = { columns: [{ name: 'minimumScore', type: 'number', nullable: false }] };
+    const tool = createTool({
+      metadata: { internalId: 'score-search', workingName: 'score-search', displayName: 'Score search', publishName: 'score_search', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: minimumSchema, outputSchema: inputSchema,
+      agentTool: { name: 'find_scores', description: 'Find scores at or above minimumScore.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ name: 'Alice', score: 42 }, { name: 'Bob', score: 7 }] } },
+        { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: 'minimumScore' } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: minimumSchema, sample: { minimumScore: 20 } } },
+      ], edges: [{ from: 'data', to: 'filter' }] },
+    });
+    const model = new QueueModel([
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'find', name: 'find_scores', arguments: { minimumScore: 40 } }] }, finishReason: 'tool_calls' },
+      { message: { role: 'assistant', content: 'done' }, finishReason: 'stop' },
+    ]);
+    const run = await useCase(tool, model).execute({ ...input, toolId: 'score-search' });
+    expect(model.requests[0]?.tools?.[0]).toMatchObject({ name: 'find_scores', description: 'Find scores at or above minimumScore.' });
+    expect(model.requests[1]?.messages.at(-1)?.content).toContain('"name":"Alice"');
+    expect(model.requests[1]?.messages.at(-1)?.content).not.toContain('"name":"Bob"');
+    expect(run.response).toBe('done');
+  });
+
+  it('workspace-output stores an Artifact in the Run session and returns only its descriptor to the model', async () => {
+    const workspaceTool = createTool({
+      metadata: { internalId: 'workspace-tool', workingName: 'workspace-tool', displayName: 'Workspace tool', publishName: 'workspace_tool', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'session-write', inputSchema,
+      graph: { nodes: [
+        { id: 'input', type: 'agent-input', config: { schema: inputSchema, sample: { name: 'sample', score: 0 } } },
+        { id: 'sink', type: 'workspace-output', config: { name: 'scores', artifactKind: 'table', writeMode: 'create', onConflict: 'new-revision', previewRows: 1 } },
+      ], edges: [{ from: 'input', to: 'sink' }] },
+    });
+    const model = new QueueModel([
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'call-1', name: 'workspace_tool', arguments: { name: 'Alice', score: 42 } }] }, finishReason: 'tool_calls' },
+      { message: { role: 'assistant', content: 'stored' }, finishReason: 'stop' },
+    ]);
+    const sessions = new InMemoryAgentSessionRepository();
+    const artifacts = new InMemorySessionArtifactRepository();
+    const runtime = new RunAgentPreviewUseCase(new StaticRepository(workspaceTool), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-workspace', () => new Date('2026-07-11T00:00:00.000Z'), undefined, undefined, undefined, undefined, sessions, artifacts);
+    const run = await runtime.execute({ ...input, toolId: 'workspace-tool' });
+    expect(run.sessionId).toBeTruthy();
+    const result = model.requests[1]?.messages.at(-1);
+    expect(result?.content).toContain('artifact');
+    expect(result?.content).toContain('"preview"');
+    const stored = await artifacts.list(scope, run.sessionId as string);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ name: 'scores', counts: { rows: 1 } });
+  });
+
+  it('lets a Session-enabled Agent list, describe, and read a bounded Workspace Artifact', async () => {
+    const workspaceTool = createTool({
+      metadata: { internalId: 'workspace-tool', workingName: 'workspace-tool', displayName: 'Workspace tool', publishName: 'workspace_tool', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'session-write', inputSchema,
+      graph: { nodes: [
+        { id: 'input', type: 'agent-input', config: { schema: inputSchema, sample: { name: 'sample', score: 0 } } },
+        { id: 'sink', type: 'workspace-output', config: { name: 'scores', artifactKind: 'table', writeMode: 'create', onConflict: 'new-revision', previewRows: 0 } },
+      ], edges: [{ from: 'input', to: 'sink' }] },
+    });
+    class WorkspaceModel implements ModelProviderPort {
+      readonly requests: ModelCompletionRequest[] = [];
+      private artifactId = '';
+      capabilities(): readonly ModelCapability[] { return ['chat', 'tool-calling']; }
+      async complete(request: ModelCompletionRequest): Promise<ModelCompletion> {
+        this.requests.push(request);
+        switch (this.requests.length) {
+          case 1: return { message: { role: 'assistant', content: null, toolCalls: [{ id: 'store', name: 'workspace_tool', arguments: { name: 'Alice', score: 42 } }] }, finishReason: 'tool_calls' };
+          case 2: {
+            const toolMessage = request.messages.at(-1);
+            this.artifactId = ((JSON.parse(toolMessage?.content ?? '{}') as { artifact?: { id?: string } }).artifact?.id ?? '');
+            return { message: { role: 'assistant', content: null, toolCalls: [{ id: 'list', name: 'workspace_list', arguments: {} }] }, finishReason: 'tool_calls' };
+          }
+          case 3: return { message: { role: 'assistant', content: null, toolCalls: [{ id: 'describe', name: 'workspace_describe', arguments: { artifactId: this.artifactId } }] }, finishReason: 'tool_calls' };
+          case 4: return { message: { role: 'assistant', content: null, toolCalls: [
+            { id: 'query', name: 'workspace_query', arguments: { artifactId: this.artifactId, columns: ['name'], filter: { column: 'score', op: 'gte', value: 40 }, aggregate: { op: 'avg', column: 'score' } } },
+            { id: 'read', name: 'workspace_read', arguments: { artifactId: this.artifactId, limit: 999 } },
+          ] }, finishReason: 'tool_calls' };
+          default: return { message: { role: 'assistant', content: 'used the artifact' }, finishReason: 'stop' };
+        }
+      }
+    }
+    const model = new WorkspaceModel();
+    const sessions = new InMemoryAgentSessionRepository();
+    const artifacts = new InMemorySessionArtifactRepository();
+    const runtime = new RunAgentPreviewUseCase(new StaticRepository(workspaceTool), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-workspace', () => new Date('2026-07-11T00:00:00.000Z'), undefined, undefined, undefined, undefined, sessions, artifacts);
+    const run = await runtime.execute({ ...input, toolId: 'workspace-tool' });
+    expect(run.response).toBe('used the artifact');
+    expect(model.requests[0]?.tools?.map((definition) => definition.name)).toEqual(expect.arrayContaining(['workspace_list', 'workspace_describe', 'workspace_read', 'workspace_query']));
+    const workspaceResults = model.requests[4]?.messages.filter((message) => message.role === 'tool').map((message) => message.content) ?? [];
+    expect(workspaceResults.join('\n')).toContain('"value":42');
+    expect(workspaceResults.join('\n')).toContain('"name":"Alice"');
+    expect(workspaceResults.join('\n')).toContain('"artifactId"');
+    expect(run.trace.filter((event) => event.kind === 'tool-result').map((event) => event.name)).toEqual(['workspace_tool', 'workspace_list', 'workspace_describe', 'workspace_query', 'workspace_read']);
+  });
+
+  it('workspace_query は選択・比較・集計をデータ専用 DSL として実行する', () => {
+    const payload = {
+      schema: { columns: [
+        { name: 'name', type: 'string', nullable: false },
+        { name: 'score', type: 'number', nullable: false },
+        { name: 'active', type: 'boolean', nullable: false },
+      ] },
+      rows: [
+        { name: 'Alice', score: 42, active: true },
+        { name: 'Bob', score: 7, active: false },
+        { name: 'Alicia', score: 84, active: true },
+      ],
+      page: { offset: 10, limit: 3, nextOffset: 13 },
+    };
+    const result = queryWorkspaceTable(payload, {
+      columns: ['name'],
+      filter: { column: 'score', op: 'gte', value: 40 },
+      aggregate: { op: 'avg', column: 'score' },
+    });
+    expect(result).toEqual({
+      schema: { columns: [{ name: 'name', type: 'string', nullable: false }] },
+      rows: [{ name: 'Alice' }, { name: 'Alicia' }],
+      page: { offset: 10, limit: 3, nextOffset: 13 },
+      aggregate: { op: 'avg', column: 'score', value: 63 },
+    });
+    expect(queryWorkspaceTable(payload, { filter: { column: 'name', op: 'contains', value: 'lic' }, aggregate: { op: 'count' } }).aggregate).toEqual({ op: 'count', value: 2 });
+    expect(queryWorkspaceTable(payload, { filter: { column: 'score', op: 'gt', value: 42 }, aggregate: { op: 'sum', column: 'score' } }).aggregate).toEqual({ op: 'sum', column: 'score', value: 84 });
+    expect(queryWorkspaceTable(payload, { filter: { column: 'score', op: 'lt', value: 42 }, aggregate: { op: 'min', column: 'score' } }).aggregate).toEqual({ op: 'min', column: 'score', value: 7 });
+    expect(queryWorkspaceTable(payload, { filter: { column: 'score', op: 'lte', value: 42 }, aggregate: { op: 'max', column: 'score' } }).aggregate).toEqual({ op: 'max', column: 'score', value: 42 });
+    expect(queryWorkspaceTable(payload, { filter: { column: 'active', op: 'eq', value: true } }).rows).toHaveLength(2);
+    expect(queryWorkspaceTable(payload, { filter: { column: 'active', op: 'neq', value: true } }).rows).toHaveLength(1);
+  });
+
+  it('workspace_query は未対応のペイロードや不正な構造化クエリを拒否する', () => {
+    const table = { schema: inputSchema, rows: [{ name: 'Alice', score: 42 }] };
+    expect(() => queryWorkspaceTable({ nodes: [] }, {})).toThrow('table Artifacts only');
+    expect(() => queryWorkspaceTable(table, { columns: [] })).toThrow('known column names');
+    expect(() => queryWorkspaceTable(table, { filter: { column: 'name', op: 'contains', value: 1 } })).toThrow('string value');
+    expect(() => queryWorkspaceTable(table, { filter: { column: 'name', op: 'equals', value: 'Alice' } })).toThrow('supported operator');
+    expect(() => queryWorkspaceTable(table, { aggregate: { op: 'sum' } })).toThrow('numeric aggregate');
+  });
+
   it('tool call引数をagent-inputへ渡し、結果で2段目推論する', async () => {
     const model = new QueueModel([
       { message: { role: 'assistant', content: null, toolCalls: [{ id: 'call-1', name: 'score_lookup', arguments: { name: 'Alice', score: 42 } }] }, finishReason: 'tool_calls', usage: { totalTokens: 10 } },
@@ -164,6 +305,21 @@ describe('RunAgentPreviewUseCase', () => {
     const usecase = new RunAgentPreviewUseCase(new StaticRepository(null), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-structured', undefined, new StaticAgents(agent));
     await expect(usecase.executeSaved({ scope, agentId: 'agent', message: 'go', mode: 'preview' })).rejects.toThrow(/does not support structured output/);
     expect(model.requests).toHaveLength(0);
+  });
+
+  it('Agent allowlist内のWikiだけを検索・注入しallowlist外の手動指定を拒否する', async () => {
+    const agent = createAgent({ metadata: { internalId: 'agent', workingName: 'agent', displayName: 'Agent', publishName: 'agent', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope }, kind: 'normal', systemPrompt: 'Answer.', tools: [], wikis: [{ wikiId: 'customer-a' }] });
+    const wiki = new FakeWikiRepository();
+    await wiki.saveSpace(createWikiSpace({ id: 'customer-a', tenant: scope, name: 'Customer A', createdAt: '2026-07-11T00:00:00.000Z' }));
+    await wiki.saveSpace(createWikiSpace({ id: 'customer-b', tenant: scope, name: 'Customer B', createdAt: '2026-07-11T00:00:00.000Z' }));
+    await wiki.save(createWikiPage({ id: 'page-a', wikiId: 'customer-a', tenant: scope, title: 'Refund policy', body: 'Alpha refunds require a receipt.', updatedAt: '2026-07-11T00:00:00.000Z' }));
+    await wiki.save(createWikiPage({ id: 'page-b', wikiId: 'customer-b', tenant: scope, title: 'Refund policy', body: 'Beta refunds never require a receipt.', updatedAt: '2026-07-11T00:00:00.000Z' }));
+    const model = new QueueModel([{ message: { role: 'assistant', content: 'ok' }, finishReason: 'stop' }]);
+    const usecase = new RunAgentPreviewUseCase(new StaticRepository(null), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-wiki', undefined, new StaticAgents(agent), undefined, undefined, wiki);
+    await usecase.executeSaved({ scope, agentId: 'agent', message: 'What is the refund policy?', mode: 'preview' });
+    const system = model.requests[0]?.messages[0]?.content ?? '';
+    expect(system).toContain('Customer A / Refund policy'); expect(system).toContain('Alpha refunds'); expect(system).not.toContain('Beta refunds');
+    await expect(usecase.executeSaved({ scope, agentId: 'agent', message: 'x', mode: 'preview', memoryPageIds: ['page-b'] })).rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/outside Agent wiki allowlist/) }) });
   });
 });
 

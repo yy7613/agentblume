@@ -2,6 +2,7 @@ import type { TenantScope } from '../tool/ids';
 
 export type RunStatus = 'running' | 'succeeded' | 'failed';
 export type RunMode = 'preview' | 'test';
+export type RunPurpose = 'interactive' | 'scenario' | 'evaluation' | 'delegation';
 
 export interface RunNodeOutput {
   readonly nodeId: string;
@@ -22,6 +23,32 @@ export interface RunUsage {
   readonly totalTokens?: number;
 }
 
+export interface RunModelSnapshot {
+  readonly provider: string;
+  readonly model: string;
+  readonly modelConfigHash: string;
+}
+
+export interface RunLatencyBreakdown {
+  readonly totalMs: number;
+  readonly modelMs: number;
+  readonly toolMs: number;
+}
+
+export interface RunPriceSnapshot {
+  readonly currency: 'USD';
+  readonly inputPerMillionTokens: number;
+  readonly outputPerMillionTokens: number;
+  readonly effectiveAt: string;
+}
+
+export interface RunEstimatedCost {
+  readonly kind: 'estimated';
+  readonly amount: number;
+  readonly currency: 'USD';
+  readonly price: RunPriceSnapshot;
+}
+
 export interface RunFailure {
   readonly code: string;
   readonly message: string;
@@ -36,8 +63,13 @@ export interface RunArtifactRef {
 export interface RunRecord {
   readonly runId: string;
   readonly scope: TenantScope;
+  /** Agent Session Workspaceとの対応。旧Runは未指定を許容する。 */
+  readonly sessionId?: string;
   readonly status: RunStatus;
   readonly mode: RunMode;
+  /** v26追加。旧recordでは未指定を許容しinteractiveとして解釈する。 */
+  readonly purpose?: RunPurpose;
+  readonly model?: RunModelSnapshot;
   readonly tool?: RunArtifactRef;
   readonly tools?: readonly RunArtifactRef[];
   readonly agent?: RunArtifactRef;
@@ -47,13 +79,18 @@ export interface RunRecord {
   readonly structuredResponse?: Readonly<Record<string, unknown>>;
   readonly trace: readonly RunTraceEvent[];
   readonly usage?: RunUsage;
+  readonly latency?: RunLatencyBreakdown;
+  readonly estimatedCost?: RunEstimatedCost;
   readonly failure?: RunFailure;
 }
 
 export interface StartRunProps {
   readonly runId: string;
   readonly scope: TenantScope;
+  readonly sessionId?: string;
   readonly mode: RunMode;
+  readonly purpose?: RunPurpose;
+  readonly model?: RunModelSnapshot;
   readonly tool?: RunRecord['tool'];
   readonly tools?: RunRecord['tools'];
   readonly agent?: RunRecord['agent'];
@@ -67,6 +104,7 @@ export function startRun(props: StartRunProps): RunRecord {
     ...(props.tool !== undefined ? { tool: { ...props.tool } } : {}),
     ...(props.tools !== undefined ? { tools: props.tools.map((tool) => ({ ...tool })) } : {}),
     ...(props.agent !== undefined ? { agent: { ...props.agent } } : {}),
+    ...(props.model !== undefined ? { model: { ...props.model } } : {}),
     status: 'running',
     trace: [],
   };
@@ -80,6 +118,8 @@ export function succeedRun(record: RunRecord, result: {
   readonly structuredResponse?: Readonly<Record<string, unknown>>;
   readonly trace: readonly RunTraceEvent[];
   readonly usage: RunUsage;
+  readonly latency?: RunLatencyBreakdown;
+  readonly estimatedCost?: RunEstimatedCost;
   readonly completedAt: string;
 }): RunRecord {
   assertRunning(record);
@@ -93,6 +133,8 @@ export function succeedRun(record: RunRecord, result: {
     ...(result.structuredResponse !== undefined ? { structuredResponse: structuredClone(result.structuredResponse) } : {}),
     trace: structuredClone(result.trace),
     usage: { ...result.usage },
+    ...(result.latency !== undefined ? { latency: { ...result.latency } } : {}),
+    ...(result.estimatedCost !== undefined ? { estimatedCost: { ...result.estimatedCost, price: { ...result.estimatedCost.price } } } : {}),
     completedAt: result.completedAt,
   };
 }
@@ -100,10 +142,23 @@ export function succeedRun(record: RunRecord, result: {
 export function failRun(record: RunRecord, result: {
   readonly trace: readonly RunTraceEvent[];
   readonly failure: RunFailure;
+  readonly latency?: RunLatencyBreakdown;
   readonly completedAt: string;
 }): RunRecord {
   assertRunning(record);
-  return { ...record, status: 'failed', trace: structuredClone(result.trace), failure: { ...result.failure }, completedAt: result.completedAt };
+  return { ...record, status: 'failed', trace: structuredClone(result.trace), failure: { ...result.failure }, ...(result.latency !== undefined ? { latency: { ...result.latency } } : {}), completedAt: result.completedAt };
+}
+
+export function redactRun(record: RunRecord, parts: { readonly payload: boolean; readonly trace: boolean }): RunRecord {
+  return {
+    ...record,
+    ...(parts.payload ? {
+      response: undefined,
+      structuredResponse: undefined,
+      ...(record.failure !== undefined ? { failure: { code: record.failure.code, message: '[redacted]' } } : {}),
+    } : {}),
+    ...(parts.trace ? { trace: [] } : {}),
+  };
 }
 
 function assertRunning(record: RunRecord): void {

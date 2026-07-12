@@ -43,6 +43,14 @@ describe('serializeTool', () => {
     expect(data.metadata.version).toBe('2.3.4');
     expect(() => JSON.stringify(data)).not.toThrow();
   });
+
+  it('keeps the optional Agent-facing Tool contract', () => {
+    const original = createTool({
+      ...sampleTool(),
+      agentTool: { name: 'search_records', description: 'Search matching records.' },
+    });
+    expect(deserializeTool(JSON.parse(JSON.stringify(serializeTool(original)))).agentTool).toEqual({ name: 'search_records', description: 'Search matching records.' });
+  });
 });
 
 describe('round-trip (serialize → JSON → parse → deserialize)', () => {

@@ -44,6 +44,7 @@ export class ReviewProposalUseCase {
       await this.saveWikiPage.execute({
         scope,
         id: target.pageId,
+        ...(target.wikiId !== undefined ? { wikiId: target.wikiId } : {}),
         title: target.title,
         tags: target.tags,
         body: target.body,

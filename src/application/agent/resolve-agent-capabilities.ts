@@ -25,7 +25,7 @@ export interface ResolvedAgentCapabilities {
 /** 委譲の絶対上限深さ。実行時のバジェット既定(2)とは別に、循環・暴走を止める安全弁。 */
 export const HARD_MAX_DEPTH = 3;
 
-const SIDE_EFFECT_RANK: Record<SideEffect, number> = { 'read-only': 0, write: 1, 'external-action': 2 };
+const SIDE_EFFECT_RANK: Record<SideEffect, number> = { 'read-only': 0, 'session-write': 1, write: 2, 'external-action': 3 };
 function maxSideEffect(a: SideEffect, b: SideEffect): SideEffect {
   return SIDE_EFFECT_RANK[a] >= SIDE_EFFECT_RANK[b] ? a : b;
 }

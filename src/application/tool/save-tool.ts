@@ -18,7 +18,7 @@ import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { PublishState, SideEffect } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import { createTool } from '../../domain/tool/tool';
-import type { Tool } from '../../domain/tool/tool';
+import type { AgentToolContract, Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import type { EtlEngine } from '../etl/engine';
 
@@ -34,6 +34,7 @@ export interface SaveToolInput {
   readonly graph: ToolGraph;
   readonly inputSchema?: Schema;
   readonly outputSchema?: Schema;
+  readonly agentTool?: AgentToolContract;
   /** バージョン繰り上げ部位。既定 'patch'。初回保存では無視され 1.0.0。 */
   readonly bump?: 'major' | 'minor' | 'patch';
   /** 公開状態。既定 'draft'。 */
@@ -48,6 +49,11 @@ export class SaveToolUseCase {
   ) {}
 
   async execute(input: SaveToolInput): Promise<Tool> {
+    const requiresSessionWrite = input.graph.nodes.some((node) => node.type === 'workspace-output' || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference'));
+    if (requiresSessionWrite && input.sideEffect === 'read-only') {
+      throw new ToolValidationError('SaveTool: workspace output requires sideEffect session-write or stronger');
+    }
+    validateAgentInputBindings(input.graph, input.inputSchema);
     // 1. 保存前グラフ検証（GraphError 等はそのまま伝播）。
     const propagation = this.engine.propagateSchemas(input.graph);
     if (propagation.hasErrors) {
@@ -84,6 +90,7 @@ export class SaveToolUseCase {
       graph: input.graph,
       ...(input.inputSchema !== undefined ? { inputSchema: input.inputSchema } : {}),
       ...(input.outputSchema !== undefined ? { outputSchema: input.outputSchema } : {}),
+      ...(input.agentTool !== undefined ? { agentTool: input.agentTool } : {}),
     });
 
     // 4. 保存。
@@ -91,6 +98,20 @@ export class SaveToolUseCase {
 
     // 5. 生成した Tool を返す。
     return tool;
+  }
+}
+
+function validateAgentInputBindings(graph: ToolGraph, inputSchema: Schema | undefined): void {
+  const bindings = graph.nodes
+    .filter((node) => node.type === 'filter')
+    .map((node) => (node.config as { valueBinding?: { source?: unknown; field?: unknown } }).valueBinding)
+    .filter((binding): binding is { source: 'agent-input'; field: string } => binding?.source === 'agent-input' && typeof binding.field === 'string');
+  if (bindings.length === 0) return;
+  if (inputSchema === undefined) throw new ToolValidationError('SaveTool: Agent input bindings require an inputSchema');
+  for (const binding of bindings) {
+    if (!inputSchema.columns.some((column) => column.name === binding.field)) {
+      throw new ToolValidationError(`SaveTool: Agent input binding references unknown field '${binding.field}'`);
+    }
   }
 }
 

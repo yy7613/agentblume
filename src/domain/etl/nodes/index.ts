@@ -20,6 +20,8 @@ import { sortNode } from './sort';
 import { distinctNode } from './distinct';
 import { fillNullNode } from './fill-null';
 import { replaceNode } from './replace';
+import { agentOutputNode } from './agent-output';
+import { workspaceOutputNode } from './workspace-output';
 
 export { jsonSourceNode } from './json-source';
 export type { JsonSourceConfig } from './json-source';
@@ -47,6 +49,10 @@ export { fillNullNode } from './fill-null';
 export type { FillNullConfig, FillRule, FillStrategy } from './fill-null';
 export { replaceNode } from './replace';
 export type { ReplaceConfig, ReplaceRule } from './replace';
+export { agentOutputNode } from './agent-output';
+export type { AgentOutputConfig, AgentOutputFormat, AgentOutputShape } from './agent-output';
+export { workspaceOutputNode } from './workspace-output';
+export type { WorkspaceArtifactKind, WorkspaceOutputConfig } from './workspace-output';
 
 /** v1 の 7 ノード + v15 の 6 ノードを登録済みの NodeRegistry を返す。 */
 export function createDefaultRegistry(): NodeRegistry {
@@ -64,5 +70,7 @@ export function createDefaultRegistry(): NodeRegistry {
   registry.register(distinctNode);
   registry.register(fillNullNode);
   registry.register(replaceNode);
+  registry.register(agentOutputNode);
+  registry.register(workspaceOutputNode);
   return registry;
 }

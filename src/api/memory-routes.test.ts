@@ -88,4 +88,33 @@ describe('memory routes (v21)', () => {
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe('WIKI_PAGE_NOT_FOUND');
   });
+
+  it('複数Wikiを分離しAgent allowlist内だけを実行contextへ入れる', async () => {
+    for (const wiki of [{ id: 'customer-a', name: 'Customer A' }, { id: 'customer-b', name: 'Customer B' }]) {
+      const created = await server.inject({ method: 'POST', url: '/wikis', payload: { scope, ...wiki, description: `${wiki.name} knowledge` } });
+      expect(created.statusCode).toBe(201);
+    }
+    await server.inject({ method: 'POST', url: '/wikis/customer-a/pages', payload: { scope, title: 'Refund policy', tags: ['refund'], body: 'Alpha requires a receipt.' } });
+    await server.inject({ method: 'POST', url: '/wikis/customer-b/pages', payload: { scope, title: 'Refund policy', tags: ['refund'], body: 'Beta never requires a receipt.' } });
+    const onlyA = await server.inject({ method: 'GET', url: '/wikis/customer-a/pages?tenantId=tenant&workspaceId=workspace&q=refund' });
+    expect(onlyA.json().pages).toHaveLength(1); expect(onlyA.json().pages[0].wikiId).toBe('customer-a');
+
+    model.enqueue(reflectionCompletion({ wikiTitle: 'Cohort A', wikiBody: 'Customer A cohort rule.' }));
+    const reflected = await server.inject({ method: 'POST', url: '/memory/reflect', payload: { scope, input: 'cohort', output: 'done', targetWikiId: 'customer-a' } });
+    expect(reflected.json().proposals[0].target.wikiId).toBe('customer-a');
+    await server.inject({ method: 'POST', url: `/memory/proposals/${reflected.json().proposals[0].id}/approve`, payload: { scope } });
+    const proposedPage = await server.inject({ method: 'GET', url: '/wikis/customer-a/pages?tenantId=tenant&workspaceId=workspace&q=cohort' });
+    expect(proposedPage.json().pages.some((page: { title: string }) => page.title === 'Cohort A')).toBe(true);
+
+    const agent = await server.inject({ method: 'POST', url: '/agents', payload: { scope, internalId: 'wiki-agent', workingName: 'wiki', displayName: 'Wiki Agent', publishName: 'wiki_agent', owner: 'owner', kind: 'normal', systemPrompt: 'Answer from memory.', tools: [], wikis: [{ wikiId: 'customer-a' }] } });
+    expect(agent.statusCode).toBe(201); expect(agent.json().agent.wikis).toEqual([{ wikiId: 'customer-a' }]);
+    model.enqueue({ message: { role: 'assistant', content: 'Alpha answer' }, finishReason: 'stop' });
+    const run = await server.inject({ method: 'POST', url: '/runs', payload: { scope, agent: { internalId: 'wiki-agent', version: '1.0.0' }, message: 'refund policy', mode: 'preview' } });
+    expect(run.statusCode).toBe(200);
+    const system = model.requests.at(-1)?.messages[0]?.content ?? '';
+    expect(system).toContain('Alpha requires a receipt.'); expect(system).not.toContain('Beta never requires');
+
+    const unknown = await server.inject({ method: 'POST', url: '/agents', payload: { scope, internalId: 'bad-agent', workingName: 'bad', displayName: 'Bad', publishName: 'bad_agent', owner: 'owner', kind: 'normal', systemPrompt: 'x', tools: [], wikis: [{ wikiId: 'ghost' }] } });
+    expect(unknown.statusCode).toBe(400); expect(unknown.json().error.message).toMatch(/wiki not found/);
+  });
 });

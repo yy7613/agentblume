@@ -23,4 +23,13 @@ export async function runRepositoryContract(repo: RunRepository): Promise<void> 
   await expect(repo.list(scope, { limit: 1 })).resolves.toMatchObject([{ runId: 'run-2' }]);
   await expect(repo.list(scope, { status: 'failed' })).resolves.toMatchObject([{ runId: 'run-2', status: 'failed' }]);
   await expect(repo.find({ tenantId: 'other', workspaceId: 'workspace' }, 'run-1')).resolves.toBeNull();
+
+  const retained = succeedRun(running('run-retained', '2026-07-03T12:00:00.000Z'), { response: 'sensitive payload', trace: [{ sequence: 1, kind: 'model-response', content: 'sensitive trace' }], usage: { totalTokens: 1 }, completedAt: '2026-07-03T12:00:01.000Z' });
+  await repo.save(retained);
+  expect(repo.applyRetention).toBeTypeOf('function');
+  await repo.applyRetention?.(scope, { payloadBefore: '2026-07-04T00:00:00.000Z', traceBefore: '2026-07-01T00:00:00.000Z', deleteBefore: '2026-07-01T00:00:00.000Z' });
+  const redacted = await repo.find(scope, 'run-retained');
+  expect(redacted?.response).toBeUndefined(); expect(redacted?.trace).toMatchObject([{ kind: 'model-response' }]);
+  await repo.applyRetention?.(scope, { payloadBefore: '2026-07-04T00:00:00.000Z', traceBefore: '2026-07-04T00:00:00.000Z', deleteBefore: '2026-07-04T00:00:00.000Z' });
+  await expect(repo.find(scope, 'run-retained')).resolves.toBeNull();
 }

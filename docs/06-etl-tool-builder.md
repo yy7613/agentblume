@@ -89,12 +89,14 @@ flowchart LR
 
 | ノード | 内容 |
 |---|---|
-| Chart.js グラフデータ | 可視化用データ生成。ETLフローに組み込み可 |
-| LLMへ渡す | 出力結果をLLMコンテキストへ（最小限に絞る） |
-| ワークスペース格納 | データ永続化 |
+| `agent-output` | 列・shape・表現・上限を指定し、結果をAgentへ直接返す |
+| `workspace-output` | Agent Session WorkspaceへArtifactとして一時保存し、Agentへ参照を返す |
+| Chart.js グラフデータ | `agent-output`のchartjs形式、または`workspace-output`のchart Artifactとして扱う |
 | MCP公開 | 作成ToolをMCPサーバとして公開 |
 
-出力は「LLMへ渡す」系統と「ワークスペース格納」系統の2系統をサポート。
+出力は「Agentへ直接渡す」系統と「Session Workspaceへ格納する」系統の2系統をサポートする。新規Toolは終端にどちらか1つの明示sinkを持つ。既存Toolの終端Transformは後方互換のため暗黙`agent-output`として扱う。
+
+Session Workspaceは既存のProject Workspace（`TenantScope.workspaceId`）とは別物で、1会話/評価ケース内だけで使う一時Artifact領域である。大量payloadをLLM contextやRun traceへ埋め込まず、表・JSON・可視化・property graph・blobをcatalog + payload storeで管理する。詳細は [ADR-0027](./adr/0027-tool-output-and-session-workspace.md) と [v28実装計画](../implementation/v28-tool-output-session-workspace.md) を参照。
 
 ---
 
@@ -163,7 +165,32 @@ flowchart LR
 
 ### 3.6 副作用の宣言
 
-各Toolを `read-only / write / external-action` としてメタデータ宣言する。エージェント実行時の安全性（承認要否・冪等性）に直結（[08-security-auth.md](./08-security-auth.md)）。
+各Toolを `read-only / session-write / write / external-action` としてメタデータ宣言する。`session-write`は一時Artifactだけを書き、preview/testで許可する。Project Workspaceや外部状態への書き込みは従来どおり承認対象とする。エージェント実行時の安全性（承認要否・冪等性）に直結（[08-security-auth.md](./08-security-auth.md)）。
+
+### 3.7 構造化設定UIと段階的ダイアログ
+
+Node設定の通常操作では`column:type`やカンマ区切りを入力させず、上流schemaから生成したcombobox、multi-select、型別value input、Rule Tableを使う。
+
+- 右Inspector: node概要、schema状態、1〜3項目のquick settings、validation、設定Dialogへの導線。
+- 設定Dialog: join/rename/cast/sort/replace、入力schema、source payload、Output deliveryなど、横幅や反復行を必要とする編集。
+- Dialog内の変更はlocal draftへ保持し、Apply時に1操作でgraphへ反映する。Cancelでは元configを保持する。
+- raw JSON/CSVや一括文字列編集はAdvancedタブのescape hatchとして残す。
+- schema不明時を除き、列名の自由入力は既定で許可しない。上流変更で消えた列はinvalid chipとして可視化する。
+
+control対応、Dialog layout、accessibility、node別配置は [ADR-0028](./adr/0028-structured-node-configuration-ui.md) を参照。
+
+### 3.8 Agent Input の条件バインドと公開契約
+
+`agent-input`は、行データのsourceとして接続する用途に加え、未接続ならTool Callingの引数宣言として使える。たとえばデータsource → `filter` のフローに対し、`filter.valueBinding = { source: 'agent-input', field: 'minimumScore' }` を設定すると、呼び出しごとの`minimumScore`で行を絞り込める。
+
+- 設計時previewはFilterに保持した固定`value`をサンプルとして使う。Agent実行時は同じ値を指定フィールドの実引数で上書きする。
+- 保存時にbinding先がInput Schemaに存在することを検証する。存在しないフィールドは保存できない。
+- Toolの表示名・公開名と、Agentへ提示するFunction名・説明は分ける。`agentTool.name`と`agentTool.description`が設定されていれば、Function Calling定義とAgent promptはそれを使用する。
+- Tool BuilderにはETL設計用previewだけを置く。以前のAgent chat preview領域は、Agentが受け取るTool Calling契約の編集パネルに置き換える。ここで`agentTool.name`、`agentTool.description`、Agent Input由来の引数名・型・必須性、推論済みの返却schema、side effectを確認できる。LLMを使う会話previewはAgent BuilderまたはChatで実行する。
+
+### 3.9 新規フォームの初期表示
+
+新規作成フォームには実運用の値や英語サンプルを初期入力しない。値は空欄とし、入力例だけをプレースホルダーで示す。プレースホルダーはUIの言語設定に従い、日本語では日本語の例示へ切り替える。既存の保存済み定義を読み込んだ場合だけ、保存されている実値をフォームへ表示する。
 
 ---
 
@@ -186,6 +213,7 @@ flowchart TB
 
 - フロー入口 = **引数スキーマ**、出口 = **出力スキーマ**。
 - 引数スキーマ → LLM Tool Calling 用 **Input Schema** に変換。
+- Agent向けTool契約の **name / description** は、画面表示用metadataと別に保存できる。未設定の既存Toolは公開名・表示名から後方互換で導出する。
 - 出力スキーマ → 実行後にアプリ側で検証する **Output Schema**。
 - Zod（実装時検証）と JSON Schema（保存・交換）の使い分けは [02-tech-stack.md](./02-tech-stack.md#zod-と-json-schema-の使い分けideas-v2-1) 参照。
 - スキーマ・APIの詳細は [04-api-spec.md](./04-api-spec.md#4-tool-callingスキーマinput--output) 参照。

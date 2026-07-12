@@ -20,7 +20,8 @@ module.exports = {
       name: 'application-no-adapters',
       comment: 'application層はadapter実装ではなくPort(interface)に依存する',
       severity: 'error',
-      from: { path: '^src/application' },
+      // テストはPortを満たすInMemory adapterを組み立てて検証するため対象外。
+      from: { path: '^src/application', pathNot: '\\.test\\.(ts|tsx)$' },
       to: { path: '^src/adapters' },
     },
     {

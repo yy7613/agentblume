@@ -49,4 +49,23 @@ describe('StatusPage', () => {
     await waitFor(() => expect(getRunTrace).toHaveBeenLastCalledWith('run-child', { tenantId: 'local', workspaceId: 'default' }));
     expect(await screen.findByText('run-child')).toBeTruthy();
   });
+
+  it('運用メトリクスを表示しAgent runへfeedbackを保存する', async () => {
+    const summary = { runId: 'run-observed', status: 'succeeded', mode: 'preview', purpose: 'interactive', agent: { internalId: 'agent', version: '1.0.0' }, startedAt: '2026-07-03T00:00:00Z', response: 'answer', traceEventCount: 1 };
+    const record = { ...summary, scope: { tenantId: 'local', workspaceId: 'default' }, model: { provider: 'scripted', model: 'scripted', modelConfigHash: 'hash' }, latency: { totalMs: 20, modelMs: 18, toolMs: 0 }, estimatedCost: { kind: 'estimated', amount: 0.0002, currency: 'USD', price: { currency: 'USD', inputPerMillionTokens: 1, outputPerMillionTokens: 2, effectiveAt: '1970-01-01T00:00:00Z' } }, trace: [{ sequence: 1, kind: 'model-response', content: 'answer' }] };
+    const operations = { from: '2026-07-01T00:00:00Z', to: '2026-07-03T00:00:00Z', summary: { runCount: 1, failureRate: 0, p50LatencyMs: 20, p95LatencyMs: 20, totalTokens: 150, estimatedCost: 0.0002, pricedRunCount: 1, feedbackRate: 0 }, points: [{ bucketStart: '2026-07-03T00:00:00Z', runCount: 1, failureRate: 0, p50LatencyMs: 20, p95LatencyMs: 20, totalTokens: 150, estimatedCost: 0.0002, pricedRunCount: 1, feedbackRate: 0 }] };
+    const submitRunFeedback = vi.fn().mockResolvedValue({ id: 'feedback', scope: record.scope, runId: record.runId, agent: record.agent, thumb: 'down', rating: 2, comment: 'wrong', issueTags: ['incorrect'], createdAt: 'now', updatedAt: 'now' });
+    const client = { listRuns: vi.fn().mockResolvedValue([summary]), getRunTrace: vi.fn().mockResolvedValue(record), getOperationsStatus: vi.fn().mockResolvedValue(operations), getRunFeedback: vi.fn().mockResolvedValue(null), submitRunFeedback } as unknown as ToolApiClient;
+    render(<StatusPage client={client} />);
+    expect((await screen.findAllByText('20.0 ms')).length).toBe(2);
+    await userEvent.click(screen.getByRole('button', { name: /agent/ }));
+    expect(await screen.findByText('scripted / scripted')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: /Needs work|要改善/ }));
+    await userEvent.selectOptions(screen.getByLabelText(/Rating|評価/), '2');
+    await userEvent.type(screen.getByLabelText(/Issue tags|課題タグ/), 'incorrect');
+    await userEvent.type(screen.getByLabelText(/Comment|コメント/), 'wrong');
+    await userEvent.click(screen.getByRole('button', { name: /Save feedback|フィードバックを保存/ }));
+    await waitFor(() => expect(submitRunFeedback).toHaveBeenCalledWith('run-observed', expect.objectContaining({ thumb: 'down', rating: 2, comment: 'wrong', issueTags: ['incorrect'] })));
+    expect((await screen.findByRole('status')).textContent).toMatch(/Saved|保存しました/);
+  });
 });

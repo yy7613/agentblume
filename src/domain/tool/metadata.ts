@@ -8,7 +8,7 @@ import type { SemVer } from './semver';
 export type PublishState = 'draft' | 'in-review' | 'published' | 'deprecated' | 'archived';
 
 /** Tool の副作用分類。 */
-export type SideEffect = 'read-only' | 'write' | 'external-action';
+export type SideEffect = 'read-only' | 'session-write' | 'write' | 'external-action';
 
 /** Tool の識別・公開・所有情報。 */
 export interface ToolMetadata {
@@ -42,7 +42,7 @@ export const PUBLISH_STATES: readonly PublishState[] = [
 ];
 
 /** 有効な SideEffect の集合（実行時検証用）。 */
-export const SIDE_EFFECTS: readonly SideEffect[] = ['read-only', 'write', 'external-action'];
+export const SIDE_EFFECTS: readonly SideEffect[] = ['read-only', 'session-write', 'write', 'external-action'];
 
 /** 値が PublishState か判定する型ガード。 */
 export function isPublishState(value: unknown): value is PublishState {

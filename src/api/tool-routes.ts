@@ -90,6 +90,7 @@ export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): v
       graph: body.graph,
       ...(body.inputSchema !== undefined ? { inputSchema: body.inputSchema } : {}),
       ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
+      ...(body.agentTool !== undefined ? { agentTool: body.agentTool } : {}),
       ...(body.bump !== undefined ? { bump: body.bump } : {}),
       ...(body.state !== undefined ? { state: body.state } : {}),
     });

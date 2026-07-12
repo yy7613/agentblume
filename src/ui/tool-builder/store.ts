@@ -32,6 +32,8 @@ export interface ToolMetadataState {
   readonly workingName: string;
   readonly displayName: string;
   readonly publishName: string;
+  readonly agentName: string;
+  readonly agentDescription: string;
   readonly owner: string;
   readonly sideEffect: SideEffectDto;
 }
@@ -67,11 +69,13 @@ interface ToolBuilderState {
 const initialMetadata: ToolMetadataState = {
   tenantId: 'local',
   workspaceId: 'default',
-  internalId: 'customer-filter',
-  workingName: 'customer-filter-draft',
-  displayName: 'Adult customers',
-  publishName: 'adult_customers',
-  owner: 'local@example.com',
+  internalId: '',
+  workingName: '',
+  displayName: '',
+  publishName: '',
+  agentName: '',
+  agentDescription: '',
+  owner: '',
   sideEffect: 'read-only',
 };
 
@@ -140,7 +144,7 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
     const node = makeNode(id, type, { x, y });
     const item = catalogItem(type);
     // 2入力ノードは選択ノードを左（toInput:0）へ自動接続し、右（toInput:1）は手動接続に任せる。
-    const edge = item.kind === 'transform' && selected !== undefined
+    const edge = item.kind !== 'source' && selected !== undefined && catalogItem(selected.data.nodeType).kind !== 'sink'
       ? [{
           id: `${selected.id}-${id}`,
           source: selected.id,
@@ -148,7 +152,10 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
           ...(item.inputArity === 2 ? { targetHandle: inputHandleId(0) } : {}),
         }]
       : [];
-    return { nodes: [...state.nodes, node], edges: [...state.edges, ...edge], selectedNodeId: id };
+    return {
+      nodes: [...state.nodes, node], edges: [...state.edges, ...edge], selectedNodeId: id,
+      ...(type === 'workspace-output' && state.metadata.sideEffect === 'read-only' ? { metadata: { ...state.metadata, sideEffect: 'session-write' as const } } : {}),
+    };
   }),
   onNodesChange: (changes) => set((state) => ({ nodes: applyNodeChanges(changes, state.nodes) })),
   onEdgesChange: (changes) => set((state) => ({ edges: applyEdgeChanges(changes, state.edges) })),
@@ -171,6 +178,8 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
       workingName: tool.metadata.workingName,
       displayName: tool.metadata.displayName,
       publishName: tool.metadata.publishName,
+      agentName: tool.agentTool?.name ?? tool.metadata.publishName,
+      agentDescription: tool.agentTool?.description ?? `${tool.metadata.displayName} (${tool.sideEffect})`,
       owner: tool.metadata.owner,
       sideEffect: tool.sideEffect,
     },

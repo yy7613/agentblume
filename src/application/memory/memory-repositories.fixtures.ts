@@ -7,7 +7,8 @@
 import { tenantKey, type TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';
-import { summarizeWikiPage, type WikiPage, type WikiPageSummary } from '../../domain/memory/wiki-page';
+import { effectiveWikiId, summarizeWikiPage, type WikiPage, type WikiPageSummary } from '../../domain/memory/wiki-page';
+import { summarizeWikiSpace, type WikiSpace, type WikiSpaceSummary } from '../../domain/memory/wiki-space';
 import type { MemoryProposalRepository } from '../../domain/memory/memory-proposal-repository';
 import type { MemoryProposal, MemoryProposalState } from '../../domain/memory/memory-proposal';
 import type { SkillRepository, SkillSummary } from '../../domain/skill/skill-repository';
@@ -22,12 +23,17 @@ const inScope = (a: TenantScope, b: TenantScope) => tenantKey(a) === tenantKey(b
 
 export class FakeWikiRepository implements WikiRepository {
   private readonly store = new Map<string, WikiPage>();
+  private readonly spaces = new Map<string, WikiSpace>();
+  async saveSpace(space: WikiSpace): Promise<void> { this.spaces.set(key(space.tenant, space.id), space); }
+  async findSpace(scope: TenantScope, id: string): Promise<WikiSpace | null> { return this.spaces.get(key(scope, id)) ?? null; }
+  async listSpaces(scope: TenantScope): Promise<WikiSpaceSummary[]> { return [...this.spaces.values()].filter((space) => inScope(space.tenant, scope)).map(summarizeWikiSpace); }
   async save(page: WikiPage): Promise<void> { this.store.set(key(page.tenant, page.id), page); }
   async find(scope: TenantScope, id: string): Promise<WikiPage | null> { return this.store.get(key(scope, id)) ?? null; }
-  async list(scope: TenantScope): Promise<WikiPageSummary[]> { return this.pages(scope).map(summarizeWikiPage); }
-  async search(scope: TenantScope, query: string, limit: number): Promise<WikiPageSummary[]> {
+  async list(scope: TenantScope, wikiId?: string): Promise<WikiPageSummary[]> { return this.pages(scope).filter((page) => wikiId === undefined || effectiveWikiId(page) === wikiId).map(summarizeWikiPage); }
+  async search(scope: TenantScope, query: string, limit: number, wikiIds?: readonly string[]): Promise<WikiPageSummary[]> {
     const terms = query.toLowerCase().split(/\s+/).filter((term) => term.length > 0);
     return this.pages(scope)
+      .filter((page) => wikiIds === undefined || wikiIds.includes(effectiveWikiId(page)))
       .filter((page) => terms.every((term) => `${page.title}\n${page.body}\n${page.tags.join(' ')}`.toLowerCase().includes(term)))
       .slice(0, Math.max(0, limit))
       .map(summarizeWikiPage);

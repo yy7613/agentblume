@@ -71,6 +71,8 @@ sequenceDiagram
   participant LLM as ModelProviderPort
   participant AZ as AuthorizationProvider
   participant TE as Tool Engine
+  participant OD as Tool Output Dispatcher
+  participant SW as Agent Session Workspace
   participant Aud as AuditSink
 
   User->>Chat: メッセージ
@@ -92,6 +94,14 @@ sequenceDiagram
   App->>TE: Tool実行（決定的変換）
   TE-->>App: 出力
   App->>App: Output Schema検証
+  App->>OD: 終端sinkへ配送
+  alt agent-output
+    OD-->>App: bounded inline result
+  else workspace-output
+    OD->>SW: Artifactをstream保存
+    SW-->>OD: ArtifactDescriptor
+    OD-->>App: 参照 + bounded preview
+  end
   App->>Aud: 実行記録（マスキング）
   App-->>RT: tool_result（構造化）
   RT->>LLM: 結果を渡して継続
@@ -102,6 +112,8 @@ sequenceDiagram
 
 v1のAgent preview/testは停止性を保証するため、1 RunあたりTool call最大4回・model round最大5回とする。各roundでは保存済みAgent versionに固定された同じTool集合を提示し、preview/testは候補集合全体がread-onlyの場合だけ実行する。
 Structured Outputを持つAgentは最終contentをJSON parseし、required、primitive型、追加field禁止を検証してからRunへ保存する。
+
+Toolの終端は`agent-output`または`workspace-output`で明示する。後者では同一Agent Session内の複数RunとサブAgentがArtifactを再利用できるが、payload全体はLLMへ自動注入しない。Session、Artifact、quota、TTLの境界は [ADR-0027](./adr/0027-tool-output-and-session-workspace.md) を参照。
 
 ---
 

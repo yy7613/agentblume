@@ -24,6 +24,8 @@ export interface FilterConfig {
   readonly column: string;
   readonly op: FilterOp;
   readonly value?: Cell;
+  /** 実行時に Agent Tool の引数で value を上書きする参照。設計時は value をsampleに使う。 */
+  readonly valueBinding?: { readonly source: 'agent-input'; readonly field: string };
 }
 
 /** 順序比較を要する演算子（列型 number|date が必須）。 */
@@ -41,6 +43,7 @@ const configSchema = z.object({
   column: z.string(),
   op: z.enum(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull']),
   value: cellSchema.optional(),
+  valueBinding: z.object({ source: z.literal('agent-input'), field: z.string().min(1) }).optional(),
 });
 
 /** Cell を順序比較用の数値に変換する（number はそのまま / Date は時刻値 / 他は NaN）。 */

@@ -29,6 +29,15 @@ describe('Tool Calling schema', () => {
     expect(toolToModelDefinition(tool)).toMatchObject({ name: 'sales_summary', description: 'Sales (read-only)', parameters: { required: ['month'] } });
   });
 
+  it('Agent向けに設定した名前と説明をfunction definitionへ使う', () => {
+    const tool = createTool({
+      metadata: { internalId: 't', workingName: 'w', displayName: 'Sales', publishName: 'sales_summary', version: SemVer.parse('1.0.0'), owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },
+      sideEffect: 'read-only', graph: { nodes: [], edges: [] }, inputSchema: schema,
+      agentTool: { name: 'find_sales', description: 'Find sales totals for a requested month.' },
+    });
+    expect(toolToModelDefinition(tool)).toMatchObject({ name: 'find_sales', description: 'Find sales totals for a requested month.' });
+  });
+
   it('不正function名と重複input列を拒否する', () => {
     const badTool = createTool({
       metadata: { internalId: 't', workingName: 'w', displayName: 'Bad', publishName: 'bad name', version: SemVer.parse('1.0.0'), owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },

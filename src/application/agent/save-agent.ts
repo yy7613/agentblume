@@ -8,6 +8,7 @@ import { SemVer } from '../../domain/tool/semver';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
 import { resolveAgentCapabilities, resolveEffectiveSideEffect } from './resolve-agent-capabilities';
+import type { WikiRepository } from '../../domain/memory/wiki-repository';
 
 export interface SaveAgentInput {
   readonly scope: TenantScope;
@@ -21,6 +22,7 @@ export interface SaveAgentInput {
   readonly skills?: readonly { readonly internalId: string; readonly version: SemVer }[];
   readonly tools: readonly { readonly internalId: string; readonly version: SemVer }[];
   readonly agents?: readonly AgentSubAgentRef[];
+  readonly wikis?: readonly { readonly wikiId: string }[];
   readonly persona?: AgentPersonaRef;
   readonly bump?: 'major' | 'minor' | 'patch';
   readonly state?: PublishState;
@@ -28,10 +30,13 @@ export interface SaveAgentInput {
 }
 
 export class SaveAgentUseCase {
-  constructor(private readonly agents: AgentRepository, private readonly tools: ToolRepository, private readonly skills?: SkillRepository) {}
+  constructor(private readonly agents: AgentRepository, private readonly tools: ToolRepository, private readonly skills?: SkillRepository, private readonly wiki?: WikiRepository) {}
 
   async execute(input: SaveAgentInput): Promise<Agent> {
     const subAgents = input.agents ?? [];
+    for (const ref of input.wikis ?? []) {
+      if (this.wiki === undefined || await this.wiki.findSpace(input.scope, ref.wikiId) === null) throw new AgentValidationError(`SaveAgent: wiki not found: ${ref.wikiId}`);
+    }
     // Tool/Skill/サブエージェント参照の存在と ask_ 名衝突を保存前に検証する。
     try { await resolveAgentCapabilities(input.scope, input.skills ?? [], input.tools, this.tools, this.skills, subAgents, this.agents); }
     catch (error) { throw error instanceof AgentValidationError ? new AgentValidationError(`SaveAgent: ${error.message}`) : error; }
@@ -48,6 +53,7 @@ export class SaveAgentUseCase {
       skills: input.skills ?? [],
       tools: input.tools,
       agents: subAgents,
+      wikis: input.wikis ?? [],
       ...(input.persona !== undefined ? { persona: input.persona } : {}),
       ...(input.output !== undefined ? { output: input.output } : {}),
     });

@@ -4,6 +4,8 @@ import { AgentVersionConflictError } from '../../domain/agent/errors';
 import { deserializeAgent, serializeAgent, type SerializedAgent } from '../../domain/agent/serialization';
 import { tenantKey, type TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
+import type { PublishState } from '../../domain/tool/metadata';
+import { AgentNotFoundError } from '../../domain/agent/errors';
 
 function key(scope: TenantScope, internalId: string, version: string): string {
   return `${tenantKey(scope)} ${internalId} ${version}`;
@@ -17,6 +19,15 @@ export class InMemoryAgentRepository implements AgentRepository {
     const entryKey = key(agent.metadata.tenant, agent.metadata.internalId, serialized.metadata.version);
     if (this.store.has(entryKey)) throw new AgentVersionConflictError(`Agent version already exists: ${agent.metadata.internalId}@${serialized.metadata.version}`);
     this.store.set(entryKey, serialized);
+  }
+
+  async updateState(scope: TenantScope, internalId: string, version: SemVer, state: PublishState): Promise<Agent> {
+    const entryKey = key(scope, internalId, version.toString());
+    const current = this.store.get(entryKey);
+    if (current === undefined) throw new AgentNotFoundError(`Agent not found: ${internalId}@${version.toString()}`);
+    const updated = deserializeAgent({ ...current, metadata: { ...current.metadata, state } });
+    this.store.set(entryKey, serializeAgent(updated));
+    return updated;
   }
 
   async findVersion(scope: TenantScope, internalId: string, version: SemVer): Promise<Agent | null> {

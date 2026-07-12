@@ -35,12 +35,13 @@ export function schemaToJsonSchema(schema: Schema | undefined): JsonSchemaObject
 }
 
 export function toolToModelDefinition(tool: Tool): ModelToolDefinition {
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(tool.metadata.publishName)) {
-    throw new AgentRunError(`publishName is not a valid function name: ${tool.metadata.publishName}`);
+  const name = tool.agentTool?.name ?? tool.metadata.publishName;
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+    throw new AgentRunError(`tool name is not a valid function name: ${name}`);
   }
   return {
-    name: tool.metadata.publishName,
-    description: `${tool.metadata.displayName} (${tool.sideEffect})`,
+    name,
+    description: tool.agentTool?.description ?? `${tool.metadata.displayName} (${tool.sideEffect})`,
     parameters: schemaToJsonSchema(tool.inputSchema),
   };
 }

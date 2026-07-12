@@ -20,6 +20,11 @@ export class WikiPageNotFoundError extends Error {
   }
 }
 
+export class WikiSpaceNotFoundError extends Error {
+  readonly code = 'WIKI_SPACE_NOT_FOUND';
+  constructor(message: string) { super(message); this.name = 'WikiSpaceNotFoundError'; }
+}
+
 /** MemoryProposal が見つからない。api で 404。 */
 export class MemoryProposalNotFoundError extends Error {
   readonly code = 'MEMORY_PROPOSAL_NOT_FOUND';

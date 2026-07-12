@@ -13,6 +13,7 @@
 - **二本柱**で設計する: 宣言的知識は新エンティティ `WikiPage`（LLM Wiki）へ、手続き的知識は**既存の `Skill.instructions` への改訂提案**として蒸留する。Skillの資産（バージョン固定・依存Tool・発火条件）を再利用し、記憶専用の別系統を作らない。
 - **記憶ループは人手承認制**: Run（実行履歴）→ 抽出 → `MemoryProposal`（差分draft）→ 人がレビュー・承認 → 保存。エージェントによる無承認の記憶書き込みはしない（プロンプト自動生成と同じエスケープハッチ原則）。書き込みは `write` 副作用として監査対象。
 - **読み出しは最小コンテキスト**: 検索（v1: キーワード/タグ → M4: 埋め込み）で絞り、要約・制限つきで注入。Wiki全文注入は禁止。
+- **複数WikiとAgent allowlist**: ADR-0026で`WikiSpace`を分離境界として追加し、Agent版が利用可能Wikiを明示する。旧Workspace直下ページは`default` Wikiとして互換読取する。
 - **`MemoryPort` で検索実装を隔離**: 埋め込み検索へは `ModelProviderPort` の `embed` capability 追加で拡張（暗黙フォールバックなし）。
 - 段階は M1（Wiki CRUD+検索+手動アタッチ）→ M2（Run抽出→提案→承認）→ M3（Skill蒸留）→ M4（埋め込み検索）。[10-memory.md §6](../10-memory.md) 参照。
 

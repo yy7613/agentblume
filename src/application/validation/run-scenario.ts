@@ -28,6 +28,8 @@ export interface RunScenarioInput {
   /** 省略時は latest。 */
   readonly version?: SemVer;
   readonly mode: 'preview' | 'test';
+  /** 評価実験から候補Agent版を差し替える。通常のScenario実行では未指定。 */
+  readonly target?: { readonly agentId: string; readonly version: SemVer };
 }
 
 /** 疑似ユーザー1ターンの構造化出力スキーマ（required 全部・additionalProperties:false）。 */
@@ -113,12 +115,14 @@ export class RunScenarioUseCase {
           content: entry.message,
         }));
         state.transcript.push({ speaker: 'user', message: reply.message });
+        const target = input.target ?? scenario.target;
         const run = await this.runAgent.executeSaved({
           scope: input.scope,
-          agentId: scenario.target.agentId,
-          version: scenario.target.version,
+          agentId: target.agentId,
+          version: target.version,
           message: reply.message,
           mode: input.mode,
+          purpose: input.target === undefined ? 'scenario' : 'evaluation',
           ...(history.length > 0 ? { history } : {}),
         }, signal);
         this.collectAgentRun(state, run);

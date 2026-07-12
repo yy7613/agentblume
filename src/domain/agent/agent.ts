@@ -40,6 +40,8 @@ export interface AgentPersonaRef {
   readonly version: SemVer;
 }
 
+export interface AgentWikiRef { readonly wikiId: string }
+
 export interface Agent {
   readonly metadata: AgentMetadata;
   readonly kind: AgentKind;
@@ -47,6 +49,8 @@ export interface Agent {
   readonly skills: readonly AgentSkillRef[];
   readonly tools: readonly AgentToolRef[];
   readonly agents: readonly AgentSubAgentRef[];
+  /** 利用可能な名前付きWikiのallowlist。旧Agentでは未指定。 */
+  readonly wikis?: readonly AgentWikiRef[];
   /** kind==='pseudo-user' のときのみ許可。由来Personaを指す（v18）。 */
   readonly persona?: AgentPersonaRef;
   readonly output?: StructuredOutputDefinition;
@@ -59,6 +63,7 @@ export interface CreateAgentProps {
   readonly skills?: readonly AgentSkillRef[];
   readonly tools: readonly AgentToolRef[];
   readonly agents?: readonly AgentSubAgentRef[];
+  readonly wikis?: readonly AgentWikiRef[];
   readonly persona?: AgentPersonaRef;
   readonly output?: StructuredOutputDefinition;
 }
@@ -139,6 +144,14 @@ export function createAgent(props: CreateAgentProps): Agent {
     return { internalId: sub.internalId, version: sub.version, usage: sub.usage };
   });
 
+  const seenWikis = new Set<string>();
+  const wikis = (props.wikis ?? []).map((wiki, index) => {
+    nonEmpty(wiki.wikiId, `wikis.${index}.wikiId`);
+    if (seenWikis.has(wiki.wikiId)) throw new AgentValidationError(`createAgent: duplicate wiki reference: ${wiki.wikiId}`);
+    seenWikis.add(wiki.wikiId);
+    return { wikiId: wiki.wikiId };
+  });
+
   // v18: Persona由来の疑似ユーザーAgentは persona 参照を持ち、能力（tools/skills/agents）を持たない。
   if (props.persona !== undefined) {
     nonEmpty(props.persona.personaId, 'persona.personaId');
@@ -149,8 +162,8 @@ export function createAgent(props: CreateAgentProps): Agent {
       throw new AgentValidationError('createAgent: persona is only allowed for kind "pseudo-user"');
     }
   }
-  if (props.kind === 'pseudo-user' && (skills.length > 0 || tools.length > 0 || agents.length > 0)) {
-    throw new AgentValidationError('createAgent: pseudo-user agents must have no skills, tools, or sub-agents (v18 constraint)');
+  if (props.kind === 'pseudo-user' && (skills.length > 0 || tools.length > 0 || agents.length > 0 || wikis.length > 0)) {
+    throw new AgentValidationError('createAgent: pseudo-user agents must have no skills, tools, sub-agents, or wikis (v18 constraint)');
   }
 
   return {
@@ -169,6 +182,7 @@ export function createAgent(props: CreateAgentProps): Agent {
     skills,
     tools,
     agents,
+    ...(wikis.length > 0 ? { wikis } : {}),
     ...(props.persona !== undefined ? { persona: { personaId: props.persona.personaId, version: props.persona.version } } : {}),
     ...(props.output !== undefined ? { output: createStructuredOutput(props.output) } : {}),
   };

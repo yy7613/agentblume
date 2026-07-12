@@ -44,7 +44,7 @@ export function ToolNode({ id, data, selected }: NodeProps<ToolFlowNode>) {
           <span className="input-label" style={{ top: '70%' }}>{text('right', '右')}</span>
         </>
       )}
-      <span className="node-kind">{isSource ? 'SOURCE' : 'TRANSFORM'}</span>
+      <span className="node-kind">{isSource ? 'SOURCE' : item.kind === 'sink' ? 'OUTPUT' : 'TRANSFORM'}</span>
       <strong>{data.label}</strong>
       <code>{id}</code>
       {inference !== undefined && (
@@ -53,7 +53,7 @@ export function ToolNode({ id, data, selected }: NodeProps<ToolFlowNode>) {
       {inference?.issues.map((issue, index) => (
         <small className={`node-issue ${issue.severity}`} key={`${issue.message}-${index}`}>{issue.message}</small>
       ))}
-      <Handle type="source" position={Position.Right} style={constantSizeHandleStyle(zoom)} />
+      {item.kind !== 'sink' && <Handle type="source" position={Position.Right} style={constantSizeHandleStyle(zoom)} />}
     </div>
   );
 }

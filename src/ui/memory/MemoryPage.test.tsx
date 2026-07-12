@@ -10,8 +10,8 @@ afterEach(cleanup);
 
 const scope = { tenantId: 'local', workspaceId: 'default' };
 
-const summary = (id: string, title: string, tags: string[]): WikiPageSummaryDto => ({ id, title, tags, version: 1, updatedAt: '2026-07-08T00:00:00.000Z' });
-const page = (id: string, title: string, body: string): WikiPageDto => ({ id, title, body, tags: ['sql'], version: 1, updatedAt: '2026-07-08T00:00:00.000Z', tenant: scope, sourceRuns: [] });
+const summary = (id: string, title: string, tags: string[]): WikiPageSummaryDto => ({ id, wikiId: 'customer-a', title, tags, version: 1, updatedAt: '2026-07-08T00:00:00.000Z' });
+const page = (id: string, title: string, body: string): WikiPageDto => ({ id, wikiId: 'customer-a', title, body, tags: ['sql'], version: 1, updatedAt: '2026-07-08T00:00:00.000Z', tenant: scope, sourceRuns: [] });
 
 function wikiProposal(id: string): MemoryProposalDto {
   return { id, tenant: scope, target: { kind: 'wiki', pageId: 'p1', isNewPage: true, title: 'Cohort', tags: ['sql'], body: 'Filter age>=18.' }, summary: 'capture cohort rule', state: 'draft', createdAt: '2026-07-08T00:00:00.000Z' };
@@ -19,6 +19,11 @@ function wikiProposal(id: string): MemoryProposalDto {
 
 function makeClient(overrides: Partial<Record<keyof ToolApiClient, unknown>> = {}) {
   return {
+    listWikis: vi.fn().mockResolvedValue([{ id: 'customer-a', name: 'Customer A', description: 'A knowledge', updatedAt: 'now' }]),
+    saveWikiSpace: vi.fn().mockResolvedValue({ id: 'customer-b', name: 'Customer B', description: 'B knowledge', tenant: scope, createdAt: 'now', updatedAt: 'now' }),
+    listWikiPages: vi.fn().mockResolvedValue([summary('p1', 'Cohort SQL', ['sql'])]),
+    getWikiPage: vi.fn().mockResolvedValue(page('p1', 'Cohort SQL', 'Filter adults.')),
+    saveWikiPage: vi.fn().mockResolvedValue(page('p1', 'Cohort SQL', 'Filter adults.')),
     listWiki: vi.fn().mockResolvedValue([summary('p1', 'Cohort SQL', ['sql'])]),
     getWiki: vi.fn().mockResolvedValue(page('p1', 'Cohort SQL', 'Filter adults.')),
     saveWiki: vi.fn().mockResolvedValue(page('p1', 'Cohort SQL', 'Filter adults.')),
@@ -35,7 +40,7 @@ describe('MemoryPage', () => {
     render(<MemoryPage client={client} />);
     await screen.findByRole('button', { name: /Cohort SQL/ });
     await userEvent.click(screen.getByRole('button', { name: /Cohort SQL/ }));
-    await waitFor(() => expect(client.getWiki).toHaveBeenCalledWith('p1', scope));
+    await waitFor(() => expect(client.getWikiPage).toHaveBeenCalledWith('customer-a', 'p1', scope));
     const title = await screen.findByDisplayValue('Cohort SQL');
     expect(title).toBeTruthy();
     expect(screen.getByDisplayValue('Filter adults.')).toBeTruthy();
@@ -47,11 +52,11 @@ describe('MemoryPage', () => {
     await screen.findByRole('button', { name: /Cohort SQL/ });
     await userEvent.type(screen.getByLabelText('Search wiki'), 'cohort');
     await userEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await waitFor(() => expect(client.listWiki).toHaveBeenCalledWith(scope, 'cohort'));
+    await waitFor(() => expect(client.listWikiPages).toHaveBeenCalledWith('customer-a', scope, 'cohort'));
   });
 
   it('新規ページを保存する（title/body 必須）', async () => {
-    const client = makeClient({ listWiki: vi.fn().mockResolvedValue([]) });
+    const client = makeClient({ listWikiPages: vi.fn().mockResolvedValue([]) });
     render(<MemoryPage client={client} />);
     await screen.findByText('No wiki pages yet.');
     const saveBtn = screen.getByRole('button', { name: 'Save page' });
@@ -60,7 +65,7 @@ describe('MemoryPage', () => {
     await userEvent.type(screen.getByLabelText('Body'), 'Some knowledge.');
     await userEvent.type(screen.getByLabelText('Tags (comma-separated)'), 'a, b');
     await userEvent.click(saveBtn);
-    await waitFor(() => expect(client.saveWiki).toHaveBeenCalledWith(expect.objectContaining({ title: 'New note', body: 'Some knowledge.', tags: ['a', 'b'] })));
+    await waitFor(() => expect(client.saveWikiPage).toHaveBeenCalledWith('customer-a', expect.objectContaining({ wikiId: 'customer-a', title: 'New note', body: 'Some knowledge.', tags: ['a', 'b'] })));
   });
 
   it('提案タブで draft を承認すると再取得する', async () => {
@@ -94,8 +99,20 @@ describe('MemoryPage', () => {
   });
 
   it('読み込み失敗をアラート表示する', async () => {
-    const client = makeClient({ listWiki: vi.fn().mockRejectedValue(new Error('boom')) });
+    const client = makeClient({ listWikiPages: vi.fn().mockRejectedValue(new Error('boom')) });
     render(<MemoryPage client={client} />);
     expect((await screen.findByRole('alert')).textContent).toContain('boom');
+  });
+
+  it('新しいWikiを作成して知識領域を分離できる', async () => {
+    const client = makeClient();
+    render(<MemoryPage client={client} />);
+    await screen.findByRole('option', { name: 'Customer A' });
+    await userEvent.click(screen.getByRole('button', { name: 'New wiki' }));
+    await userEvent.type(screen.getByLabelText('Wiki ID'), 'customer-b');
+    await userEvent.type(screen.getByLabelText('Wiki name'), 'Customer B');
+    await userEvent.type(screen.getByLabelText('Description'), 'B knowledge');
+    await userEvent.click(screen.getByRole('button', { name: 'Save wiki' }));
+    await waitFor(() => expect(client.saveWikiSpace).toHaveBeenCalledWith({ scope, id: 'customer-b', name: 'Customer B', description: 'B knowledge' }));
   });
 });

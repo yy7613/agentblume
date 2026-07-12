@@ -19,8 +19,10 @@ import { RunNotFoundError } from '../domain/run/errors';
 import { AgentNotFoundError, AgentValidationError, AgentVersionConflictError } from '../domain/agent/errors';
 import { SkillNotFoundError, SkillValidationError, SkillVersionConflictError } from '../domain/skill/errors';
 import { PersonaNotFoundError, ScenarioNotFoundError, ScenarioRunNotFoundError, ValidationDomainError } from '../domain/validation/errors';
-import { EvaluationDomainError } from '../domain/evaluation/errors';
-import { MemoryDomainError, MemoryProposalNotFoundError, WikiPageNotFoundError } from '../domain/memory/errors';
+import { EvaluationAssetVersionConflictError, EvaluationDatasetNotFoundError, EvaluationDomainError, EvaluatorProfileNotFoundError, ExperimentConflictError, ExperimentNotFoundError, JudgeEvaluationError, JudgeRubricNotFoundError, QualityGateConflictError, QualityGateNotFoundError } from '../domain/evaluation/errors';
+import { MemoryDomainError, MemoryProposalNotFoundError, WikiPageNotFoundError, WikiSpaceNotFoundError } from '../domain/memory/errors';
+import { FeedbackValidationError } from '../domain/operations/errors';
+import { AgentSessionClosedError, AgentSessionExpiredError, AgentSessionNotFoundError, SessionArtifactNotFoundError, SessionDomainError, SessionQuotaExceededError } from '../domain/session/errors';
 
 /** HTTP エラーレスポンス表現。 */
 export interface HttpError {
@@ -91,12 +93,29 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof ValidationDomainError) return httpError(400, err.code, err.message);
 
   // 評価ドメイン: 入力不正など不変条件違反は 400。
+  if (err instanceof EvaluationDatasetNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof EvaluatorProfileNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof EvaluationAssetVersionConflictError) return httpError(409, err.code, err.message);
+  if (err instanceof ExperimentNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof ExperimentConflictError) return httpError(409, err.code, err.message);
+  if (err instanceof QualityGateNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof QualityGateConflictError) return httpError(409, err.code, err.message);
+  if (err instanceof JudgeRubricNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof JudgeEvaluationError) return httpError(422, err.code, err.message);
   if (err instanceof EvaluationDomainError) return httpError(400, err.code, err.message);
 
   // 記憶ドメイン: NotFound系は404、不変条件違反（入力不正・不正な状態遷移）は400。
   if (err instanceof WikiPageNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof WikiSpaceNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof MemoryProposalNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof MemoryDomainError) return httpError(400, err.code, err.message);
+  if (err instanceof FeedbackValidationError) return httpError(422, err.code, err.message);
+  if (err instanceof AgentSessionNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof SessionArtifactNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof AgentSessionClosedError) return httpError(409, err.code, err.message);
+  if (err instanceof AgentSessionExpiredError) return httpError(410, err.code, err.message);
+  if (err instanceof SessionQuotaExceededError) return httpError(413, err.code, err.message);
+  if (err instanceof SessionDomainError) return httpError(400, err.code, err.message);
 
   if (err instanceof UnsafeToolError) return httpError(403, err.code, err.message);
   if (err instanceof ToolArgumentsError) return httpError(422, err.code, err.message);

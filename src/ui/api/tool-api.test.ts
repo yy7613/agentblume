@@ -88,6 +88,122 @@ describe('ToolApiClient', () => {
     expect(error).toMatchObject({ code: 'MODEL_PROVIDER', runId: 'run-2' });
   });
 
+  it('Agent SessionとArtifactのwire contractを扱う', async () => {
+    const session = { id: 'session-1', status: 'active' };
+    const artifact = { id: 'artifact-1', sessionId: 'session-1', name: 'result', kind: 'table' };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ session }))
+      .mockResolvedValueOnce(jsonResponse({ session: { ...session, status: 'closed' } }))
+      .mockResolvedValueOnce(jsonResponse({ artifacts: [artifact] }))
+      .mockResolvedValueOnce(jsonResponse({ artifact, payload: { rows: [] } }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    await client.createAgentSession({ scope, agent: { internalId: 'agent', version: '1.0.0' } });
+    await client.closeAgentSession('session/1', scope);
+    await client.listSessionArtifacts('session/1', scope);
+    await client.getSessionArtifact('session/1', 'artifact/1', scope, 25, 50, 'edges');
+    await client.deleteSessionArtifact('session/1', 'artifact/1', scope);
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/api/agent-sessions');
+    expect(fetcher.mock.calls[1]?.[0]).toContain('/agent-sessions/session%2F1/close');
+    expect(fetcher.mock.calls[2]?.[0]).toContain('/artifacts?');
+    expect(fetcher.mock.calls[3]?.[0]).toContain('limit=25');
+    expect(fetcher.mock.calls[3]?.[0]).toContain('offset=50');
+    expect(fetcher.mock.calls[3]?.[0]).toContain('section=edges');
+    expect(fetcher.mock.calls[4]?.[1]).toMatchObject({ method: 'DELETE' });
+  });
+
+  it('legacy health, evaluation, and memory endpoints retain their wire contracts', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'ok' }))
+      .mockResolvedValueOnce(jsonResponse({ agent: { metadata: { version: '1.0.0' } } }))
+      .mockResolvedValueOnce(jsonResponse({ evaluation: { score: 1 } }))
+      .mockResolvedValueOnce(jsonResponse({ pages: [] }))
+      .mockResolvedValueOnce(jsonResponse({ page: { id: 'page' } }))
+      .mockResolvedValueOnce(jsonResponse({ page: { id: 'page' } }))
+      .mockResolvedValueOnce(jsonResponse({ proposals: [] }))
+      .mockResolvedValueOnce(jsonResponse({ proposals: [] }))
+      .mockResolvedValueOnce(jsonResponse({ proposal: { id: 'proposal' } }))
+      .mockResolvedValueOnce(jsonResponse({ proposal: { id: 'proposal' } }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    await client.health();
+    await client.registerPseudoUserAgent('persona/a', { scope, personaVersion: '1.0.0' });
+    await client.evaluate({ scope, input: 'question', output: 'answer' });
+    await client.listWiki(scope, 'refund');
+    await client.getWiki('page/1', scope);
+    await client.saveWiki({ scope, title: 'Policy', tags: [], body: 'text' });
+    await client.reflectRun({ scope, input: 'question', output: 'answer', sourceRunId: 'run-1' });
+    await client.listProposals(scope, 'draft');
+    await client.approveProposal('proposal/1', scope);
+    await client.rejectProposal('proposal/1', scope);
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/api/health');
+    expect(fetcher.mock.calls[1]?.[0]).toContain('persona%2Fa/register-agent');
+    expect(fetcher.mock.calls[3]?.[0]).toContain('q=refund');
+    expect(fetcher.mock.calls[7]?.[0]).toContain('state=draft');
+    expect(fetcher.mock.calls[8]?.[0]).toContain('proposal%2F1/approve');
+  });
+
+  it('omits optional query parameters when callers do not supply them', async () => {
+    const fetcher = vi.fn();
+    fetcher.mockImplementation(() => Promise.resolve(jsonResponse({ tool: {}, agents: [], runs: [], persona: {}, scenario: {}, dataset: {}, pages: [], proposals: [], experiments: [] })));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    await client.getTool('tool', scope);
+    await client.listAgents(scope, 'normal');
+    await client.listRuns(scope);
+    await client.getPersona('persona', scope);
+    await client.listScenarioRuns(scope);
+    await client.getEvaluationDataset('dataset', scope);
+    await client.listExperiments(scope);
+    await client.listWiki(scope);
+    await client.listWikiPages('wiki', scope);
+    await client.listProposals(scope);
+    expect(fetcher.mock.calls[0]?.[0]).not.toContain('version=');
+    expect(fetcher.mock.calls[2]?.[0]).not.toContain('limit=');
+    expect(fetcher.mock.calls[7]?.[0]).not.toContain('q=');
+  });
+
+  it('operations status、feedback、retentionのwire contractを扱う', async () => {
+    const feedback = { id: 'feedback-1', runId: 'run-1' };
+    const policy = { scope, payloadDays: 30, traceDays: 14, aggregateDays: 365, updatedAt: 'now' };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: { summary: { runCount: 1 }, points: [] } }))
+      .mockResolvedValueOnce(jsonResponse({ feedback: null }))
+      .mockResolvedValueOnce(jsonResponse({ feedback }))
+      .mockResolvedValueOnce(jsonResponse({ policy }))
+      .mockResolvedValueOnce(jsonResponse({ policy }))
+      .mockResolvedValueOnce(jsonResponse({ result: { deleted: 1 } }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    await client.getOperationsStatus(scope, 7);
+    await client.getRunFeedback('run/1', scope);
+    await client.submitRunFeedback('run/1', { scope, thumb: 'down', rating: 2, comment: 'wrong', issueTags: ['incorrect'] });
+    await client.getRetentionPolicy(scope);
+    await client.saveRetentionPolicy({ scope, payloadDays: 30, traceDays: 14, aggregateDays: 365 });
+    await client.applyRetention(scope);
+    expect(fetcher.mock.calls[0]?.[0]).toContain('/api/operations/status?');
+    expect(fetcher.mock.calls[1]?.[0]).toContain('/api/runs/run%2F1/feedback?');
+    expect(fetcher.mock.calls[2]?.[1]).toEqual(expect.objectContaining({ method: 'PUT' }));
+    expect(fetcher.mock.calls[5]?.[1]).toEqual(expect.objectContaining({ method: 'POST', body: JSON.stringify({ scope }) }));
+  });
+
+  it('複数WikiとWiki内ページのwire contractを扱う', async () => {
+    const wiki = { id: 'customer-a', name: 'Customer A' }; const page = { id: 'page-1', wikiId: 'customer-a' };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ wikis: [wiki] }))
+      .mockResolvedValueOnce(jsonResponse({ wiki }))
+      .mockResolvedValueOnce(jsonResponse({ wiki }))
+      .mockResolvedValueOnce(jsonResponse({ pages: [page] }))
+      .mockResolvedValueOnce(jsonResponse({ page }))
+      .mockResolvedValueOnce(jsonResponse({ page }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    await client.listWikis(scope); await client.getWikiSpace('customer/a', scope); await client.saveWikiSpace({ scope, id: 'customer-a', name: 'Customer A' });
+    await client.listWikiPages('customer/a', scope, 'refund'); await client.getWikiPage('customer/a', 'page/1', scope); await client.saveWikiPage('customer/a', { scope, title: 'Policy', tags: [], body: 'text' });
+    expect(fetcher.mock.calls[0]?.[0]).toContain('/api/wikis?');
+    expect(fetcher.mock.calls[1]?.[0]).toContain('/api/wikis/customer%2Fa?');
+    expect(fetcher.mock.calls[3]?.[0]).toContain('/api/wikis/customer%2Fa/pages?');
+    expect(fetcher.mock.calls[3]?.[0]).toContain('q=refund');
+    expect(fetcher.mock.calls[4]?.[0]).toContain('/pages/page%2F1?');
+    expect(fetcher.mock.calls[5]?.[1]).toEqual(expect.objectContaining({ method: 'POST' }));
+  });
+
   it('標準形式でないHTTPエラーにもfallbackを使う', async () => {
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({}, 500));
     await expect(new ToolApiClient('', fetcher as typeof fetch).inferDraft(graph)).rejects.toMatchObject({ code: 'HTTP_ERROR' });

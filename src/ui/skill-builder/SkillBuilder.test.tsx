@@ -15,6 +15,13 @@ describe('SkillBuilder', () => {
       saveSkill: vi.fn().mockResolvedValue({ metadata: { version: '1.0.0' } }),
     } as unknown as ToolApiClient;
     render(<SkillBuilder client={client} />);
+    await userEvent.type(screen.getByLabelText('Skill internal ID'), 'data-analysis');
+    await userEvent.type(screen.getByLabelText('Working name'), 'Data analysis draft');
+    await userEvent.type(screen.getByLabelText('Skill display name'), 'Data analysis');
+    await userEvent.type(screen.getByLabelText('Publish name'), 'data_analysis');
+    await userEvent.type(screen.getByLabelText('Owner'), 'local-user');
+    await userEvent.type(screen.getByLabelText('Skill responsibility'), 'Analyze supplied data.');
+    await userEvent.type(screen.getByLabelText('Skill activation condition'), 'Use for analysis.');
 
     await userEvent.click(await screen.findByRole('checkbox', { name: /Score filter/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Generate draft' }));

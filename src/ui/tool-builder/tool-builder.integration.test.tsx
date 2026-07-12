@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
 import type { PreviewResultDto, PropagationResultDto, SerializedToolDto } from '../api/types';
@@ -25,6 +25,18 @@ beforeEach(() => { useToolBuilderStore.getState().reset(); vi.useFakeTimers(); }
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe('ToolBuilder preview integration', () => {
+  it('Agent context領域でAgent Inputの引数スキーマを編集できる', () => {
+    useToolBuilderStore.getState().addNode('agent-input');
+    const client = { inferDraft: vi.fn(), previewDraft: vi.fn() } as unknown as ToolApiClient;
+    render(<ToolBuilder client={client} />);
+    expect(screen.getByRole('table', { name: 'Agent arguments' })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Argument name 1'), { target: { value: 'minimumAge' } });
+    fireEvent.change(screen.getByLabelText('Argument type minimumAge'), { target: { value: 'number' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add argument' }));
+    const input = useToolBuilderStore.getState().nodes.find((node) => node.data.nodeType === 'agent-input');
+    expect((input?.data.config['schema'] as { columns: { name: string; type: string }[] }).columns).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'minimumAge', type: 'number' }), expect.objectContaining({ name: 'argument2', type: 'string' })]));
+  });
+
   it('debounce infer→previewでsampleを描画し、次のissueではpreviewを抑止する', async () => {
     const invalid: PropagationResultDto = {
       ...valid, hasErrors: true,
@@ -35,6 +47,13 @@ describe('ToolBuilder preview integration', () => {
       previewDraft: vi.fn().mockResolvedValue(sample),
     } as unknown as ToolApiClient;
     render(<ToolBuilder client={client} />);
+
+    expect(screen.queryByLabelText('Agent chat')).toBeNull();
+    expect(screen.getByLabelText('Agent-facing name')).toBeTruthy();
+    expect(screen.getByLabelText('Agent-facing description')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Agent-facing name'), { target: { value: 'find_adults' } });
+    fireEvent.change(screen.getByLabelText('Agent-facing description'), { target: { value: 'Find adult customers by minimum age.' } });
+    expect(useToolBuilderStore.getState().metadata).toMatchObject({ agentName: 'find_adults', agentDescription: 'Find adult customers by minimum age.' });
 
     await act(async () => { await vi.advanceTimersByTimeAsync(300); });
     expect(screen.getByRole('cell', { name: '30' })).toBeTruthy();

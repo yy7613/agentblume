@@ -11,10 +11,12 @@ import type { QueryWikiUseCase } from '../application/memory/query-wiki';
 import type { ReflectRunUseCase } from '../application/memory/reflect-run';
 import type { ListProposalsUseCase } from '../application/memory/list-proposals';
 import type { ReviewProposalUseCase } from '../application/memory/review-proposal';
+import type { QueryWikiSpacesUseCase, SaveWikiSpaceUseCase } from '../application/memory/wiki-spaces';
 import { serializeMemoryProposal } from '../domain/memory/serialization';
 import { serializeWikiPage } from '../domain/memory/serialization';
+import { serializeWikiSpace } from '../domain/memory/serialization';
 import { BadRequestError } from './error-mapping';
-import { proposalDecisionBodySchema, proposalListQuerySchema, reflectRunBodySchema, saveWikiBodySchema, wikiSearchQuerySchema } from './schemas';
+import { proposalDecisionBodySchema, proposalListQuerySchema, reflectRunBodySchema, saveWikiBodySchema, saveWikiSpaceBodySchema, wikiSearchQuerySchema } from './schemas';
 
 export interface MemoryRouteDeps {
   readonly saveWikiPage: SaveWikiPageUseCase;
@@ -22,6 +24,8 @@ export interface MemoryRouteDeps {
   readonly reflectRun: ReflectRunUseCase;
   readonly listProposals: ListProposalsUseCase;
   readonly reviewProposal: ReviewProposalUseCase;
+  readonly saveWikiSpace: SaveWikiSpaceUseCase;
+  readonly queryWikiSpaces: QueryWikiSpacesUseCase;
 }
 
 function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
@@ -33,12 +37,27 @@ function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
 }
 
 export function registerMemoryRoutes(app: FastifyInstance, deps: MemoryRouteDeps): void {
+  app.get('/wikis', async (request) => {
+    const query = parse(wikiSearchQuerySchema, request.query);
+    return { wikis: await deps.queryWikiSpaces.list({ tenantId: query.tenantId, workspaceId: query.workspaceId }) };
+  });
+
+  app.get<{ Params: { id: string } }>('/wikis/:id', async (request) => {
+    const query = parse(wikiSearchQuerySchema, request.query);
+    return { wiki: serializeWikiSpace(await deps.queryWikiSpaces.get({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.id)) };
+  });
+
+  app.post('/wikis', async (request, reply) => {
+    const body = parse(saveWikiSpaceBodySchema, request.body);
+    return reply.status(201).send({ wiki: serializeWikiSpace(await deps.saveWikiSpace.execute(body)) });
+  });
+
   app.get('/wiki', async (request) => {
     const query = parse(wikiSearchQuerySchema, request.query);
     const scope = { tenantId: query.tenantId, workspaceId: query.workspaceId };
     const pages = query.q !== undefined
-      ? await deps.queryWiki.search(scope, query.q, query.limit ?? 10)
-      : await deps.queryWiki.list(scope);
+      ? await deps.queryWiki.search(scope, query.q, query.limit ?? 10, query.wikiId === undefined ? undefined : [query.wikiId])
+      : await deps.queryWiki.list(scope, query.wikiId);
     return { pages };
   });
 
@@ -53,11 +72,32 @@ export function registerMemoryRoutes(app: FastifyInstance, deps: MemoryRouteDeps
     const page = await deps.saveWikiPage.execute({
       scope: body.scope,
       ...(body.id !== undefined ? { id: body.id } : {}),
+      ...(body.wikiId !== undefined ? { wikiId: body.wikiId } : {}),
       title: body.title,
       tags: body.tags,
       body: body.body,
       ...(body.sourceRunId !== undefined ? { sourceRunId: body.sourceRunId } : {}),
     });
+    return reply.status(201).send({ page: serializeWikiPage(page) });
+  });
+
+  app.get<{ Params: { wikiId: string } }>('/wikis/:wikiId/pages', async (request) => {
+    const query = parse(wikiSearchQuerySchema, request.query);
+    const scope = { tenantId: query.tenantId, workspaceId: query.workspaceId };
+    const pages = query.q === undefined ? await deps.queryWiki.list(scope, request.params.wikiId) : await deps.queryWiki.search(scope, query.q, query.limit ?? 10, [request.params.wikiId]);
+    return { pages };
+  });
+
+  app.get<{ Params: { wikiId: string; id: string } }>('/wikis/:wikiId/pages/:id', async (request) => {
+    const query = parse(wikiSearchQuerySchema, request.query);
+    const page = await deps.queryWiki.get({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.id);
+    if ((page.wikiId ?? 'default') !== request.params.wikiId) throw new BadRequestError('wiki page does not belong to requested wiki');
+    return { page: serializeWikiPage(page) };
+  });
+
+  app.post<{ Params: { wikiId: string } }>('/wikis/:wikiId/pages', async (request, reply) => {
+    const body = parse(saveWikiBodySchema, request.body);
+    const page = await deps.saveWikiPage.execute({ scope: body.scope, ...(body.id !== undefined ? { id: body.id } : {}), wikiId: request.params.wikiId, title: body.title, tags: body.tags, body: body.body, ...(body.sourceRunId !== undefined ? { sourceRunId: body.sourceRunId } : {}) });
     return reply.status(201).send({ page: serializeWikiPage(page) });
   });
 
@@ -70,6 +110,7 @@ export function registerMemoryRoutes(app: FastifyInstance, deps: MemoryRouteDeps
       ...(body.sourceRunId !== undefined ? { sourceRunId: body.sourceRunId } : {}),
       ...(body.targetSkillId !== undefined ? { targetSkillId: body.targetSkillId } : {}),
       ...(body.existingWikiPageId !== undefined ? { existingWikiPageId: body.existingWikiPageId } : {}),
+      ...(body.targetWikiId !== undefined ? { targetWikiId: body.targetWikiId } : {}),
     });
     return { proposals: proposals.map(serializeMemoryProposal) };
   });

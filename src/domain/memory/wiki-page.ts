@@ -6,10 +6,13 @@
  */
 import type { TenantScope } from '../tool/ids';
 import { MemoryDomainError } from './errors';
+import { DEFAULT_WIKI_ID } from './wiki-space';
 
 export interface WikiPage {
   readonly id: string;
   readonly tenant: TenantScope;
+  /** 旧recordでは欠損を許容し、default Wiki所属として解釈する。 */
+  readonly wikiId?: string;
   readonly title: string;
   readonly tags: readonly string[];
   readonly body: string;
@@ -20,6 +23,7 @@ export interface WikiPage {
 
 export interface WikiPageSummary {
   readonly id: string;
+  readonly wikiId?: string;
   readonly title: string;
   readonly tags: readonly string[];
   readonly version: number;
@@ -48,6 +52,7 @@ function normalizeTags(tags: readonly string[]): readonly string[] {
 export interface CreateWikiPageProps {
   readonly id: string;
   readonly tenant: TenantScope;
+  readonly wikiId?: string;
   readonly title: string;
   readonly tags?: readonly string[];
   readonly body: string;
@@ -62,9 +67,11 @@ export function createWikiPage(props: CreateWikiPageProps): WikiPage {
   nonEmpty(props.tenant?.tenantId, 'tenant.tenantId');
   nonEmpty(props.tenant.workspaceId, 'tenant.workspaceId');
   nonEmpty(props.updatedAt, 'updatedAt');
+  if (props.wikiId !== undefined) nonEmpty(props.wikiId, 'wikiId');
   return {
     id: props.id,
     tenant: { ...props.tenant },
+    ...(props.wikiId !== undefined ? { wikiId: props.wikiId.trim() } : {}),
     title: props.title,
     tags: normalizeTags(props.tags ?? []),
     body: props.body,
@@ -103,5 +110,7 @@ export function reviseWikiPage(page: WikiPage, changes: ReviseWikiPageChanges): 
 }
 
 export function summarizeWikiPage(page: WikiPage): WikiPageSummary {
-  return { id: page.id, title: page.title, tags: [...page.tags], version: page.version, updatedAt: page.updatedAt };
+  return { id: page.id, ...(page.wikiId !== undefined ? { wikiId: page.wikiId } : {}), title: page.title, tags: [...page.tags], version: page.version, updatedAt: page.updatedAt };
 }
+
+export function effectiveWikiId(page: Pick<WikiPage, 'wikiId'>): string { return page.wikiId ?? DEFAULT_WIKI_ID; }

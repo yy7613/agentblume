@@ -6,15 +6,26 @@
  */
 import type { MemoryProposal, MemoryProposalTarget } from './memory-proposal';
 import type { WikiPage } from './wiki-page';
+import type { WikiSpace } from './wiki-space';
 
 export interface SerializedWikiPage {
   readonly id: string;
   readonly tenant: { readonly tenantId: string; readonly workspaceId: string };
+  readonly wikiId?: string;
   readonly title: string;
   readonly tags: readonly string[];
   readonly body: string;
   readonly version: number;
   readonly sourceRuns: readonly string[];
+  readonly updatedAt: string;
+}
+
+export interface SerializedWikiSpace {
+  readonly id: string;
+  readonly tenant: { readonly tenantId: string; readonly workspaceId: string };
+  readonly name: string;
+  readonly description: string;
+  readonly createdAt: string;
   readonly updatedAt: string;
 }
 
@@ -32,6 +43,7 @@ export function serializeWikiPage(page: WikiPage): SerializedWikiPage {
   return {
     id: page.id,
     tenant: { tenantId: page.tenant.tenantId, workspaceId: page.tenant.workspaceId },
+    ...(page.wikiId !== undefined ? { wikiId: page.wikiId } : {}),
     title: page.title,
     tags: [...page.tags],
     body: page.body,
@@ -45,6 +57,7 @@ export function deserializeWikiPage(value: SerializedWikiPage): WikiPage {
   return {
     id: value.id,
     tenant: { tenantId: value.tenant.tenantId, workspaceId: value.tenant.workspaceId },
+    ...(value.wikiId !== undefined ? { wikiId: value.wikiId } : {}),
     title: value.title,
     tags: [...value.tags],
     body: value.body,
@@ -54,9 +67,17 @@ export function deserializeWikiPage(value: SerializedWikiPage): WikiPage {
   };
 }
 
+export function serializeWikiSpace(space: WikiSpace): SerializedWikiSpace {
+  return { id: space.id, tenant: { ...space.tenant }, name: space.name, description: space.description, createdAt: space.createdAt, updatedAt: space.updatedAt };
+}
+
+export function deserializeWikiSpace(value: SerializedWikiSpace): WikiSpace {
+  return { id: value.id, tenant: { ...value.tenant }, name: value.name, description: value.description, createdAt: value.createdAt, updatedAt: value.updatedAt };
+}
+
 function cloneTarget(target: MemoryProposalTarget): MemoryProposalTarget {
   return target.kind === 'wiki'
-    ? { kind: 'wiki', pageId: target.pageId, isNewPage: target.isNewPage, title: target.title, tags: [...target.tags], body: target.body }
+    ? { kind: 'wiki', ...(target.wikiId !== undefined ? { wikiId: target.wikiId } : {}), pageId: target.pageId, isNewPage: target.isNewPage, title: target.title, tags: [...target.tags], body: target.body }
     : { kind: 'skill', skillId: target.skillId, instructions: target.instructions };
 }
 

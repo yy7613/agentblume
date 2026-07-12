@@ -32,6 +32,7 @@ export function MetadataBar({ client }: { readonly client: ToolApiClient }) {
         owner: metadata.owner,
         sideEffect: metadata.sideEffect,
         graph: currentGraph(),
+        agentTool: { name: metadata.agentName, description: metadata.agentDescription },
         ...(inputSchema() !== undefined ? { inputSchema: inputSchema() } : {}),
         ...(outputSchema() !== undefined ? { outputSchema: outputSchema() } : {}),
       });
@@ -55,17 +56,17 @@ export function MetadataBar({ client }: { readonly client: ToolApiClient }) {
 
   return (
     <header className="metadata-bar">
-      <div className="title-block"><span className="eyebrow">{text('Tool Builder', 'ツールビルダー')}</span><input aria-label={text('Display name', '表示名')} value={metadata.displayName} onChange={(event) => setMetadata('displayName', event.target.value)} /></div>
+      <div className="title-block"><span className="eyebrow">{text('Tool Builder', 'ツールビルダー')}</span><input aria-label={text('Display name', '表示名')} placeholder={text('e.g. Customer search', '例: 顧客検索')} value={metadata.displayName} onChange={(event) => setMetadata('displayName', event.target.value)} /></div>
       <details>
         <summary>{text('Metadata', 'メタデータ')}</summary>
         <div className="metadata-grid">
-          <label>{text('Internal ID', '内部ID')}<input value={metadata.internalId} onChange={(event) => setMetadata('internalId', event.target.value)} /></label>
-          <label>{text('Working name', '作業名')}<input value={metadata.workingName} onChange={(event) => setMetadata('workingName', event.target.value)} /></label>
-          <label>{text('Publish name', '公開名')}<input value={metadata.publishName} onChange={(event) => setMetadata('publishName', event.target.value)} /></label>
-          <label>{text('Owner', '所有者')}<input value={metadata.owner} onChange={(event) => setMetadata('owner', event.target.value)} /></label>
+          <label>{text('Internal ID', '内部ID')}<input placeholder={text('e.g. customer-search', '例: customer-search')} value={metadata.internalId} onChange={(event) => setMetadata('internalId', event.target.value)} /></label>
+          <label>{text('Working name', '作業名')}<input placeholder={text('e.g. Customer search draft', '例: 顧客検索の下書き')} value={metadata.workingName} onChange={(event) => setMetadata('workingName', event.target.value)} /></label>
+          <label>{text('Publish name', '公開名')}<input placeholder={text('e.g. customer_search', '例: customer_search')} value={metadata.publishName} onChange={(event) => setMetadata('publishName', event.target.value)} /></label>
+          <label>{text('Owner', '所有者')}<input placeholder={text('e.g. team@example.com', '例: team@example.com')} value={metadata.owner} onChange={(event) => setMetadata('owner', event.target.value)} /></label>
           <label>{text('Tenant', 'テナント')}<input value={metadata.tenantId} onChange={(event) => setMetadata('tenantId', event.target.value)} /></label>
           <label>{text('Workspace', 'ワークスペース')}<input value={metadata.workspaceId} onChange={(event) => setMetadata('workspaceId', event.target.value)} /></label>
-          <label>{text('Side effect', '副作用')}<select value={metadata.sideEffect} onChange={(event) => setMetadata('sideEffect', event.target.value as SideEffectDto)}><option>read-only</option><option>write</option><option>external-action</option></select></label>
+          <label>{text('Side effect', '副作用')}<select value={metadata.sideEffect} onChange={(event) => setMetadata('sideEffect', event.target.value as SideEffectDto)}><option>read-only</option><option>session-write</option><option>write</option><option>external-action</option></select></label>
         </div>
       </details>
       <div className="save-actions">

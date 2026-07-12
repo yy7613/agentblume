@@ -13,6 +13,12 @@ import { isPublishState, isSideEffect } from './metadata';
 import type { SideEffect, ToolMetadata } from './metadata';
 import { SemVer } from './semver';
 
+/** Agent/LLM に公開する Tool Calling 契約。未指定時は metadata から後方互換に導出する。 */
+export interface AgentToolContract {
+  readonly name: string;
+  readonly description: string;
+}
+
 /** ETL グラフとメタデータを束ねる Tool 集約。 */
 export interface Tool {
   readonly metadata: ToolMetadata;
@@ -20,6 +26,7 @@ export interface Tool {
   readonly graph: ToolGraph;
   readonly inputSchema?: Schema;
   readonly outputSchema?: Schema;
+  readonly agentTool?: AgentToolContract;
 }
 
 /** createTool の入力。 */
@@ -29,6 +36,7 @@ export interface CreateToolProps {
   readonly graph: ToolGraph;
   readonly inputSchema?: Schema;
   readonly outputSchema?: Schema;
+  readonly agentTool?: AgentToolContract;
 }
 
 /** 非空文字列でなければ ToolValidationError。 */
@@ -78,7 +86,7 @@ function cloneConfig(config: unknown): unknown {
  * 返す Tool は入力を複製したもので、外部変更の影響を受けない。
  */
 export function createTool(props: CreateToolProps): Tool {
-  const { metadata, sideEffect, graph, inputSchema, outputSchema } = props;
+  const { metadata, sideEffect, graph, inputSchema, outputSchema, agentTool } = props;
 
   if (metadata === null || typeof metadata !== 'object') {
     throw new ToolValidationError('createTool: metadata is required');
@@ -115,6 +123,10 @@ export function createTool(props: CreateToolProps): Tool {
   if (!Array.isArray(graph.edges)) {
     throw new ToolValidationError('createTool: graph.edges must be an array');
   }
+  if (agentTool !== undefined) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(agentTool.name)) throw new ToolValidationError('createTool: agentTool.name must be a valid function name');
+    assertNonEmptyString(agentTool.description, 'agentTool.description');
+  }
 
   // 全て検証済み。入力を複製して外部変更の影響を受けない Tool を返す。
   const clonedMetadata: ToolMetadata = {
@@ -134,6 +146,7 @@ export function createTool(props: CreateToolProps): Tool {
     graph: cloneGraph(graph),
     ...(inputSchema !== undefined ? { inputSchema: cloneSchema(inputSchema) } : {}),
     ...(outputSchema !== undefined ? { outputSchema: cloneSchema(outputSchema) } : {}),
+    ...(agentTool !== undefined ? { agentTool: { name: agentTool.name, description: agentTool.description } } : {}),
   };
 
   return tool;

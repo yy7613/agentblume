@@ -34,7 +34,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   const [agents, setAgents] = useState<readonly AgentSummaryDto[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [definition, setDefinition] = useState<SerializedAgentDto>();
-  const [message, setMessage] = useState('Call your tools if useful, then explain the result.');
+  const [message, setMessage] = useState('');
   const [turns, setTurns] = useState<readonly Turn[]>([]);
   const [evaluations, setEvaluations] = useState<ReadonlyMap<number, EvaluationResultDto | 'loading' | 'error'>>(new Map());
   const [distillations, setDistillations] = useState<ReadonlyMap<number, DistillState>>(new Map());
@@ -111,9 +111,10 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   async function distill(index: number, inputText: string, outputText: string, runId: string): Promise<void> {
     if (inputText.trim() === '' || outputText.trim() === '') return;
     const targetSkillId = definition?.skills[0]?.internalId;
+    const targetWikiId = definition?.wikis?.[0]?.wikiId;
     setDistillations((prev) => new Map(prev).set(index, 'loading'));
     try {
-      const proposals = await client.reflectRun({ scope, input: inputText, output: outputText, sourceRunId: runId, ...(targetSkillId !== undefined ? { targetSkillId } : {}) });
+      const proposals = await client.reflectRun({ scope, input: inputText, output: outputText, sourceRunId: runId, ...(targetSkillId !== undefined ? { targetSkillId } : {}), ...(targetWikiId !== undefined ? { targetWikiId } : {}) });
       setDistillations((prev) => new Map(prev).set(index, { count: proposals.length }));
     } catch {
       setDistillations((prev) => new Map(prev).set(index, 'error'));

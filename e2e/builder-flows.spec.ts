@@ -115,6 +115,12 @@ test('Chat・MCP・Validation・Memory・Settingsの全ナビが実操作でき�
     scope, internalId: 'screen-agent', workingName: 'Screen agent', displayName: 'Screen Agent', publishName: 'screen_agent', owner: 'e2e', kind: 'normal', systemPrompt: 'Use the screen tool.', skills: [], tools: [{ internalId: 'screen-tool', version: '1.0.0' }],
   } });
   expect(agent.status()).toBe(201);
+  await page.route('**/agent-sessions', async (route) => {
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ session: { id: 'screen-session', scope, rootAgent: { internalId: 'screen-agent', version: '1.0.0' }, status: 'active', createdAt: '2026-07-11T00:00:00.000Z', lastAccessedAt: '2026-07-11T00:00:00.000Z', expiresAt: '2026-07-12T00:00:00.000Z', quota: { maxBytes: 1, maxArtifactBytes: 1, maxArtifacts: 1 } } }) });
+  });
+  await page.route('**/agent-sessions/**/artifacts**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ artifacts: [] }) });
+  });
   await page.route('**/runs', async (route) => {
     const body = route.request().postDataJSON();
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ run: { runId: `screen-${body.mode}`, mode: body.mode, agent: body.agent, response: 'screen response', tools: [{ internalId: 'screen-tool', publishName: 'screen_tool', version: '1.0.0' }], trace: [], usage: {} } }) });
@@ -142,11 +148,19 @@ test('Chat・MCP・Validation・Memory・Settingsの全ナビが実操作でき�
   await expect(page.getByRole('button', { name: /Screen Persona/ })).toContainText('1.0.0');
   await page.getByRole('tab', { name: 'Scenarios' }).click();
   await expect(page.getByRole('tab', { name: 'Scenarios' })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: 'Datasets' }).click();
+  await expect(page.getByRole('tab', { name: 'Datasets' })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: 'Experiments' }).click();
+  await expect(page.getByRole('tab', { name: 'Experiments' })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: 'Runs' }).click();
   await expect(page.getByRole('tab', { name: 'Runs' })).toHaveAttribute('aria-selected', 'true');
 
   await page.getByRole('button', { name: 'Memory', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Long-term memory' })).toBeVisible();
+  await page.getByLabel('Wiki ID').fill('screen-wiki');
+  await page.getByLabel('Wiki name').fill('Screen Wiki');
+  await page.getByRole('button', { name: 'Save wiki' }).click();
+  await expect(page.getByLabel('Active wiki')).toHaveValue('screen-wiki');
   await page.getByLabel('Title').fill('E2E note');
   await page.getByLabel('Body').fill('E2E memory body.');
   await page.getByRole('button', { name: 'Save page' }).click();

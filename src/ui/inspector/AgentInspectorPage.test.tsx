@@ -8,6 +8,11 @@ import { AgentInspectorPage } from './AgentInspectorPage';
 
 afterEach(cleanup);
 
+async function sendMessage(message = 'Inspect this run'): Promise<void> {
+  await userEvent.type(screen.getByLabelText('Inspect message'), message);
+  await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+}
+
 const definition = {
   metadata: { internalId: 'agent', workingName: 'w', displayName: 'Agent', publishName: 'agent', version: '1.2.0', owner: 'o', state: 'draft', tenant: { tenantId: 'local', workspaceId: 'default' } },
   kind: 'normal', systemPrompt: 'Use tools.',
@@ -54,12 +59,12 @@ describe('AgentInspectorPage', () => {
     const client = makeClient({ evaluate });
     render(<AgentInspectorPage client={client} />);
     await screen.findByRole('option', { name: /Agent/ });
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await sendMessage();
     const evalButton = await screen.findByRole('button', { name: 'Evaluate response' });
     await userEvent.click(evalButton);
     await waitFor(() => expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({ output: '42 rows matched' })));
     // 直前のユーザー発話が input として渡る。
-    expect((evaluate.mock.calls[0]?.[0] as { input: string }).input).toContain('Call your tools');
+    expect((evaluate.mock.calls[0]?.[0] as { input: string }).input).toContain('Inspect this run');
     expect(await screen.findByText('keyword-coverage')).toBeTruthy();
     expect(screen.getByText('completeness')).toBeTruthy();
     expect(screen.getByText(/Average 75%/)).toBeTruthy();
@@ -70,7 +75,7 @@ describe('AgentInspectorPage', () => {
     const client = makeClient({ reflectRun });
     render(<AgentInspectorPage client={client} />);
     await screen.findByRole('option', { name: /Agent/ });
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await sendMessage();
     const distillButton = await screen.findByRole('button', { name: 'Distill to memory' });
     await userEvent.click(distillButton);
     // 直前ユーザー発話・応答・runId、対象Skill(先頭)を渡す。
@@ -83,7 +88,7 @@ describe('AgentInspectorPage', () => {
     render(<AgentInspectorPage client={client} />);
     await screen.findByRole('option', { name: /Agent/ });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await sendMessage();
     // 応答本文はバブルとトレース(model-response)の両方に現れる。
     expect((await screen.findAllByText('42 rows matched')).length).toBeGreaterThan(0);
 
@@ -115,7 +120,7 @@ describe('AgentInspectorPage', () => {
     await screen.findByRole('option', { name: /Agent/ });
     await userEvent.click(await screen.findByText('Attach memory'));
     await userEvent.click(screen.getByRole('checkbox', { name: /Cohort SQL/ }));
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await sendMessage();
     await waitFor(() => expect(runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ memoryPageIds: ['w1'] })));
   });
 
@@ -130,7 +135,7 @@ describe('AgentInspectorPage', () => {
     const client = makeClient({ runSavedAgent: vi.fn().mockResolvedValue(noTools) });
     render(<AgentInspectorPage client={client} />);
     await screen.findByRole('option', { name: /Agent/ });
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await sendMessage();
     expect(await screen.findByText('No tools were called.')).toBeTruthy();
   });
 
@@ -138,7 +143,7 @@ describe('AgentInspectorPage', () => {
     const client = makeClient({ runSavedAgent: vi.fn().mockRejectedValue('kaboom') });
     render(<AgentInspectorPage client={client} />);
     await screen.findByRole('option', { name: /Agent/ });
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await sendMessage();
     expect(await screen.findByText('Request failed')).toBeTruthy();
     expect(screen.getByText('Error')).toBeTruthy();
   });
@@ -156,7 +161,7 @@ describe('AgentInspectorPage', () => {
     const client = makeClient({ runSavedAgent: vi.fn().mockResolvedValue(run) });
     render(<AgentInspectorPage client={client} />);
     await screen.findByRole('option', { name: /Agent/ });
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await sendMessage();
     expect(await screen.findByText('E_Y: boom')).toBeTruthy();
     expect(screen.getByText('(empty)')).toBeTruthy();
     expect(screen.getAllByText(/…/).length).toBeGreaterThan(0);

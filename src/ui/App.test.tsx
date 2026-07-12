@@ -38,6 +38,6 @@ describe('App navigation', () => {
   it.each([['Chat', 'Chat page'], ['MCP', 'MCP page'], ['Validation', 'Validation page'], ['Settings', 'Settings page']] as const)('%s画面を有効なナビとして開く', async (name, content) => {
     render(<App client={{} as ToolApiClient} />);
     await userEvent.click(screen.getByRole('button', { name }));
-    expect(screen.getByText(content)).toBeTruthy();
+    expect(await screen.findByText(content)).toBeTruthy();
   });
 });

@@ -21,6 +21,7 @@ export interface SerializedAgent {
   readonly skills: readonly { readonly internalId: string; readonly version: string }[];
   readonly tools: readonly { readonly internalId: string; readonly version: string }[];
   readonly agents: readonly { readonly internalId: string; readonly version: string; readonly usage: string }[];
+  readonly wikis?: readonly { readonly wikiId: string }[];
   readonly persona?: { readonly personaId: string; readonly version: string };
   readonly output?: StructuredOutputDefinition;
 }
@@ -37,6 +38,7 @@ const schema = z.object({
   skills: z.array(z.object({ internalId: z.string(), version: z.string() })).default([]),
   tools: z.array(z.object({ internalId: z.string(), version: z.string() })),
   agents: z.array(z.object({ internalId: z.string(), version: z.string(), usage: z.string() })).default([]),
+  wikis: z.array(z.object({ wikiId: z.string() })).default([]),
   persona: z.object({ personaId: z.string(), version: z.string() }).optional(),
   output: z.object({
     name: z.string(),
@@ -61,6 +63,7 @@ export function serializeAgent(agent: Agent): SerializedAgent {
     skills: agent.skills.map((skill) => ({ internalId: skill.internalId, version: skill.version.toString() })),
     tools: agent.tools.map((tool) => ({ internalId: tool.internalId, version: tool.version.toString() })),
     agents: agent.agents.map((sub) => ({ internalId: sub.internalId, version: sub.version.toString(), usage: sub.usage })),
+    ...(agent.wikis !== undefined ? { wikis: agent.wikis.map((wiki) => ({ ...wiki })) } : {}),
     ...(agent.persona !== undefined ? { persona: { personaId: agent.persona.personaId, version: agent.persona.version.toString() } } : {}),
     ...(agent.output !== undefined ? { output: structuredClone(agent.output) } : {}),
   };
@@ -84,6 +87,7 @@ export function deserializeAgent(value: unknown): Agent {
     skills: agent.skills.map((skill) => ({ internalId: skill.internalId, version: SemVer.parse(skill.version) })),
     tools: agent.tools.map((tool) => ({ internalId: tool.internalId, version: SemVer.parse(tool.version) })),
     agents: agent.agents.map((sub) => ({ internalId: sub.internalId, version: SemVer.parse(sub.version), usage: sub.usage })),
+    ...(agent.wikis.length > 0 ? { wikis: agent.wikis.map((wiki) => ({ ...wiki })) } : {}),
     ...(agent.persona !== undefined ? { persona: { personaId: agent.persona.personaId, version: SemVer.parse(agent.persona.version) } } : {}),
     ...(agent.output !== undefined ? { output: agent.output } : {}),
   });

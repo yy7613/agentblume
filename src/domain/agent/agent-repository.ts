@@ -14,6 +14,8 @@ export interface AgentSummary {
 
 export interface AgentRepository {
   save(agent: Agent): Promise<void>;
+  /** Promotion-capable repositories update lifecycle state without creating a new semantic version. */
+  updateState?(scope: TenantScope, internalId: string, version: SemVer, state: PublishState): Promise<Agent>;
   findVersion(scope: TenantScope, internalId: string, version: SemVer): Promise<Agent | null>;
   findLatest(scope: TenantScope, internalId: string): Promise<Agent | null>;
   listVersions(scope: TenantScope, internalId: string): Promise<SemVer[]>;

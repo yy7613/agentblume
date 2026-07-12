@@ -5,6 +5,7 @@ import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import { SaveAgentUseCase } from './save-agent';
+import type { WikiRepository } from '../../domain/memory/wiki-repository';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
 const v = SemVer.of(1, 0, 0);
@@ -43,5 +44,13 @@ describe('SaveAgentUseCase sub-agents', () => {
     const agents = new MapAgents(new Map([['a', leaf('a', 'dup')], ['b', leaf('b', 'dup')]]));
     await expect(new SaveAgentUseCase(agents, noTools).execute({ ...rootInput, agents: [{ internalId: 'a', version: v, usage: 'x' }, { internalId: 'b', version: v, usage: 'y' }] }))
       .rejects.toThrow(/SaveAgent:.*collides/);
+  });
+
+  it('存在するWiki allowlistをAgent版へ保存し、未知Wikiを拒否する', async () => {
+    const wiki = { findSpace: async (_scope: TenantScope, id: string) => id === 'customer-a' ? { id, tenant: scope, name: 'Customer A', description: '', createdAt: 'now', updatedAt: 'now' } : null } as unknown as WikiRepository;
+    const agents = new MapAgents();
+    const saved = await new SaveAgentUseCase(agents, noTools, undefined, wiki).execute({ ...rootInput, wikis: [{ wikiId: 'customer-a' }] });
+    expect(saved.wikis).toEqual([{ wikiId: 'customer-a' }]);
+    await expect(new SaveAgentUseCase(new MapAgents(), noTools, undefined, wiki).execute({ ...rootInput, wikis: [{ wikiId: 'ghost' }] })).rejects.toThrow(/wiki not found: ghost/);
   });
 });

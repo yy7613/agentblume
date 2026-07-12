@@ -60,6 +60,8 @@ DB/API接続、Secrets Provider、認証アダプター、ワークスペースR
 データセット評価、回帰、LLM-as-Judge、本番ログからの評価データ化、環境昇格、高度なポリシー制御。
 加えて **長期記憶（`ideas-v3`）**: LLM Wiki（WikiPage + 検索）と Skillsベースの蒸留（Run → 提案 → 人手承認 → Skill.instructions 改訂）。詳細は [10-memory.md](./10-memory.md)。
 
+評価資産の版管理、一括実験、回帰ゲート、LLM-as-Judge、観測・Feedback、運用データ還流の実装順序は [LLMOps 実装計画](../implementation/llmops-roadmap.md) を参照。
+
 ---
 
 ## 3. 機能 → フェーズ対応（`ideas-v2.md §6` チェックリスト）

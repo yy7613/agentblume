@@ -7,8 +7,8 @@ import { useI18n } from '../i18n';
 export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
   const metadata = useToolBuilderStore((state) => state.metadata);
   const currentVersion = useToolBuilderStore((state) => state.currentVersion);
-  const [systemPrompt, setSystemPrompt] = useState('Use the connected tool when it can answer the request.');
-  const [message, setMessage] = useState('Use this tool and explain the result.');
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [message, setMessage] = useState('');
   const [run, setRun] = useState<AgentPreviewRunDto>();
   const [failedRun, setFailedRun] = useState<RunRecordDto>();
   const [error, setError] = useState<string>();
@@ -46,8 +46,8 @@ export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
 
   return <section className="agent-chat-panel" aria-label={text('Agent chat', 'エージェントチャット')}>
     <div className="panel-title"><div><span className="eyebrow">{text('Agent preview', 'エージェントプレビュー')}</span><h2>LM Studio {text('chat', 'チャット')}</h2></div><span className="version-chip">{currentVersion === undefined ? text('Save first', '先に保存してください') : `Tool v${currentVersion}`}</span></div>
-    <label>{text('System prompt', 'システムプロンプト')}<textarea rows={2} value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} /></label>
-    <div className="chat-compose"><textarea aria-label={text('Chat message', 'チャットメッセージ')} rows={2} value={message} onChange={(event) => setMessage(event.target.value)} /><button type="button" className="primary" disabled={currentVersion === undefined || loading || message.trim() === ''} onClick={() => void send()}>{loading ? text('Running…', '実行中…') : text('Run agent', 'エージェントを実行')}</button></div>
+    <label>{text('System prompt', 'システムプロンプト')}<textarea rows={2} placeholder={text('Explain how the Agent should use this Tool.', 'エージェントがこのツールを使う方針を記述します。')} value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} /></label>
+    <div className="chat-compose"><textarea aria-label={text('Chat message', 'チャットメッセージ')} rows={2} placeholder={text('Ask the Agent to use this Tool…', 'このツールを使うようエージェントに依頼…')} value={message} onChange={(event) => setMessage(event.target.value)} /><button type="button" className="primary" disabled={currentVersion === undefined || loading || message.trim() === ''} onClick={() => void send()}>{loading ? text('Running…', '実行中…') : text('Run agent', 'エージェントを実行')}</button></div>
     {currentVersion === undefined && <p className="empty-state">{text('Save a validated Tool before connecting it to an Agent.', '検証済みツールを保存するとエージェントへ接続できます。')}</p>}
     {error !== undefined && <div className="api-error" role="alert">{error}</div>}
     {run !== undefined && <>

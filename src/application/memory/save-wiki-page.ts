@@ -8,11 +8,14 @@ import { randomUUID } from 'node:crypto';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';
 import { createWikiPage, reviseWikiPage, type WikiPage } from '../../domain/memory/wiki-page';
+import { MemoryDomainError, WikiSpaceNotFoundError } from '../../domain/memory/errors';
+import { createWikiSpace, DEFAULT_WIKI_ID } from '../../domain/memory/wiki-space';
 
 export interface SaveWikiPageInput {
   readonly scope: TenantScope;
   /** 省略時は新規（id 自動採番）。既存 id なら改訂。 */
   readonly id?: string;
+  readonly wikiId?: string;
   readonly title: string;
   readonly tags: readonly string[];
   readonly body: string;
@@ -30,6 +33,14 @@ export class SaveWikiPageUseCase {
   async execute(input: SaveWikiPageInput): Promise<WikiPage> {
     const updatedAt = this.now().toISOString();
     const existing = input.id !== undefined ? await this.wiki.find(input.scope, input.id) : null;
+    const desiredWikiId = input.wikiId ?? existing?.wikiId ?? DEFAULT_WIKI_ID;
+    const currentWikiId = existing?.wikiId ?? DEFAULT_WIKI_ID;
+    if (existing !== null && desiredWikiId !== currentWikiId) throw new MemoryDomainError(`SaveWikiPage: page '${existing.id}' cannot move from wiki '${currentWikiId}' to '${desiredWikiId}'`);
+    const space = await this.wiki.findSpace(input.scope, desiredWikiId);
+    if (space === null) {
+      if (input.wikiId !== undefined && input.wikiId !== DEFAULT_WIKI_ID) throw new WikiSpaceNotFoundError(`SaveWikiPage: wiki not found: ${desiredWikiId}`);
+      await this.wiki.saveSpace(createWikiSpace({ id: DEFAULT_WIKI_ID, tenant: input.scope, name: 'Default Wiki', createdAt: updatedAt }));
+    }
     const page = existing !== null
       ? reviseWikiPage(existing, {
           title: input.title,
@@ -41,6 +52,7 @@ export class SaveWikiPageUseCase {
       : createWikiPage({
           id: input.id ?? this.makeId(),
           tenant: input.scope,
+          ...(input.wikiId !== undefined ? { wikiId: desiredWikiId } : {}),
           title: input.title,
           tags: input.tags,
           body: input.body,

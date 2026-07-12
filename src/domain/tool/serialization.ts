@@ -15,7 +15,7 @@ import { PUBLISH_STATES, SIDE_EFFECTS } from './metadata';
 import type { PublishState, SideEffect } from './metadata';
 import { SemVer } from './semver';
 import { createTool } from './tool';
-import type { Tool } from './tool';
+import type { AgentToolContract, Tool } from './tool';
 
 /** 永続化用の素データ表現。 */
 export interface SerializedTool {
@@ -33,6 +33,7 @@ export interface SerializedTool {
   graph: ToolGraph; // config: unknown は JSON そのまま
   inputSchema?: Schema;
   outputSchema?: Schema;
+  agentTool?: AgentToolContract;
 }
 
 const dataTypeSchema: z.ZodType<DataType> = z.enum([
@@ -89,6 +90,7 @@ const serializedToolSchema = z.object({
   graph: graphSchema,
   inputSchema: schemaSchema.optional(),
   outputSchema: schemaSchema.optional(),
+  agentTool: z.object({ name: z.string(), description: z.string() }).optional(),
 });
 
 /** Tool を JSON.stringify 可能な素のオブジェクトへ直列化する。 */
@@ -119,6 +121,7 @@ export function serializeTool(tool: Tool): SerializedTool {
     },
     ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
     ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
+    ...(tool.agentTool !== undefined ? { agentTool: { ...tool.agentTool } } : {}),
   };
   return data;
 }
@@ -158,5 +161,6 @@ export function deserializeTool(data: unknown): Tool {
     graph: value.graph,
     ...(value.inputSchema !== undefined ? { inputSchema: value.inputSchema } : {}),
     ...(value.outputSchema !== undefined ? { outputSchema: value.outputSchema } : {}),
+    ...(value.agentTool !== undefined ? { agentTool: value.agentTool } : {}),
   });
 }

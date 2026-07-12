@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FakeWikiRepository } from './memory-repositories.fixtures';
 import { SaveWikiPageUseCase } from './save-wiki-page';
+import { createWikiSpace } from '../../domain/memory/wiki-space';
 
 const scope = { tenantId: 'local', workspaceId: 'default' };
 
@@ -33,5 +34,15 @@ describe('SaveWikiPageUseCase', () => {
     const page = await usecase.execute({ scope, id: 'given', title: 'T', tags: [], body: 'B' });
     expect(page.id).toBe('given');
     expect(page.version).toBe(1);
+  });
+
+  it('明示Wikiへ保存し、存在しないWikiと別Wikiへの暗黙移動を拒否する', async () => {
+    const { wiki, usecase } = make();
+    await wiki.saveSpace(createWikiSpace({ id: 'a', tenant: scope, name: 'A', createdAt: 'now' }));
+    await wiki.saveSpace(createWikiSpace({ id: 'b', tenant: scope, name: 'B', createdAt: 'now' }));
+    const page = await usecase.execute({ scope, id: 'p', wikiId: 'a', title: 'T', tags: [], body: 'B' });
+    expect(page.wikiId).toBe('a');
+    await expect(usecase.execute({ scope, id: 'p', wikiId: 'b', title: 'T', tags: [], body: 'B' })).rejects.toThrow(/cannot move/);
+    await expect(usecase.execute({ scope, wikiId: 'ghost', title: 'T', tags: [], body: 'B' })).rejects.toThrow(/wiki not found/);
   });
 });

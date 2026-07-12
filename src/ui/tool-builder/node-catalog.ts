@@ -1,11 +1,11 @@
-export const NODE_TYPES = ['agent-input', 'json-source', 'csv-source', 'select', 'filter', 'rename', 'cast', 'join', 'union', 'sort', 'distinct', 'fill-null', 'replace'] as const;
+export const NODE_TYPES = ['agent-input', 'json-source', 'csv-source', 'select', 'filter', 'rename', 'cast', 'join', 'union', 'sort', 'distinct', 'fill-null', 'replace', 'agent-output', 'workspace-output'] as const;
 export type ToolNodeType = (typeof NODE_TYPES)[number];
 
 export interface NodeCatalogItem {
   readonly type: ToolNodeType;
   readonly label: string;
   readonly labelJa: string;
-  readonly kind: 'source' | 'transform';
+  readonly kind: 'source' | 'transform' | 'sink';
   /** 入力ポート数（domain側 EtlNode.inputArity と同値。source=0 / 通常transform=1 / join・union=2）。 */
   readonly inputArity: 0 | 1 | 2;
   readonly description: string;
@@ -40,6 +40,8 @@ export const NODE_CATALOG: readonly NodeCatalogItem[] = [
   { type: 'distinct', label: 'Distinct', labelJa: '重複排除', kind: 'transform', inputArity: 1, description: 'Remove duplicate rows.', descriptionJa: '重複する行を取り除きます。', defaultConfig: { columns: [] } },
   { type: 'fill-null', label: 'Fill null', labelJa: 'null処理', kind: 'transform', inputArity: 1, description: 'Fill null cells or drop such rows.', descriptionJa: 'nullを定数で埋めるか行を削除します。', defaultConfig: { rules: [] } },
   { type: 'replace', label: 'Replace', labelJa: '値置換', kind: 'transform', inputArity: 1, description: 'Replace matching cell values.', descriptionJa: '一致するセルの値を置換します。', defaultConfig: { rules: [] } },
+  { type: 'agent-output', label: 'Agent output', labelJa: 'エージェント出力', kind: 'sink', inputArity: 1, description: 'Format a bounded result for the Agent.', descriptionJa: '上限付きの結果をエージェントへ返します。', defaultConfig: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
+  { type: 'workspace-output', label: 'Workspace output', labelJa: 'ワークスペース出力', kind: 'sink', inputArity: 1, description: 'Store a temporary session artifact and return its reference.', descriptionJa: 'セッションの一時Artifactへ保存し、参照を返します。', defaultConfig: { name: 'tool-output', artifactKind: 'table', writeMode: 'create', onConflict: 'new-revision', previewRows: 10 } },
 ];
 
 export function catalogItem(type: ToolNodeType): NodeCatalogItem {

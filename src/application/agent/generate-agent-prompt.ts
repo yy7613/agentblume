@@ -66,5 +66,7 @@ function schemaLabel(schema?: Schema): string {
 }
 
 function toolGuide(tool: Tool): string {
-  return `- ${tool.metadata.publishName}@${tool.metadata.version.toString()}（${tool.metadata.displayName}）: input [${schemaLabel(tool.inputSchema)}] / output [${schemaLabel(tool.outputSchema)}] / side-effect ${tool.sideEffect}`;
+  const name = tool.agentTool?.name ?? tool.metadata.publishName;
+  const description = tool.agentTool?.description ?? tool.metadata.displayName;
+  return `- ${name}@${tool.metadata.version.toString()}（${description}）: input [${schemaLabel(tool.inputSchema)}] / output [${schemaLabel(tool.outputSchema)}] / side-effect ${tool.sideEffect}`;
 }
