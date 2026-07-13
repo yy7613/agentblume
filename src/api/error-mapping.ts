@@ -24,6 +24,7 @@ import { MemoryDomainError, MemoryProposalNotFoundError, WikiPageNotFoundError, 
 import { FeedbackValidationError } from '../domain/operations/errors';
 import { AgentSessionClosedError, AgentSessionExpiredError, AgentSessionNotFoundError, SessionArtifactNotFoundError, SessionDomainError, SessionQuotaExceededError } from '../domain/session/errors';
 import { DataSourceValidationError } from '../application/data-source/manage-data-sources';
+import { WebSearchValidationError } from '../application/search/web-search';
 
 /** HTTP エラーレスポンス表現。 */
 export interface HttpError {
@@ -79,6 +80,7 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof ToolNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof VersionConflictError) return httpError(409, err.code, err.message);
   if (err instanceof ToolValidationError) return httpError(400, err.code, err.message);
+  if (err instanceof WebSearchValidationError) return httpError(400, err.code, err.message);
   if (err instanceof RunNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof AgentNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof AgentVersionConflictError) return httpError(409, err.code, err.message);

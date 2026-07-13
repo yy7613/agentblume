@@ -9,6 +9,7 @@ Tool Builderへ明示的なOutputノードを追加し、Tool実行結果を次�
 
 1. `agent-output`: 制限付きで整形し、Agentへ直接返す。
 2. `workspace-output`: Agent Session WorkspaceへArtifactとして保存し、Agentへ参照だけを返す。
+3. `graph-output`: 入力行をproperty graphとしてAgent Session Workspaceへ保存し、Agentへ参照だけを返す。
 
 さらに、現在は独立している複数Runを`AgentSession`で束ね、同一会話およびサブAgent間でArtifactを安全に再利用できるようにする。
 
@@ -16,7 +17,7 @@ Tool Builderへ明示的なOutputノードを追加し、Tool実行結果を次�
 
 The following usable vertical slice is now in the codebase.
 
-- `agent-output` and `workspace-output` are registered `sink` nodes. The palette has a dedicated Output section, and sinks do not expose a downstream handle.
+- `agent-output`, `workspace-output`, and `graph-output` are registered `sink` nodes. The palette has a dedicated Output section, and sinks do not expose a downstream handle.
 - `ToolOutputDispatcher` applies inline row/byte limits, deterministic output shapes, overflow-to-artifact, artifact descriptors, idempotency keys, revisions, and Session quotas.
 - `AgentSession` and `SessionArtifact` are persisted in the test/local profiles. The local catalog is SQLite while payloads are atomically written to a Session-scoped filesystem directory; Run records carry `sessionId`. Chat creates one Session for a conversation and displays the Session Workspace artifact drawer.
 - Table Artifacts use an NDJSON/JSONL payload file. `workspace_read` and the Artifact API accept bounded `offset`/`limit` pages instead of returning a whole table. `workspace_query` is a data-only DSL limited to selected columns, one scalar comparison filter, and one aggregate over the bounded table page; it does not interpret SQL or code. Graph Output provides source/target/optional-label column selectors, produces a property graph with node/edge counts, and supports bounded `nodes` or `edges` reads. Child Agents inherit the same Session.

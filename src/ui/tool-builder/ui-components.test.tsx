@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, type ToolApiClient } from '../api/tool-api';
@@ -9,6 +9,7 @@ import { NodeInspector } from './NodeInspector';
 import { PreviewPanel } from './PreviewPanel';
 import { useToolBuilderStore } from './store';
 import { AgentChatPanel } from './AgentChatPanel';
+import { NodePalette } from './NodePalette';
 
 const propagation: PropagationResultDto = {
   order: ['source-1', 'filter-1'],
@@ -183,6 +184,38 @@ describe('NodeInspector', () => {
     expect(useToolBuilderStore.getState().nodes.find((node) => node.id === selected)?.data.config).toEqual({
       rules: [{ column: 'name', from: 'N/A', to: null }],
     });
+  });
+
+  it('出力ノードの設定ダイアログで直接返却と専用グラフ出力を編集する', async () => {
+    const { rerender } = render(<NodeInspector />);
+    useToolBuilderStore.getState().addNode('agent-output');
+    rerender(<NodeInspector />);
+    await userEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    let dialog = within(screen.getByRole('dialog', { name: 'Node configuration' }));
+    await userEvent.selectOptions(dialog.getByLabelText('Result shape'), 'single-value');
+    expect(dialog.getByLabelText('Value column')).toBeTruthy();
+    await userEvent.click(dialog.getByRole('button', { name: 'Cancel' }));
+
+    useToolBuilderStore.getState().addNode('graph-output');
+    rerender(<NodeInspector />);
+    await userEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    dialog = within(screen.getByRole('dialog', { name: 'Node configuration' }));
+    expect(dialog.getByText('Property graph mapping')).toBeTruthy();
+    await userEvent.click(dialog.getByRole('button', { name: 'Apply settings' }));
+    const selected = useToolBuilderStore.getState().selectedNodeId;
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === selected)?.data.config).toMatchObject({ graph: { sourceColumn: '', targetColumn: '' } });
+  });
+});
+
+describe('NodePalette', () => {
+  it('未設定providerではWeb検索を表示せず、設定済みproviderがあると表示する', async () => {
+    const none = { listSearchProviders: vi.fn().mockResolvedValue([]) } as unknown as ToolApiClient;
+    const { rerender } = render(<NodePalette client={none} />);
+    await waitFor(() => expect(none.listSearchProviders).toHaveBeenCalled());
+    expect(screen.queryByText('Web search')).toBeNull();
+    const configured = { listSearchProviders: vi.fn().mockResolvedValue([{ id: 'tavily', label: 'Tavily Search', supportsDomainFilter: true }]) } as unknown as ToolApiClient;
+    rerender(<NodePalette client={configured} />);
+    expect(await screen.findByText('Web search')).toBeTruthy();
   });
 });
 

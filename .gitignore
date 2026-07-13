@@ -17,6 +17,7 @@ test-results/
 # Environment & local secrets
 .env
 .env.*
+!.env.example
 scripts/lm-studio.local.ps1
 
 # Editor & OS

@@ -39,7 +39,9 @@ flowchart LR
 
   UC --> MODEL["Model provider\nLM Studio / OpenAI互換"]
   UC --> DB["PostgreSQL read adapter\nallowlist + read-only + row limit"]
+  UC --> SEARCH["Web search adapters\nTavily / TinyFish / Google legacy\nexplicit fetch + TTL cache"]
   ENV["Backend environment\nDB接続情報・passwordEnv・allowedTables"] --> DB
+  ENV --> SEARCH
 
   classDef boundary fill:#e8f0fe,stroke:#5167d6,color:#182a6b;
   classDef core fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
@@ -54,6 +56,7 @@ flowchart LR
 - UIはHTTP APIだけを呼び、資格情報・ファイル本文・DB接続文字列を保持しない。
 - Tool実行時は、保存された`dataSourceId`をbackendが解決する。CSV/JSON本文とDB接続情報はTool定義へ複製しない。
 - DB読取はPostgreSQL adapterに限定し、環境変数の`allowedTables`に一致するtable/viewを読み取り専用・行数上限付きで取得する。詳細は[ADR-0029](./adr/0029-data-source-registry.md)。
+- Web検索は環境変数のキーが揃うproviderだけをUIへ公開する。明示取得結果は15分のサーバー内キャッシュで参照し、Toolの自動previewは外部検索を起動しない。詳細は[ADR-0030](./adr/0030-optional-web-search-providers.md)。
 
 ---
 

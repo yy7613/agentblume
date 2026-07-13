@@ -97,7 +97,7 @@ sequenceDiagram
   App->>OD: 終端sinkへ配送
   alt agent-output
     OD-->>App: bounded inline result
-  else workspace-output
+  else workspace-output / graph-output
     OD->>SW: Artifactをstream保存
     SW-->>OD: ArtifactDescriptor
     OD-->>App: 参照 + bounded preview
@@ -113,7 +113,7 @@ sequenceDiagram
 v1のAgent preview/testは停止性を保証するため、1 RunあたりTool call最大4回・model round最大5回とする。各roundでは保存済みAgent versionに固定された同じTool集合を提示し、preview/testは候補集合全体がread-onlyの場合だけ実行する。
 Structured Outputを持つAgentは最終contentをJSON parseし、required、primitive型、追加field禁止を検証してからRunへ保存する。
 
-Toolの終端は`agent-output`または`workspace-output`で明示する。後者では同一Agent Session内の複数RunとサブAgentがArtifactを再利用できるが、payload全体はLLMへ自動注入しない。Session、Artifact、quota、TTLの境界は [ADR-0027](./adr/0027-tool-output-and-session-workspace.md) を参照。
+Toolの終端は`agent-output`、`workspace-output`、または`graph-output`で明示する。後二者では同一Agent Session内の複数RunとサブAgentがArtifactを再利用できるが、payload全体はLLMへ自動注入しない。`graph-output`は入力行をedge、指定列をnodeとして保存する。Session、Artifact、quota、TTLの境界は [ADR-0027](./adr/0027-tool-output-and-session-workspace.md) を参照。
 
 ---
 

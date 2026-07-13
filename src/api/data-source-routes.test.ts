@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, type App } from '../composition/root';
 import { buildServer } from './server';
+import type { SearchProviderCatalog } from '../application/search/search-provider';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
 describe('data source routes', () => {
@@ -45,5 +46,27 @@ describe('data source routes', () => {
     expect(saved.statusCode).toBe(201); expect(saved.json().tool.graph.nodes[0].config).toEqual({ dataSourceId: sourceId });
     const preview = await server.inject({ method: 'POST', url: '/tools/source-tool/preview', payload: { scope } });
     expect(preview.statusCode).toBe(200); expect(preview.json().result.output.rows).toHaveLength(2);
+  });
+
+  it('設定済み検索providerだけを公開し、明示取得キャッシュをWeb検索sourceへ解決する', async () => {
+    await server.close(); app.close();
+    const providers: SearchProviderCatalog = {
+      list: () => [{ id: 'tavily', label: 'Tavily Search', supportsDomainFilter: true }],
+      search: async (request) => [{ title: request.query, url: 'https://example.test', snippet: 'cached', score: 0.8, provider: request.provider, retrievedAt: '2026-07-12T00:00:00.000Z' }],
+    };
+    app = createApp({ profile: 'test', searchProviderCatalog: providers }); server = buildServer(app);
+    expect((await server.inject({ method: 'GET', url: '/search-providers' })).json()).toEqual({ providers: [{ id: 'tavily', label: 'Tavily Search', supportsDomainFilter: true }] });
+    const fetched = await server.inject({ method: 'POST', url: '/web-searches', payload: { scope, provider: 'tavily', query: 'LLMOps', maxResults: 3 } });
+    expect(fetched.statusCode).toBe(201);
+    const cacheKey = fetched.json().search.cacheKey as string;
+    const graph = { nodes: [{ id: 'search', type: 'web-search-source', config: { provider: 'tavily', query: 'LLMOps', maxResults: 3, cacheKey } }], edges: [] };
+    const draft = await server.inject({ method: 'POST', url: '/tool-drafts/preview', payload: { scope, graph } });
+    expect(draft.statusCode).toBe(200); expect(draft.json().result.output.rows).toMatchObject([{ title: 'LLMOps', provider: 'tavily' }]);
+    const changedGraph = {
+      ...graph,
+      nodes: [{ ...graph.nodes[0]!, config: { ...graph.nodes[0]!.config, query: 'different' } }],
+    };
+    const changed = await server.inject({ method: 'POST', url: '/tool-drafts/preview', payload: { scope, graph: changedGraph } });
+    expect(changed.statusCode).toBe(400); expect(changed.json().error.code).toBe('DATA_SOURCE_VALIDATION');
   });
 });

@@ -13,6 +13,8 @@ param(
 
   [switch]$UiOnly,
 
+  [switch]$SampleData,
+
   [switch]$DryRun
 )
 
@@ -420,6 +422,7 @@ if (-not $ApiOnly) {
 }
 
 $targets = @()
+$sampleDataEnvironment = if ($SampleData) { 'true' } else { 'false' }
 if (-not $UiOnly) {
   $targets += [pscustomobject]@{
     Name = 'api'
@@ -427,6 +430,7 @@ if (-not $UiOnly) {
     Environment = @{
       AGENTCONTEXT_PROFILE = $Profile
       AGENTCONTEXT_PORT = $ApiPort
+      AGENTCONTEXT_SAMPLE_DATA = $sampleDataEnvironment
       NO_COLOR = '1'
       FORCE_COLOR = '0'
     }
@@ -454,7 +458,7 @@ if ($DryRun) {
   }
   foreach ($target in $targets) {
     if ($target.Name -eq 'api') {
-      Write-Host "api: AGENTCONTEXT_PROFILE=$Profile AGENTCONTEXT_PORT=$ApiPort $npmPath $($target.Arguments)"
+      Write-Host "api: AGENTCONTEXT_PROFILE=$Profile AGENTCONTEXT_PORT=$ApiPort AGENTCONTEXT_SAMPLE_DATA=$sampleDataEnvironment $npmPath $($target.Arguments)"
     } else {
       Write-Host "ui: AGENTCONTEXT_API_URL=http://127.0.0.1:$ApiPort $npmPath $($target.Arguments)"
     }
@@ -489,6 +493,9 @@ if (-not $ApiOnly) {
 
 Write-Host "Repo root: $repoRoot"
 Write-Host "Profile : $Profile"
+if ($SampleData) {
+  Write-Host 'Samples : enabled (idempotent sample data will be prepared by the API)'
+}
 if (-not $UiOnly) {
   if ($restartExistingApi) {
     Write-Host "API     : http://127.0.0.1:$ApiPort/health (restart: $($existingApiOwner.Label))"

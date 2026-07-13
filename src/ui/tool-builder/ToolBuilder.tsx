@@ -11,7 +11,7 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
   useDraftPreview(client);
   return <div className="tool-builder">
     <MetadataBar client={client} />
-    <div className="builder-workspace"><NodePalette /><FlowCanvas /><NodeInspector client={client} /></div>
+    <div className="builder-workspace"><NodePalette client={client} /><FlowCanvas /><NodeInspector client={client} /></div>
     <div className="result-workspace"><PreviewPanel /><AgentToolContextPanel /></div>
   </div>;
 }

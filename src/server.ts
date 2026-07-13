@@ -7,6 +7,7 @@
  */
 import { buildServer } from './api/server';
 import { createApp } from './composition/root';
+import { seedSampleData } from './sample-data';
 
 // Mastra Evals(@mastra/core)同梱の外部テレメトリを無効化する（オフラインファースト）。
 process.env['MASTRA_TELEMETRY_DISABLED'] ??= 'true';
@@ -14,6 +15,11 @@ process.env['MASTRA_TELEMETRY_DISABLED'] ??= 'true';
 const app = createApp();
 const server = buildServer(app, { logger: true });
 const port = Number(process.env['AGENTCONTEXT_PORT'] ?? 3030);
+
+if (process.env['AGENTCONTEXT_SAMPLE_DATA'] === 'true') {
+  const sample = await seedSampleData(app);
+  server.log.info({ sample }, 'manual sample data is ready');
+}
 
 /** シグナル受信時: HTTP を閉じ、リポジトリを解放して終了する。 */
 async function shutdown(signal: string): Promise<void> {

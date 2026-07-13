@@ -14,6 +14,7 @@
     "serve": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx src/server.ts",
     "llmops:gate": "node --experimental-sqlite --disable-warning=ExperimentalWarning --import tsx src/llmops-gate.ts",
     "dev:ui": "vite",
+    "dev:sample": "pwsh -ExecutionPolicy Bypass -File scripts/start-dev.ps1 -SampleData",
     "build": "vite build",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",

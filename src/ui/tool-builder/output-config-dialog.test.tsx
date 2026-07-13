@@ -22,8 +22,8 @@ describe('output configuration dialog', () => {
     expect(useToolBuilderStore.getState().nodes.find((node) => node.id === id)?.data.config['maxRows']).toBe(7);
   });
 
-  it('configures graph source and target columns in the Workspace Output dialog', async () => {
-    useToolBuilderStore.getState().addNode('workspace-output');
+  it('configures graph source and target columns in the Graph Output dialog', async () => {
+    useToolBuilderStore.getState().addNode('graph-output');
     const id = useToolBuilderStore.getState().selectedNodeId as string;
     useToolBuilderStore.getState().setPropagation({
       order: ['source-1', 'filter-1', id], hasErrors: false,
@@ -36,10 +36,9 @@ describe('output configuration dialog', () => {
     render(<NodeInspector />);
     await userEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const dialog = screen.getByRole('dialog', { name: 'Node configuration' });
-    await userEvent.selectOptions(within(dialog).getByLabelText('Artifact type'), 'graph');
     await userEvent.selectOptions(within(dialog).getByLabelText('Source column'), 'id');
     await userEvent.selectOptions(within(dialog).getByLabelText('Target column'), 'name');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Apply settings' }));
-    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === id)?.data.config).toMatchObject({ artifactKind: 'graph', graph: { sourceColumn: 'id', targetColumn: 'name' } });
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === id)?.data.config).toMatchObject({ graph: { sourceColumn: 'id', targetColumn: 'name' } });
   });
 });

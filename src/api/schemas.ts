@@ -323,6 +323,15 @@ export const registerDatabaseDataSourceBodySchema = z.object({
   connectionId: z.string().min(1).max(128),
   defaultSchema: z.string().min(1).max(128).optional(),
 });
+
+/** 検索結果の明示取得。キーはbodyに含めず、backend環境変数でのみ解決する。 */
+export const webSearchFetchBodySchema = z.object({
+  scope: tenantScopeSchema,
+  provider: z.enum(['tavily', 'tinyfish', 'google-custom-search']),
+  query: z.string().min(1).max(2_000),
+  maxResults: z.number().int().min(1).max(10).optional(),
+  includeDomains: z.array(z.string().min(1).max(253)).max(10).optional(),
+});
 export const databaseConnectionTestBodySchema = z.object({ scope: tenantScopeSchema });
 
 export const saveWikiSpaceBodySchema = z.object({

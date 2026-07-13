@@ -154,7 +154,7 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
       : [];
     return {
       nodes: [...state.nodes, node], edges: [...state.edges, ...edge], selectedNodeId: id,
-      ...(type === 'workspace-output' && state.metadata.sideEffect === 'read-only' ? { metadata: { ...state.metadata, sideEffect: 'session-write' as const } } : {}),
+      ...((type === 'workspace-output' || type === 'graph-output') && state.metadata.sideEffect === 'read-only' ? { metadata: { ...state.metadata, sideEffect: 'session-write' as const } } : {}),
     };
   }),
   onNodesChange: (changes) => set((state) => ({ nodes: applyNodeChanges(changes, state.nodes) })),

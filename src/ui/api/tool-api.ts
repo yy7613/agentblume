@@ -71,6 +71,8 @@ import type {
   DataSourceDto,
   DatabaseConnectionDto,
   DatabaseConnectionStatusDto,
+  SearchProviderDto,
+  WebSearchFetchDto,
 } from './types';
 
 export class ApiError extends Error {
@@ -206,6 +208,14 @@ export class ToolApiClient {
 
   async listDatabaseConnections(): Promise<readonly DatabaseConnectionDto[]> {
     return (await this.request<{ connections: DatabaseConnectionDto[] }>('/data-sources/connections')).connections;
+  }
+
+  async listSearchProviders(): Promise<readonly SearchProviderDto[]> {
+    return (await this.request<{ providers: SearchProviderDto[] }>('/search-providers')).providers;
+  }
+
+  async fetchWebSearch(input: { readonly scope: TenantScopeDto; readonly provider: SearchProviderDto['id']; readonly query: string; readonly maxResults?: number; readonly includeDomains?: readonly string[] }): Promise<WebSearchFetchDto> {
+    return (await this.request<{ search: WebSearchFetchDto }>('/web-searches', { method: 'POST', body: JSON.stringify(input) })).search;
   }
 
   async testDatabaseConnection(connectionId: string, scope: TenantScopeDto): Promise<DatabaseConnectionStatusDto> {
@@ -548,7 +558,20 @@ export class ToolApiClient {
       ...init,
       headers: { 'content-type': 'application/json', ...init.headers },
     });
-    const body = response.status === 204 ? {} : await response.json() as unknown;
+    let body: unknown = {};
+    if (response.status !== 204) {
+      const text = await response.text();
+      if (text !== '') {
+        try { body = JSON.parse(text) as unknown; }
+        catch {
+          throw new ApiError(
+            response.status,
+            response.ok ? 'INVALID_API_RESPONSE' : 'HTTP_ERROR',
+            response.ok ? 'API returned a non-JSON response. Check that the API server is running and the development proxy is configured.' : response.statusText,
+          );
+        }
+      }
+    }
     if (!response.ok) {
       const error = body as { error?: { code?: string; message?: string; runId?: string } };
       throw new ApiError(

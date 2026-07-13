@@ -477,7 +477,7 @@ export class RunAgentPreviewUseCase {
     const args = validateToolArguments(tool.inputSchema, call.arguments);
     const graph = graphWithArguments(tool, args);
     const executableGraph = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(ctx.scope, graph);
-    const preview = this.engine.preview(executableGraph, { rowLimit: tool.graph.nodes.some((node) => node.type === 'workspace-output' || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference')) ? 10_000 : 100 });
+    const preview = this.engine.preview(executableGraph, { rowLimit: tool.graph.nodes.some((node) => node.type === 'workspace-output' || node.type === 'graph-output' || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference')) ? 10_000 : 100 });
     assertOutputMatchesSchema(preview.output, tool.outputSchema);
     const delivery = await this.output.dispatch({ tool, table: preview.output, session: ctx.session, runId: ctx.runId, toolCallId: call.id, ...(agent?.internalId === undefined ? {} : { agentId: agent.internalId }) });
     trace.push({
@@ -506,7 +506,7 @@ export class RunAgentPreviewUseCase {
   }
 
   private workspaceDefinitions(ctx: NodeContext, tools: readonly Tool[]): readonly ModelToolDefinition[] {
-    if (ctx.session === undefined || this.artifacts === undefined || !tools.some((tool) => tool.graph.nodes.some((node) => node.type === 'workspace-output' || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference')))) return [];
+    if (ctx.session === undefined || this.artifacts === undefined || !tools.some((tool) => tool.graph.nodes.some((node) => node.type === 'workspace-output' || node.type === 'graph-output' || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference')))) return [];
     return [
       { name: 'workspace_list', description: 'List temporary artifacts available in the current Agent session.', parameters: { type: 'object', properties: {}, required: [], additionalProperties: false } },
       { name: 'workspace_describe', description: 'Describe schema, size and provenance for a temporary artifact.', parameters: { type: 'object', properties: { artifactId: { type: 'string', description: 'Artifact ID returned by workspace_list or a Tool result.' } }, required: ['artifactId'], additionalProperties: false } },

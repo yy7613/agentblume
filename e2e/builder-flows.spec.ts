@@ -25,10 +25,6 @@ async function fillSkillDefinition(page: import('@playwright/test').Page, intern
   await page.getByLabel('Skill display name').fill(displayName);
   await page.getByLabel('Publish name').fill(publishName);
   await page.getByLabel('Owner').fill('e2e@example.com');
-  await page.getByLabel('Skill responsibility').fill('Analyze the given value.');
-  await page.getByLabel('Skill activation condition').fill('Use when analysis is requested.');
-  await page.getByLabel('Input description').fill('A numeric value to analyze.');
-  await page.getByLabel('Output description').fill('A concise analysis result.');
 }
 
 test('Tool Builderでpreviewを確認してversion保存できる', async ({ page }) => {
@@ -108,7 +104,7 @@ test('Agent BuilderでTool選択からprompt生成・編集・保存まで完了
   await expect(page.getByText('E2E agent response')).toBeVisible();
 });
 
-test('Skill Builderで固定Tool参照からprompt生成・編集・保存まで完了する', async ({ page }) => {
+test('Skill Builderで名前・説明・内容を保存できる', async ({ page }) => {
   const toolResponse = await page.request.post('/tools', { data: {
     scope, internalId: 'e2e-skill-tool', workingName: 'E2E skill tool', displayName: 'E2E Skill Tool',
     publishName: 'e2e_skill_tool', owner: 'e2e@example.com', sideEffect: 'read-only',
@@ -122,11 +118,8 @@ test('Skill Builderで固定Tool参照からprompt生成・編集・保存まで
   await page.getByRole('button', { name: 'Skill', exact: true }).click();
   await expect(page.getByText('Skill Builder', { exact: true })).toBeVisible();
   await fillSkillDefinition(page, 'e2e-analysis-skill', 'E2E Analysis Skill', 'e2e_analysis_skill');
-  await page.getByRole('checkbox', { name: /E2E Skill Tool/ }).check();
-  await page.getByRole('button', { name: 'Generate draft' }).click();
-  const instructions = page.getByLabel('Skill instructions');
-  await expect(instructions).toHaveValue(/e2e_skill_tool@1\.0\.0/);
-  await instructions.fill('Reviewed E2E skill instructions.');
+  await page.getByLabel('Skill description').fill('Analyze data and explain the result.');
+  await page.getByRole('textbox', { name: 'Skill content' }).fill('Reviewed E2E skill instructions.');
   await page.getByRole('button', { name: 'Save version' }).click();
   await expect(page.getByText('saved 1.0.0')).toBeVisible();
 
@@ -134,7 +127,8 @@ test('Skill Builderで固定Tool参照からprompt生成・編集・保存まで
   expect(response.status()).toBe(200);
   const skill = (await response.json()).skill;
   expect(skill.instructions).toBe('Reviewed E2E skill instructions.');
-  expect(skill.tools).toEqual([{ internalId: 'e2e-skill-tool', version: '1.0.0' }]);
+  expect(skill.responsibility).toBe('Analyze data and explain the result.');
+  expect(skill.tools).toEqual([]);
 });
 
 test('Chat・MCP・Validation・Memory・Settingsの全ナビが実操作できる', async ({ page }) => {

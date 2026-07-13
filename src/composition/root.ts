@@ -125,6 +125,9 @@ import type { DataSourceRepository } from '../domain/data-source/data-source-rep
 import { EnvironmentPostgresConnectionCatalog } from '../adapters/database/environment-postgres';
 import { DeleteDataSourceUseCase, QueryDataSourcesUseCase, QueryDatabaseConnectionsUseCase, RegisterDatabaseDataSourceUseCase, SaveFileDataSourceUseCase } from '../application/data-source/manage-data-sources';
 import { ResolveDataSourceGraphUseCase } from '../application/data-source/resolve-data-source-graph';
+import { EnvironmentSearchProviderCatalog } from '../adapters/search/environment-search-provider-catalog';
+import { WebSearchUseCase } from '../application/search/web-search';
+import type { SearchProviderCatalog } from '../application/search/search-provider';
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
@@ -149,6 +152,8 @@ export interface AppOptions {
   readonly operationsRepository?: OperationsRepository;
   readonly telemetry?: TelemetryPort;
   readonly pricing?: PricingPort;
+  /** 検索adapterの契約テスト・埋め込み用差し替え。省略時は環境変数でproviderを検出する。 */
+  readonly searchProviderCatalog?: SearchProviderCatalog;
 }
 
 /** 配線済みアプリケーション。 */
@@ -188,6 +193,7 @@ export interface App {
   readonly queryDataSources: QueryDataSourcesUseCase;
   readonly deleteDataSource: DeleteDataSourceUseCase;
   readonly queryDatabaseConnections: QueryDatabaseConnectionsUseCase;
+  readonly webSearch: WebSearchUseCase;
   readonly saveAgent: SaveAgentUseCase;
   readonly queryAgents: QueryAgentsUseCase;
   readonly generateAgentPrompt: GenerateAgentPromptUseCase;
@@ -387,7 +393,8 @@ export function createApp(options?: AppOptions): App {
   const telemetry = options?.telemetry ?? (process.env['AGENTCONTEXT_OTEL_ENABLED'] === 'true' ? new OpenTelemetryAdapter() : new NoopTelemetryAdapter());
   const pricing = options?.pricing ?? new StaticPricingAdapter(resolvePricingCatalog(profile));
   const databaseConnections = new EnvironmentPostgresConnectionCatalog();
-  const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections);
+  const webSearch = new WebSearchUseCase(options?.searchProviderCatalog ?? new EnvironmentSearchProviderCatalog());
+  const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections, webSearch);
 
   const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources);
   const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);
@@ -434,6 +441,7 @@ export function createApp(options?: AppOptions): App {
     queryDataSources: new QueryDataSourcesUseCase(dataSourceAdapter.repo),
     deleteDataSource: new DeleteDataSourceUseCase(dataSourceAdapter.repo),
     queryDatabaseConnections: new QueryDatabaseConnectionsUseCase(databaseConnections),
+    webSearch,
     saveAgent: new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo, wikiAdapter.repo),
     queryAgents: new QueryAgentsUseCase(agentAdapter.repo),
     generateAgentPrompt: new GenerateAgentPromptUseCase(repo, skillAdapter.repo, agentAdapter.repo),

@@ -65,10 +65,24 @@ interface AgentOutputConfig {
 ```ts
 interface WorkspaceOutputConfig {
   readonly name: string;
-  readonly artifactKind: 'table' | 'json' | 'chart' | 'graph' | 'blob';
-  readonly writeMode: 'create' | 'replace' | 'append';
+  readonly artifactKind: 'table' | 'json' | 'chart' | 'blob';
+  readonly writeMode: 'create' | 'replace';
   readonly onConflict: 'fail' | 'new-revision';
   readonly previewRows: number;
+}
+```
+
+#### `graph-output`
+
+property graphは汎用Artifact種別の選択肢に混在させず、endpoint列を必須にする専用sinkとする。
+
+```ts
+interface GraphOutputConfig {
+  readonly name: string;
+  readonly writeMode: 'create' | 'replace';
+  readonly onConflict: 'fail' | 'new-revision';
+  readonly previewRows: number;
+  readonly graph: { readonly sourceColumn: string; readonly targetColumn: string; readonly edgeLabelColumn?: string };
 }
 ```
 
@@ -92,7 +106,7 @@ interface ArtifactDescriptor {
 
 ### 3. 初期版は終端sinkをちょうど1つにする
 
-- 新規Toolは終端に`agent-output`または`workspace-output`をちょうど1つ持つ。
+- 新規Toolは終端に`agent-output`、`workspace-output`、または`graph-output`をちょうど1つ持つ。
 - sinkは`inputArity:1`、`kind:'sink'`で、出力ハンドルを持たない。
 - 既存Toolは出次数0のノードに暗黙の`agent-output`があるものとして読み込み、次回編集時にUI上で明示ノードへ正規化する。
 - 1回の実行で複数sinkへfan-outする機能は初期版に含めない。必要ならTransform結果をWorkspaceへ保存してから参照するか、将来Workflowで複数Toolを接続する。
@@ -107,7 +121,7 @@ sinkノードのschema推論と`execute()`は上流Tableをそのまま通す純
 flowchart LR
   G[ETL Engine] -->|terminal Table + sink config| D[ToolOutputDispatcher]
   D -->|agent-output| I[InlineToolResult]
-  D -->|workspace-output| S[SessionArtifactStore]
+  D -->|workspace-output / graph-output| S[SessionArtifactStore]
   S --> R[ArtifactDescriptor]
   I --> L[LLM tool result]
   R --> L
@@ -168,6 +182,7 @@ Agentには組み込みのSession Workspace Toolを公開する。
 
 - `agent-output`: 設定したshape/formatから導出したinline result contract。
 - `workspace-output`: 固定の`ArtifactDescriptor` contract。
+- `graph-output`: graph kindの固定`ArtifactDescriptor` contract。
 - 保存時はpayload schemaとsink configの整合性を検証する。
 - 実行時は終端Tableを`outputSchema`で検証してからdispatchする。
 
@@ -176,7 +191,7 @@ Agentには組み込みのSession Workspace Toolを公開する。
 既存の`read-only | write | external-action`へ`session-write`を追加する。
 
 - `agent-output`かつ`overflow:'error'`だけのToolは`read-only`。
-- `workspace-output`またはoverflow退避を持つToolは最低`session-write`。
+- `workspace-output`、`graph-output`、またはoverflow退避を持つToolは最低`session-write`。
 - `session-write`はpreview/testで許可するが、Session境界・quota・traceを必須にする。
 - Project Workspaceや外部システムへの永続書き込みは従来どおり`write`/`external-action`で承認対象とする。
 

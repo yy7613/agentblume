@@ -22,6 +22,7 @@ import { fillNullNode } from './fill-null';
 import { replaceNode } from './replace';
 import { agentOutputNode } from './agent-output';
 import { workspaceOutputNode } from './workspace-output';
+import { graphOutputNode } from './graph-output';
 
 export { jsonSourceNode } from './json-source';
 export type { JsonSourceConfig } from './json-source';
@@ -52,7 +53,9 @@ export type { ReplaceConfig, ReplaceRule } from './replace';
 export { agentOutputNode } from './agent-output';
 export type { AgentOutputConfig, AgentOutputFormat, AgentOutputShape } from './agent-output';
 export { workspaceOutputNode } from './workspace-output';
-export type { WorkspaceArtifactKind, WorkspaceOutputConfig } from './workspace-output';
+export type { WorkspaceArtifactKind, WorkspaceOutputConfig, LegacyGraphWorkspaceOutputConfig, CompatibleWorkspaceOutputConfig } from './workspace-output';
+export { graphOutputNode } from './graph-output';
+export type { GraphArtifactMapping, GraphOutputConfig } from './graph-output';
 
 /** v1 の 7 ノード + v15 の 6 ノードを登録済みの NodeRegistry を返す。 */
 export function createDefaultRegistry(): NodeRegistry {
@@ -72,5 +75,6 @@ export function createDefaultRegistry(): NodeRegistry {
   registry.register(replaceNode);
   registry.register(agentOutputNode);
   registry.register(workspaceOutputNode);
+  registry.register(graphOutputNode);
   return registry;
 }

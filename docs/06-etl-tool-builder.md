@@ -63,6 +63,7 @@ flowchart LR
 | エージェント引数 | 画面で定義した引数 = 入力源 | 引数スキーマから確定 | ✅ |
 | DB | 接続（SecretReference）、クエリ | 推論 / 明示 | Phase2 |
 | API | エンドポイント、保存済みレスポンス切替 | 明示（推論不可） | Phase2 |
+| Web検索 | 有効化済みprovider、検索語、取得件数 | 正規化済み検索結果 | ✅ 初期実装 |
 
 ### 2.2 変換 (transform)
 
@@ -91,10 +92,11 @@ flowchart LR
 |---|---|
 | `agent-output` | 列・shape・表現・上限を指定し、結果をAgentへ直接返す |
 | `workspace-output` | Agent Session WorkspaceへArtifactとして一時保存し、Agentへ参照を返す |
+| `graph-output` | 入力行をedge、指定した始点・終点列をnodeとしてproperty graph Artifactへ保存する |
 | Chart.js グラフデータ | `agent-output`のchartjs形式、または`workspace-output`のchart Artifactとして扱う |
 | MCP公開 | 作成ToolをMCPサーバとして公開 |
 
-出力は「Agentへ直接渡す」系統と「Session Workspaceへ格納する」系統の2系統をサポートする。新規Toolは終端にどちらか1つの明示sinkを持つ。既存Toolの終端Transformは後方互換のため暗黙`agent-output`として扱う。
+出力は「Agentへ直接渡す」系統と「Session Workspaceへ格納する」系統の2系統をサポートする。グラフ保存は設定の一種ではなく、列対応を明示する専用の`graph-output` sinkとする。新規Toolは終端にどれか1つの明示sinkを持つ。既存Toolの終端Transformは後方互換のため暗黙`agent-output`として扱う。
 
 Session Workspaceは既存のProject Workspace（`TenantScope.workspaceId`）とは別物で、1会話/評価ケース内だけで使う一時Artifact領域である。大量payloadをLLM contextやRun traceへ埋め込まず、表・JSON・可視化・property graph・blobをcatalog + payload storeで管理する。詳細は [ADR-0027](./adr/0027-tool-output-and-session-workspace.md) と [v28実装計画](../implementation/v28-tool-output-session-workspace.md) を参照。
 
@@ -202,6 +204,18 @@ control対応、Dialog layout、accessibility、node別配置は [ADR-0028](./ad
 - DB資格情報は`AGENTCONTEXT_DB_CONNECTIONS`と`passwordEnv`でbackendだけが解決する。設定例はリポジトリ直下の[.env.example](../.env.example)を参照する。
 
 詳細な安全境界は[ADR-0029](./adr/0029-data-source-registry.md)を参照。
+
+### 3.11 任意のWeb検索データソース
+
+Tavily、TinyFish、Google Custom Searchを、ETLの行データを生成する任意providerとして扱う。検索APIのキーはbackend環境変数だけで解決し、Tool定義、ブラウザ、Run traceへ含めない。
+
+- `TAVILY_API_KEY`、`TINYFISH_API_KEY`、またはGoogle用の`GOOGLE_CUSTOM_SEARCH_API_KEY`と`GOOGLE_CUSTOM_SEARCH_ENGINE_ID`がすべて存在するproviderだけを有効にする。APIは有効providerの`id`、表示名、能力だけをUIへ返す。
+- 有効providerが0件なら、Tool Builderのノードパレット、source選択、設定DialogにWeb検索を表示しない。既存定義で無効providerを参照した実行は、UI非表示に頼らずbackendで拒否する。
+- `web-search-source`は`provider`、固定文字列またはAgent Inputにbindした`query`、`maxResults`、任意の許可domain・鮮度条件を持つ。出力は`title`、`url`、`snippet`、`score`、`provider`、`retrievedAt`へ正規化した表とする。
+- 自動draft previewは外部検索を起動しない。作成者が`検索結果を取得`を明示したときだけbackendが実行し、結果はprovider、検索条件、取得時刻、15分TTLを持つサーバー内キャッシュへ保存する。Tool graphは結果本文ではなく`cacheKey`だけを保持し、previewとTool実行はそのキャッシュだけを読む。
+- 初期実装は最大10件、10秒timeout、64KiB応答上限をbackendで強制する。キャッシュはプロセス再起動で失われる。キャッシュ永続化、呼出頻度・予算の組織ポリシー、本番実行時の明示更新は後続範囲とする。検索結果本文の無制限な収集や任意URLのfetchは初期範囲に含めない。
+
+Google Custom Searchは公開されている移行予定を踏まえ、互換providerとして隔離する。新規の標準providerにはせず、画面にも`Google Custom Search（legacy）`と表示する。詳細なPort、API、失敗時の扱い、実装順序は[ADR-0030](./adr/0030-optional-web-search-providers.md)を参照。
 
 ---
 

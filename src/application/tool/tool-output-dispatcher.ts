@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Table } from '../../domain/data/types';
 import type { GraphNode } from '../../domain/etl/graph';
 import type { AgentOutputConfig } from '../../domain/etl/nodes/agent-output';
-import type { GraphArtifactMapping, WorkspaceOutputConfig } from '../../domain/etl/nodes/workspace-output';
+import type { GraphArtifactMapping, GraphOutputConfig } from '../../domain/etl/nodes/graph-output';
+import type { CompatibleWorkspaceOutputConfig, WorkspaceOutputConfig } from '../../domain/etl/nodes/workspace-output';
 import { createSessionArtifact, toArtifactDescriptor, type SessionArtifactDescriptor } from '../../domain/session/session-artifact';
 import type { AgentSession } from '../../domain/session/agent-session';
 import { SessionQuotaExceededError } from '../../domain/session/errors';
@@ -35,7 +36,7 @@ export class ToolOutputDispatcher {
 
   async dispatch(input: ToolOutputDispatchInput): Promise<ToolDeliveryResult> {
     const sink = terminalSink(input.tool);
-    if (sink?.type === 'workspace-output') return this.store(input, sink);
+    if (sink?.type === 'workspace-output' || sink?.type === 'graph-output') return this.store(input, sink);
     const config = sink?.type === 'agent-output' ? sink.config as AgentOutputConfig : DEFAULT_OUTPUT;
     const value = inlineValue(input.table, config);
     const content = stringify(value);
@@ -49,12 +50,18 @@ export class ToolOutputDispatcher {
     const session = input.session;
     const repository = this.artifacts;
     if (session === undefined || repository === undefined) throw new SessionQuotaExceededError('workspace output requires an active agent session');
-    const config: WorkspaceOutputConfig = sink === undefined
+    const config: CompatibleWorkspaceOutputConfig | GraphOutputConfig = sink === undefined
       ? { name: `${input.tool.metadata.publishName}-output`, artifactKind: 'table', writeMode: 'create', onConflict: 'new-revision', previewRows: 10 }
-      : sink.config as WorkspaceOutputConfig;
+      : sink.config as CompatibleWorkspaceOutputConfig | GraphOutputConfig;
     const normalized = tablePayload(input.table);
-    const payload = config.artifactKind === 'graph' ? graphPayload(normalized, config.graph) : normalized;
-    const encoded = serializedArtifactPayload(payload, config.artifactKind);
+    const kind = sink?.type === 'graph-output' ? 'graph' : (config as WorkspaceOutputConfig).artifactKind;
+    const mapping = sink?.type === 'graph-output'
+      ? (config as GraphOutputConfig).graph
+      : (config as CompatibleWorkspaceOutputConfig).artifactKind === 'graph'
+        ? (config as Extract<CompatibleWorkspaceOutputConfig, { readonly artifactKind: 'graph' }>).graph
+        : undefined;
+    const payload = kind === 'graph' ? graphPayload(normalized, mapping) : normalized;
+    const encoded = serializedArtifactPayload(payload, kind);
     const sizeBytes = byteLength(encoded);
     if (sizeBytes > session.quota.maxArtifactBytes) throw new SessionQuotaExceededError(`artifact exceeds maxArtifactBytes (${sizeBytes} > ${session.quota.maxArtifactBytes})`);
     const usage = await repository.usage(session.scope, session.id);
@@ -73,10 +80,10 @@ export class ToolOutputDispatcher {
     const revision = named.length === 0 ? 1 : Math.max(...named.map((artifact) => artifact.revision)) + 1;
     const timestamp = this.now().toISOString();
     const artifact = createSessionArtifact({
-      id: this.makeId(), scope: session.scope, sessionId: session.id, name: config.name, kind: config.artifactKind,
-      revision, contentType: config.artifactKind === 'table' ? 'application/x-ndjson' : config.artifactKind === 'graph' ? 'application/vnd.agentblume.property-graph+json' : 'application/json',
+      id: this.makeId(), scope: session.scope, sessionId: session.id, name: config.name, kind,
+      revision, contentType: kind === 'table' ? 'application/x-ndjson' : kind === 'graph' ? 'application/vnd.agentblume.property-graph+json' : 'application/json',
       schema: input.table.schema, sizeBytes, checksum: createHash('sha256').update(encoded).digest('hex'),
-      counts: config.artifactKind === 'graph' ? { nodes: (payload as GraphArtifactPayload).nodes.length, edges: (payload as GraphArtifactPayload).edges.length } : { rows: input.table.rows.length }, origin: { runId: input.runId, toolId: input.tool.metadata.internalId, toolVersion: input.tool.metadata.version.toString(), toolCallId: input.toolCallId, sinkNodeId, ...(input.agentId === undefined ? {} : { agentId: input.agentId }) },
+      counts: kind === 'graph' ? { nodes: (payload as GraphArtifactPayload).nodes.length, edges: (payload as GraphArtifactPayload).edges.length } : { rows: input.table.rows.length }, origin: { runId: input.runId, toolId: input.tool.metadata.internalId, toolVersion: input.tool.metadata.version.toString(), toolCallId: input.toolCallId, sinkNodeId, ...(input.agentId === undefined ? {} : { agentId: input.agentId }) },
       createdAt: timestamp, expiresAt: session.expiresAt,
     });
     await repository.save(artifact, payload, idempotencyKey);
@@ -88,7 +95,7 @@ export class ToolOutputDispatcher {
 function terminalSink(tool: Tool): GraphNode | undefined {
   const origins = new Set(tool.graph.edges.map((edge) => edge.from));
   const terminal = tool.graph.nodes.filter((node) => !origins.has(node.id));
-  return terminal.length === 1 && ['agent-output', 'workspace-output'].includes(terminal[0]?.type ?? '') ? terminal[0] : undefined;
+  return terminal.length === 1 && ['agent-output', 'workspace-output', 'graph-output'].includes(terminal[0]?.type ?? '') ? terminal[0] : undefined;
 }
 
 function inlineValue(table: Table, config: AgentOutputConfig): unknown {
@@ -123,7 +130,7 @@ function graphId(value: unknown, column: string): string {
   if (value === undefined || value === null || String(value).trim() === '') throw new Error(`graph mapping column '${column}' has an empty value`);
   return String(value);
 }
-function serializedArtifactPayload(payload: TableArtifactPayload | GraphArtifactPayload, kind: WorkspaceOutputConfig['artifactKind']): string {
+function serializedArtifactPayload(payload: TableArtifactPayload | GraphArtifactPayload, kind: WorkspaceOutputConfig['artifactKind'] | 'graph'): string {
   return kind === 'table'
     ? `${JSON.stringify({ schema: (payload as TableArtifactPayload).schema })}\n${(payload as TableArtifactPayload).rows.map((row) => JSON.stringify(row)).join('\n')}${(payload as TableArtifactPayload).rows.length === 0 ? '' : '\n'}`
     : stringify(payload);

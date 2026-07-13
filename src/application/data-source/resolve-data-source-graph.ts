@@ -4,17 +4,35 @@ import type { TenantScope } from '../../domain/tool/ids';
 import type { DataSourceRepository } from '../../domain/data-source/data-source-repository';
 import { DataSourceValidationError } from './manage-data-sources';
 import type { DatabaseReadPort } from './manage-data-sources';
+import type { WebSearchUseCase } from '../search/web-search';
 
 /** Tool定義内のopaqueなdataSourceIdを、実行直前だけbackend payloadへ展開する。 */
 export class ResolveDataSourceGraphUseCase {
-  constructor(private readonly sources: DataSourceRepository, private readonly database?: DatabaseReadPort) {}
+  constructor(private readonly sources: DataSourceRepository, private readonly database?: DatabaseReadPort, private readonly webSearch?: WebSearchUseCase) {}
 
   async execute(scope: TenantScope, graph: ToolGraph): Promise<ToolGraph> {
     return {
       ...graph,
       nodes: await Promise.all(graph.nodes.map(async (node) => {
-        if (node.type !== 'csv-source' && node.type !== 'json-source' && node.type !== 'database-source') return node;
+        if (node.type !== 'csv-source' && node.type !== 'json-source' && node.type !== 'database-source' && node.type !== 'web-search-source') return node;
         const configured = node.config as Record<string, unknown>;
+        if (node.type === 'web-search-source') {
+          const provider = configured['provider'];
+          const query = configured['query'];
+          const maxResults = configured['maxResults'] ?? 5;
+          const cacheKey = configured['cacheKey'];
+          if (this.webSearch === undefined) throw new DataSourceValidationError('web search execution is not configured');
+          if (typeof provider !== 'string' || typeof query !== 'string' || typeof maxResults !== 'number' || !Number.isInteger(maxResults)) throw new DataSourceValidationError('web search source has invalid settings');
+          try {
+            if (!this.webSearch.isConfigured(provider)) throw new DataSourceValidationError(`search provider is not configured: ${provider}`);
+            if (typeof cacheKey !== 'string' || cacheKey === '') return { ...node, type: 'json-source', config: { rows: [] } };
+            const includeDomains = Array.isArray(configured['includeDomains']) && configured['includeDomains'].every((value) => typeof value === 'string') ? configured['includeDomains'] as string[] : [];
+            const rows = this.webSearch.resolve(scope, { cacheKey, provider, query, maxResults, includeDomains });
+            return { ...node, type: 'json-source', config: { rows } };
+          } catch (error) {
+            throw new DataSourceValidationError(error instanceof Error ? error.message : 'web search source cannot resolve cache');
+          }
+        }
         const dataSourceId = configured['dataSourceId'];
         if (typeof dataSourceId !== 'string' || dataSourceId.trim() === '') return node;
         if (node.type === 'database-source') {

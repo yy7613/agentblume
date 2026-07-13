@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { DeleteDataSourceUseCase, QueryDataSourcesUseCase, QueryDatabaseConnectionsUseCase, RegisterDatabaseDataSourceUseCase, SaveFileDataSourceUseCase } from '../application/data-source/manage-data-sources';
+import type { WebSearchUseCase } from '../application/search/web-search';
 import { BadRequestError } from './error-mapping';
-import { dataSourceListQuerySchema, databaseConnectionTestBodySchema, registerDatabaseDataSourceBodySchema, saveFileDataSourceBodySchema } from './schemas';
+import { dataSourceListQuerySchema, databaseConnectionTestBodySchema, registerDatabaseDataSourceBodySchema, saveFileDataSourceBodySchema, webSearchFetchBodySchema } from './schemas';
 
 export interface DataSourceRouteDeps {
   readonly saveFileDataSource: SaveFileDataSourceUseCase;
@@ -10,6 +11,7 @@ export interface DataSourceRouteDeps {
   readonly queryDataSources: QueryDataSourcesUseCase;
   readonly deleteDataSource: DeleteDataSourceUseCase;
   readonly queryDatabaseConnections: QueryDatabaseConnectionsUseCase;
+  readonly webSearch: WebSearchUseCase;
 }
 
 function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
@@ -26,6 +28,15 @@ export function registerDataSourceRoutes(app: FastifyInstance, deps: DataSourceR
   });
 
   app.get('/data-sources/connections', async () => ({ connections: deps.queryDatabaseConnections.list() }));
+
+  // providerのキー・利用量・接続設定は返さず、設定済みproviderだけをUIへ公開する。
+  app.get('/search-providers', async () => ({ providers: deps.webSearch.listProviders() }));
+
+  app.post('/web-searches', async (request, reply) => {
+    const body = parse(webSearchFetchBodySchema, request.body);
+    const search = await deps.webSearch.fetch(body.scope, body);
+    return reply.status(201).send({ search });
+  });
 
   app.post('/data-sources/files', async (request, reply) => {
     const body = parse(saveFileDataSourceBodySchema, request.body);

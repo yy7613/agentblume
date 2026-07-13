@@ -216,6 +216,23 @@ export interface DatabaseDataSourceDto extends DataSourceBaseDto {
 export interface DatabaseConnectionDto { readonly id: string; readonly driver: 'postgresql' }
 export interface DatabaseConnectionStatusDto extends DatabaseConnectionDto { readonly available: boolean; readonly error?: string }
 
+/** キーなどを含まない、Tool Builderで選択可能なWeb検索provider。 */
+export interface SearchProviderDto {
+  readonly id: 'tavily' | 'tinyfish' | 'google-custom-search';
+  readonly label: string;
+  readonly supportsDomainFilter: boolean;
+}
+export interface WebSearchFetchDto {
+  readonly cacheKey: string;
+  readonly provider: SearchProviderDto['id'];
+  readonly query: string;
+  readonly maxResults: number;
+  readonly includeDomains: readonly string[];
+  readonly rows: readonly Readonly<Record<string, JsonCell>>[];
+  readonly retrievedAt: string;
+  readonly expiresAt: string;
+}
+
 export type RunPurposeDto = 'interactive' | 'scenario' | 'evaluation' | 'delegation';
 export interface RunModelSnapshotDto { readonly provider: string; readonly model: string; readonly modelConfigHash: string }
 export interface RunLatencyDto { readonly totalMs: number; readonly modelMs: number; readonly toolMs: number }

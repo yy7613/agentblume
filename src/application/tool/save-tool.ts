@@ -51,7 +51,7 @@ export class SaveToolUseCase {
   ) {}
 
   async execute(input: SaveToolInput): Promise<Tool> {
-    const requiresSessionWrite = input.graph.nodes.some((node) => node.type === 'workspace-output' || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference'));
+    const requiresSessionWrite = input.graph.nodes.some((node) => node.type === 'workspace-output' || node.type === 'graph-output' || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference'));
     if (requiresSessionWrite && input.sideEffect === 'read-only') {
       throw new ToolValidationError('SaveTool: workspace output requires sideEffect session-write or stronger');
     }

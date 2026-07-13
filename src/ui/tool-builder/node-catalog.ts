@@ -1,4 +1,4 @@
-export const NODE_TYPES = ['agent-input', 'json-source', 'csv-source', 'database-source', 'select', 'filter', 'rename', 'cast', 'join', 'union', 'sort', 'distinct', 'fill-null', 'replace', 'agent-output', 'workspace-output'] as const;
+export const NODE_TYPES = ['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'select', 'filter', 'rename', 'cast', 'join', 'union', 'sort', 'distinct', 'fill-null', 'replace', 'agent-output', 'workspace-output', 'graph-output'] as const;
 export type ToolNodeType = (typeof NODE_TYPES)[number];
 
 export interface NodeCatalogItem {
@@ -34,6 +34,10 @@ export const NODE_CATALOG: readonly NodeCatalogItem[] = [
     type: 'database-source', label: 'Database source', labelJa: 'データベース入力', kind: 'source', inputArity: 0,
     description: 'Read an allowlisted table or view through a backend-managed connection.', descriptionJa: 'バックエンド管理接続から、許可済みtable/viewだけを読み込みます。', defaultConfig: { dataSourceId: '', table: '', limit: 1000 },
   },
+  {
+    type: 'web-search-source', label: 'Web search', labelJa: 'Web検索', kind: 'source', inputArity: 0,
+    description: 'Use explicitly fetched, cached results from a configured search provider.', descriptionJa: '設定済み検索providerから明示取得したキャッシュ結果を使います。', defaultConfig: { provider: '', query: '', maxResults: 5 },
+  },
   { type: 'select', label: 'Select', labelJa: '列選択', kind: 'transform', inputArity: 1, description: 'Keep only selected columns.', descriptionJa: '必要な列だけを残します。', defaultConfig: { columns: [] } },
   { type: 'filter', label: 'Filter', labelJa: '行フィルター', kind: 'transform', inputArity: 1, description: 'Keep only rows matching a condition.', descriptionJa: '条件に合う行だけを残します。', defaultConfig: { column: '', op: 'eq', value: '' } },
   { type: 'rename', label: 'Rename', labelJa: '列名変更', kind: 'transform', inputArity: 1, description: 'Rename columns.', descriptionJa: '列名を変更します。', defaultConfig: { renames: [] } },
@@ -46,6 +50,7 @@ export const NODE_CATALOG: readonly NodeCatalogItem[] = [
   { type: 'replace', label: 'Replace', labelJa: '値置換', kind: 'transform', inputArity: 1, description: 'Replace matching cell values.', descriptionJa: '一致するセルの値を置換します。', defaultConfig: { rules: [] } },
   { type: 'agent-output', label: 'Agent output', labelJa: 'エージェント出力', kind: 'sink', inputArity: 1, description: 'Format a bounded result for the Agent.', descriptionJa: '上限付きの結果をエージェントへ返します。', defaultConfig: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
   { type: 'workspace-output', label: 'Workspace output', labelJa: 'ワークスペース出力', kind: 'sink', inputArity: 1, description: 'Store a temporary session artifact and return its reference.', descriptionJa: 'セッションの一時Artifactへ保存し、参照を返します。', defaultConfig: { name: 'tool-output', artifactKind: 'table', writeMode: 'create', onConflict: 'new-revision', previewRows: 10 } },
+  { type: 'graph-output', label: 'Graph output', labelJa: 'グラフ出力', kind: 'sink', inputArity: 1, description: 'Store input rows as a temporary property graph in the session workspace.', descriptionJa: '入力行をプロパティグラフとしてセッションワークスペースへ一時保存します。', defaultConfig: { name: 'graph-output', writeMode: 'create', onConflict: 'new-revision', previewRows: 10, graph: { sourceColumn: '', targetColumn: '' } } },
 ];
 
 export function catalogItem(type: ToolNodeType): NodeCatalogItem {

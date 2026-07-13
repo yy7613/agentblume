@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ConfigError } from '../errors';
 import { agentOutputNode } from './agent-output';
+import { graphOutputNode } from './graph-output';
 import { workspaceOutputNode } from './workspace-output';
 
 const table = { schema: { columns: [{ name: 'id', type: 'number' as const, nullable: false }] }, rows: [{ id: 1 }] };
@@ -32,10 +33,13 @@ describe('output sink nodes', () => {
     expect(() => workspaceOutputNode.validateConfig({ name: '', artifactKind: 'table', writeMode: 'append', onConflict: 'fail', previewRows: 101 })).toThrow(ConfigError);
   });
 
-  it('requires distinct source and target column mappings for graph artifacts', () => {
-    const config = workspaceOutputNode.validateConfig({ name: 'network', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 5, graph: { sourceColumn: 'from', targetColumn: 'to', edgeLabelColumn: 'kind' } });
+  it('graph-output requires distinct source and target column mappings', () => {
+    const config = graphOutputNode.validateConfig({ name: 'network', writeMode: 'create', onConflict: 'new-revision', previewRows: 5, graph: { sourceColumn: 'from', targetColumn: 'to', edgeLabelColumn: 'kind' } });
     expect(config.graph).toMatchObject({ sourceColumn: 'from', targetColumn: 'to' });
+    expect(graphOutputNode.execute([table], config)).toEqual(table);
+    expect(() => graphOutputNode.validateConfig({ name: 'network', writeMode: 'create', onConflict: 'new-revision', previewRows: 5 })).toThrow(ConfigError);
+    expect(() => graphOutputNode.validateConfig({ name: 'network', writeMode: 'create', onConflict: 'new-revision', previewRows: 5, graph: { sourceColumn: 'id', targetColumn: 'id' } })).toThrow(ConfigError);
+    expect(workspaceOutputNode.validateConfig({ name: 'legacy-network', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 5, graph: { sourceColumn: 'from', targetColumn: 'to' } })).toMatchObject({ artifactKind: 'graph' });
     expect(() => workspaceOutputNode.validateConfig({ name: 'network', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 5 })).toThrow(ConfigError);
-    expect(() => workspaceOutputNode.validateConfig({ name: 'network', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 5, graph: { sourceColumn: 'id', targetColumn: 'id' } })).toThrow(ConfigError);
   });
 });

@@ -61,6 +61,11 @@ describe('ToolApiClient', () => {
     await expect(promise).rejects.toEqual(expect.objectContaining({ status: 422, code: 'ETL_GRAPH', message: 'broken graph', name: 'ApiError' }));
   });
 
+  it('HTMLなどJSON以外の応答を、構文エラーではなくAPI応答エラーとして扱う', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html' } }));
+    await expect(new ToolApiClient('', fetcher as typeof fetch).listDataSources(scope)).rejects.toEqual(expect.objectContaining({ code: 'INVALID_API_RESPONSE', message: expect.stringContaining('non-JSON') }));
+  });
+
   it('Agent runをversion固定bodyとAbortSignalで呼ぶ', async () => {
     const run = { runId: 'run-1', response: 'done', trace: [] };
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({ run }));
@@ -109,6 +114,17 @@ describe('ToolApiClient', () => {
     expect(fetcher.mock.calls[3]?.[0]).toBe('/api/data-sources/connections');
     expect(fetcher.mock.calls[4]?.[0]).toContain('/connections/sales/test');
     expect(fetcher.mock.calls[5]?.[0]).toContain('/data-sources/file%2F1?');
+  });
+
+  it('検索provider一覧と明示検索取得のwire contractを扱う', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ providers: [{ id: 'tavily', label: 'Tavily Search', supportsDomainFilter: true }] }))
+      .mockResolvedValueOnce(jsonResponse({ search: { cacheKey: 'cache-1', provider: 'tavily', query: 'LLMOps', maxResults: 3, includeDomains: [], rows: [], retrievedAt: '2026-07-12T00:00:00.000Z', expiresAt: '2026-07-12T00:15:00.000Z' } }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    await expect(client.listSearchProviders()).resolves.toMatchObject([{ id: 'tavily' }]);
+    await expect(client.fetchWebSearch({ scope, provider: 'tavily', query: 'LLMOps', maxResults: 3 })).resolves.toMatchObject({ cacheKey: 'cache-1' });
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/api/search-providers');
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({ method: 'POST', body: JSON.stringify({ scope, provider: 'tavily', query: 'LLMOps', maxResults: 3 }) });
   });
 
   it('Agent SessionとArtifactのwire contractを扱う', async () => {

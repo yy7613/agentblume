@@ -65,7 +65,7 @@ describe('ToolOutputDispatcher', () => {
   it('normalizes mapped table rows into a bounded property graph Artifact', async () => {
     const artifacts = new InMemorySessionArtifactRepository();
     const dispatcher = new ToolOutputDispatcher(artifacts, () => new Date('2026-07-11T01:00:00.000Z'), () => 'graph-artifact');
-    const graphTool = tool('workspace-output', { name: 'relations', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 1, graph: { sourceColumn: 'id', targetColumn: 'name' } });
+    const graphTool = tool('graph-output', { name: 'relations', writeMode: 'create', onConflict: 'new-revision', previewRows: 1, graph: { sourceColumn: 'id', targetColumn: 'name' } });
     const result = await dispatcher.dispatch({ tool: graphTool, table, session, runId: 'graph-run', toolCallId: 'graph-call' });
     expect(result).toMatchObject({ delivery: 'session-workspace', artifact: { kind: 'graph', contentType: 'application/vnd.agentblume.property-graph+json', counts: { nodes: 4, edges: 2 }, preview: { nodes: [{ id: '1' }], edges: [{ source: '1', target: 'Alice' }] } } });
     expect(await artifacts.read(scope, session.id, 'graph-artifact', { section: 'edges', limit: 1 })).toMatchObject({ payload: { edges: [{ source: '1', target: 'Alice' }], page: { section: 'edges', nextOffset: 1 } } });
@@ -82,8 +82,8 @@ describe('ToolOutputDispatcher', () => {
 
     const edges = { schema: { columns: [{ name: 'source', type: 'string' as const, nullable: true }, { name: 'target', type: 'string' as const, nullable: false }, { name: 'kind', type: 'string' as const, nullable: false }] }, rows: [{ source: 'alice', target: 'bob', kind: 'knows' }, { source: 'alice', target: 'bob', kind: 'knows' }] };
     const graphArtifacts = new InMemorySessionArtifactRepository();
-    const graph = await new ToolOutputDispatcher(graphArtifacts, () => new Date('2026-07-11T01:00:00.000Z'), () => 'labeled-graph').dispatch({ tool: tool('workspace-output', { name: 'labeled', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 1, graph: { sourceColumn: 'source', targetColumn: 'target', edgeLabelColumn: 'kind' } }), table: edges, session, runId: 'labels', toolCallId: 'write' });
+    const graph = await new ToolOutputDispatcher(graphArtifacts, () => new Date('2026-07-11T01:00:00.000Z'), () => 'labeled-graph').dispatch({ tool: tool('graph-output', { name: 'labeled', writeMode: 'create', onConflict: 'new-revision', previewRows: 1, graph: { sourceColumn: 'source', targetColumn: 'target', edgeLabelColumn: 'kind' } }), table: edges, session, runId: 'labels', toolCallId: 'write' });
     expect(graph).toMatchObject({ artifact: { counts: { nodes: 2, edges: 2 }, preview: { edges: [{ label: 'knows' }] } } });
-    await expect(new ToolOutputDispatcher(graphArtifacts).dispatch({ tool: tool('workspace-output', { name: 'invalid', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 1, graph: { sourceColumn: 'source', targetColumn: 'target' } }), table: { ...edges, rows: [{ source: null, target: 'bob', kind: 'knows' }] }, session, runId: 'invalid', toolCallId: 'write' })).rejects.toThrow(/empty value/);
+    await expect(new ToolOutputDispatcher(graphArtifacts).dispatch({ tool: tool('graph-output', { name: 'invalid', writeMode: 'create', onConflict: 'new-revision', previewRows: 1, graph: { sourceColumn: 'source', targetColumn: 'target' } }), table: { ...edges, rows: [{ source: null, target: 'bob', kind: 'knows' }] }, session, runId: 'invalid', toolCallId: 'write' })).rejects.toThrow(/empty value/);
   });
 });
