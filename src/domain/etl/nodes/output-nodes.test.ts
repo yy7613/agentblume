@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ConfigError } from '../errors';
 import { agentOutputNode } from './agent-output';
+import { chartOutputNode } from './chart-output';
 import { graphOutputNode } from './graph-output';
 import { workspaceOutputNode } from './workspace-output';
 
@@ -41,5 +42,13 @@ describe('output sink nodes', () => {
     expect(() => graphOutputNode.validateConfig({ name: 'network', writeMode: 'create', onConflict: 'new-revision', previewRows: 5, graph: { sourceColumn: 'id', targetColumn: 'id' } })).toThrow(ConfigError);
     expect(workspaceOutputNode.validateConfig({ name: 'legacy-network', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 5, graph: { sourceColumn: 'from', targetColumn: 'to' } })).toMatchObject({ artifactKind: 'graph' });
     expect(() => workspaceOutputNode.validateConfig({ name: 'network', artifactKind: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 5 })).toThrow(ConfigError);
+  });
+
+  it('validates graph and chart mappings against the upstream schema before execution', () => {
+    const graph = graphOutputNode.validateConfig({ name: 'network', writeMode: 'create', onConflict: 'new-revision', previewRows: 5, graph: { mode: 'correlation-network', columnX: 'left', columnY: 'right', coefficient: 'score', pairCount: 'pairs', minimumAbsoluteCoefficient: 0.2, minimumPairCount: 3 } });
+    expect(graphOutputNode.inferSchema([table.schema], graph)).toMatchObject({ state: 'mismatch', issues: expect.arrayContaining([expect.objectContaining({ column: 'left' })]) });
+    const chart = chartOutputNode.validateConfig({ configVersion: 1, name: 'scores', chartType: 'scatter', mapping: { xColumn: 'id', yColumn: 'missing' }, maxPoints: 50, downsample: 'lttb', writeMode: 'create', onConflict: 'new-revision', previewRows: 5 });
+    expect(chartOutputNode.inferSchema([table.schema], chart)).toMatchObject({ state: 'mismatch', issues: expect.arrayContaining([expect.objectContaining({ column: 'missing' })]) });
+    expect(chartOutputNode.inferSchema([table.schema], chartOutputNode.validateConfig({ ...chart, chartType: 'histogram', mapping: { valueColumn: 'id' } }))).toMatchObject({ state: 'confirmed' });
   });
 });

@@ -401,6 +401,13 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .session-workspace { position: absolute; right: 20px; top: 84px; width: 220px; max-height: 42vh; overflow: auto; display: grid; gap: 6px; padding: 11px; background: #ffffffed; border: 1px solid #dce2ef; border-radius: 10px; box-shadow: 0 8px 28px #27355618; font-size: 11px; color: #53607b; }
 .session-workspace strong { color: #2d3a57; }
 .session-workspace span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: #f4f6fb; padding: 5px 6px; border-radius: 5px; }
+.session-workspace .session-artifact-chart { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: #214e99; background: #eaf2ff; border: 1px solid #c7daf8; padding: 5px 6px; border-radius: 5px; cursor: pointer; }
+.chart-dialog-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: #14233c66; padding: 24px; }
+.chart-dialog { width: min(720px, 100%); max-height: min(680px, 100%); overflow: auto; background: #fff; color: #1b2438; border-radius: 12px; padding: 20px; box-shadow: 0 16px 48px #17233c55; }
+.chart-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.chart-dialog h2 { margin: 2px 0 16px; font-size: 20px; }
+.chart-dialog .chart-svg { width: 100%; min-height: 250px; color: #2864bf; background: #f8faff; border: 1px solid #dce7f7; border-radius: 8px; }
+.chart-svg line { stroke: #aebcd1; stroke-width: 1; }.chart-svg path { stroke: currentColor; }.chart-svg circle { fill: currentColor; }
 @media (max-width: 1050px) { .cc-thread-inner, .cc-input, .cc-hint { max-width: 100%; } }
 
 /* ── 動作確認チャットの観測パネル（能力バー・メトリクス・呼ばれたTool・トレース） ── */

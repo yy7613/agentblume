@@ -23,6 +23,11 @@ import { replaceNode } from './replace';
 import { agentOutputNode } from './agent-output';
 import { workspaceOutputNode } from './workspace-output';
 import { graphOutputNode } from './graph-output';
+import { summaryStatisticsNode } from './summary-statistics';
+import { correlationAnalysisNode } from './correlation-analysis';
+import { timeSeriesAnalysisNode } from './time-series-analysis';
+import { outlierFilterNode } from './outlier-filter';
+import { chartOutputNode } from './chart-output';
 
 export { jsonSourceNode } from './json-source';
 export type { JsonSourceConfig } from './json-source';
@@ -55,7 +60,17 @@ export type { AgentOutputConfig, AgentOutputFormat, AgentOutputShape } from './a
 export { workspaceOutputNode } from './workspace-output';
 export type { WorkspaceArtifactKind, WorkspaceOutputConfig, LegacyGraphWorkspaceOutputConfig, CompatibleWorkspaceOutputConfig } from './workspace-output';
 export { graphOutputNode } from './graph-output';
-export type { GraphArtifactMapping, GraphOutputConfig } from './graph-output';
+export type { GraphArtifactMapping, EdgeListGraphArtifactMapping, CorrelationNetworkGraphArtifactMapping, GraphOutputConfig } from './graph-output';
+export { summaryStatisticsNode } from './summary-statistics';
+export type { SummaryStatisticsConfig, SummaryMetric } from './summary-statistics';
+export { correlationAnalysisNode } from './correlation-analysis';
+export type { CorrelationAnalysisConfig } from './correlation-analysis';
+export { timeSeriesAnalysisNode } from './time-series-analysis';
+export type { TimeSeriesAnalysisConfig } from './time-series-analysis';
+export { outlierFilterNode } from './outlier-filter';
+export type { OutlierFilterConfig } from './outlier-filter';
+export { chartOutputNode } from './chart-output';
+export type { ChartOutputConfig, ChartType } from './chart-output';
 
 /** v1 の 7 ノード + v15 の 6 ノードを登録済みの NodeRegistry を返す。 */
 export function createDefaultRegistry(): NodeRegistry {
@@ -76,5 +91,10 @@ export function createDefaultRegistry(): NodeRegistry {
   registry.register(agentOutputNode);
   registry.register(workspaceOutputNode);
   registry.register(graphOutputNode);
+  registry.register(summaryStatisticsNode);
+  registry.register(correlationAnalysisNode);
+  registry.register(timeSeriesAnalysisNode);
+  registry.register(outlierFilterNode);
+  registry.register(chartOutputNode);
   return registry;
 }

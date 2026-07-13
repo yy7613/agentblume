@@ -20,6 +20,7 @@ import { QueryRunsUseCase } from '../application/agent/query-runs';
 import { EtlEngine } from '../application/etl/engine';
 import type { ModelProviderPort } from '../application/model/model-provider';
 import { DraftToolUseCase } from '../application/tool/draft-tool';
+import { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
 import { PreviewToolUseCase } from '../application/tool/preview-tool';
 import { GetToolUseCase, ListToolVersionsUseCase, ListToolsUseCase } from '../application/tool/query-tool';
 import { SaveToolUseCase } from '../application/tool/save-tool';
@@ -240,6 +241,7 @@ export interface App {
   readonly saveWikiSpace: SaveWikiSpaceUseCase;
   readonly queryWikiSpaces: QueryWikiSpacesUseCase;
   readonly draftTool: DraftToolUseCase;
+  readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
   readonly saveTool: SaveToolUseCase;
   readonly getTool: GetToolUseCase;
   readonly listToolVersions: ListToolVersionsUseCase;
@@ -490,6 +492,7 @@ export function createApp(options?: AppOptions): App {
     saveWikiSpace: new SaveWikiSpaceUseCase(wikiAdapter.repo),
     queryWikiSpaces: new QueryWikiSpacesUseCase(wikiAdapter.repo),
     draftTool: new DraftToolUseCase(engine, resolveDataSources),
+    suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, profile !== 'test' && (process.env['ANALYSIS_ASSISTANT_ENABLED'] ?? 'true') !== 'false' && (process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== ''),
     saveTool: new SaveToolUseCase(repo, engine, resolveDataSources),
     getTool: new GetToolUseCase(repo),
     listToolVersions: new ListToolVersionsUseCase(repo),

@@ -14,6 +14,7 @@ export default defineConfig({
       '/tool-drafts': apiTarget,
       '/runs': apiTarget,
       '/agents': apiTarget,
+      '/agent-sessions': apiTarget,
       '/agent-drafts': apiTarget,
       '/skills': apiTarget,
       '/skill-drafts': apiTarget,

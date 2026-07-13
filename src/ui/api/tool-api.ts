@@ -73,6 +73,7 @@ import type {
   DatabaseConnectionStatusDto,
   SearchProviderDto,
   WebSearchFetchDto,
+  AnalysisConfigProposalDto,
 } from './types';
 
 export class ApiError extends Error {
@@ -119,6 +120,14 @@ export class ToolApiClient {
       { method: 'POST', body: JSON.stringify({ graph, rowLimit, ...(scope === undefined ? {} : { scope }) }), signal },
     );
     return body.result;
+  }
+
+  async analysisAssistantCapability(): Promise<boolean> {
+    return (await this.request<{ analysisAssistant: { enabled: boolean } }>('/runtime/capabilities')).analysisAssistant.enabled;
+  }
+
+  async suggestAnalysisConfig(input: { readonly graph: ToolGraphDto; readonly nodeId: string; readonly intent: string; readonly scope?: TenantScopeDto }): Promise<AnalysisConfigProposalDto> {
+    return (await this.request<{ proposal: AnalysisConfigProposalDto }>('/tool-drafts/suggest-analysis-config', { method: 'POST', body: JSON.stringify(input) })).proposal;
   }
 
   async saveTool(input: SaveToolDto): Promise<SerializedToolDto> {

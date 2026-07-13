@@ -1,11 +1,11 @@
-export const NODE_TYPES = ['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'select', 'filter', 'rename', 'cast', 'join', 'union', 'sort', 'distinct', 'fill-null', 'replace', 'agent-output', 'workspace-output', 'graph-output'] as const;
+export const NODE_TYPES = ['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'select', 'filter', 'rename', 'cast', 'join', 'union', 'sort', 'distinct', 'fill-null', 'replace', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output'] as const;
 export type ToolNodeType = (typeof NODE_TYPES)[number];
 
 export interface NodeCatalogItem {
   readonly type: ToolNodeType;
   readonly label: string;
   readonly labelJa: string;
-  readonly kind: 'source' | 'transform' | 'sink';
+  readonly kind: 'source' | 'transform' | 'analyze' | 'sink';
   /** 入力ポート数（domain側 EtlNode.inputArity と同値。source=0 / 通常transform=1 / join・union=2）。 */
   readonly inputArity: 0 | 1 | 2;
   readonly description: string;
@@ -48,9 +48,14 @@ export const NODE_CATALOG: readonly NodeCatalogItem[] = [
   { type: 'distinct', label: 'Distinct', labelJa: '重複排除', kind: 'transform', inputArity: 1, description: 'Remove duplicate rows.', descriptionJa: '重複する行を取り除きます。', defaultConfig: { columns: [] } },
   { type: 'fill-null', label: 'Fill null', labelJa: 'null処理', kind: 'transform', inputArity: 1, description: 'Fill null cells or drop such rows.', descriptionJa: 'nullを定数で埋めるか行を削除します。', defaultConfig: { rules: [] } },
   { type: 'replace', label: 'Replace', labelJa: '値置換', kind: 'transform', inputArity: 1, description: 'Replace matching cell values.', descriptionJa: '一致するセルの値を置換します。', defaultConfig: { rules: [] } },
+  { type: 'summary-statistics', label: 'Summary statistics', labelJa: '基本統計量', kind: 'analyze', inputArity: 1, description: 'Calculate grouped descriptive statistics for numeric columns.', descriptionJa: '数値列の基本統計量をグループごとに計算します。', defaultConfig: { configVersion: 1, columns: [], groupBy: [], metrics: ['valid-count', 'missing-count', 'mean', 'stddev', 'min', 'q1', 'median', 'q3', 'max'], variance: 'sample' } },
+  { type: 'correlation-analysis', label: 'Correlation analysis', labelJa: '相関分析', kind: 'analyze', inputArity: 1, description: 'Calculate Pearson or Spearman correlation pairs.', descriptionJa: 'PearsonまたはSpearmanの相関係数を計算します。', defaultConfig: { configVersion: 1, columns: [], method: 'pearson', missing: 'pairwise', minPairs: 2, includeDiagonal: false } },
+  { type: 'time-series-analysis', label: 'Time series analysis', labelJa: '時系列分析', kind: 'analyze', inputArity: 1, description: 'Bucket dates and calculate time-series aggregates.', descriptionJa: '日時をバケット化して時系列集計を行います。', defaultConfig: { configVersion: 1, timeColumn: '', valueColumns: [], groupBy: [], timezone: 'UTC', interval: 'day', aggregate: 'mean', fill: 'none' } },
+  { type: 'outlier-filter', label: 'Outlier filter', labelJa: '外れ値の検出・除外', kind: 'analyze', inputArity: 1, description: 'Flag or exclude outliers with IQR, z-score, or MAD.', descriptionJa: 'IQR・z-score・MADで外れ値をフラグまたは除外します。', defaultConfig: { configVersion: 1, columns: [], groupBy: [], method: 'iqr', threshold: 1.5, action: 'flag', nulls: 'keep', flagColumns: { isOutlier: 'isOutlier', score: 'outlierScore', reason: 'outlierReason' } } },
   { type: 'agent-output', label: 'Agent output', labelJa: 'エージェント出力', kind: 'sink', inputArity: 1, description: 'Format a bounded result for the Agent.', descriptionJa: '上限付きの結果をエージェントへ返します。', defaultConfig: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
   { type: 'workspace-output', label: 'Workspace output', labelJa: 'ワークスペース出力', kind: 'sink', inputArity: 1, description: 'Store a temporary session artifact and return its reference.', descriptionJa: 'セッションの一時Artifactへ保存し、参照を返します。', defaultConfig: { name: 'tool-output', artifactKind: 'table', writeMode: 'create', onConflict: 'new-revision', previewRows: 10 } },
   { type: 'graph-output', label: 'Graph output', labelJa: 'グラフ出力', kind: 'sink', inputArity: 1, description: 'Store input rows as a temporary property graph in the session workspace.', descriptionJa: '入力行をプロパティグラフとしてセッションワークスペースへ一時保存します。', defaultConfig: { name: 'graph-output', writeMode: 'create', onConflict: 'new-revision', previewRows: 10, graph: { sourceColumn: '', targetColumn: '' } } },
+  { type: 'chart-output', label: 'Chart output', labelJa: 'チャート出力', kind: 'sink', inputArity: 1, description: 'Store a typed visualization chart in the session workspace.', descriptionJa: '型付けした可視化チャートをセッションワークスペースへ保存します。', defaultConfig: { configVersion: 1, name: 'chart-output', chartType: 'time-series', mapping: {}, maxPoints: 1000, downsample: 'none', writeMode: 'create', onConflict: 'new-revision', previewRows: 10 } },
 ];
 
 export function catalogItem(type: ToolNodeType): NodeCatalogItem {

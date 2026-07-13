@@ -71,6 +71,39 @@ describe('ToolOutputDispatcher', () => {
     expect(await artifacts.read(scope, session.id, 'graph-artifact', { section: 'edges', limit: 1 })).toMatchObject({ payload: { edges: [{ source: '1', target: 'Alice' }], page: { section: 'edges', nextOffset: 1 } } });
   });
 
+  it('stores a typed bounded chart Artifact instead of returning chart rows to the agent', async () => {
+    const artifacts = new InMemorySessionArtifactRepository();
+    const dispatcher = new ToolOutputDispatcher(artifacts, () => new Date('2026-07-11T01:00:00.000Z'), () => 'chart-artifact');
+    const chartTool = tool('chart-output', { configVersion: 1, name: 'people-chart', chartType: 'scatter', mapping: { xColumn: 'id', yColumn: 'id' }, maxPoints: 1, downsample: 'none', writeMode: 'create', onConflict: 'new-revision', previewRows: 1 });
+    const result = await dispatcher.dispatch({ tool: chartTool, table, session, runId: 'chart-run', toolCallId: 'chart-call' });
+    expect(result).toMatchObject({ delivery: 'session-workspace', artifact: { kind: 'chart', name: 'people-chart', preview: { chartType: 'scatter', sourceRowCount: 2, sampled: true, rows: [{ id: 1 }] } } });
+    expect(await artifacts.find(scope, session.id, 'chart-artifact')).toMatchObject({ payload: { specVersion: 1, chartType: 'scatter', rows: [{ id: 1 }] } });
+  });
+
+  it('uses LTTB sampling for numeric and time-series chart mappings while preserving endpoints', async () => {
+    const artifacts = new InMemorySessionArtifactRepository();
+    const dispatcher = new ToolOutputDispatcher(artifacts, () => new Date('2026-07-11T01:00:00.000Z'), () => 'lttb-chart');
+    const trend = { schema: { columns: [{ name: 'at', type: 'date' as const, nullable: false }, { name: 'value', type: 'number' as const, nullable: false }] }, rows: Array.from({ length: 12 }, (_, index) => ({ at: new Date(`2026-07-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`), value: index === 6 ? 100 : index })) };
+    const chartTool = tool('chart-output', { configVersion: 1, name: 'trend', chartType: 'time-series', mapping: { timeColumn: 'at', valueColumn: 'value' }, maxPoints: 4, downsample: 'lttb', writeMode: 'create', onConflict: 'new-revision', previewRows: 4 });
+    await dispatcher.dispatch({ tool: chartTool, table: trend, session, runId: 'lttb-run', toolCallId: 'lttb-call' });
+    const stored = await artifacts.find(scope, session.id, 'lttb-chart');
+    expect(stored).toMatchObject({ payload: { sampled: true, sourceRowCount: 12 } });
+    const rows = (stored?.payload as { rows: readonly { value: number }[] }).rows;
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toMatchObject({ value: 0 });
+    expect(rows.at(-1)).toMatchObject({ value: 11 });
+    expect(rows.some((row) => row.value === 100)).toBe(true);
+  });
+
+  it('turns correlation pairs into an undirected property graph without diagonal or symmetric duplicates', async () => {
+    const artifacts = new InMemorySessionArtifactRepository();
+    const dispatcher = new ToolOutputDispatcher(artifacts, () => new Date('2026-07-11T01:00:00.000Z'), () => 'correlation-graph');
+    const correlations = { schema: { columns: [{ name: 'columnX', type: 'string' as const, nullable: false }, { name: 'columnY', type: 'string' as const, nullable: false }, { name: 'coefficient', type: 'number' as const, nullable: true }, { name: 'pairCount', type: 'number' as const, nullable: false }] }, rows: [{ columnX: 'sales', columnY: 'profit', coefficient: 0.8, pairCount: 20 }, { columnX: 'profit', columnY: 'sales', coefficient: 0.8, pairCount: 20 }, { columnX: 'sales', columnY: 'sales', coefficient: 1, pairCount: 20 }, { columnX: 'sales', columnY: 'cost', coefficient: 0.1, pairCount: 20 }] };
+    const graphTool = tool('graph-output', { name: 'correlations', writeMode: 'create', onConflict: 'new-revision', previewRows: 3, graph: { mode: 'correlation-network', columnX: 'columnX', columnY: 'columnY', coefficient: 'coefficient', pairCount: 'pairCount', minimumAbsoluteCoefficient: 0.5, minimumPairCount: 10 } });
+    const result = await dispatcher.dispatch({ tool: graphTool, table: correlations, session, runId: 'correlation-run', toolCallId: 'correlation-call' });
+    expect(result).toMatchObject({ artifact: { kind: 'graph', counts: { nodes: 2, edges: 1 }, preview: { edges: [expect.objectContaining({ source: 'sales', target: 'profit', properties: expect.objectContaining({ absoluteCoefficient: 0.8 }) })] } } });
+  });
+
   it('covers empty inline forms, graph labels, duplicate nodes, and workspace limits', async () => {
     const empty = { ...table, rows: [] };
     const dispatcher = new ToolOutputDispatcher();

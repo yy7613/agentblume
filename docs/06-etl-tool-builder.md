@@ -29,12 +29,14 @@ flowchart LR
     A1["基本統計"]
     A2["相関分析"]
     A3["時系列分析"]
+    A4["外れ値の検出・除外"]
   end
   subgraph SNK["出力 (sink)"]
-    O1["Chart.js グラフデータ"]
+    O1["可視化Chart Artifact"]
     O2["LLMへ渡す"]
     O3["ワークスペース格納"]
-    O4["MCP公開"]
+    O4["property graph Artifact"]
+    O5["MCP公開"]
   end
 
   SRC --> TRN --> ANL --> SNK
@@ -84,7 +86,16 @@ flowchart LR
 
 ### 2.3 分析 (analyze)
 
-基本統計 / 相関分析 / 時系列分析。ETLフロー内でも設定・実行できる。
+分析結果は通常の`Table`として後続ETLへ渡す。保存済みToolの計算は決定的に実行し、LLMは実行時の計算には使わない。
+
+| ノード | 主な設定 | 出力 |
+|---|---|---|
+| `summary-statistics` | 対象列、group、平均・標準偏差・四分位など | group/対象列ごとのlong形式統計表 |
+| `correlation-analysis` | 対象列、Pearson/Spearman、欠損処理 | 列pairごとの係数・有効件数 |
+| `time-series-analysis` | 時刻列、値列、timezone、interval、集計、欠損bucket補完、window/lag | bucket/seriesごとのlong形式時系列表 |
+| `outlier-filter` | IQR/z-score/MAD、閾値、flag/exclude | 判定列付き、または除外済みの表 |
+
+外れ値は監査しやすい`flag`を推奨し、`exclude`時も除外前後の件数と規則を診断へ残す。時系列はIANA timezoneの暦境界（DSTを含む）を使用し、`zero`/`forward`で欠損bucketを補完できる。アルゴリズム、上限、欠損値、timezone、LLM設定補助の詳細は [ADR-0031](./adr/0031-analytical-nodes-chart-output-and-local-llm-assistance.md) と [v31実装計画](../implementation/v31-analytics-chart-output-llm-assistance.md) を参照。
 
 ### 2.4 出力 (sink)
 
@@ -92,11 +103,12 @@ flowchart LR
 |---|---|
 | `agent-output` | 列・shape・表現・上限を指定し、結果をAgentへ直接返す |
 | `workspace-output` | Agent Session WorkspaceへArtifactとして一時保存し、Agentへ参照を返す |
-| `graph-output` | 入力行をedge、指定した始点・終点列をnodeとしてproperty graph Artifactへ保存する |
-| Chart.js グラフデータ | `agent-output`のchartjs形式、または`workspace-output`のchart Artifactとして扱う |
+| `chart-output` | 型付けした可視化仕様をChart Artifactへ保存する。ヒストグラム、箱ひげ図、散布図、相関ヒートマップ、時系列、外れ値overlayを扱う |
+| `graph-output` | 入力行をedgeへ変換するか、相関表を無向networkへ変換し、property graph Artifactへ保存する。相関networkでは係数・有効ペア数の下限を指定できる |
+| 互換Chart.js出力 | 既存`agent-output`のchartjs形式、または`workspace-output`のchart Artifactとして扱う |
 | MCP公開 | 作成ToolをMCPサーバとして公開 |
 
-出力は「Agentへ直接渡す」系統と「Session Workspaceへ格納する」系統の2系統をサポートする。グラフ保存は設定の一種ではなく、列対応を明示する専用の`graph-output` sinkとする。新規Toolは終端にどれか1つの明示sinkを持つ。既存Toolの終端Transformは後方互換のため暗黙`agent-output`として扱う。
+出力は「Agentへ直接渡す」系統と「Session Workspaceへ格納する」系統の2系統をサポートする。可視化チャートは`chart-output`、関係探索用property graphは`graph-output`と明確に分ける。新規Toolは終端にどれか1つの明示sinkを持つ。既存Toolの終端Transformは後方互換のため暗黙`agent-output`として扱う。
 
 Session Workspaceは既存のProject Workspace（`TenantScope.workspaceId`）とは別物で、1会話/評価ケース内だけで使う一時Artifact領域である。大量payloadをLLM contextやRun traceへ埋め込まず、表・JSON・可視化・property graph・blobをcatalog + payload storeで管理する。詳細は [ADR-0027](./adr/0027-tool-output-and-session-workspace.md) と [v28実装計画](../implementation/v28-tool-output-session-workspace.md) を参照。
 
@@ -216,6 +228,18 @@ Tavily、TinyFish、Google Custom Searchを、ETLの行データを生成する�
 - 初期実装は最大10件、10秒timeout、64KiB応答上限をbackendで強制する。キャッシュはプロセス再起動で失われる。キャッシュ永続化、呼出頻度・予算の組織ポリシー、本番実行時の明示更新は後続範囲とする。検索結果本文の無制限な収集や任意URLのfetchは初期範囲に含めない。
 
 Google Custom Searchは公開されている移行予定を踏まえ、互換providerとして隔離する。新規の標準providerにはせず、画面にも`Google Custom Search（legacy）`と表示する。詳細なPort、API、失敗時の扱い、実装順序は[ADR-0030](./adr/0030-optional-web-search-providers.md)を参照。
+
+### 3.12 ローカルLLMによる分析設定補助
+
+基本統計、相関、時系列、外れ値の設定Dialogでは、schemaと決定的data profileから推奨初期値を作れる。`LM_STUDIO_MODEL`が設定され、structured outputを利用できる場合だけ「ローカルLLMで設定案」を表示する。
+
+- LLMへ渡す既定情報はschema、型、null率、distinct数、範囲、現在設定、ユーザーの分析目的に限定する。
+- raw sampleは明示opt-inとし、マスキング後に最大20行かつ8 KiBへ制限する。
+- LLMは厳格なJSON形式の設定案を返し、backendがnode設定、schema伝播、bounded previewを検証する。
+- 設定案は自動適用・自動保存しない。現在値との差分、仮定、警告、previewを確認してからユーザーがApplyする。
+- 保存済みToolの実行計算にはLLMを使わない。
+
+詳細は[ADR-0031](./adr/0031-analytical-nodes-chart-output-and-local-llm-assistance.md)を参照。
 
 ---
 

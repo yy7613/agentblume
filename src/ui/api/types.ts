@@ -192,6 +192,8 @@ export interface AgentPreviewRunDto {
   readonly estimatedCost?: RunEstimatedCostDto;
 }
 
+export interface AnalysisConfigProposalDto { readonly nodeId: string; readonly nodeType: string; readonly config: Readonly<Record<string, unknown>>; readonly rationale: readonly string[]; readonly warnings: readonly string[] }
+
 /** payloadや接続資格情報を含まない、Tool用データソースのカタログ表現。 */
 export type DataSourceDto = FileDataSourceDto | DatabaseDataSourceDto;
 export interface DataSourceBaseDto {

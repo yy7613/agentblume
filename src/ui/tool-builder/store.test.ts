@@ -22,6 +22,23 @@ describe('tool builder store', () => {
     expect(before).not.toBe(useToolBuilderStore.getState().nodes);
   });
 
+  it('graph-output追加時に上流スキーマの先頭2列を初期マッピングに使う', () => {
+    useToolBuilderStore.getState().setPropagation({
+      order: ['source-1', 'filter-1'], hasErrors: false,
+      nodes: {
+        'source-1': { nodeId: 'source-1', state: 'inferred', issues: [], schema: { columns: [{ name: 'id', type: 'number', nullable: false }, { name: 'name', type: 'string', nullable: false }] } },
+        'filter-1': { nodeId: 'filter-1', state: 'confirmed', issues: [], schema: { columns: [{ name: 'id', type: 'number', nullable: false }, { name: 'name', type: 'string', nullable: false }] } },
+      },
+    });
+
+    useToolBuilderStore.getState().addNode('graph-output');
+
+    const state = useToolBuilderStore.getState();
+    const selected = state.nodes.find((node) => node.id === state.selectedNodeId);
+    expect(selected?.data.config).toMatchObject({ graph: { sourceColumn: 'id', targetColumn: 'name' } });
+    expect(state.metadata.sideEffect).toBe('session-write');
+  });
+
   it('source追加は自動edgeを作らず、manual connectionを追加できる', () => {
     const edgeCount = useToolBuilderStore.getState().edges.length;
     useToolBuilderStore.getState().addNode('csv-source');

@@ -141,8 +141,12 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
     const selected = state.nodes.find((node) => node.id === state.selectedNodeId);
     const x = selected === undefined ? 160 + state.nodes.length * 40 : selected.position.x + 280;
     const y = selected === undefined ? 100 + state.nodes.length * 55 : selected.position.y;
-    const node = makeNode(id, type, { x, y });
     const item = catalogItem(type);
+    const upstreamColumns = selected === undefined ? [] : (state.propagation?.nodes[selected.id]?.schema.columns ?? []);
+    const initialConfig = type === 'graph-output' && upstreamColumns.length >= 2
+      ? { ...structuredClone(item.defaultConfig), graph: { sourceColumn: upstreamColumns[0]?.name, targetColumn: upstreamColumns[1]?.name } }
+      : undefined;
+    const node = makeNode(id, type, { x, y }, initialConfig);
     // 2入力ノードは選択ノードを左（toInput:0）へ自動接続し、右（toInput:1）は手動接続に任せる。
     const edge = item.kind !== 'source' && selected !== undefined && catalogItem(selected.data.nodeType).kind !== 'sink'
       ? [{

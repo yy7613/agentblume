@@ -2,11 +2,13 @@
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { DraftToolUseCase } from '../application/tool/draft-tool';
+import type { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
 import { BadRequestError } from './error-mapping';
-import { draftInspectBodySchema, draftPreviewBodySchema } from './schemas';
+import { analysisSuggestionBodySchema, draftInspectBodySchema, draftPreviewBodySchema } from './schemas';
 
 export interface DraftToolRouteDeps {
   readonly draftTool: DraftToolUseCase;
+  readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
 }
 
 function parseWith<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
@@ -34,5 +36,10 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
       body.scope,
     );
     return { result };
+  });
+  app.get('/runtime/capabilities', async () => ({ analysisAssistant: { enabled: deps.suggestAnalysisConfig.available() } }));
+  app.post('/tool-drafts/suggest-analysis-config', async (request) => {
+    const body = parseWith(analysisSuggestionBodySchema, request.body);
+    return { proposal: await deps.suggestAnalysisConfig.execute({ graph: body.graph, nodeId: body.nodeId, intent: body.intent }) };
   });
 }

@@ -44,7 +44,7 @@ export function ToolNode({ id, data, selected }: NodeProps<ToolFlowNode>) {
           <span className="input-label" style={{ top: '70%' }}>{text('right', '右')}</span>
         </>
       )}
-      <span className="node-kind">{isSource ? 'SOURCE' : item.kind === 'sink' ? 'OUTPUT' : 'TRANSFORM'}</span>
+      <span className="node-kind">{isSource ? 'SOURCE' : item.kind === 'sink' ? 'OUTPUT' : item.kind === 'analyze' ? 'ANALYZE' : 'TRANSFORM'}</span>
       <strong>{data.label}</strong>
       <code>{id}</code>
       {inference !== undefined && (

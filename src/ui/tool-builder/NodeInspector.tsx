@@ -1,13 +1,13 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { ColumnDto, DataSourceDto, DataType, SchemaDto, SearchProviderDto, TenantScopeDto } from '../api/types';
+import type { AnalysisConfigProposalDto, ColumnDto, DataSourceDto, DataType, SchemaDto, SearchProviderDto, TenantScopeDto, ToolGraphDto } from '../api/types';
 import { catalogItem, toInputOf, type ToolNodeType } from './node-catalog';
 import { useToolBuilderStore } from './store';
 import { useI18n } from '../i18n';
 import { DATA_TYPES, cellText, coerceCell, coerceScalar, columnsText, parseColumns, parsePairs, parseReplaceRules, parseSortKeys, splitList, type FillRuleDraft, type JoinKeyDraft, type ReplaceRuleDraft, type SortKeyDraft } from './node-config-utils';
 
 const EMPTY_COLUMNS: readonly ColumnDto[] = [];
-const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'rename', 'cast', 'join', 'sort', 'fill-null', 'replace', 'agent-output', 'workspace-output', 'graph-output']);
+const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'rename', 'cast', 'join', 'sort', 'fill-null', 'replace', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output']);
 
 export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
   const selectedNodeId = useToolBuilderStore((state) => state.selectedNodeId);
@@ -41,9 +41,16 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
   const [dialogNodeId, setDialogNodeId] = useState<string>();
   const [dataSources, setDataSources] = useState<readonly DataSourceDto[]>([]);
   const [searchProviders, setSearchProviders] = useState<readonly SearchProviderDto[]>([]);
+  const [analysisAssistantAvailable, setAnalysisAssistantAvailable] = useState(false);
   const tenantId = useToolBuilderStore((state) => state.metadata.tenantId);
   const workspaceId = useToolBuilderStore((state) => state.metadata.workspaceId);
   const scope = { tenantId, workspaceId };
+  const builderNodes = useToolBuilderStore((state) => state.nodes);
+  const builderEdges = useToolBuilderStore((state) => state.edges);
+  const graph = useMemo<ToolGraphDto>(() => ({
+    nodes: builderNodes.map((item) => ({ id: item.id, type: item.data.nodeType, config: item.data.config })),
+    edges: builderEdges.map((item) => ({ from: item.source, to: item.target, ...(toInputOf(item.targetHandle) === undefined ? {} : { toInput: toInputOf(item.targetHandle) }) })),
+  }), [builderNodes, builderEdges]);
   const { text } = useI18n();
 
   useEffect(() => {
@@ -56,6 +63,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
     if (client === undefined || typeof client.listDataSources !== 'function') return;
     void client.listDataSources({ tenantId, workspaceId }).then(setDataSources).catch(() => setDataSources([]));
     void client.listSearchProviders().then(setSearchProviders).catch(() => setSearchProviders([]));
+    void client.analysisAssistantCapability().then(setAnalysisAssistantAvailable).catch(() => setAnalysisAssistantAvailable(false));
   }, [client, tenantId, workspaceId]);
 
   if (node === undefined) return <aside className="inspector empty"><h2>{text('Inspector', 'インスペクター')}</h2><p>{text('Select a node.', 'ノードを選択してください。')}</p></aside>;
@@ -67,7 +75,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
 
   return (
     <aside className="inspector" aria-label={text('Node inspector', 'ノードインスペクター')}>
-      <span className="eyebrow">{catalogItem(type).kind === 'source' ? text('source', '入力') : catalogItem(type).kind === 'sink' ? text('output', '出力') : text('transform', '変換')}</span>
+      <span className="eyebrow">{catalogItem(type).kind === 'source' ? text('source', '入力') : catalogItem(type).kind === 'sink' ? text('output', '出力') : catalogItem(type).kind === 'analyze' ? text('analysis', '分析') : text('transform', '変換')}</span>
       <h2>{text(catalogItem(type).label, catalogItem(type).labelJa)}</h2>
       <p>{text(catalogItem(type).description, catalogItem(type).descriptionJa)}</p>
       {DIALOG_NODE_TYPES.has(type) && <button type="button" className="secondary inspector-configure" onClick={openDialog}>{text('Open settings', '設定を開く')}</button>}
@@ -93,16 +101,18 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
       {type === 'distinct' && <details><summary>{text('Advanced text input', '詳細テキスト入力')}</summary><label>{text('Distinct columns', '重複判定の列')}<input value={(config['columns'] as string[] | undefined)?.join(', ') ?? ''} onChange={(event) => setConfig({ columns: splitList(event.target.value) })} placeholder="id, name" /></label></details>}
       {type === 'fill-null' && <details><summary>{text('Advanced inline editor', '詳細インライン編集')}</summary><FillNullFields config={config} setConfig={setConfig} columns={columns} /></details>}
       {type === 'replace' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Replacements', '置換ルール')} <small>{text('one column:from:to per line (null = null literal)', '1行に column:from:to（null は null リテラル）')}</small><textarea rows={8} value={(config['rules'] as ReplaceRuleDraft[] | undefined)?.map((rule) => `${rule.column}:${cellText(rule.from)}:${cellText(rule.to)}`).join('\n') ?? ''} onChange={(event) => setConfig({ rules: parseReplaceRules(event.target.value, columns) })} /></label></details>}
+      {isAnalysisType(type) && <><p>{text('Configure analysis columns and method in the dialog. Results stay deterministic and can be used by following nodes.', '分析列と方法は設定ダイアログで指定します。結果は決定的に計算され、後続ノードでも利用できます。')}</p></>}
       {type === 'agent-output' && <><p>{text(`Direct result · ${String(config['shape'] ?? 'rows')} · ${String(config['maxRows'] ?? 100)} rows`, `直接返却 · ${String(config['shape'] ?? 'rows')} · ${String(config['maxRows'] ?? 100)}行`)}</p><details><summary>{text('Quick inline edit', '簡易インライン編集')}</summary><AgentOutputFields config={config} setConfig={setConfig} columns={columns} /></details></>}
       {type === 'workspace-output' && <><p>{text(`Session artifact · ${String(config['name'] ?? '')}`, `セッションArtifact · ${String(config['name'] ?? '')}`)}</p><details><summary>{text('Quick inline edit', '簡易インライン編集')}</summary><WorkspaceOutputFields config={config} setConfig={setConfig} /></details></>}
       {type === 'graph-output' && <><p>{text(`Property graph · ${String(config['name'] ?? '')}`, `プロパティグラフ · ${String(config['name'] ?? '')}`)}</p><details><summary>{text('Quick inline edit', '簡易インライン編集')}</summary><GraphOutputFields config={config} setConfig={setConfig} columns={columns} /></details></>}
+      {type === 'chart-output' && <><p>{text(`Chart artifact · ${String(config['chartType'] ?? '')}`, `チャートArtifact · ${String(config['chartType'] ?? '')}`)}</p></>}
       {catalogItem(type).inputArity === 2
         ? <>
             {leftColumns.length > 0 && <div className="column-hints"><strong>{text('Left input columns', '左入力の列')}</strong>{leftColumns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
             {rightColumns.length > 0 && <div className="column-hints"><strong>{text('Right input columns', '右入力の列')}</strong>{rightColumns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
           </>
         : columns.length > 0 && <div className="column-hints"><strong>{text('Upstream columns', '上流の列')}</strong>{columns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
-      {dialogNodeId === node.id && dialogDraft !== undefined && <NodeConfigDialog type={type} initial={dialogDraft} columns={columns} leftColumns={leftColumns} rightColumns={rightColumns} dataSources={dataSources} searchProviders={searchProviders} client={client} scope={scope} onCancel={closeDialog} onApply={(next) => { update(node.id, next); closeDialog(); }} />}
+      {dialogNodeId === node.id && dialogDraft !== undefined && <NodeConfigDialog type={type} initial={dialogDraft} nodeId={node.id} graph={graph} analysisAssistantAvailable={analysisAssistantAvailable} columns={columns} leftColumns={leftColumns} rightColumns={rightColumns} dataSources={dataSources} searchProviders={searchProviders} client={client} scope={scope} onCancel={closeDialog} onApply={(next) => { update(node.id, next); closeDialog(); }} />}
     </aside>
   );
 }
@@ -137,6 +147,28 @@ function WorkspaceOutputFields({ config, setConfig }: { readonly config: Readonl
   </>;
 }
 
+function ChartOutputFields({ config, setConfig, columns }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[] }) {
+  const { text } = useI18n(); const mapping = (config['mapping'] as Readonly<Record<string, string | number>> | undefined) ?? {};
+  const patchMapping = (key: string, value: string) => setConfig({ mapping: { ...mapping, [key]: value } });
+  const field = (key: string, label: string) => <label>{label}<select value={typeof mapping[key] === 'string' ? String(mapping[key]) : ''} onChange={(event) => patchMapping(key, event.target.value)}><option value="">{text('Select a column', '列を選択')}</option>{columns.map((column) => <option key={column.name} value={column.name}>{column.name} · {column.type}</option>)}</select></label>;
+  const chartType = String(config['chartType'] ?? 'time-series');
+  return <>
+    <p>{text('Charts are saved as a bounded session artifact. The agent receives only its descriptor and preview.', 'チャートは上限付きのセッションArtifactとして保存します。エージェントへは参照情報とプレビューだけが渡されます。')}</p>
+    <label>{text('Artifact name', 'Artifact名')}<input value={String(config['name'] ?? '')} onChange={(event) => setConfig({ name: event.target.value })} /></label>
+    <label>{text('Chart type', 'チャート種別')}<select value={chartType} onChange={(event) => setConfig({ chartType: event.target.value, mapping: {} })}>{['histogram','box-plot','scatter','correlation-heatmap','time-series','outlier-overlay'].map((value) => <option key={value}>{value}</option>)}</select></label>
+    {chartType === 'histogram' && field('valueColumn', text('Value column', '値列'))}
+    {chartType === 'box-plot' && <>{field('valueColumn', text('Value column', '値列'))}{field('categoryColumn', text('Category column', 'カテゴリ列'))}</>}
+    {chartType === 'scatter' && <>{field('xColumn', text('X column', 'X列'))}{field('yColumn', text('Y column', 'Y列'))}{field('seriesColumn', text('Series column', '系列列'))}</>}
+    {chartType === 'correlation-heatmap' && <>{field('xColumn', text('X column', 'X列'))}{field('yColumn', text('Y column', 'Y列'))}{field('coefficientColumn', text('Coefficient column', '係数列'))}</>}
+    {chartType === 'time-series' && <>{field('timeColumn', text('Time column', '日時列'))}{field('valueColumn', text('Value column', '値列'))}{field('seriesColumn', text('Series column', '系列列'))}</>}
+    {chartType === 'outlier-overlay' && <>{field('xColumn', text('X column', 'X列'))}{field('valueColumn', text('Value column', '値列'))}{field('flagColumn', text('Outlier flag column', '外れ値フラグ列'))}</>}
+    <label>{text('Maximum points', '最大ポイント数')}<input type="number" min={1} max={5000} value={Number(config['maxPoints'] ?? 1000)} onChange={(event) => setConfig({ maxPoints: Number(event.target.value) })} /></label>
+    <label>{text('Downsample', '間引き')}<select value={String(config['downsample'] ?? 'none')} onChange={(event) => setConfig({ downsample: event.target.value })}><option value="none">none</option><option value="lttb">lttb</option></select></label>
+    <label>{text('Title (optional)', 'タイトル（任意）')}<input value={String(config['title'] ?? '')} onChange={(event) => setConfig({ title: event.target.value === '' ? undefined : event.target.value })} /></label>
+    <label>{text('Preview rows', 'プレビュー行数')}<input type="number" min={0} max={100} value={Number(config['previewRows'] ?? 10)} onChange={(event) => setConfig({ previewRows: Number(event.target.value) })} /></label>
+  </>;
+}
+
 function GraphOutputFields({ config, setConfig, columns }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[] }) {
   const { text } = useI18n();
   return <>
@@ -151,22 +183,23 @@ function GraphOutputFields({ config, setConfig, columns }: { readonly config: Re
 
 function GraphMappingFields({ config, setConfig, columns }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[] }) {
   const { text } = useI18n();
-  const graph = (config['graph'] as { sourceColumn?: string; targetColumn?: string; edgeLabelColumn?: string } | undefined) ?? {};
+  const graph = (config['graph'] as { mode?: string; sourceColumn?: string; targetColumn?: string; edgeLabelColumn?: string; columnX?: string; columnY?: string; coefficient?: string; pairCount?: string; minimumAbsoluteCoefficient?: number; minimumPairCount?: number } | undefined) ?? {};
   const patch = (next: Partial<typeof graph>) => setConfig({ graph: { ...graph, ...next } });
   const options = <><option value="">{text('Select a column', '列を選択')}</option>{columns.map((column) => <option key={column.name} value={column.name}>{column.name} · {column.type}</option>)}</>;
+  const mode = graph.mode === 'correlation-network' ? 'correlation-network' : 'edge-list';
   return <section className="graph-mapping-fields">
     <strong>{text('Property graph mapping', 'プロパティグラフ対応')}</strong>
-    <small>{text('Each input row becomes an edge; endpoint values become nodes.', '各入力行をedge、始点・終点の値をnodeとして保存します。')}</small>
-    <label>{text('Source column', '始点列')}<select value={graph.sourceColumn ?? ''} onChange={(event) => patch({ sourceColumn: event.target.value })}>{options}</select></label>
-    <label>{text('Target column', '終点列')}<select value={graph.targetColumn ?? ''} onChange={(event) => patch({ targetColumn: event.target.value })}>{options}</select></label>
-    <label>{text('Edge label column (optional)', 'edgeラベル列（任意）')}<select value={graph.edgeLabelColumn ?? ''} onChange={(event) => patch({ edgeLabelColumn: event.target.value === '' ? undefined : event.target.value })}>{options}</select></label>
+    <label>{text('Mapping mode', '対応モード')}<select value={mode} onChange={(event) => setConfig({ graph: event.target.value === 'correlation-network' ? { mode: 'correlation-network', columnX: '', columnY: '', coefficient: '', pairCount: '', minimumAbsoluteCoefficient: 0, minimumPairCount: 2 } : { mode: 'edge-list', sourceColumn: '', targetColumn: '' } })}><option value="edge-list">{text('Edge list', 'エッジリスト')}</option><option value="correlation-network">{text('Correlation network', '相関ネットワーク')}</option></select></label>
+    {mode === 'edge-list' ? <><small>{text('Each input row becomes an edge; endpoint values become nodes.', '各入力行をedge、始点・終点の値をnodeとして保存します。')}</small><label>{text('Source column', '始点列')}<select value={graph.sourceColumn ?? ''} onChange={(event) => patch({ sourceColumn: event.target.value })}>{options}</select></label><label>{text('Target column', '終点列')}<select value={graph.targetColumn ?? ''} onChange={(event) => patch({ targetColumn: event.target.value })}>{options}</select></label><label>{text('Edge label column (optional)', 'edgeラベル列（任意）')}<select value={graph.edgeLabelColumn ?? ''} onChange={(event) => patch({ edgeLabelColumn: event.target.value === '' ? undefined : event.target.value })}>{options}</select></label></> : <><small>{text('Correlation pairs become undirected edges. Diagonal and duplicate pairs are removed.', '相関ペアを無向edgeとして保存します。対角成分と重複ペアは除きます。')}</small><label>{text('First variable column', '変数X列')}<select value={graph.columnX ?? ''} onChange={(event) => patch({ columnX: event.target.value })}>{options}</select></label><label>{text('Second variable column', '変数Y列')}<select value={graph.columnY ?? ''} onChange={(event) => patch({ columnY: event.target.value })}>{options}</select></label><label>{text('Coefficient column', '係数列')}<select value={graph.coefficient ?? ''} onChange={(event) => patch({ coefficient: event.target.value })}>{options}</select></label><label>{text('Pair count column', 'ペア数列')}<select value={graph.pairCount ?? ''} onChange={(event) => patch({ pairCount: event.target.value })}>{options}</select></label><label>{text('Minimum absolute coefficient', '絶対係数の下限')}<input type="number" min={0} max={1} step={0.05} value={Number(graph.minimumAbsoluteCoefficient ?? 0)} onChange={(event) => patch({ minimumAbsoluteCoefficient: Number(event.target.value) })} /></label><label>{text('Minimum pair count', '最小ペア数')}<input type="number" min={0} value={Number(graph.minimumPairCount ?? 2)} onChange={(event) => patch({ minimumPairCount: Number(event.target.value) })} /></label></>}
   </section>;
 }
 
-function NodeConfigDialog({ type, initial, columns, leftColumns, rightColumns, dataSources, searchProviders, client, scope, onCancel, onApply }: { readonly type: ToolNodeType; readonly initial: Readonly<Record<string, unknown>>; readonly columns: readonly ColumnDto[]; readonly leftColumns: readonly ColumnDto[]; readonly rightColumns: readonly ColumnDto[]; readonly dataSources: readonly DataSourceDto[]; readonly searchProviders: readonly SearchProviderDto[]; readonly client?: ToolApiClient; readonly scope: TenantScopeDto; readonly onCancel: () => void; readonly onApply: (config: Readonly<Record<string, unknown>>) => void }) {
+function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvailable, columns, leftColumns, rightColumns, dataSources, searchProviders, client, scope, onCancel, onApply }: { readonly type: ToolNodeType; readonly initial: Readonly<Record<string, unknown>>; readonly nodeId: string; readonly graph: ToolGraphDto; readonly analysisAssistantAvailable: boolean; readonly columns: readonly ColumnDto[]; readonly leftColumns: readonly ColumnDto[]; readonly rightColumns: readonly ColumnDto[]; readonly dataSources: readonly DataSourceDto[]; readonly searchProviders: readonly SearchProviderDto[]; readonly client?: ToolApiClient; readonly scope: TenantScopeDto; readonly onCancel: () => void; readonly onApply: (config: Readonly<Record<string, unknown>>) => void }) {
   const [draft, setDraft] = useState<Readonly<Record<string, unknown>>>(initial);
+  const [intent, setIntent] = useState(''); const [proposal, setProposal] = useState<AnalysisConfigProposalDto>(); const [assistantError, setAssistantError] = useState<string>(); const [suggesting, setSuggesting] = useState(false);
   const { text } = useI18n();
   const patch = (next: Record<string, unknown>) => setDraft((current) => ({ ...current, ...next }));
+  const suggest = async () => { if (client === undefined || intent.trim() === '') return; setSuggesting(true); setAssistantError(undefined); try { const result = await client.suggestAnalysisConfig({ graph: { ...graph, nodes: graph.nodes.map((item) => item.id === nodeId ? { ...item, config: draft } : item) }, nodeId, intent, scope }); setProposal(result); } catch (error) { setAssistantError(error instanceof Error ? error.message : text('Suggestion failed.', '設定案の取得に失敗しました。')); } finally { setSuggesting(false); } };
   return <div className="node-config-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
     <section className="node-config-dialog" role="dialog" aria-modal="true" aria-label={text('Node configuration', 'ノード設定')}>
       <header><div><span className="eyebrow">{text('Configuration', '設定')}</span><h2>{text(catalogItem(type).label, catalogItem(type).labelJa)}</h2></div><button type="button" className="ghost" aria-label={text('Close settings', '設定を閉じる')} onClick={onCancel}>×</button></header>
@@ -174,6 +207,7 @@ function NodeConfigDialog({ type, initial, columns, leftColumns, rightColumns, d
         {type === 'agent-output' && <AgentOutputFields config={draft} setConfig={patch} columns={columns} />}
         {type === 'workspace-output' && <WorkspaceOutputFields config={draft} setConfig={patch} />}
         {type === 'graph-output' && <GraphOutputFields config={draft} setConfig={patch} columns={columns} />}
+        {type === 'chart-output' && <ChartOutputFields config={draft} setConfig={patch} columns={columns} />}
         {type === 'rename' && <RenameRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'cast' && <CastRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'sort' && <SortRuleEditor config={draft} setConfig={patch} columns={columns} />}
@@ -181,11 +215,51 @@ function NodeConfigDialog({ type, initial, columns, leftColumns, rightColumns, d
         {type === 'agent-input' && <SchemaTableEditor config={draft} setConfig={patch} />}
         {type === 'join' && <JoinFields config={draft} setConfig={patch} leftColumns={leftColumns} rightColumns={rightColumns} />}
         {type === 'fill-null' && <FillNullFields config={draft} setConfig={patch} columns={columns} />}
+        {isAnalysisType(type) && <AnalysisFields type={type} config={draft} setConfig={patch} columns={columns} />}
+        {isAnalysisType(type) && analysisAssistantAvailable && <section className="analysis-assistant"><h3>{text('Local LLM assistance', 'ローカルLLM設定補助')}</h3><label>{text('Analysis goal', '分析したいこと')}<textarea value={intent} onChange={(event) => setIntent(event.target.value)} placeholder={text('e.g. Find month-to-month trends by category.', '例: カテゴリ別の月次推移を確認したい')} rows={3} /></label><button type="button" className="secondary" disabled={suggesting || intent.trim() === ''} onClick={() => void suggest()}>{suggesting ? text('Suggesting…', '提案中…') : text('Suggest configuration', '設定案を作成')}</button>{assistantError !== undefined && <small className="field-error">{assistantError}</small>}{proposal !== undefined && <div className="assistant-proposal"><p>{text('The proposal has been validated against the current schema and preview.', '設定案は現在のスキーマとプレビューで検証済みです。')}</p>{proposal.rationale.map((item, index) => <small key={`r-${index}`}>• {item}</small>)}{proposal.warnings.map((item, index) => <small className="field-error" key={`w-${index}`}>• {item}</small>)}<button type="button" onClick={() => { setDraft(proposal.config); setProposal(undefined); }}>{text('Apply proposal to this dialog', 'このダイアログへ提案を適用')}</button></div>}</section>}
         {(type === 'json-source' || type === 'csv-source' || type === 'database-source' || type === 'web-search-source') && <SourceDialogEditor type={type} config={draft} setConfig={patch} dataSources={dataSources} searchProviders={searchProviders} client={client} scope={scope} />}
       </div>
       <footer><button type="button" className="secondary" onClick={onCancel}>{text('Cancel', 'キャンセル')}</button><button type="button" className="primary" onClick={() => onApply(draft)}>{text('Apply settings', '設定を適用')}</button></footer>
     </section>
   </div>;
+}
+
+function isAnalysisType(type: ToolNodeType): type is 'summary-statistics' | 'correlation-analysis' | 'time-series-analysis' | 'outlier-filter' { return ['summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter'].includes(type); }
+
+function AnalysisFields({ type, config, setConfig, columns }: { readonly type: 'summary-statistics' | 'correlation-analysis' | 'time-series-analysis' | 'outlier-filter'; readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[] }) {
+  const { text } = useI18n();
+  const numeric = columns.filter((column) => column.type === 'number');
+  const selected = (key: string) => Array.isArray(config[key]) ? (config[key] as string[]) : [];
+  const setSelected = (key: string, values: string[]) => setConfig({ [key]: values });
+  if (type === 'summary-statistics') return <>
+    <ColumnMultiSelect label={text('Numeric columns', '数値列')} columns={numeric} value={selected('columns')} onChange={(next) => setSelected('columns', next)} />
+    <ColumnMultiSelect label={text('Group columns', 'グループ列')} columns={columns} value={selected('groupBy')} onChange={(next) => setSelected('groupBy', next)} hint={text('Optional', '任意')} />
+    <ColumnMultiSelect label={text('Metrics', '統計量')} columns={['valid-count','missing-count','unique-count','sum','mean','stddev','min','q1','median','q3','max'].map((name) => ({ name, type: 'number' as DataType, nullable: false }))} value={selected('metrics')} onChange={(next) => setSelected('metrics', next)} />
+    <label>{text('Standard deviation', '標準偏差')}<select value={String(config['variance'] ?? 'sample')} onChange={(event) => setConfig({ variance: event.target.value })}><option value="sample">sample</option><option value="population">population</option></select></label>
+  </>;
+  if (type === 'correlation-analysis') return <>
+    <ColumnMultiSelect label={text('Numeric columns', '数値列')} columns={numeric} value={selected('columns')} onChange={(next) => setSelected('columns', next)} hint={text('Select two or more columns.', '2列以上を選択します。')} />
+    <label>{text('Method', '方法')}<select value={String(config['method'] ?? 'pearson')} onChange={(event) => setConfig({ method: event.target.value })}><option value="pearson">Pearson</option><option value="spearman">Spearman</option></select></label>
+    <label>{text('Missing values', '欠損値')}<select value={String(config['missing'] ?? 'pairwise')} onChange={(event) => setConfig({ missing: event.target.value })}><option value="pairwise">pairwise</option><option value="listwise">listwise</option></select></label>
+    <label>{text('Minimum pairs', '最小ペア数')}<input type="number" min={2} value={Number(config['minPairs'] ?? 2)} onChange={(event) => setConfig({ minPairs: Number(event.target.value) })} /></label>
+    <label className="check"><input type="checkbox" checked={config['includeDiagonal'] === true} onChange={(event) => setConfig({ includeDiagonal: event.target.checked })} />{text('Include diagonal', '対角成分を含める')}</label>
+  </>;
+  if (type === 'time-series-analysis') return <>
+    <label>{text('Time column', '日時列')}<select value={String(config['timeColumn'] ?? '')} onChange={(event) => setConfig({ timeColumn: event.target.value })}><option value="">{text('Select a date column', '日時列を選択')}</option>{columns.filter((column) => column.type === 'date').map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}</select></label>
+    <ColumnMultiSelect label={text('Value columns', '値列')} columns={numeric} value={selected('valueColumns')} onChange={(next) => setSelected('valueColumns', next)} />
+    <ColumnMultiSelect label={text('Group columns', 'グループ列')} columns={columns} value={selected('groupBy')} onChange={(next) => setSelected('groupBy', next)} hint={text('Optional', '任意')} />
+    <label>{text('Timezone', 'タイムゾーン')}<input value={String(config['timezone'] ?? 'UTC')} onChange={(event) => setConfig({ timezone: event.target.value })} placeholder="UTC" /></label>
+    <label>{text('Interval', '間隔')}<select value={String(config['interval'] ?? 'day')} onChange={(event) => setConfig({ interval: event.target.value })}>{['minute','hour','day','week','month'].map((value) => <option key={value}>{value}</option>)}</select></label>
+    <label>{text('Aggregation', '集計')}<select value={String(config['aggregate'] ?? 'mean')} onChange={(event) => setConfig({ aggregate: event.target.value })}>{['count','sum','mean','min','max'].map((value) => <option key={value}>{value}</option>)}</select></label>
+  </>;
+  return <>
+    <ColumnMultiSelect label={text('Numeric columns', '数値列')} columns={numeric} value={selected('columns')} onChange={(next) => setSelected('columns', next)} />
+    <ColumnMultiSelect label={text('Group columns', 'グループ列')} columns={columns} value={selected('groupBy')} onChange={(next) => setSelected('groupBy', next)} hint={text('Optional', '任意')} />
+    <label>{text('Method', '方法')}<select value={String(config['method'] ?? 'iqr')} onChange={(event) => setConfig({ method: event.target.value })}>{['iqr','z-score','mad'].map((value) => <option key={value}>{value}</option>)}</select></label>
+    <label>{text('Threshold', '閾値')}<input type="number" min={0.01} step={0.1} value={Number(config['threshold'] ?? 1.5)} onChange={(event) => setConfig({ threshold: Number(event.target.value) })} /></label>
+    <label>{text('Action', '操作')}<select value={String(config['action'] ?? 'flag')} onChange={(event) => setConfig({ action: event.target.value })}><option value="flag">{text('Flag rows', '行にフラグを付ける')}</option><option value="exclude">{text('Exclude rows', '行を除外する')}</option></select></label>
+    <label>{text('Null values', 'null値')}<select value={String(config['nulls'] ?? 'keep')} onChange={(event) => setConfig({ nulls: event.target.value })}><option value="keep">{text('Keep', '保持')}</option><option value="exclude">{text('Exclude', '除外')}</option></select></label>
+  </>;
 }
 
 function RenameRuleEditor({ config, setConfig, columns }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[] }) {

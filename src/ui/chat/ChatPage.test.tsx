@@ -102,6 +102,20 @@ describe('ChatPage', () => {
     await waitFor(() => expect(client.closeAgentSession).toHaveBeenCalledWith('session-1', { tenantId: 'local', workspaceId: 'default' }));
   });
 
+  it('opens a chart Artifact from the session workspace', async () => {
+    const client = {
+      listAgents: vi.fn().mockResolvedValue(oneAgent),
+      createAgentSession: vi.fn().mockResolvedValue({ id: 'session-1', scope: { tenantId: 'local', workspaceId: 'default' }, rootAgent: { internalId: 'agent', version: '1.0.0' }, status: 'active', createdAt: '2026-07-11T00:00:00.000Z', lastAccessedAt: '2026-07-11T00:00:00.000Z', expiresAt: '2026-07-12T00:00:00.000Z', quota: { maxBytes: 1, maxArtifactBytes: 1, maxArtifacts: 1 } }),
+      runSavedAgent: vi.fn().mockResolvedValue({ runId: 'run-chart', response: 'stored', trace: [], usage: {}, mode: 'preview' }),
+      listSessionArtifacts: vi.fn().mockResolvedValue([{ id: 'chart-1', sessionId: 'session-1', name: 'Trend', kind: 'chart', revision: 1, contentType: 'application/json', sizeBytes: 128, checksum: 'sum', createdAt: '2026-07-11T00:00:00.000Z', expiresAt: '2026-07-12T00:00:00.000Z' }]),
+      getSessionArtifact: vi.fn().mockResolvedValue({ artifact: {}, payload: { specVersion: 1, chartType: 'time-series', mapping: { timeColumn: 'at', valueColumn: 'value' }, rows: [{ at: '2026-07-01', value: 3 }], sourceRowCount: 1, sampled: false } }),
+    } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />); await screen.findByRole('option', { name: /Agent/ }); await sendMessage();
+    await userEvent.click(await screen.findByRole('button', { name: /Trend · chart/ }));
+    expect(await screen.findByRole('dialog', { name: 'Chart preview' })).toBeTruthy();
+    expect(client.getSessionArtifact).toHaveBeenCalledWith('session-1', 'chart-1', { tenantId: 'local', workspaceId: 'default' });
+  });
+
   it('starts a new Session when the selected Agent changes', async () => {
     const agents = [...oneAgent, { internalId: 'other', displayName: 'Other', publishName: 'other', latestVersion: '1.0.0', kind: 'normal', state: 'draft' }];
     const client = {

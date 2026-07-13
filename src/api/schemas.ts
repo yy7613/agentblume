@@ -194,6 +194,11 @@ export const createAgentSessionBodySchema = z.object({
   scope: tenantScopeSchema,
   agent: z.object({ internalId: z.string().min(1), version: z.string().optional() }),
 });
+
+/** ローカルLLMに分析nodeの設定案だけを依頼する。 */
+export const analysisSuggestionBodySchema = z.object({
+  scope: tenantScopeSchema.optional(), graph: graphSchema, nodeId: z.string().min(1), intent: z.string().min(1).max(2_000),
+});
 export const closeAgentSessionBodySchema = z.object({ scope: tenantScopeSchema });
 export const sessionScopeQuerySchema = tenantScopeSchema;
 export const sessionArtifactQuerySchema = tenantScopeSchema.extend({ limit: z.coerce.number().int().min(1).max(100).optional(), offset: z.coerce.number().int().min(0).max(1_000_000).optional(), section: z.enum(['nodes', 'edges']).optional() });

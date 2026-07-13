@@ -270,6 +270,24 @@ type GateRule =
 
 **DoD:** 明示Output node、Session分離、Artifact参照、quota/TTL/idempotency、同一SessionのAgent間再利用がE2Eでgreen。別Session・別scopeへの漏洩がない。
 
+### Increment 31: 分析ノード、Chart出力、ローカルLLM設定補助
+
+**Status:** In progress (2026-07-13). 決定的な4分析node、`chart-output`、Session WorkspaceのChart preview、相関network preset、初期LLM設定補助、IANA timezone/DST基準の欠損bucket補完を実装済み。Chart rendererの型別高度表現は後続slice。
+
+**目的:** Tool Builderへ決定的なデータ分析と型付けした可視化を追加し、難しい設定だけをローカルLLMで安全に補助する。
+
+- `summary-statistics`、`correlation-analysis`、`time-series-analysis`、`outlier-filter`を`analyze` nodeとして追加する。
+- 分析結果はlong形式の`Table`とし、後続ETL、Agent出力、Artifact出力から再利用する。
+- 可視化Chartとproperty graphを分け、専用`chart-output`と相関network対応`graph-output`を提供する。
+- 外れ値除外は件数と規則を診断へ残し、UIではflagを推奨する。
+- LLMはschemaとbounded profileからstrict JSONの設定案を作るだけとし、backend validation、dry-run、人手Applyを必須にする。
+- `LM_STUDIO_MODEL`未設定またはstructured output非対応時は補助UIを表示せず、手動設定と決定的な推奨初期値を使えるようにする。
+- raw sampleは既定で送らず、明示許可時もマスキング後20行/8 KiBに制限する。
+
+設計判断は [ADR-0031](../docs/adr/0031-analytical-nodes-chart-output-and-local-llm-assistance.md)、段階的な型・UI・API・test契約は [v31実装計画](./v31-analytics-chart-output-llm-assistance.md) を参照。
+
+**DoD:** 4分析node、6種のChart、相関property graph、LLM設定案の差分確認がE2Eでgreenになり、LLM不正応答や未設定時にも保存済みToolと手動設定が影響を受けない。
+
 ## 6. 実装順序と依存関係
 
 ```mermaid
@@ -281,12 +299,14 @@ flowchart LR
   V25 --> V27["v27 還流・外部連携"]
   V26 --> V27
   V26 --> V28["v28 Output・Session Workspace"]
+  V28 --> V31["v31 分析・Chart・設定補助"]
 ```
 
 - **P0 / MVP:** v22-v24。品質劣化を検出して公開を止められるところまで。
 - **P1:** v25-v26。定性的評価と運用観測を加える。
 - **P2:** v27。継続改善フライホイールと外部連携を完成させる。
 - **実行基盤拡張:** v28。Tool resultの大容量化とSession内再利用をLLMOps資産の永続化から分離する。
+- **分析基盤拡張:** v31。決定的な分析node、Chart/property graph出力、検証付きローカルLLM設定補助を追加する。
 - v22開始時に各incrementのADRと詳細実装契約を1つずつ作り、次incrementの型を先行実装しない。
 
 ## 7. 横断テスト戦略
