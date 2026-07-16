@@ -7,6 +7,8 @@ const uiUrl = `http://127.0.0.1:${uiPort}`;
 
 export default defineConfig({
   testDir: './e2e',
+  // デモ画像生成は、sample dataを起動する playwright.manual.config.ts 専用とする。
+  testIgnore: ['**/manual-screenshots.spec.ts', '**/harness-tutorial-screenshots.spec.ts'],
   fullyParallel: false,
   workers: 1,
   forbidOnly: Boolean(process.env['CI']),

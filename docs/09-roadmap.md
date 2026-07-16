@@ -54,7 +54,7 @@ CSV/JSON入力、基本変換、スキーマ伝播、固定サンプルプレビ
 DB/API接続、Secrets Provider、認証アダプター、ワークスペースRBAC、バージョン、監査ログ、公開前承認。
 
 ### Phase 3: 拡張実行
-カスタムコードのサンドボックス、MCP公開、Webhook、Workflow Builder、cron、コードプロジェクトへの分岐。
+カスタムコードのサンドボックス、MCP公開、Webhook、Workflow Builder、cron、コードプロジェクトへの分岐。Workflow Builderに先行する限定的な制御フローとして、Agent Harness BuilderをDefinition→Sequential/Concurrent→Handoff/Group Chat→Magenticの順に導入する。
 
 ### Phase 4: 評価と運用
 データセット評価、回帰、LLM-as-Judge、本番ログからの評価データ化、環境昇格、高度なポリシー制御。
@@ -90,6 +90,7 @@ flowchart TB
     F15["Mastraコードへ一方向エクスポート"]
     F16["cron/イベントトリガーGUI"]
     F17["Workflow Builderの制御ノード"]
+    F20["Agent Harness Builder<br/>Sequential / Concurrent / Handoff / Group Chat / Magentic"]
   end
   subgraph PH4["Phase 4"]
     F18["長期記憶: LLM Wiki（WikiPage+検索）"]

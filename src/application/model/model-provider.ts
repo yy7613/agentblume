@@ -35,6 +35,11 @@ export interface ModelToolCall {
   readonly arguments: JsonObject;
 }
 
+/** OpenAI互換のマルチモーダル入力。画像は adapter 境界で image_url 形式へ変換する。 */
+export type ModelContentPart =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'image_url'; readonly imageUrl: string };
+
 export interface ModelMessage {
   readonly role: 'system' | 'user' | 'assistant' | 'tool';
   readonly content: string | null;
@@ -42,8 +47,13 @@ export interface ModelMessage {
   readonly toolCallId?: string;
 }
 
+/** モデルへ送るメッセージ。応答・ツール結果は常に文字列の ModelMessage として扱う。 */
+export interface ModelRequestMessage extends Omit<ModelMessage, 'content'> {
+  readonly content: string | readonly ModelContentPart[] | null;
+}
+
 export interface ModelCompletionRequest {
-  readonly messages: readonly ModelMessage[];
+  readonly messages: readonly ModelRequestMessage[];
   readonly tools?: readonly ModelToolDefinition[];
   readonly temperature?: number;
   readonly responseFormat?: {
@@ -65,7 +75,7 @@ export interface ModelCompletion {
   readonly usage?: ModelUsage;
 }
 
-export type ModelCapability = 'chat' | 'tool-calling' | 'structured-output';
+export type ModelCapability = 'chat' | 'tool-calling' | 'structured-output' | 'vision';
 
 export interface ModelProviderPort {
   complete(request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion>;

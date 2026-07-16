@@ -3,6 +3,8 @@
 > 参照: [03-domain-model.md](./03-domain-model.md) / [07-execution-model.md](./07-execution-model.md) / [11-scenario-validation.md](./11-scenario-validation.md)
 >
 > **凡例**: 🔷 = 本仕様書による設計（`ideas-v2.md §13` で保留だった「マルチエージェント」の具体化）
+>
+> Sequential / Concurrent / Handoff / Group Chat / Magenticの図へAgentを割り当てる拡張は [14-agent-harness-builder.md](./14-agent-harness-builder.md) を参照。本書のAgent-as-Tools方式は引き続き単純委譲の標準である。
 
 作成済みのAgent同士を協調させる仕組み。**設計の憲法は次の2点**:
 

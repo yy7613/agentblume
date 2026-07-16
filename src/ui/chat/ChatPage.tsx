@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AgentPreviewRunDto, AgentSummaryDto, RunTraceEventDto, SessionArtifactDto } from '../api/types';
+import type { AgentPreviewRunDto, AgentSummaryDto, HarnessRunDto, HarnessSummaryDto, RunImageAttachmentDto, RunTraceEventDto, SessionArtifactDto } from '../api/types';
 import { useI18n } from '../i18n';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
@@ -8,8 +8,8 @@ const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 type Translate = (english: string, japanese: string) => string;
 
 type ChatTurn =
-  | { readonly role: 'user'; readonly text: string }
-  | { readonly role: 'assistant'; readonly run: AgentPreviewRunDto }
+  | { readonly role: 'user'; readonly text: string; readonly images: readonly RunImageAttachmentDto[] }
+  | { readonly role: 'assistant'; readonly run: AgentPreviewRunDto | HarnessRunDto }
   | { readonly role: 'error'; readonly text: string };
 
 const sparkIcon = (
@@ -27,11 +27,21 @@ const sendIcon = (
     <path fill="currentColor" d="M12 4l7 7-1.4 1.4L13 7.8V20h-2V7.8l-4.6 4.6L5 11z" />
   </svg>
 );
+const attachIcon = (
+  <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+    <path fill="currentColor" d="M16.5 6.5 9 14a2.12 2.12 0 0 0 3 3l7-7a4.24 4.24 0 1 0-6-6l-7.2 7.2a6.36 6.36 0 0 0 9 9L20 15l-1.5-1.5-5.2 5.2a4.24 4.24 0 1 1-6-6l7.2-7.2a2.12 2.12 0 1 1 3 3l-7 7a.71.71 0 0 1-1-1l7.5-7.5-1-1z" />
+  </svg>
+);
+
+const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
+const MAX_IMAGES = 2;
 
 export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const [agents, setAgents] = useState<readonly AgentSummaryDto[]>([]);
+  const [harnesses, setHarnesses] = useState<readonly HarnessSummaryDto[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [message, setMessage] = useState('');
+  const [images, setImages] = useState<readonly RunImageAttachmentDto[]>([]);
   const [turns, setTurns] = useState<readonly ChatTurn[]>([]);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string>();
@@ -40,20 +50,25 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const [chart, setChart] = useState<{ readonly artifact: SessionArtifactDto; readonly payload: ChartPayload }>();
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const { text } = useI18n();
 
   useEffect(() => {
     let active = true;
     setBusy(true);
-    void client.listAgents(scope)
-      .then((all) => { if (!active) return; const items = all.filter((agent) => agent.kind !== 'pseudo-user'); setAgents(items); setSelectedId((current) => current || items[0]?.internalId || ''); })
+    const harnessClient = client as Partial<ToolApiClient>;
+    const harnessItems = typeof harnessClient.listHarnesses === 'function' ? client.listHarnesses(scope) : Promise.resolve([]);
+    void Promise.all([client.listAgents(scope), harnessItems])
+      .then(([all, allHarnesses]) => { if (!active) return; const items = all.filter((agent) => agent.kind !== 'pseudo-user'); setAgents(items); setHarnesses(allHarnesses); setSelectedId((current) => current || items[0]?.internalId || (allHarnesses[0] === undefined ? '' : `harness:${allHarnesses[0].internalId}`)); })
       .catch((cause: unknown) => { if (active) setLoadError(messageOf(cause)); })
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, [client]);
 
   const agent = useMemo(() => agents.find((item) => item.internalId === selectedId), [agents, selectedId]);
-  const agentName = agent?.displayName ?? text('Agent', 'エージェント');
+  const harness = useMemo(() => selectedId.startsWith('harness:') ? harnesses.find((item) => item.internalId === selectedId.slice('harness:'.length)) : undefined, [harnesses, selectedId]);
+  const target = agent === undefined ? (harness === undefined ? undefined : { kind: 'harness' as const, item: harness }) : { kind: 'agent' as const, item: agent };
+  const agentName = target?.item.displayName ?? text('Agent', 'エージェント');
 
   useEffect(() => {
     if (sessionId === undefined || typeof (client as Partial<ToolApiClient>).listSessionArtifacts !== 'function') { setArtifacts([]); return; }
@@ -69,19 +84,23 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
 
   async function send(): Promise<void> {
     const content = message.trim();
-    if (agent === undefined || content === '' || busy) return;
+    if (target === undefined || content === '' || busy) return;
     setBusy(true);
-    setTurns((prev) => [...prev, { role: 'user', text: content }]);
-    setMessage('');
+    const attachedImages = images;
+    setTurns((prev) => [...prev, { role: 'user', text: content, images: attachedImages }]);
+    setMessage(''); setImages([]);
     try {
-      let activeSessionId = sessionId;
+      let activeSessionId = target.kind === 'agent' ? sessionId : undefined;
       const sessions = client as Partial<ToolApiClient>;
-      if (activeSessionId === undefined && typeof sessions.createAgentSession === 'function') {
-        const session = await client.createAgentSession({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion } });
+      if (target.kind === 'agent' && activeSessionId === undefined && typeof sessions.createAgentSession === 'function') {
+        const session = await client.createAgentSession({ scope, agent: { internalId: target.item.internalId, version: target.item.latestVersion } });
         activeSessionId = session.id;
         setSessionId(activeSessionId);
       }
-      const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview', sessionId: activeSessionId });
+      if (target.kind === 'harness' && attachedImages.length > 0) throw new Error(text('Image input is not available for Harness preview yet.', 'Harness previewではまだ画像入力を利用できません。'));
+      const run = target.kind === 'agent'
+        ? await client.runSavedAgent({ scope, agent: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview', sessionId: activeSessionId, ...(attachedImages.length > 0 ? { images: attachedImages } : {}) })
+        : await client.runHarness({ scope, harness: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview' });
       setTurns((prev) => [...prev, { role: 'assistant', run }]);
       if (activeSessionId !== undefined && typeof sessions.listSessionArtifacts === 'function') void sessions.listSessionArtifacts(activeSessionId, scope).then(setArtifacts).catch(() => {});
     } catch (cause) {
@@ -93,13 +112,13 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
 
   function newChat(): void {
     const closing = sessionId;
-    setTurns([]); setSessionId(undefined); setArtifacts([]);
+    setTurns([]); setSessionId(undefined); setArtifacts([]); setImages([]);
     if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
   }
 
   function selectAgent(next: string): void {
     const closing = sessionId;
-    setSelectedId(next); setSessionId(undefined); setArtifacts([]); setTurns([]);
+    setSelectedId(next); setSessionId(undefined); setArtifacts([]); setTurns([]); setImages([]);
     if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
   }
 
@@ -109,6 +128,27 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       const result = await client.getSessionArtifact(sessionId, artifact.id, scope);
       if (isChartPayload(result.payload)) setChart({ artifact, payload: result.payload });
     } catch (cause) { setLoadError(messageOf(cause)); }
+  }
+
+  async function selectImages(files: FileList | null): Promise<void> {
+    if (files === null) return;
+    const selected = Array.from(files);
+    if (images.length + selected.length > MAX_IMAGES) {
+      setLoadError(text('You can attach up to two images.', '画像は2枚まで添付できます。'));
+      return;
+    }
+    const invalid = selected.find((file) => !isSupportedImage(file) || file.size > MAX_IMAGE_BYTES);
+    if (invalid !== undefined) {
+      setLoadError(text('Attach PNG, JPEG, WebP, or GIF images up to 3 MiB each.', 'PNG、JPEG、WebP、GIFを1枚3 MiBまで添付できます。'));
+      return;
+    }
+    try {
+      const next = await Promise.all(selected.map(async (file) => ({ name: file.name, dataUrl: await readAsDataUrl(file) })));
+      setImages((current) => [...current, ...next]);
+      setLoadError(undefined);
+    } catch {
+      setLoadError(text('The image could not be read.', '画像を読み込めませんでした。'));
+    }
   }
 
   const suggestions = [
@@ -139,8 +179,8 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
             <div className="cc-welcome">
               <span className="cc-mark lg" aria-hidden="true">{sparkIcon}</span>
               <h2>{text('Ask the agent anything', 'エージェントに質問しましょう')}</h2>
-              <p>{welcomeHint(agents.length, busy, text)}</p>
-              {agents.length > 0 && (
+              <p>{welcomeHint(agents.length + harnesses.length, busy, text)}</p>
+              {(agents.length + harnesses.length) > 0 && (
                 <div className="cc-suggestions">
                   {suggestions.map((suggestion) => (
                     <button type="button" key={suggestion} onClick={() => setMessage(suggestion)}>{suggestion}</button>
@@ -165,6 +205,12 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
 
       <form className="cc-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
         <div className="cc-input">
+          {images.length > 0 && <div className="cc-image-list" aria-label={text('Attached images', '添付画像')}>
+            {images.map((image) => <div className="cc-image-chip" key={`${image.name}:${image.dataUrl.length}`}>
+              <img src={image.dataUrl} alt={image.name} />
+              <button type="button" aria-label={text(`Remove ${image.name}`, `${image.name}を削除`)} onClick={() => setImages((current) => current.filter((item) => item !== image))}>×</button>
+            </div>)}
+          </div>}
           <textarea
             ref={inputRef}
             aria-label={text('Chat message', 'チャットメッセージ')}
@@ -174,23 +220,30 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }}
           />
+          <input ref={imageInputRef} className="cc-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void selectImages(event.target.files); event.currentTarget.value = ''; }} />
           <div className="cc-tools">
-            <select
-              className="cc-agent"
-              aria-label={text('Chat agent', 'チャット対象エージェント')}
-              value={selectedId}
-              disabled={busy || agents.length === 0}
-              onChange={(event) => selectAgent(event.target.value)}
-            >
-              <option value="">{text('Select an agent', 'エージェントを選択')}</option>
-              {agents.map((item) => <option key={item.internalId} value={item.internalId}>{item.displayName} · {item.latestVersion}</option>)}
-            </select>
-            <button type="submit" className="cc-send" aria-label={text('Send', '送信')} disabled={busy || agent === undefined || message.trim() === ''}>
+            <div className="cc-tools-start">
+              <button type="button" className="cc-attach" aria-label={text('Attach images', '画像を添付')} title={text('Attach images', '画像を添付')} disabled={busy || images.length >= MAX_IMAGES || target?.kind === 'harness'} onClick={() => imageInputRef.current?.click()}>{attachIcon}</button>
+              <select
+                className="cc-agent"
+                aria-label={text('Chat agent', 'チャット対象エージェント')}
+                value={selectedId}
+                disabled={busy || agents.length === 0}
+                onChange={(event) => selectAgent(event.target.value)}
+              >
+                <option value="">{text('Select an agent', 'エージェントを選択')}</option>
+                {agents.map((item) => <option key={item.internalId} value={item.internalId}>{item.displayName} · {item.latestVersion}</option>)}
+                {harnesses.length > 0 && <optgroup label={text('Harnesses', 'Harness')}>
+                  {harnesses.map((item) => <option key={item.internalId} value={`harness:${item.internalId}`}>{item.displayName} · {item.latestVersion} · {item.pattern}</option>)}
+                </optgroup>}
+              </select>
+            </div>
+            <button type="submit" className="cc-send" aria-label={text('Send', '送信')} disabled={busy || target === undefined || message.trim() === ''}>
               {sendIcon}
             </button>
           </div>
         </div>
-        <p className="cc-hint">{text('Enter to send · Shift+Enter for a new line · preview mode', 'Enterで送信 · Shift+Enterで改行 · プレビュー実行')}</p>
+        <p className="cc-hint">{text('Enter to send · Shift+Enter for a new line · attach up to 2 images · preview mode', 'Enterで送信 · Shift+Enterで改行 · 画像は2枚まで添付 · プレビュー実行')}</p>
       </form>
       {sessionId !== undefined && <aside className="session-workspace" aria-label={text('Session workspace', 'セッションワークスペース')}>
         <strong>{text('Session workspace', 'セッションワークスペース')}</strong><small>{text(`${artifacts.length} temporary artifacts`, `一時Artifact ${artifacts.length}件`)}</small>
@@ -208,7 +261,7 @@ function Turn({ turn, agentName, text }: { readonly turn: ChatTurn; readonly age
     return (
       <div className="cc-msg user">
         <span className="cc-avatar user" aria-hidden="true">{userIcon}</span>
-        <div className="cc-bubble"><span className="cc-name">{text('You', 'あなた')}</span><p>{turn.text}</p></div>
+        <div className="cc-bubble"><span className="cc-name">{text('You', 'あなた')}</span><p>{turn.text}</p>{turn.images.length > 0 && <div className="cc-turn-images">{turn.images.map((image) => <img key={`${image.name}:${image.dataUrl.length}`} src={image.dataUrl} alt={image.name} />)}</div>}</div>
       </div>
     );
   }
@@ -221,6 +274,9 @@ function Turn({ turn, agentName, text }: { readonly turn: ChatTurn; readonly age
     );
   }
   const { run } = turn;
+  if (isHarnessRun(run)) {
+    return <div className="cc-msg assistant"><span className="cc-avatar assistant" aria-hidden="true">{sparkIcon}</span><div className="cc-bubble"><span className="cc-name">{agentName}</span><p>{run.response ?? run.failure?.message ?? ''}</p><div className="cc-steps">{run.events.filter((event) => event.kind !== 'harness_started' && event.kind !== 'harness_completed').map((event) => <span className="cc-step" key={event.sequence}><i className="cc-step-dot" />{event.kind}{event.slotId === undefined ? '' : ` · ${event.slotId}`}</span>)}</div><span className="cc-meta">harness run {run.runId}</span></div></div>;
+  }
   return (
     <div className="cc-msg assistant">
       <span className="cc-avatar assistant" aria-hidden="true">{sparkIcon}</span>
@@ -282,6 +338,18 @@ function usageLabel(run: AgentPreviewRunDto): string {
 }
 
 function messageOf(cause: unknown) { return cause instanceof Error ? cause.message : 'Request failed'; }
+
+function isSupportedImage(file: File): boolean { return ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type); }
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('invalid image result'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function isHarnessRun(run: AgentPreviewRunDto | HarnessRunDto): run is HarnessRunDto { return 'harness' in run; }
 
 function formatBytes(bytes: number): string { return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`; }
 

@@ -30,6 +30,9 @@
 | 10 | [10-memory.md](./10-memory.md) | 長期記憶（LLM Wiki + Skillsベース、`ideas-v3` 由来） |
 | 11 | [11-scenario-validation.md](./11-scenario-validation.md) | シナリオ検証（種別疑似ユーザー × 複数ターン会話 × アンケート/感想） |
 | 12 | [12-multi-agent.md](./12-multi-agent.md) | マルチエージェント（サブエージェント委譲・単一チャット面・均一Agent抽象） |
+| 13 | [13-demo-operation-manual.md](./13-demo-operation-manual.md) | デモデータ操作マニュアル |
+| 14 | [14-agent-harness-builder.md](./14-agent-harness-builder.md) | Agent Harness Builder（Sequential / Concurrent / Handoff / Group Chat / Magentic） |
+| 15 | [15-agent-harness-tutorial.md](./15-agent-harness-tutorial.md) | マルチエージェントHarnessの操作チュートリアル |
 
 > **凡例**: 本ドキュメント群では、アイデアに明記された内容を「✅ 記載あり」、本仕様書が補う未決定の提案を「🔷 提案」、採用を決定した提案を「🔶 採用決定」として区別する。
 
@@ -44,6 +47,7 @@ flowchart TB
     TB["Tool Builder<br/>ETLノードフロー"]
     SC["Skill Composer<br/>責務・入出力・依存の束"]
     AB["Agent Assembler<br/>プロンプト自動生成"]
+    HB["Harness Builder<br/>Agent orchestration"]
     WB["Workflow Builder<br/>分岐・ループ・承認 (Phase3)"]
   end
 
@@ -62,6 +66,7 @@ flowchart TB
 
   TB --> SC --> AB
   AB --> RT
+  HB --> RT
   WB --> RT
   TB --> MCPS
   AB --> VAL
@@ -70,7 +75,7 @@ flowchart TB
 
   classDef nocode fill:#e3f2fd,stroke:#1565c0,color:#0d47a1;
   classDef escape fill:#fff3e0,stroke:#e65100,color:#bf360c;
-  class TB,SC,AB,WB nocode;
+  class TB,SC,AB,HB,WB nocode;
   class CN,EX escape;
 ```
 
@@ -104,12 +109,13 @@ flowchart TB
 
 ---
 
-## 6. 4つのビルダーと責務分離
+## 6. 5つのビルダーと責務分離
 
 | ビルダー | 責務 | 実行規則 |
 |---|---|---|
 | **Tool Builder** | 入力→変換→出力の、可能な限り決定的で再実行可能なデータ変換 | ETL（データ変換） |
 | **Workflow Builder** | 複数Toolの接続・分岐・反復・再試行・承認・スケジュール実行 | 制御フロー |
+| **Harness Builder** | 図上の役割へAgent versionを割り当て、複数Agentの制御方式と実行Policyを構成 | マルチエージェント制御 |
 | **Agent Builder** | LLMによるSkill/Tool選択・引数生成・構造化応答 | 非決定的（LLM） |
 | **Skill Composer** | 責務・入力・出力・依存ツールの束を再利用単位として定義 | 構成（メタデータ） |
 
@@ -142,6 +148,7 @@ flowchart TB
 | **Tool（ツール）** | 「入力スキーマ → 変換 → 出力スキーマ」の検証済み実行単位 |
 | **Skill（スキル）** | 責務・入力・出力・依存ツールの束。再利用単位 |
 | **Agent（エージェント）** | システムプロンプト + 構造化出力 + Skill + Tool の構成体 |
+| **Agent Harness（ハーネス）** | バージョン固定Agentを型付きオーケストレーション図へ割り当て、計画・記憶・承認・予算・観測Policyとともに1つの実行対象へ合成する定義 |
 | **Workflow（ワークフロー）** | 複数Toolを接続し分岐・反復・承認・スケジュールで束ねる制御フロー |
 | **Node（ノード）** | ETLフロー上の1変換単位（source / transform / analyze / sink / control / custom-code） |
 | **Port** | アプリケーションが所有する外部SDK境界のインターフェース |

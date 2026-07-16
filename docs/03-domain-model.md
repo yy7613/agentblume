@@ -12,6 +12,7 @@ erDiagram
   WORKSPACE ||--o{ TOOL : contains
   WORKSPACE ||--o{ SKILL : contains
   WORKSPACE ||--o{ AGENT : contains
+  WORKSPACE ||--o{ AGENT_HARNESS : contains
   WORKSPACE ||--o{ WORKFLOW : contains
   WORKSPACE ||--o{ SECRET_REF : registers
   WORKSPACE ||--o{ AGENT_SESSION : hosts
@@ -27,6 +28,9 @@ erDiagram
   AGENT }o--o{ SKILL : "composes"
   AGENT }o--o{ TOOL : "binds directly"
   AGENT ||--o| OUTPUT_SCHEMA : "structured output"
+  AGENT_HARNESS }o--|{ AGENT : "assigns versioned slots"
+  AGENT_HARNESS ||--o{ HARNESS_RUN : "executes as"
+  HARNESS_RUN ||--o{ RUN : "owns participant runs"
   AGENT_SESSION ||--o{ RUN : groups
   AGENT_SESSION ||--o{ SESSION_ARTIFACT : owns
   RUN ||--o{ SESSION_ARTIFACT : produces
@@ -135,6 +139,8 @@ v1の`StructuredOutput`はJSON object直下の`string / number / integer / boole
 v1の`Skill`は責務・発火条件・入出力説明・編集可能なinstructionsを持ち、依存Toolを`internalId + SemVer`で固定する。latest参照は保存しないため、Tool更新後も既存Skillの再現性を維持する。AgentへのSkill組み込みは後続Incrementで扱う。
 
 `Agent.agents`（サブエージェント参照 = `internalId + SemVer + usage委譲基準`）によるマルチエージェント合成は [12-multi-agent.md](./12-multi-agent.md) を参照。バージョン固定参照のため循環は構造的に不可能で、合成体も通常のAgentと同一の抽象として扱う（[ADR-0018](./adr/0018-multi-agent-sub-agent-delegation.md)）。
+
+`AgentHarness`はSequential、Concurrent、Handoff、Group Chat、Magenticのように制御フロー自体を保存・可視化する集約である。pattern別の型付きtopology、Agent versionを割り当てるslot、実行policyを保持し、Compilerが共通の実行グラフへ変換する。単純委譲には引き続き`Agent.agents`を使う。詳細は [14-agent-harness-builder.md](./14-agent-harness-builder.md) を参照。
 
 `AgentSession`は1つのルート会話または評価ケースを表し、複数Runと一時`SessionArtifact`を束ねる。Project Workspaceや長期Wikiとは寿命・認可境界を分け、サブAgentだけが親Sessionを継承する。詳細は [ADR-0027](./adr/0027-tool-output-and-session-workspace.md) を参照。
 

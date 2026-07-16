@@ -33,6 +33,21 @@ describe('LmStudioModelProvider', () => {
     });
   });
 
+  it('画像付き入力をOpenAI互換のimage_url content partへ変換する', async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ choices: [{ finish_reason: 'stop', message: { content: 'seen' } }] }));
+    const provider = new LmStudioModelProvider({ baseUrl: 'http://x/v1', model: 'vision-model', fetcher });
+    await provider.complete({ messages: [{ role: 'user', content: [
+      { type: 'text', text: 'What is this?' },
+      { type: 'image_url', imageUrl: 'data:image/png;base64,AA==' },
+    ] }] });
+    const body = JSON.parse(String((fetcher.mock.calls[0]?.[1] as RequestInit).body));
+    expect(provider.capabilities()).toContain('vision');
+    expect(body.messages[0]).toEqual({ role: 'user', content: [
+      { type: 'text', text: 'What is this?' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } },
+    ] });
+  });
+
   it.each([
     [response({ error: 'offline' }, 503), /HTTP 503/],
     [response({ choices: [] }), /invalid/],

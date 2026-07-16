@@ -38,6 +38,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
         ...(version !== undefined ? { version } : {}),
         message: body.message,
         mode: body.mode,
+        ...(body.images !== undefined ? { images: body.images } : {}),
         ...(body.memoryPageIds !== undefined ? { memoryPageIds: body.memoryPageIds } : {}),
         ...(body.sessionId !== undefined ? { sessionId: body.sessionId } : {}),
       }, request.raw.signal);
@@ -50,6 +51,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
         systemPrompt: body.systemPrompt,
         message: body.message,
         mode: body.mode,
+        ...(body.images !== undefined ? { images: body.images } : {}),
         ...(body.sessionId !== undefined ? { sessionId: body.sessionId } : {}),
       }, request.raw.signal);
     }

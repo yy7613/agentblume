@@ -15,7 +15,7 @@ import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
 import { EtlEngine } from '../etl/engine';
-import type { ModelCompletion, ModelMessage, ModelProviderPort, ModelToolCall, ModelToolDefinition, ModelUsage } from '../model/model-provider';
+import type { ModelCompletion, ModelContentPart, ModelMessage, ModelProviderPort, ModelRequestMessage, ModelToolCall, ModelToolDefinition, ModelUsage } from '../model/model-provider';
 import { AgentRunError, RunFailedError, UnsafeToolError } from './errors';
 import { failureFrom, sanitizeRunTrace } from './run-trace';
 import { assertOutputMatchesSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
@@ -45,6 +45,13 @@ export interface RunAgentPreviewInput {
   readonly mode: AgentRunMode;
   readonly purpose?: RunPurpose;
   readonly sessionId?: string;
+  readonly images?: readonly ImageAttachment[];
+}
+
+/** チャットから渡す画像。data URLだけを許可し、外部URLの取得は行わない。 */
+export interface ImageAttachment {
+  readonly name: string;
+  readonly dataUrl: string;
 }
 
 /** 直前までの会話履歴（system直後へ注入される。v16: シナリオ検証の複数ターン会話用）。 */
@@ -62,6 +69,7 @@ export interface RunSavedAgentPreviewInput {
   readonly purpose?: RunPurpose;
   readonly sessionId?: string;
   readonly history?: readonly AgentHistoryMessage[];
+  readonly images?: readonly ImageAttachment[];
   /** サブエージェント委譲のツリー共有バジェット（既定値で補完・上限超は既定へクランプ）。 */
   readonly budget?: Partial<RunBudget>;
   /** 手動アタッチした長期記憶（Wiki）の要約。指定時のみ system prompt 先頭へ最小注入する（v21 M1）。 */
@@ -229,7 +237,7 @@ export class RunAgentPreviewUseCase {
       { tool: { internalId: input.toolId, ...(input.version !== undefined ? { version: input.version.toString() } : {}) } },
       async (trace, timing, runId) => {
         const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget: makeBudget(), depth: 0, subAgents: [], ...(session === undefined ? {} : { session }) };
-        const result = await this.perform(input.systemPrompt, input.message, [tool], trace, timing, ctx, signal);
+        const result = await this.perform(input.systemPrompt, input.message, [tool], trace, timing, ctx, signal, undefined, undefined, undefined, input.images);
         return result.tool === undefined ? { ...result, tool: this.toolRef(tool) } : result;
       },
     );
@@ -258,7 +266,7 @@ export class RunAgentPreviewUseCase {
         const wikiContext = await this.buildWikiContext(input.scope, agent, input.message, input.memoryPageIds);
         const memoryContext = [wikiContext, input.memoryContext].filter((value): value is string => value !== undefined && value.trim() !== '').join('\n\n') || undefined;
         const systemPrompt = withMemoryContext(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), memoryContext);
-        return this.perform(systemPrompt, input.message, resolved.tools, trace, timing, ctx, signal, this.agentRef(agent), agent.output, input.history);
+        return this.perform(systemPrompt, input.message, resolved.tools, trace, timing, ctx, signal, this.agentRef(agent), agent.output, input.history, input.images);
       },
     );
   }
@@ -334,6 +342,7 @@ export class RunAgentPreviewUseCase {
     agent?: RunRecord['agent'],
     output?: StructuredOutputDefinition,
     history?: readonly AgentHistoryMessage[],
+    images?: readonly ImageAttachment[],
   ): Promise<RunResult> {
     for (const tool of tools) {
       if (tool.sideEffect !== 'read-only' && tool.sideEffect !== 'session-write') {
@@ -347,14 +356,17 @@ export class RunAgentPreviewUseCase {
     if (output !== undefined && !this.model.capabilities().includes('structured-output')) {
       throw new AgentRunError('configured model provider does not support structured output');
     }
+    if ((images?.length ?? 0) > 0 && !this.model.capabilities().includes('vision')) {
+      throw new AgentRunError('configured model provider does not support image input');
+    }
 
     const toolDefinitions = tools.map(toolToModelDefinition);
     const definitions = [...toolDefinitions, ...ctx.subAgents.map(subAgentToolDefinition), ...this.workspaceDefinitions(ctx, tools)];
-    const messages: ModelMessage[] = [
+    const messages: ModelRequestMessage[] = [
       { role: 'system', content: systemPrompt },
       // v16: 会話履歴（シナリオ検証の複数ターン）を system 直後へ注入する（後方互換: 省略時は従来どおり）。
       ...(history ?? []).map((entry): ModelMessage => ({ role: entry.role, content: entry.content })),
-      { role: 'user', content: userMessage },
+      { role: 'user', content: userContent(userMessage, images) },
     ];
     const completions: ModelCompletion[] = [];
     const executed: NonNullable<RunRecord['tool']>[] = [];
@@ -635,6 +647,14 @@ export class RunAgentPreviewUseCase {
     if (agent === null) throw new AgentNotFoundError(`RunAgentPreview: agent not found: ${agentId}${version === undefined ? '' : `@${version.toString()}`}`);
     return agent;
   }
+}
+
+function userContent(message: string, images?: readonly ImageAttachment[]): string | readonly ModelContentPart[] {
+  if (images === undefined || images.length === 0) return message;
+  return [
+    { type: 'text', text: message },
+    ...images.map((image): ModelContentPart => ({ type: 'image_url', imageUrl: image.dataUrl })),
+  ];
 }
 
 function boundedWorkspacePayload(payload: unknown, limit: number): unknown {

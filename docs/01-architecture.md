@@ -174,6 +174,7 @@ flowchart LR
 | Port | 責務 | 代表Adapter |
 |---|---|---|
 | `AgentRuntimePort` | エージェント実行・ストリーミング・Tool呼び出し仲介 | Mastra |
+| `HarnessRuntimePort` | バージョン付きHarnessの開始・pause/resume・共通イベント正規化 | Local Harness Runtime / Microsoft Agent Framework Adapter（将来） |
 | `ModelProviderPort` | LLM推論・埋め込み。モデルルーティング | LM Studio（開発）/ OpenAI互換 / クラウド各社 |
 | `McpClientPort` | 外部MCPサーバのTool利用 | MCP SDK Client |
 | `McpServerPort` | 自作ToolをMCPとして公開 | MCP SDK Server |
@@ -240,12 +241,14 @@ flowchart LR
   end
   subgraph Control["制御フロー"]
     WE["Workflow Engine<br/>分岐 / 反復 / 承認 / スケジュール"]
+    HE["Harness Runtime<br/>Agent orchestration patterns"]
   end
   subgraph NonDet["非決定的（LLM）"]
     AE["Agent Engine<br/>Skill/Tool選択・引数生成・構造化応答"]
   end
 
   AE -->|Tool呼び出し| TE
+  HE -->|Agentをleaf実行| AE
   WE -->|Tool/Agent起動| TE
   WE --> AE
 
@@ -257,7 +260,8 @@ flowchart LR
 
 - **Tool Engine**: 副作用を宣言し、プレビューでは書き込みを実行しない。外部APIは保存済みレスポンスへ切替可能。
 - **Agent Engine**: LLMには要約・意図解釈・タスク計画のみを担わせ、計算・データ処理・外部実行はToolへ委譲。
-- **Workflow Engine**: Phase 3で導入（v1対象外）。
+- **Harness Runtime**: Agent協調に限定した型付き制御フロー。Sequential / Concurrentから段階導入し、詳細は [14-agent-harness-builder.md](./14-agent-harness-builder.md) を参照。
+- **Workflow Engine**: 汎用の分岐・反復・cronをPhase 3で導入。Harness Runtimeは将来この実行基盤へ統合できるが、保存するAgent Harness契約は維持する。
 
 ---
 

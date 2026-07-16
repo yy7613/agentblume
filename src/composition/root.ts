@@ -129,6 +129,17 @@ import { ResolveDataSourceGraphUseCase } from '../application/data-source/resolv
 import { EnvironmentSearchProviderCatalog } from '../adapters/search/environment-search-provider-catalog';
 import { WebSearchUseCase } from '../application/search/web-search';
 import type { SearchProviderCatalog } from '../application/search/search-provider';
+import { InMemoryAgentHarnessRepository } from '../adapters/storage/in-memory-harness-repository';
+import { SqliteAgentHarnessRepository } from '../adapters/storage/sqlite-harness-repository';
+import type { AgentHarnessRepository } from '../domain/harness/harness-repository';
+import { SaveHarnessUseCase } from '../application/harness/save-harness';
+import { QueryHarnessesUseCase } from '../application/harness/query-harnesses';
+import { ValidateHarnessUseCase } from '../application/harness/validate-harness';
+import { CompileHarnessUseCase } from '../application/harness/compile-harness';
+import { InMemoryHarnessRunRepository } from '../adapters/storage/in-memory-harness-run-repository';
+import { SqliteHarnessRunRepository } from '../adapters/storage/sqlite-harness-run-repository';
+import type { HarnessRunRepository } from '../domain/harness/harness-run-repository';
+import { QueryHarnessRunsUseCase, RunHarnessUseCase } from '../application/harness/run-harness';
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
@@ -143,6 +154,8 @@ export interface AppOptions {
   readonly modelProvider?: ModelProviderPort;
   readonly runRepository?: RunRepository;
   readonly agentRepository?: AgentRepository;
+  readonly harnessRepository?: AgentHarnessRepository;
+  readonly harnessRunRepository?: HarnessRunRepository;
   readonly skillRepository?: SkillRepository;
   readonly experimentRepository?: ExperimentRepository;
   readonly qualityGateRepository?: QualityGateRepository;
@@ -167,6 +180,8 @@ export interface App {
   readonly judgeEvaluator: JudgeEvaluatorPort;
   readonly runRepo: RunRepository;
   readonly agentRepo: AgentRepository;
+  readonly harnessRepo: AgentHarnessRepository;
+  readonly harnessRunRepo: HarnessRunRepository;
   readonly skillRepo: SkillRepository;
   readonly personaRepo: PersonaRepository;
   readonly scenarioRepo: ScenarioRepository;
@@ -198,6 +213,12 @@ export interface App {
   readonly saveAgent: SaveAgentUseCase;
   readonly queryAgents: QueryAgentsUseCase;
   readonly generateAgentPrompt: GenerateAgentPromptUseCase;
+  readonly saveHarness: SaveHarnessUseCase;
+  readonly queryHarnesses: QueryHarnessesUseCase;
+  readonly validateHarness: ValidateHarnessUseCase;
+  readonly compileHarness: CompileHarnessUseCase;
+  readonly runHarness: RunHarnessUseCase;
+  readonly queryHarnessRuns: QueryHarnessRunsUseCase;
   readonly saveSkill: SaveSkillUseCase;
   readonly querySkills: QuerySkillsUseCase;
   readonly generateSkillPrompt: GenerateSkillPromptUseCase;
@@ -315,6 +336,16 @@ export function createApp(options?: AppOptions): App {
     : profile === 'local'
       ? (() => { const sqlite = new SqliteAgentRepository(path ?? ':memory:'); return { repo: sqlite as AgentRepository, close: () => sqlite.close() }; })()
       : { repo: new InMemoryAgentRepository() as AgentRepository, close: () => {} };
+  const harnessAdapter = options?.harnessRepository !== undefined
+    ? { repo: options.harnessRepository, close: () => {} }
+    : profile === 'local'
+      ? (() => { const sqlite = new SqliteAgentHarnessRepository(path ?? ':memory:'); return { repo: sqlite as AgentHarnessRepository, close: () => sqlite.close() }; })()
+      : { repo: new InMemoryAgentHarnessRepository() as AgentHarnessRepository, close: () => {} };
+  const harnessRunAdapter = options?.harnessRunRepository !== undefined
+    ? { repo: options.harnessRunRepository, close: () => {} }
+    : profile === 'local'
+      ? (() => { const sqlite = new SqliteHarnessRunRepository(path ?? ':memory:'); return { repo: sqlite as HarnessRunRepository, close: () => sqlite.close() }; })()
+      : { repo: new InMemoryHarnessRunRepository() as HarnessRunRepository, close: () => {} };
   const sessionAdapter = profile === 'local'
     ? (() => { const sqlite = new SqliteAgentSessionRepository(path ?? ':memory:'); return { repo: sqlite as AgentSessionRepository, close: () => sqlite.close() }; })()
     : { repo: new InMemoryAgentSessionRepository() as AgentSessionRepository, close: () => {} };
@@ -416,6 +447,8 @@ export function createApp(options?: AppOptions): App {
     judgeEvaluator,
     runRepo: runAdapter.repo,
     agentRepo: agentAdapter.repo,
+    harnessRepo: harnessAdapter.repo,
+    harnessRunRepo: harnessRunAdapter.repo,
     skillRepo: skillAdapter.repo,
     personaRepo: personaAdapter.repo,
     scenarioRepo: scenarioAdapter.repo,
@@ -447,6 +480,12 @@ export function createApp(options?: AppOptions): App {
     saveAgent: new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo, wikiAdapter.repo),
     queryAgents: new QueryAgentsUseCase(agentAdapter.repo),
     generateAgentPrompt: new GenerateAgentPromptUseCase(repo, skillAdapter.repo, agentAdapter.repo),
+    saveHarness: new SaveHarnessUseCase(harnessAdapter.repo, agentAdapter.repo),
+    queryHarnesses: new QueryHarnessesUseCase(harnessAdapter.repo),
+    validateHarness: new ValidateHarnessUseCase(agentAdapter.repo),
+    compileHarness: new CompileHarnessUseCase(),
+    runHarness: new RunHarnessUseCase(harnessAdapter.repo, harnessRunAdapter.repo, runAgentPreview),
+    queryHarnessRuns: new QueryHarnessRunsUseCase(harnessRunAdapter.repo),
     saveSkill,
     querySkills: new QuerySkillsUseCase(skillAdapter.repo),
     generateSkillPrompt: new GenerateSkillPromptUseCase(repo),
@@ -500,40 +539,46 @@ export function createApp(options?: AppOptions): App {
     previewTool: new PreviewToolUseCase(repo, engine, resolveDataSources),
     close: () => {
       experimentWorker.shutdown();
-      try { closeTools(); }
+      try { harnessRunAdapter.close(); }
       finally {
-        try { runAdapter.close(); }
+        try { harnessAdapter.close(); }
         finally {
-          try { agentAdapter.close(); }
+          try { closeTools(); }
           finally {
-            try { sessionAdapter.close(); }
+            try { runAdapter.close(); }
             finally {
-              try { sessionArtifactAdapter.close(); }
+              try { agentAdapter.close(); }
               finally {
-                try { dataSourceAdapter.close(); }
+                try { sessionAdapter.close(); }
                 finally {
-                  try { skillAdapter.close(); }
+                  try { sessionArtifactAdapter.close(); }
                   finally {
-                    try { personaAdapter.close(); }
+                    try { dataSourceAdapter.close(); }
                     finally {
-                      try { scenarioAdapter.close(); }
+                      try { skillAdapter.close(); }
                       finally {
-                        try { scenarioRunAdapter.close(); }
+                        try { personaAdapter.close(); }
                         finally {
-                          try { wikiAdapter.close(); }
+                          try { scenarioAdapter.close(); }
                           finally {
-                            try { memoryProposalAdapter.close(); }
+                            try { scenarioRunAdapter.close(); }
                             finally {
-                              try { evaluationDatasetAdapter.close(); }
+                              try { wikiAdapter.close(); }
                               finally {
-                                try { evaluatorProfileAdapter.close(); }
+                                try { memoryProposalAdapter.close(); }
                                 finally {
-                                  try { experimentAdapter.close(); }
+                                  try { evaluationDatasetAdapter.close(); }
                                   finally {
-                                    try { qualityGateAdapter.close(); }
+                                    try { evaluatorProfileAdapter.close(); }
                                     finally {
-                                      try { judgeRubricAdapter.close(); }
-                                      finally { operationsAdapter.close(); }
+                                      try { experimentAdapter.close(); }
+                                      finally {
+                                        try { qualityGateAdapter.close(); }
+                                        finally {
+                                          try { judgeRubricAdapter.close(); }
+                                          finally { operationsAdapter.close(); }
+                                        }
+                                      }
                                     }
                                   }
                                 }

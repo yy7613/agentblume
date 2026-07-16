@@ -6,7 +6,7 @@ const uiUrl = `http://127.0.0.1:${uiPort}`;
 /** デモデータ入りの実画面を再現し、マニュアル画像を更新する専用設定。 */
 export default defineConfig({
   testDir: './e2e',
-  testMatch: 'manual-screenshots.spec.ts',
+  testMatch: ['manual-screenshots.spec.ts', 'harness-tutorial-screenshots.spec.ts'],
   fullyParallel: false,
   workers: 1,
   reporter: [['list']],

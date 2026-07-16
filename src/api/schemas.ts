@@ -10,6 +10,7 @@ import { PUBLISH_STATES, SIDE_EFFECTS } from '../domain/tool/metadata';
 import type { PublishState, SideEffect } from '../domain/tool/metadata';
 import { AGENT_KINDS } from '../domain/agent/agent';
 import { STRUCTURED_OUTPUT_TYPES } from '../domain/agent/structured-output';
+import { HARNESS_PATTERNS } from '../domain/harness/agent-harness';
 import { PERSONA_ARCHETYPES, PERSONA_LANGUAGES, PERSONA_LEVELS, PERSONA_VERBOSITIES } from '../domain/validation/persona';
 import { SURVEY_QUESTION_KINDS } from '../domain/validation/survey';
 import { CODE_SCORERS } from '../domain/evaluation/evaluator-profile';
@@ -170,6 +171,56 @@ const runBaseSchema = {
   mode: z.enum(['preview', 'test']).default('preview'),
 } as const;
 
+const imageAttachmentSchema = z.object({
+  name: z.string().min(1).max(200),
+  // SVGと外部URLを除外する。データURLに限定してサーバーが意図せず外部へアクセスしないようにする。
+  dataUrl: z.string().max(4_200_000).regex(/^data:image\/(?:jpeg|png|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/),
+});
+
+const harnessSlotSchema = z.object({
+  id: z.string().min(1), label: z.string().min(1), purpose: z.string().min(1),
+  assignment: z.object({ internalId: z.string().min(1), version: z.string().min(1) }),
+});
+const harnessTopologySchema = z.discriminatedUnion('pattern', [
+  z.object({ pattern: z.literal('agent-as-tools'), coordinatorSlotId: z.string().min(1), participantSlotIds: z.array(z.string().min(1)).min(1) }),
+  z.object({ pattern: z.literal('sequential'), orderedSlotIds: z.array(z.string().min(1)).min(2), contextMode: z.enum(['full-conversation', 'previous-response']) }),
+  z.object({ pattern: z.literal('concurrent'), participantSlotIds: z.array(z.string().min(1)).min(2), aggregation: z.enum(['collect', 'vote', 'agent']), aggregatorSlotId: z.string().min(1).optional() }),
+  z.object({ pattern: z.literal('handoff'), startSlotId: z.string().min(1), transitions: z.array(z.object({ fromSlotId: z.string().min(1), toSlotId: z.string().min(1), condition: z.string().min(1) })).min(1), autonomous: z.boolean().default(false) }),
+  z.object({ pattern: z.literal('group-chat'), participantSlotIds: z.array(z.string().min(1)).min(2), selector: z.enum(['round-robin', 'fixed-order', 'agent']), managerSlotId: z.string().min(1).optional(), maxRounds: z.number().int().min(1).max(100) }),
+  z.object({ pattern: z.literal('magentic'), managerSlotId: z.string().min(1), participantSlotIds: z.array(z.string().min(1)).min(2), maxRounds: z.number().int().min(1).max(100), maxStalls: z.number().int().min(0).max(100), maxResets: z.number().int().min(0).max(100), requirePlanSignoff: z.boolean().default(false) }),
+]);
+const harnessPoliciesSchema = z.object({
+  budget: z.object({ maxDurationMs: z.number().int().min(1_000).max(3_600_000), maxParticipantRuns: z.number().int().min(1).max(100), maxModelRounds: z.number().int().min(1).max(200), maxToolCalls: z.number().int().min(1).max(500), maxParallelism: z.number().int().min(1).max(32) }),
+  context: z.enum(['task-only', 'previous-response', 'full-conversation']),
+  planning: z.object({ enabled: z.boolean(), requireApproval: z.boolean() }),
+  memory: z.object({ wikiIds: z.array(z.string().min(1)), sessionWorkspace: z.boolean() }),
+  approvals: z.object({ mode: z.enum(['inherit-agent', 'always', 'disabled-in-preview']) }),
+  failure: z.object({ mode: z.enum(['fail-fast', 'collect', 'continue-with-error']) }),
+});
+
+/** POST /harnesses と Harness Draft 検証の共通DTO。Agent参照は保存時にSemVer固定される。 */
+export const saveHarnessBodySchema = z.object({
+  scope: tenantScopeSchema,
+  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: z.string().min(1),
+  pattern: z.enum(HARNESS_PATTERNS), slots: z.array(harnessSlotSchema).min(1), topology: harnessTopologySchema,
+  policies: harnessPoliciesSchema.optional(), output: z.object({ format: z.literal('text') }).optional(),
+  bump: z.enum(['major', 'minor', 'patch']).optional(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
+}).superRefine((value, context) => {
+  if (value.pattern !== value.topology.pattern) context.addIssue({ code: 'custom', path: ['topology', 'pattern'], message: 'topology.pattern must match pattern' });
+});
+
+export const harnessListQuerySchema = tenantScopeSchema;
+export const runHarnessBodySchema = z.object({
+  scope: tenantScopeSchema,
+  harness: z.object({ internalId: z.string().min(1), version: z.string().min(1).optional() }),
+  message: z.string().min(1), mode: z.enum(['preview', 'test']).default('preview'),
+});
+export const harnessRunQuerySchema = tenantScopeSchema;
+export const harnessRunListQuerySchema = tenantScopeSchema.extend({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  status: z.enum(['running', 'succeeded', 'failed', 'waiting-input', 'waiting-approval', 'cancelled']).optional(),
+});
+
 /** POST /runs: inline Tool previewまたは保存済みAgent preview。 */
 export const runAgentBodySchema = z.union([z.object({
   ...runBaseSchema,
@@ -179,6 +230,7 @@ export const runAgentBodySchema = z.union([z.object({
   }),
   systemPrompt: z.string().min(1),
   sessionId: z.string().min(1).optional(),
+  images: z.array(imageAttachmentSchema).max(2).optional(),
 }), z.object({
   ...runBaseSchema,
   agent: z.object({
@@ -188,6 +240,7 @@ export const runAgentBodySchema = z.union([z.object({
   /** 手動アタッチする Wiki ページ id（指定時のみ最小注入する・v21 M1）。 */
   memoryPageIds: z.array(z.string().min(1)).optional(),
   sessionId: z.string().min(1).optional(),
+  images: z.array(imageAttachmentSchema).max(2).optional(),
 })]);
 
 export const createAgentSessionBodySchema = z.object({

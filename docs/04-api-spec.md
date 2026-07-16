@@ -64,6 +64,11 @@ interface AgentRuntimePort {
   cancel(runId: RunId): Promise<void>;
 }
 
+interface HarnessRuntimePort {
+  start(input: StartHarnessInput, signal?: AbortSignal): Promise<HarnessRunSnapshot>;
+  resume(input: ResumeHarnessInput, signal?: AbortSignal): Promise<HarnessRunSnapshot>;
+}
+
 interface ModelProviderPort {
   // v1 Agent previewはTool Callingを含む正規化済みcompletionを返す。
   // token streamingは後続のAgentRuntimePort実装で共通RuntimeEventへ拡張する。
@@ -72,7 +77,7 @@ interface ModelProviderPort {
 }
 ```
 
-> v1の `ModelProviderPort` は `chat` / `tool-calling` / `structured-output` に限定する。埋め込みはRAG導入時に `embed` capabilityと要求型を追加する。
+`ModelProviderPort` のcapabilityは `chat` / `tool-calling` / `structured-output` / `vision` である。`vision` を持つproviderには、ユーザー入力をテキストpartと`image_url` partの配列として渡せる。LM Studio adapterは画像のデータURLをOpenAI互換の`image_url.url`へ変換する。埋め込みはRAG導入時に `embed` capabilityと要求型を追加する。
 
 AgentにStructured Outputがある場合、completion requestへ`responseFormat: { name, strict, schema }`を指定する。LM Studio adapterはOpenAI互換`response_format.json_schema`へ変換し、最終contentはアプリケーション側でも再検証する。
 
@@ -222,6 +227,8 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 
 保存済みAgent実行では、system promptとTool候補をAgent versionから解決する。
 v1の実行上限はTool call 4回、model round 5回であり、実際の呼び出し順はRun traceと`tools`へ保存する。
+
+複数Agentの制御フローは`/harnesses`と`/harness-runs`で分離する。Harnessはpattern別の型付き定義を保存し、Handoffの追加入力やMagenticの計画承認は`POST /harness-runs/:runId/responses`の型付きrequest/responseで再開する。完全な契約は [14-agent-harness-builder.md §9](./14-agent-harness-builder.md#9-rest-api) を参照。
 
 ```jsonc
 // POST /runs

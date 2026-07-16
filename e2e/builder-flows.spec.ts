@@ -104,6 +104,49 @@ test('Agent BuilderでTool選択からprompt生成・編集・保存まで完了
   await expect(page.getByText('E2E agent response')).toBeVisible();
 });
 
+test('Harness BuilderでAgent割当・検証・保存・Sequential previewまで完了する', async ({ page }) => {
+  for (const agent of [
+    { internalId: 'harness-author', displayName: 'Harness Author' },
+    { internalId: 'harness-reviewer', displayName: 'Harness Reviewer' },
+    { internalId: 'harness-publisher', displayName: 'Harness Publisher' },
+  ]) {
+    const response = await page.request.post('/agents', { data: {
+      scope, ...agent, workingName: `${agent.displayName} draft`, publishName: agent.internalId.replace(/-/g, '_'), owner: 'e2e@example.com', kind: 'normal', systemPrompt: `You are the ${agent.displayName}.`, tools: [],
+    } });
+    expect(response.status()).toBe(201);
+  }
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Harness', exact: true }).click();
+  await expect(page.getByText('Agent Harness Builder', { exact: true })).toBeVisible();
+  await page.getByLabel('Internal ID').fill('e2e-content-review');
+  await page.getByLabel('Display name').fill('E2E Content Review');
+  await page.getByLabel('Owner').fill('e2e@example.com');
+  await page.getByLabel('Assign agent to Author').selectOption('harness-author');
+  await page.getByLabel('Assign agent to Reviewer').selectOption('harness-reviewer');
+  await page.getByLabel('Assign agent to Publisher').selectOption('harness-publisher');
+  await page.getByRole('button', { name: 'Validate', exact: true }).click();
+  await expect(page.getByText('Definition is valid', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Save version', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'e2e-content-review@1.0.0' })).toBeVisible();
+
+  const harnessResponse = await page.request.get('/harnesses/e2e-content-review', { params: scope });
+  expect(harnessResponse.status()).toBe(200);
+  expect((await harnessResponse.json()).harness).toMatchObject({ pattern: 'sequential', topology: { orderedSlotIds: ['author', 'reviewer', 'publisher'] } });
+
+  await page.route('**/harness-runs', async (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({
+      harness: { internalId: 'e2e-content-review', version: '1.0.0' }, message: 'Review this product announcement.', mode: 'preview',
+    });
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ run: {
+      runId: 'e2e-harness-run', scope, harness: { internalId: 'e2e-content-review', version: '1.0.0', displayName: 'E2E Content Review' }, mode: 'preview', status: 'succeeded', message: 'Review this product announcement.', startedAt: '2026-07-16T00:00:00.000Z', completedAt: '2026-07-16T00:00:01.000Z', response: 'Reviewed and ready to publish.', events: [{ sequence: 1, kind: 'participant_completed', at: '2026-07-16T00:00:01.000Z', slotId: 'publisher', childRunId: 'child-3' }],
+    } }) });
+  });
+  await page.getByLabel('Harness chat message').fill('Review this product announcement.');
+  await page.getByRole('button', { name: 'Run preview', exact: true }).click();
+  await expect(page.getByText('Reviewed and ready to publish.')).toBeVisible();
+});
+
 test('Skill Builderで名前・説明・内容を保存できる', async ({ page }) => {
   const toolResponse = await page.request.post('/tools', { data: {
     scope, internalId: 'e2e-skill-tool', workingName: 'E2E skill tool', displayName: 'E2E Skill Tool',

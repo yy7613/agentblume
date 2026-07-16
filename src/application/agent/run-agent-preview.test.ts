@@ -150,7 +150,8 @@ describe('RunAgentPreviewUseCase', () => {
           case 1: return { message: { role: 'assistant', content: null, toolCalls: [{ id: 'store', name: 'workspace_tool', arguments: { name: 'Alice', score: 42 } }] }, finishReason: 'tool_calls' };
           case 2: {
             const toolMessage = request.messages.at(-1);
-            this.artifactId = ((JSON.parse(toolMessage?.content ?? '{}') as { artifact?: { id?: string } }).artifact?.id ?? '');
+            const content = typeof toolMessage?.content === 'string' ? toolMessage.content : '{}';
+            this.artifactId = ((JSON.parse(content) as { artifact?: { id?: string } }).artifact?.id ?? '');
             return { message: { role: 'assistant', content: null, toolCalls: [{ id: 'list', name: 'workspace_list', arguments: {} }] }, finishReason: 'tool_calls' };
           }
           case 3: return { message: { role: 'assistant', content: null, toolCalls: [{ id: 'describe', name: 'workspace_describe', arguments: { artifactId: this.artifactId } }] }, finishReason: 'tool_calls' };

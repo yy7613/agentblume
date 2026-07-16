@@ -24,13 +24,17 @@ import { registerQualityGateRoutes, type QualityGateRouteDeps } from './quality-
 import { registerOperationsRoutes, type OperationsRouteDeps } from './operations-routes';
 import { registerSessionRoutes, type SessionRouteDeps } from './session-routes';
 import { registerDataSourceRoutes, type DataSourceRouteDeps } from './data-source-routes';
+import { registerHarnessRoutes, type HarnessRouteDeps } from './harness-routes';
+import { registerHarnessRunRoutes, type HarnessRunRouteDeps } from './harness-run-routes';
 
 /** ルート・エラーハンドラ設定済みの Fastify インスタンスを組み立てる（listen しない）。 */
 export function buildServer(
-  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps,
+  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & HarnessRouteDeps & HarnessRunRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps,
   options?: { logger?: boolean },
 ): FastifyInstance {
-  const app = Fastify({ logger: options?.logger ?? false });
+  // チャットの画像（最大2枚・各3 MiB）はBase64化で合計約8 MiBになる。
+  // JSONのメタデータ分も含めて受理できるよう、10 MiBまで許可する。
+  const app = Fastify({ logger: options?.logger ?? false, bodyLimit: 10 * 1024 * 1024 });
 
   // ハンドラから throw された例外を §2 のマッピングで HTTP へ変換する。
   app.setErrorHandler((error, _request, reply) => {
@@ -42,6 +46,8 @@ export function buildServer(
   registerDraftToolRoutes(app, deps);
   registerRunRoutes(app, deps);
   registerAgentRoutes(app, deps);
+  registerHarnessRoutes(app, deps);
+  registerHarnessRunRoutes(app, deps);
   registerSkillRoutes(app, deps);
   registerValidationRoutes(app, deps);
   registerEvaluationRoutes(app, deps);

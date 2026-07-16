@@ -149,7 +149,43 @@ sequenceDiagram
 
 ---
 
-## 5. Workflow実行（Phase 3）
+## 5. Agent Harness実行
+
+Harness Compilerがpattern別定義を共通実行グラフへ変換し、Harness Runtimeが保存済みAgentをleafとして起動する。root Harness Runから各participant Runへ`childRunId`で辿れる。
+
+```mermaid
+sequenceDiagram
+  actor User
+  participant Chat
+  participant HR as Harness Runtime
+  participant CP as Context Projector
+  participant AR as Agent Runner
+  participant Rep as Run/Event Repository
+
+  User->>Chat: Harnessへメッセージ
+  Chat->>HR: start(harness@version, input)
+  HR->>Rep: root Run開始
+  loop patternが選ぶ各participant
+    HR->>CP: task + conversation ledger + context policy
+    CP-->>HR: participant向けmessages
+    HR->>AR: Agent@versionをleaf実行
+    AR-->>HR: response + childRunId
+    HR->>Rep: participant event / budget / ledger
+  end
+  alt ユーザー入力・承認待ち
+    HR-->>Chat: waiting request
+    User->>Chat: response
+    Chat->>HR: resume(runId, requestId, response)
+  else 完了
+    HR-->>Chat: terminal output
+  end
+```
+
+Conversation LedgerはUser/Agentメッセージを共有するが、Tool call内部やManager protocolを他participantへbroadcastしない。すべてのpatternはmodel判定とは別にhard budgetを持つ。詳細は [14-agent-harness-builder.md](./14-agent-harness-builder.md) を参照。
+
+---
+
+## 6. Workflow実行（Phase 3）
 
 複数Toolの接続・分岐・反復・再試行・承認・スケジュール実行。制御ノードはここに属する。
 
@@ -172,7 +208,7 @@ flowchart TB
 
 ---
 
-## 6. 実行トレースの可視化
+## 7. 実行トレースの可視化
 
 最小版（v1）: どのノード・どのサンプル行で落ちたかを色で示す。フル観測（Status画面の本格版）はPhase 4。
 

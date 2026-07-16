@@ -74,6 +74,11 @@ import type {
   SearchProviderDto,
   WebSearchFetchDto,
   AnalysisConfigProposalDto,
+  SaveHarnessDto,
+  SerializedAgentHarnessDto,
+  HarnessSummaryDto,
+  HarnessValidationDto,
+  HarnessRunDto,
 } from './types';
 
 export class ApiError extends Error {
@@ -200,6 +205,23 @@ export class ToolApiClient {
     return (await this.request<{ run: AgentPreviewRunDto }>('/runs', {
       method: 'POST', body: JSON.stringify(input), signal,
     })).run;
+  }
+
+  async saveHarness(input: SaveHarnessDto): Promise<SerializedAgentHarnessDto> {
+    return (await this.request<{ harness: SerializedAgentHarnessDto }>('/harnesses', { method: 'POST', body: JSON.stringify(input) })).harness;
+  }
+
+  async listHarnesses(scope: TenantScopeDto): Promise<readonly HarnessSummaryDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ harnesses: HarnessSummaryDto[] }>(`/harnesses?${query}`)).harnesses;
+  }
+
+  async validateHarness(input: SaveHarnessDto): Promise<HarnessValidationDto> {
+    return (await this.request<{ validation: HarnessValidationDto }>('/harness-drafts/validate', { method: 'POST', body: JSON.stringify(input) })).validation;
+  }
+
+  async runHarness(input: { readonly scope: TenantScopeDto; readonly harness: { readonly internalId: string; readonly version?: string }; readonly message: string; readonly mode: 'preview' | 'test' }, signal?: AbortSignal): Promise<HarnessRunDto> {
+    return (await this.request<{ run: HarnessRunDto }>('/harness-runs', { method: 'POST', body: JSON.stringify(input), signal })).run;
   }
 
   async listDataSources(scope: TenantScopeDto): Promise<readonly DataSourceDto[]> {

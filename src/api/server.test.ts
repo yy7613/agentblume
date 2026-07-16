@@ -73,4 +73,8 @@ describe('buildServer', () => {
     expect(server.hasRoute({ method: 'GET', url: '/health' })).toBe(true);
     expect(server.hasRoute({ method: 'POST', url: '/tools' })).toBe(true);
   });
+
+  it('画像2枚のBase64リクエストに十分なボディ上限を設定する', () => {
+    expect(server.initialConfig.bodyLimit).toBe(10 * 1024 * 1024);
+  });
 });

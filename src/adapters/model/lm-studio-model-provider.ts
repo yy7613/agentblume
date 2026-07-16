@@ -6,6 +6,7 @@ import {
   type ModelCompletion,
   type ModelCompletionRequest,
   type ModelMessage,
+  type ModelRequestMessage,
   type ModelProviderPort,
 } from '../../application/model/model-provider';
 
@@ -41,8 +42,13 @@ function isJsonObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function toOpenAiMessage(message: ModelMessage): Record<string, unknown> {
-  const common = { role: message.role, content: message.content };
+function toOpenAiMessage(message: ModelRequestMessage): Record<string, unknown> {
+  const content = Array.isArray(message.content)
+    ? message.content.map((part) => part.type === 'text'
+      ? { type: 'text', text: part.text }
+      : { type: 'image_url', image_url: { url: part.imageUrl } })
+    : message.content;
+  const common = { role: message.role, content };
   if (message.role === 'assistant' && message.toolCalls !== undefined) {
     return {
       ...common,
@@ -74,7 +80,7 @@ export class LmStudioModelProvider implements ModelProviderPort {
   }
 
   capabilities(): readonly ModelCapability[] {
-    return ['chat', 'tool-calling', 'structured-output'];
+    return ['chat', 'tool-calling', 'structured-output', 'vision'];
   }
 
   async complete(request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion> {

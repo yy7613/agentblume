@@ -84,6 +84,22 @@ describe('ChatPage', () => {
     expect(screen.getByText('Error')).toBeTruthy();
   });
 
+  it('画像を添付してプレビューし、保存済みAgentの実行入力へ渡す', async () => {
+    const client = {
+      listAgents: vi.fn().mockResolvedValue(oneAgent),
+      runSavedAgent: vi.fn().mockResolvedValue({ runId: 'run-image', response: 'I can see it.', trace: [], usage: {}, mode: 'preview' }),
+    } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    const file = new File(['tiny image'], 'tiny.png', { type: 'image/png' });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await userEvent.upload(input, file);
+    expect(await screen.findByAltText('tiny.png')).toBeTruthy();
+    await sendMessage('What is this?');
+    await waitFor(() => expect(client.runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ images: [expect.objectContaining({ name: 'tiny.png', dataUrl: expect.stringMatching(/^data:image\/png;base64,/) })] })));
+    expect(await screen.findByText('I can see it.')).toBeTruthy();
+  });
+
   it('creates one Agent Session, passes it to Runs, renders its artifacts, and closes it for a new chat', async () => {
     const client = {
       listAgents: vi.fn().mockResolvedValue(oneAgent),

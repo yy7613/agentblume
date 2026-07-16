@@ -192,6 +192,44 @@ export interface AgentPreviewRunDto {
   readonly estimatedCost?: RunEstimatedCostDto;
 }
 
+export type HarnessPatternDto = 'agent-as-tools' | 'sequential' | 'concurrent' | 'handoff' | 'group-chat' | 'magentic';
+export interface HarnessSlotDto { readonly id: string; readonly label: string; readonly purpose: string; readonly assignment: AgentToolRefDto; }
+export type HarnessTopologyDto =
+  | { readonly pattern: 'agent-as-tools'; readonly coordinatorSlotId: string; readonly participantSlotIds: readonly string[] }
+  | { readonly pattern: 'sequential'; readonly orderedSlotIds: readonly string[]; readonly contextMode: 'full-conversation' | 'previous-response' }
+  | { readonly pattern: 'concurrent'; readonly participantSlotIds: readonly string[]; readonly aggregation: 'collect' | 'vote' | 'agent'; readonly aggregatorSlotId?: string }
+  | { readonly pattern: 'handoff'; readonly startSlotId: string; readonly transitions: readonly { readonly fromSlotId: string; readonly toSlotId: string; readonly condition: string }[]; readonly autonomous: boolean }
+  | { readonly pattern: 'group-chat'; readonly participantSlotIds: readonly string[]; readonly selector: 'round-robin' | 'fixed-order' | 'agent'; readonly managerSlotId?: string; readonly maxRounds: number }
+  | { readonly pattern: 'magentic'; readonly managerSlotId: string; readonly participantSlotIds: readonly string[]; readonly maxRounds: number; readonly maxStalls: number; readonly maxResets: number; readonly requirePlanSignoff: boolean };
+export interface HarnessPoliciesDto {
+  readonly budget: { readonly maxDurationMs: number; readonly maxParticipantRuns: number; readonly maxModelRounds: number; readonly maxToolCalls: number; readonly maxParallelism: number };
+  readonly context: 'task-only' | 'previous-response' | 'full-conversation';
+  readonly planning: { readonly enabled: boolean; readonly requireApproval: boolean };
+  readonly memory: { readonly wikiIds: readonly string[]; readonly sessionWorkspace: boolean };
+  readonly approvals: { readonly mode: 'inherit-agent' | 'always' | 'disabled-in-preview' };
+  readonly failure: { readonly mode: 'fail-fast' | 'collect' | 'continue-with-error' };
+}
+export interface SerializedAgentHarnessDto {
+  readonly metadata: SerializedAgentDto['metadata'];
+  readonly pattern: HarnessPatternDto;
+  readonly slots: readonly HarnessSlotDto[];
+  readonly topology: HarnessTopologyDto;
+  readonly policies: HarnessPoliciesDto;
+  readonly output: { readonly format: 'text' };
+}
+export interface SaveHarnessDto {
+  readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner: string;
+  readonly pattern: HarnessPatternDto; readonly slots: readonly HarnessSlotDto[]; readonly topology: HarnessTopologyDto; readonly policies?: HarnessPoliciesDto;
+  readonly output?: { readonly format: 'text' }; readonly bump?: 'major' | 'minor' | 'patch';
+}
+export interface HarnessSummaryDto { readonly internalId: string; readonly displayName: string; readonly publishName: string; readonly latestVersion: string; readonly pattern: HarnessPatternDto; readonly state: SerializedToolDto['metadata']['state']; }
+export interface HarnessValidationDto { readonly valid: boolean; readonly issues: readonly { readonly path: string; readonly message: string }[] }
+export interface HarnessRunDto {
+  readonly runId: string; readonly scope: TenantScopeDto; readonly harness: { readonly internalId: string; readonly version: string; readonly displayName: string }; readonly mode: 'preview' | 'test';
+  readonly status: 'running' | 'succeeded' | 'failed' | 'waiting-input' | 'waiting-approval' | 'cancelled'; readonly message: string; readonly startedAt: string; readonly completedAt?: string; readonly response?: string;
+  readonly failure?: { readonly code: string; readonly message: string }; readonly events: readonly { readonly sequence: number; readonly kind: string; readonly at: string; readonly slotId?: string; readonly childRunId?: string; readonly message?: string }[];
+}
+
 export interface AnalysisConfigProposalDto { readonly nodeId: string; readonly nodeType: string; readonly config: Readonly<Record<string, unknown>>; readonly rationale: readonly string[]; readonly warnings: readonly string[] }
 
 /** payloadや接続資格情報を含まない、Tool用データソースのカタログ表現。 */
@@ -247,6 +285,12 @@ export interface RunAgentDto {
   readonly message: string;
   readonly mode: 'preview' | 'test';
   readonly sessionId?: string;
+  readonly images?: readonly RunImageAttachmentDto[];
+}
+
+export interface RunImageAttachmentDto {
+  readonly name: string;
+  readonly dataUrl: string;
 }
 
 export interface RunSavedAgentDto {
@@ -257,6 +301,7 @@ export interface RunSavedAgentDto {
   /** 手動アタッチする Wiki ページ id（v21 M1）。 */
   readonly memoryPageIds?: readonly string[];
   readonly sessionId?: string;
+  readonly images?: readonly RunImageAttachmentDto[];
 }
 
 export interface AgentSessionDto {

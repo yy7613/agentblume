@@ -48,6 +48,19 @@ describe('POST /runs', () => {
     expect(trace.json().run).toMatchObject({ status: 'succeeded', response: 'Alice: 42' });
   });
 
+  it('画像添付をマルチモーダルのユーザー入力としてモデルへ渡す', async () => {
+    model.enqueue({ message: { role: 'assistant', content: 'A tiny image.' }, finishReason: 'stop' });
+    const response = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, tool: { internalId: 'score-tool' }, systemPrompt: 'Describe images.', message: 'What is shown?', mode: 'preview',
+      images: [{ name: 'tiny.png', dataUrl: 'data:image/png;base64,AA==' }],
+    } });
+    expect(response.statusCode).toBe(200);
+    expect(model.requests[0]?.messages.at(-1)).toMatchObject({ role: 'user', content: [
+      { type: 'text', text: 'What is shown?' },
+      { type: 'image_url', imageUrl: 'data:image/png;base64,AA==' },
+    ] });
+  });
+
   it('保存済みAgentの複数Tool候補からモデルが選んだToolを実行する', async () => {
     await app.saveTool.execute({
       scope, internalId: 'other-tool', workingName: 'other', displayName: 'Other score', publishName: 'other_lookup', owner: 'owner', sideEffect: 'read-only',

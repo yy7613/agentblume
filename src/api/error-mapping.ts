@@ -25,6 +25,7 @@ import { FeedbackValidationError } from '../domain/operations/errors';
 import { AgentSessionClosedError, AgentSessionExpiredError, AgentSessionNotFoundError, SessionArtifactNotFoundError, SessionDomainError, SessionQuotaExceededError } from '../domain/session/errors';
 import { DataSourceValidationError } from '../application/data-source/manage-data-sources';
 import { WebSearchValidationError } from '../application/search/web-search';
+import { HarnessNotFoundError, HarnessRunError, HarnessRunNotFoundError, HarnessValidationError, HarnessVersionConflictError } from '../domain/harness/errors';
 
 /** HTTP エラーレスポンス表現。 */
 export interface HttpError {
@@ -85,6 +86,11 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof AgentNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof AgentVersionConflictError) return httpError(409, err.code, err.message);
   if (err instanceof AgentValidationError) return httpError(400, err.code, err.message);
+  if (err instanceof HarnessNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof HarnessRunNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof HarnessVersionConflictError) return httpError(409, err.code, err.message);
+  if (err instanceof HarnessValidationError) return httpError(400, err.code, err.message);
+  if (err instanceof HarnessRunError) return httpError(422, err.code, err.message);
   if (err instanceof SkillNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof SkillVersionConflictError) return httpError(409, err.code, err.message);
   if (err instanceof SkillValidationError) return httpError(400, err.code, err.message);
