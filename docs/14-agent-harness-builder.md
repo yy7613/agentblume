@@ -1,6 +1,6 @@
 # 14. Agent Harness Builder
 
-> Status: Implemented (M1–M3: definition, Builder, Sequential/Concurrent preview). Handoff、Group Chat、Magenticの対話型runtimeは後続。
+> Status: Implemented (M1–M5 core preview、および interactive runtime の Handoff会話再開・Magentic計画承認・永続checkpoint)。
 >
 > 関連: [12-multi-agent.md](./12-multi-agent.md) / [07-execution-model.md](./07-execution-model.md) / [ADR-0032](./adr/0032-versioned-agent-harness-orchestration.md)
 
@@ -72,7 +72,7 @@ flowchart LR
   C --> O[Output]
 ```
 
-既存 `Agent.agents` と同じ意味論をHarness上で可視化する。初期実装では既存Agent定義を読み取り専用で表示し、二重に保存しない。
+Coordinator slotへ参加slotを一時的な委譲Toolとして渡す。Coordinatorが必要な専門Agentだけを呼び出し、子Runの結果を受け取って最終応答を返す。Harnessのslot割り当てはCoordinator Agentの保存済み定義を書き換えない。
 
 ### 3.2 Sequential
 
@@ -115,10 +115,11 @@ flowchart LR
   F -->|back| T
 ```
 
-- start slotを1つ指定する。
-- 有向edgeが許可された移譲先を表す。Agentはedgeの`condition`を説明に持つhandoff Toolを呼ぶ。
+- start slotを1つ指定する。one-shot previewでは、担当Agentが応答末尾の`[[handoff:slot-id]]`で次の担当を指定する。
+- 有向edgeが許可された移譲先を表す。RuntimeはTopologyにない移譲先を拒否する。
 - 移譲後は受け手がタスク所有者になる。呼び出し元へ自動的には戻らない。
-- handoffしない通常応答ではHarnessを `waiting-input` にし、チャットから次のユーザー入力を待つ。明示設定時だけautonomous modeを許す。
+- `autonomous: true`ではhandoffしない通常応答を最終応答にする。`autonomous: false`では同じ応答を`waiting-input`として保存し、現在の担当slot、会話Ledger、残予算をcheckpointへ保存する。
+- ユーザーが同じRun IDへ`input` responseを送ると、保存済みHarness versionとactive slotで実行を再開する。再開後も担当がhandoffしなければ、次の`waiting-input` checkpointを作る。
 
 ### 3.5 Group Chat
 
@@ -134,8 +135,8 @@ flowchart TB
   G --> O[Output]
 ```
 
-- `selector` は `round-robin`、`agent`、`fixed-order`。
-- `agent` selectorではManager Agent versionを割り当てる。
+- `selector` は `round-robin`、`agent`、`fixed-order`。いずれも`maxRounds`まで実行できる。
+- `agent` selectorではManager Agent versionを割り当て、`[[speaker:slot-id]]`で次の参加者を選ぶ。
 - 全参加者はUser/Agentの共有会話履歴を見る。Tool callの内部イベントは共有しない。
 - `maxRounds` は必須。Manager判定を使う場合もhard limitを外せない。
 
@@ -154,10 +155,10 @@ flowchart TB
   P -. stalled .-> X["Replan / optional approval"] --> P
 ```
 
-- Manager Agentと2個以上のparticipantを割り当てる。
+- Manager Agentと2個以上のparticipantを割り当てる。Managerは`[[delegate:slot-id]]`で作業を委譲し、`[[final]]`で最終応答を宣言する。
 - `maxRounds`、`maxStalls`、`maxResets` を必須上限として持つ。
-- Managerは公開可能なPlan/Progress Ledgerだけを構造化出力する。非公開の思考過程は要求・保存しない。
-- 任意で初期計画と再計画を人が承認・修正できる。
+- Managerの公開可能なPlan/Progress Ledgerだけをイベントへ保存する。非公開の思考過程は要求・保存しない。
+- `requirePlanSignoff: true`では、許可されたparticipantとinstructionを`waiting-approval` checkpointとして停止する。人は`approve`、`revise`、`reject`を送れる。`approve`は保存済みinstructionを実行し、`revise`はfeedbackをLedgerに加えてManagerへ再計画させ、`reject`はRunを`cancelled`にする。
 
 ## 4. ドメインモデル
 
@@ -285,9 +286,10 @@ Harness Sessionは共有Conversation LedgerとSession Workspaceを所有する�
 stateDiagram-v2
   [*] --> running
   running --> waiting_input: handoff Agentが応答して移譲しない
-  running --> waiting_approval: Tool/Plan承認
+  running --> waiting_approval: Magentic Plan承認
   waiting_input --> running: user response
-  waiting_approval --> running: approve/revise/reject
+  waiting_approval --> running: approve/revise
+  waiting_approval --> cancelled: reject
   running --> succeeded: terminal output
   running --> failed: error/budget/timeout
   waiting_input --> cancelled
@@ -298,14 +300,14 @@ Harness Runはroot recordを持ち、各参加Agent実行は既存Runとして�
 
 主なイベントは次のとおり。
 
-- `harness_started`, `harness_completed`, `harness_failed`
+- `harness_started`, `harness_resumed`, `harness_completed`, `harness_failed`, `harness_cancelled`
 - `participant_started`, `participant_completed`, `participant_failed`
 - `handoff_requested`, `speaker_selected`
 - `plan_created`, `plan_revised`, `progress_updated`, `stall_detected`
 - `approval_requested`, `input_requested`, `checkpoint_saved`
 - `intermediate_output`
 
-RunにはHarness version、全Agent version、Model snapshot、budget消費、選択経路、承認者を記録する。Prompt全文や非公開思考過程はイベントへ保存しない。
+waiting状態のRunには`checkpoint`を同じroot recordへ保存する。checkpointはactive slotまたは承認対象slot、公開会話Ledger、残りのparticipant/model/tool budget、期限、利用者に表示するprompt/planだけを含む。初期TTLは24時間で、再開ごとに実行時間budgetを新しく開始する。Prompt全文や非公開思考過程はイベントへ保存しない。
 
 ### 6.4 共有予算と並列性
 
@@ -350,7 +352,7 @@ Agentの割当を変更しても元Agentは変更しない。Harnessを保存す
 Chatの対象選択を`Agent | Harness`を含むRunnable一覧へ拡張する。ユーザーは常に1つのRunnableへ話しかける。
 
 - Agent選択時は既存`POST /runs`を使う。
-- Harness選択時はHarness Sessionを開始し、waiting状態なら同じsessionへresumeする。
+- Harness選択時はroot Harness Runを開始する。`waiting-input`なら次の送信を同じRun IDの`input` responseとして送る。`waiting-approval`では承認・却下ボタン、またはテキストによる修正依頼を表示する。
 - 中間出力は折り畳み表示、最終応答だけを通常のAssistant bubbleにする。
 - Handoffでは現在の担当Agent名を表示するが、チャット相手のHarness名は変えない。
 - StatusはHarness root → participant child Run → Tool traceの3段ドリルダウンを提供する。
@@ -384,14 +386,28 @@ POST   /harness-runs/:runId/cancel
 }
 ```
 
-Resume要求は`requestId`と型付きresponseを持つ。承認、計画修正、handoffの追加ユーザー入力を同じendpointで扱い、自由形式の状態書き換えは許可しない。
+Resume要求はcheckpoint種別と一致する型付きresponseだけを受け付ける。保存済みのactive slot、Ledger、残予算、Harness versionを自由形式で書き換えることはできない。
+
+```json
+{
+  "scope": { "tenantId": "local", "workspaceId": "default" },
+  "response": { "kind": "input", "message": "対象は企業の管理者です" }
+}
+```
+
+```json
+{
+  "scope": { "tenantId": "local", "workspaceId": "default" },
+  "response": { "kind": "approval", "decision": "revise", "feedback": "法務レビュー後の表現へ修正して" }
+}
+```
 
 ## 10. Repositoryと永続化
 
 - `AgentHarnessRepository`: definition/versionの保存と取得。
-- `HarnessRunRepository`: root状態、入力snapshot、最終出力、budget使用量。
+- `HarnessRunRepository`: root状態、入力snapshot、最終出力、checkpoint、残予算。
 - `HarnessEventRepository`: sequence付きappend-only event。
-- `HarnessCheckpointRepository`: waiting状態と長時間Runの再開点。
+- checkpointは`HarnessRunRepository`のroot recordへ埋め込む。SQLiteでは既存のrecord JSONとして原子的に保存する。
 - 参加Agentの詳細は既存`RunRepository`へ保存し、Harness eventは`childRunId`だけを持つ。
 
 保存済みHarnessの削除は参照Runを壊さない論理削除とする。Agent versionを削除する場合はHarness参照を調べ、使用中なら拒否する。
@@ -424,12 +440,13 @@ Fake runtimeで経路を決定的に再現するcontract testを各patternに用
 1. **M1 Definition**: Domain、serialization、repository、CRUD、型付きCompiler、Validation。
 2. **M2 Builder**: Preset Gallery、Canvas、Agent割当、pattern inspector、保存。
 3. **M3 Deterministic patterns**: Sequential、Concurrent、root/child trace、Preview。
-4. **M4 Interactive patterns**: Handoff、Group Chat、Conversation Ledger、pause/resume/checkpoint。
-5. **M5 Magentic**: Plan/Progress protocol、stall/reset、plan approval、最終合成。
-6. **M6 Harness policies**: Claw Starter、memory、approval、background実行、観測強化。
-7. **M7 Adapter/export**: Microsoft Agent Framework adapterまたはコードexport。Local Runtimeとのcontract testを共有する。
+4. **M4 Interactive patterns**: Handoff／Group Chatのone-shot preview、許可transition、話者選択、round上限を実装。
+5. **M5 Magentic**: Plan/Progress protocol、delegate/final、stall/reset、最終合成を実装。
+6. **M6 Interactive runtime**: Handoffの会話再開、Magenticの計画承認、24時間の永続checkpoint、resume/cancel APIとChat操作を実装。
+7. **M7 Harness policies**: Claw Starter、memory、Tool approval、background実行、観測強化。
+8. **M8 Adapter/export**: Microsoft Agent Framework adapterまたはコードexport。Local Runtimeとのcontract testを共有する。
 
-初回リリースはM1〜M3とし、Magenticを最初から一括実装しない。Sequential/ConcurrentでSession、予算、child Run、Canvas traceの基盤を固めてから対話型へ進む。
+全patternはversion固定のAgent slot、共通予算、時間上限、root/child Runイベントを使ってpreviewできる。interactive runtimeはHandoffとMagenticに限定して同じRun契約を実装済みであり、Group ChatやTool承認は同じcheckpoint unionを拡張して追加する。
 
 ## 14. 非目標
 

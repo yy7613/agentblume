@@ -215,6 +215,14 @@ export const runHarnessBodySchema = z.object({
   harness: z.object({ internalId: z.string().min(1), version: z.string().min(1).optional() }),
   message: z.string().min(1), mode: z.enum(['preview', 'test']).default('preview'),
 });
+export const resumeHarnessRunBodySchema = z.object({
+  scope: tenantScopeSchema,
+  response: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('input'), message: z.string().min(1) }),
+    z.object({ kind: z.literal('approval'), decision: z.enum(['approve', 'revise', 'reject']), feedback: z.string().min(1).optional() }),
+  ]),
+});
+export const cancelHarnessRunBodySchema = z.object({ scope: tenantScopeSchema });
 export const harnessRunQuerySchema = tenantScopeSchema;
 export const harnessRunListQuerySchema = tenantScopeSchema.extend({
   limit: z.coerce.number().int().min(1).max(100).optional(),

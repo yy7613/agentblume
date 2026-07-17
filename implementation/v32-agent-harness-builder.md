@@ -1,10 +1,10 @@
 # v32 実装計画: Agent Harness Builder
 
-> In progress。詳細仕様は [docs/14-agent-harness-builder.md](../docs/14-agent-harness-builder.md)、判断は [ADR-0032](../docs/adr/0032-versioned-agent-harness-orchestration.md)。M1–M3は実装済み、M4以降は後続。
+> Implemented。詳細仕様は [docs/14-agent-harness-builder.md](../docs/14-agent-harness-builder.md)、判断は [ADR-0032](../docs/adr/0032-versioned-agent-harness-orchestration.md)。M1–M6のpreviewとinteractive runtimeを実装済み。
 
 ## 1. 目的と初回リリース境界
 
-保存済みAgent versionを図上のslotへ割り当て、Harnessを保存・検証・previewできる基盤を追加する。初回リリースはDefinition、Builder、Sequential、Concurrentまでとする。Handoff、Group Chat、Magenticは同じ契約上へ段階追加する。
+保存済みAgent versionを図上のslotへ割り当て、Harnessを保存・検証・previewできる基盤を追加する。全patternは共通のRun、予算、時間上限、root/child event契約でone-shot previewできる。
 
 初回に含めないもの:
 
@@ -136,25 +136,38 @@ Contract cases:
 - StatusでHarness root→participant Run→Tool traceを辿る。
 - Scenario targetへHarness refを追加し、participant path assertionを導入。
 
-## 9. 後続Slice
+## 9. Slice H: Interactive Runtime（実装済み）
 
-### Handoff
+### Handoffの継続会話
 
-Conversation Ledger、許可transition Tool、active participant、`waiting-input`、resume endpoint、checkpoint。
+`autonomous: false`のHandoffで担当Agentがhandoffせず応答すると、`waiting-input`へ遷移する。checkpointにはactive participant、公開Conversation Ledger、残participant/model/tool budget、24時間の期限、画面表示用promptを保存する。`POST /harness-runs/:runId/responses`の`{ kind: 'input' }`で同じRun IDを再開し、次の応答後も必要なら新しいcheckpointを保存する。
 
-### Group Chat
+### Magenticの人手承認
 
-round-robin selectorから開始し、assigned Manager Agent selectorを後続追加。hard maxRounds必須。
+`requirePlanSignoff: true`のManager delegate planは、participantを実行する前に`waiting-approval`へ遷移する。checkpointは選択slot、instruction、公開Ledger、round/stall/reset、残予算、期限、表示用planを保存する。`approve`は保存済みinstructionを実行し、`revise`はfeedbackをLedgerへ加えてManagerを再実行し、`reject`はRunをcancelledにする。公開可能な進捗のみ保存し、非公開思考過程を要求しない。
 
-### Magentic
+### 状態とAPI
 
-Manager structured protocol、Plan/Progress Ledger、stall/reset、計画承認、最終合成。公開可能な進捗のみ保存し、非公開思考過程を要求しない。
+```text
+running --Handoff terminal--> waiting-input --input--> running
+running --Magentic plan--> waiting-approval --approve/revise--> running
+waiting-approval --reject--> cancelled
+waiting-* --cancel--> cancelled
+```
 
-### Claw StarterとAdapter
+`HarnessRunRecord`にcheckpointを埋め込み、InMemory/SQLite Repositoryが同じroot recordとして保存する。開始、再開、cancelはそれぞれ`POST /harness-runs`、`POST /harness-runs/:runId/responses`、`POST /harness-runs/:runId/cancel`を使用する。期限を過ぎたcheckpointは再開できない。
+
+## 10. 後続Slice
+
+### Group Chatの継続会話
+
+同じcheckpoint unionを拡張し、round-robin／Manager selectorの途中で利用者が発話できる会話モードを追加する。hard maxRoundsは維持する。
+
+### Tool承認とClaw Starter
 
 planning/memory/approval/background/observability policy presetを提供し、Local RuntimeとMicrosoft Agent Framework adapter/exportのcontractを揃える。
 
-## 10. 全体DoD
+## 11. 全体DoD
 
 - typecheck 3構成、Vitest全件、dependency cruise、Playwrightがgreen。
 - 全Harness/Agent参照がversion固定。

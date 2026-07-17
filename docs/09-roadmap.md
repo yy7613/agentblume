@@ -54,7 +54,7 @@ CSV/JSON入力、基本変換、スキーマ伝播、固定サンプルプレビ
 DB/API接続、Secrets Provider、認証アダプター、ワークスペースRBAC、バージョン、監査ログ、公開前承認。
 
 ### Phase 3: 拡張実行
-カスタムコードのサンドボックス、MCP公開、Webhook、Workflow Builder、cron、コードプロジェクトへの分岐。Workflow Builderに先行する限定的な制御フローとして、Agent Harness BuilderをDefinition→Sequential/Concurrent→Handoff/Group Chat→Magenticの順に導入する。
+カスタムコードのサンドボックス、MCP公開、Webhook、Workflow Builder、cron、コードプロジェクトへの分岐。Workflow Builderに先行する限定的な制御フローとして、Agent Harness Builderで全パターンのpreviewと、Handoffの会話再開・Magenticの計画承認・24時間の永続checkpointを提供する。次段階ではGroup Chatの継続会話とTool単位の承認へ拡張する。
 
 ### Phase 4: 評価と運用
 データセット評価、回帰、LLM-as-Judge、本番ログからの評価データ化、環境昇格、高度なポリシー制御。

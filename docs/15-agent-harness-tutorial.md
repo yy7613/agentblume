@@ -2,7 +2,7 @@
 
 このチュートリアルでは、保存済みAgentを3つの役割へ割り当て、Sequential Harnessとして保存し、チャットの実行対象に選ぶまでを説明する。対象は、すでにAgent BuilderでAgentを保存した利用者である。
 
-初期リリースでは`sequential`と`concurrent`をpreview実行できる。`handoff`、`group-chat`、`magentic`は定義とAgent割り当てを保存できるが、対話型の実行runtimeは後続リリースで追加する。
+すべてのパターンをpreview実行できる。さらに`autonomous: false`のHandoffは会話を再開でき、`requirePlanSignoff: true`のMagenticは人手による計画承認を待機できる。待機状態はHarness Runのcheckpointとして24時間保存される。
 
 掲載画像は2026年7月16日にPlaywrightで実画面を操作して取得した。画像では、Writer、Reviewer、Publisherの3 Agentを新規作成して各slotへversion固定で割り当てている。モデルへの実際の問い合わせ結果は含めない。
 
@@ -72,14 +72,38 @@ Sequential実行ではWriter、Reviewer、Publisherの順にchild Runが作ら�
 
 `collect`では各Agentの結果をまとめて返す。集約用Agentを割り当てる`agent`集約は、独立した結果を渡して最終回答を作る。並列数はHarness policyの`maxParallelism`で上限を持つ。
 
-## 7. 実行前の確認項目
+## 7. 他のマルチエージェントパターンを実行する
+
+| Pattern | 実行方法 | 終了条件 |
+|---|---|---|
+| Agent as tools | Coordinatorが必要なslotを委譲Toolとして呼ぶ | Coordinatorの最終応答 |
+| Handoff | 担当Agentが`[[handoff:slot-id]]`で許可済みの次担当へ引き継ぐ。`autonomous: false`では通常応答の後に入力待ちになる | autonomous時は最終応答、非自律時は次の入力または予算上限 |
+| Group Chat | round-robin／fixed-order、またはManagerの`[[speaker:slot-id]]`で発話者を選ぶ | `maxRounds`、または`[[final]]` |
+| Magentic | Managerが`[[delegate:slot-id]]`で作業を委譲し、`[[final]]`で完了を宣言する。`requirePlanSignoff`時は委譲前に承認を待つ | `[[final]]`、cancel、またはround・stall・reset上限 |
+
+制御マーカーはHarness Runtimeだけが解釈し、指定先が保存済みTopologyに含まれない場合はRunを失敗として記録する。通常の最終文にはマーカーを含めない。
+
+## 8. Handoffの会話再開とMagenticの計画承認
+
+Handoffで利用者と複数回やり取りしたい場合は、HarnessのTopologyで`autonomous`をオフにする。担当Agentがhandoffせずに応答すると、チャットには応答と「入力待ち」が表示される。続きのメッセージを送信すると、同じHarness Run ID・同じ担当slot・保存済みの会話履歴で再開される。不要になったRunは「実行を中止」でcancelできる。
+
+Magenticで人の確認を入れる場合は`requirePlanSignoff`をオンにする。Managerがparticipantとinstructionを選択した時点で、チャットに計画と「計画を承認」「却下して中止」が表示される。
+
+- 承認: 保存済みのparticipant/instructionを実行して次のroundへ進む。
+- 修正依頼: 入力欄にfeedbackを入力して送信する。Managerはそのfeedbackを含むLedgerで再計画する。
+- 却下: Runをcancelledにしてcheckpointを破棄する。
+
+checkpointには公開会話、選択slot、残予算、期限だけを保存する。内部Tool出力やモデルの非公開思考はcheckpointへ保存されない。期限は開始・再開からではなく、checkpointを作った時点から24時間である。
+
+## 9. 実行前の確認項目
 
 - すべてのslotに保存済みAgent versionを割り当てた。
 - Sequentialでは順序、Concurrentでは参加Agentと集約方法を確認した。
+- Handoff、Group Chat、Magenticでは、保存済みTopologyにあるslot IDだけを制御マーカーで指定する。
 - preview実行で副作用を持つToolを使う場合は、既存Agentのpreview制約も確認した。
 - 長い処理はparticipant run数、model round数、並列数の上限内に収めた。
 
-## 8. スクリーンショットと画面操作を再実行する
+## 10. スクリーンショットと画面操作を再実行する
 
 次のコマンドはデモデータを含む専用API/UIを起動し、このチュートリアルの画面操作を検証して画像を更新する。
 

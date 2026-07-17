@@ -227,8 +227,12 @@ export interface HarnessValidationDto { readonly valid: boolean; readonly issues
 export interface HarnessRunDto {
   readonly runId: string; readonly scope: TenantScopeDto; readonly harness: { readonly internalId: string; readonly version: string; readonly displayName: string }; readonly mode: 'preview' | 'test';
   readonly status: 'running' | 'succeeded' | 'failed' | 'waiting-input' | 'waiting-approval' | 'cancelled'; readonly message: string; readonly startedAt: string; readonly completedAt?: string; readonly response?: string;
+  readonly checkpoint?: HarnessRunCheckpointDto;
   readonly failure?: { readonly code: string; readonly message: string }; readonly events: readonly { readonly sequence: number; readonly kind: string; readonly at: string; readonly slotId?: string; readonly childRunId?: string; readonly message?: string }[];
 }
+export type HarnessRunCheckpointDto =
+  | { readonly kind: 'handoff-input'; readonly activeSlotId: string; readonly expiresAt: string; readonly prompt: string }
+  | { readonly kind: 'magentic-approval'; readonly managerSlotId: string; readonly selectedSlotId: string; readonly expiresAt: string; readonly plan: string };
 
 export interface AnalysisConfigProposalDto { readonly nodeId: string; readonly nodeType: string; readonly config: Readonly<Record<string, unknown>>; readonly rationale: readonly string[]; readonly warnings: readonly string[] }
 

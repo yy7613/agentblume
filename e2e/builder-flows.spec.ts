@@ -147,6 +147,42 @@ test('Harness BuilderでAgent割当・検証・保存・Sequential previewまで
   await expect(page.getByText('Reviewed and ready to publish.')).toBeVisible();
 });
 
+test('Harness Builderで全オーケストレーションpatternへAgentを割り当てて保存できる', async ({ page }) => {
+  for (const agent of [
+    { internalId: 'pattern-author', displayName: 'Pattern Author' },
+    { internalId: 'pattern-reviewer', displayName: 'Pattern Reviewer' },
+    { internalId: 'pattern-publisher', displayName: 'Pattern Publisher' },
+  ]) {
+    const response = await page.request.post('/agents', { data: {
+      scope, ...agent, workingName: `${agent.displayName} draft`, publishName: agent.internalId.replace(/-/g, '_'), owner: 'e2e@example.com', kind: 'normal', systemPrompt: `You are the ${agent.displayName}.`, tools: [],
+    } });
+    expect(response.status()).toBe(201);
+  }
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Harness', exact: true }).click();
+  await page.getByLabel('Owner').fill('e2e@example.com');
+  await page.getByLabel('Assign agent to Author').selectOption('pattern-author');
+  await page.getByLabel('Assign agent to Reviewer').selectOption('pattern-reviewer');
+  await page.getByLabel('Assign agent to Publisher').selectOption('pattern-publisher');
+
+  for (const pattern of [
+    { label: 'Agent as tools', id: 'agent-as-tools' },
+    { label: 'Sequential', id: 'sequential' },
+    { label: 'Concurrent', id: 'concurrent' },
+    { label: 'Handoff', id: 'handoff' },
+    { label: 'Group Chat', id: 'group-chat' },
+    { label: 'Magentic', id: 'magentic' },
+  ]) {
+    await page.getByRole('button', { name: new RegExp(`^${pattern.label}`) }).click();
+    await page.getByLabel('Internal ID').fill(`e2e-${pattern.id}`);
+    await page.getByLabel('Display name').fill(`E2E ${pattern.label}`);
+    await page.getByRole('button', { name: 'Save version', exact: true }).click();
+    await expect(page.getByRole('heading', { name: `e2e-${pattern.id}@1.0.0` })).toBeVisible();
+    const saved = await page.request.get(`/harnesses/e2e-${pattern.id}`, { params: scope });
+    expect((await saved.json()).harness).toMatchObject({ pattern: pattern.id });
+  }
+});
+
 test('Skill Builderで名前・説明・内容を保存できる', async ({ page }) => {
   const toolResponse = await page.request.post('/tools', { data: {
     scope, internalId: 'e2e-skill-tool', workingName: 'E2E skill tool', displayName: 'E2E Skill Tool',

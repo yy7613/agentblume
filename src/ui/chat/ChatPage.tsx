@@ -46,6 +46,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
+  const [activeHarnessRun, setActiveHarnessRun] = useState<HarnessRunDto>();
   const [artifacts, setArtifacts] = useState<readonly SessionArtifactDto[]>([]);
   const [chart, setChart] = useState<{ readonly artifact: SessionArtifactDto; readonly payload: ChartPayload }>();
   const threadRef = useRef<HTMLDivElement>(null);
@@ -100,8 +101,13 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       if (target.kind === 'harness' && attachedImages.length > 0) throw new Error(text('Image input is not available for Harness preview yet.', 'Harness previewではまだ画像入力を利用できません。'));
       const run = target.kind === 'agent'
         ? await client.runSavedAgent({ scope, agent: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview', sessionId: activeSessionId, ...(attachedImages.length > 0 ? { images: attachedImages } : {}) })
-        : await client.runHarness({ scope, harness: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview' });
+        : activeHarnessRun?.status === 'waiting-input'
+          ? await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'input', message: content } })
+          : activeHarnessRun?.status === 'waiting-approval'
+            ? await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'approval', decision: 'revise', feedback: content } })
+            : await client.runHarness({ scope, harness: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview' });
       setTurns((prev) => [...prev, { role: 'assistant', run }]);
+      if (isHarnessRun(run)) setActiveHarnessRun(run.status === 'waiting-input' || run.status === 'waiting-approval' ? run : undefined);
       if (activeSessionId !== undefined && typeof sessions.listSessionArtifacts === 'function') void sessions.listSessionArtifacts(activeSessionId, scope).then(setArtifacts).catch(() => {});
     } catch (cause) {
       setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause) }]);
@@ -112,13 +118,13 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
 
   function newChat(): void {
     const closing = sessionId;
-    setTurns([]); setSessionId(undefined); setArtifacts([]); setImages([]);
+    setTurns([]); setSessionId(undefined); setArtifacts([]); setImages([]); setActiveHarnessRun(undefined);
     if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
   }
 
   function selectAgent(next: string): void {
     const closing = sessionId;
-    setSelectedId(next); setSessionId(undefined); setArtifacts([]); setTurns([]); setImages([]);
+    setSelectedId(next); setSessionId(undefined); setArtifacts([]); setTurns([]); setImages([]); setActiveHarnessRun(undefined);
     if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
   }
 
@@ -148,6 +154,35 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       setLoadError(undefined);
     } catch {
       setLoadError(text('The image could not be read.', '画像を読み込めませんでした。'));
+    }
+  }
+
+  async function respondToApproval(decision: 'approve' | 'reject'): Promise<void> {
+    if (activeHarnessRun?.status !== 'waiting-approval' || busy) return;
+    setBusy(true);
+    setTurns((prev) => [...prev, { role: 'user', text: decision === 'approve' ? text('Approve the plan.', '計画を承認します。') : text('Reject and cancel the plan.', '計画を却下して中止します。'), images: [] }]);
+    try {
+      const run = await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'approval', decision } });
+      setTurns((prev) => [...prev, { role: 'assistant', run }]);
+      setActiveHarnessRun(run.status === 'waiting-input' || run.status === 'waiting-approval' ? run : undefined);
+    } catch (cause) {
+      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause) }]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelInteractiveHarness(): Promise<void> {
+    if (activeHarnessRun === undefined || busy) return;
+    setBusy(true);
+    try {
+      const run = await client.cancelHarnessRun(activeHarnessRun.runId, scope);
+      setTurns((prev) => [...prev, { role: 'assistant', run }]);
+      setActiveHarnessRun(undefined);
+    } catch (cause) {
+      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause) }]);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -204,6 +239,15 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       </div>
 
       <form className="cc-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+        {activeHarnessRun?.status === 'waiting-approval' && <div className="cc-alert">
+          <span>{text('The Magentic plan is waiting for approval. Enter feedback to request a revision.', 'Magenticの計画は承認待ちです。入力して送信すると修正依頼になります。')}</span>
+          <button type="button" className="cc-new" disabled={busy} onClick={() => void respondToApproval('approve')}>{text('Approve plan', '計画を承認')}</button>
+          <button type="button" className="cc-new" disabled={busy} onClick={() => void respondToApproval('reject')}>{text('Reject and cancel', '却下して中止')}</button>
+        </div>}
+        {activeHarnessRun?.status === 'waiting-input' && <div className="cc-alert">
+          <span>{activeHarnessRun.checkpoint?.kind === 'handoff-input' ? activeHarnessRun.checkpoint.prompt : text('The Harness is waiting for your message.', 'Harnessは入力待ちです。')}</span>
+          <button type="button" className="cc-new" disabled={busy} onClick={() => void cancelInteractiveHarness()}>{text('Cancel run', '実行を中止')}</button>
+        </div>}
         <div className="cc-input">
           {images.length > 0 && <div className="cc-image-list" aria-label={text('Attached images', '添付画像')}>
             {images.map((image) => <div className="cc-image-chip" key={`${image.name}:${image.dataUrl.length}`}>
@@ -214,7 +258,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
           <textarea
             ref={inputRef}
             aria-label={text('Chat message', 'チャットメッセージ')}
-            placeholder={text('Ask the agent…', 'エージェントに質問…')}
+            placeholder={activeHarnessRun?.status === 'waiting-input' ? text('Reply to continue the handoff…', 'Handoffを続ける返信を入力…') : activeHarnessRun?.status === 'waiting-approval' ? text('Describe the plan revision…', '計画の修正内容を入力…') : text('Ask the agent…', 'エージェントに質問…')}
             rows={1}
             value={message}
             onChange={(event) => setMessage(event.target.value)}
@@ -228,7 +272,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
                 className="cc-agent"
                 aria-label={text('Chat agent', 'チャット対象エージェント')}
                 value={selectedId}
-                disabled={busy || agents.length === 0}
+                disabled={busy || (agents.length === 0 && harnesses.length === 0)}
                 onChange={(event) => selectAgent(event.target.value)}
               >
                 <option value="">{text('Select an agent', 'エージェントを選択')}</option>
@@ -275,7 +319,12 @@ function Turn({ turn, agentName, text }: { readonly turn: ChatTurn; readonly age
   }
   const { run } = turn;
   if (isHarnessRun(run)) {
-    return <div className="cc-msg assistant"><span className="cc-avatar assistant" aria-hidden="true">{sparkIcon}</span><div className="cc-bubble"><span className="cc-name">{agentName}</span><p>{run.response ?? run.failure?.message ?? ''}</p><div className="cc-steps">{run.events.filter((event) => event.kind !== 'harness_started' && event.kind !== 'harness_completed').map((event) => <span className="cc-step" key={event.sequence}><i className="cc-step-dot" />{event.kind}{event.slotId === undefined ? '' : ` · ${event.slotId}`}</span>)}</div><span className="cc-meta">harness run {run.runId}</span></div></div>;
+    const waiting = run.checkpoint?.kind === 'handoff-input'
+      ? run.checkpoint.prompt
+      : run.checkpoint?.kind === 'magentic-approval'
+        ? `${text('Plan approval required:', '計画の承認が必要です:')} ${run.checkpoint.plan}`
+        : undefined;
+    return <div className="cc-msg assistant"><span className="cc-avatar assistant" aria-hidden="true">{sparkIcon}</span><div className="cc-bubble"><span className="cc-name">{agentName}</span><p>{run.response ?? run.failure?.message ?? waiting ?? ''}</p>{waiting !== undefined && run.response !== undefined && <p>{waiting}</p>}<div className="cc-steps">{run.events.filter((event) => event.kind !== 'harness_started' && event.kind !== 'harness_completed').map((event) => <span className="cc-step" key={event.sequence}><i className="cc-step-dot" />{event.kind}{event.slotId === undefined ? '' : ` · ${event.slotId}`}</span>)}</div><span className="cc-meta">harness run {run.runId}</span></div></div>;
   }
   return (
     <div className="cc-msg assistant">

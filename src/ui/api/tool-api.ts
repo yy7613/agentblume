@@ -224,6 +224,14 @@ export class ToolApiClient {
     return (await this.request<{ run: HarnessRunDto }>('/harness-runs', { method: 'POST', body: JSON.stringify(input), signal })).run;
   }
 
+  async respondToHarnessRun(runId: string, input: { readonly scope: TenantScopeDto; readonly response: { readonly kind: 'input'; readonly message: string } | { readonly kind: 'approval'; readonly decision: 'approve' | 'revise' | 'reject'; readonly feedback?: string } }, signal?: AbortSignal): Promise<HarnessRunDto> {
+    return (await this.request<{ run: HarnessRunDto }>(`/harness-runs/${encodeURIComponent(runId)}/responses`, { method: 'POST', body: JSON.stringify(input), signal })).run;
+  }
+
+  async cancelHarnessRun(runId: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<HarnessRunDto> {
+    return (await this.request<{ run: HarnessRunDto }>(`/harness-runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', body: JSON.stringify({ scope }), signal })).run;
+  }
+
   async listDataSources(scope: TenantScopeDto): Promise<readonly DataSourceDto[]> {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     return (await this.request<{ sources: DataSourceDto[] }>(`/data-sources?${query}`)).sources;

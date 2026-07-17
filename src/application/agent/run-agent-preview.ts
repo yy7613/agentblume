@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Agent } from '../../domain/agent/agent';
+import type { Agent, AgentSubAgentRef } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import { AgentNotFoundError } from '../../domain/agent/errors';
 import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
@@ -69,6 +69,8 @@ export interface RunSavedAgentPreviewInput {
   readonly purpose?: RunPurpose;
   readonly sessionId?: string;
   readonly history?: readonly AgentHistoryMessage[];
+  /** 呼び出し元がこのRunだけへ追加する、version固定の委譲先。HarnessのCoordinatorで使用する。 */
+  readonly additionalAgents?: readonly AgentSubAgentRef[];
   readonly images?: readonly ImageAttachment[];
   /** サブエージェント委譲のツリー共有バジェット（既定値で補完・上限超は既定へクランプ）。 */
   readonly budget?: Partial<RunBudget>;
@@ -261,7 +263,16 @@ export class RunAgentPreviewUseCase {
         if (effect !== 'read-only' && effect !== 'session-write') {
           throw new UnsafeToolError(`Agent preview refuses ${effect} effective side-effect for agent '${agent.metadata.internalId}'`);
         }
-        const resolved = await resolveAgentCapabilities(input.scope, agent.skills, agent.tools, this.repo, this.skills, agent.agents, agentRepo);
+        const additionalAgents = input.additionalAgents ?? [];
+        for (const ref of additionalAgents) {
+          const sub = await agentRepo.findVersion(input.scope, ref.internalId, ref.version);
+          if (sub === null) throw new AgentRunError(`additional sub-agent not found: ${ref.internalId}@${ref.version.toString()}`);
+          const subEffect = await resolveEffectiveSideEffect(input.scope, sub, { tools: this.repo, agents: agentRepo, skills: this.skills });
+          if (subEffect !== 'read-only' && subEffect !== 'session-write') {
+            throw new UnsafeToolError(`Agent preview refuses ${subEffect} effective side-effect for additional sub-agent '${sub.metadata.internalId}'`);
+          }
+        }
+        const resolved = await resolveAgentCapabilities(input.scope, agent.skills, agent.tools, this.repo, this.skills, [...agent.agents, ...additionalAgents], agentRepo);
         const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget, depth: 0, subAgents: resolved.subAgents, ...(session === undefined ? {} : { session }) };
         const wikiContext = await this.buildWikiContext(input.scope, agent, input.message, input.memoryPageIds);
         const memoryContext = [wikiContext, input.memoryContext].filter((value): value is string => value !== undefined && value.trim() !== '').join('\n\n') || undefined;

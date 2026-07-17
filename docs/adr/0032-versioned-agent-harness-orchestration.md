@@ -1,6 +1,6 @@
 # ADR-0032: マルチエージェント構成をバージョン付きAgent Harnessと型付きPattern Compilerで表現する
 
-- Status: Accepted (M1–M3 implemented; interactive patterns follow)
+- Status: Accepted (M1–M6 implemented; Handoff resume、Magentic approval、durable checkpoint included)
 - Date: 2026-07-15
 - Context doc: [docs/14-agent-harness-builder.md](../14-agent-harness-builder.md)
 
@@ -18,7 +18,7 @@
 4. **Harness topologyとruntime policyを分離する。** 計画、記憶、承認、共有予算、観測、background実行はpatternとは独立したpolicyとする。Clawはこのpolicyを設定済みのStarter Templateとして提供する。
 5. **Harnessは単一のRunnableとして公開する。** ChatではAgentまたはHarnessを1つ選ぶ。内部参加Agentはchild Runとして追跡し、Harness root Runが最終応答と状態を所有する。
 6. **共有Conversation Ledgerと参加者別sessionを使う。** Context Projectorがpatternに応じて`task-only / previous-response / full-conversation`を投影する。Tool call内部は他Agentへbroadcastしない。
-7. **pause/resumeを第一級にする。** Handoffのユーザー入力待ち、Tool承認、Magentic計画承認を`waiting-input / waiting-approval`状態と型付きrequest/responseで保存する。
+7. **pause/resumeを第一級にする。** Handoffのユーザー入力待ちとMagentic計画承認を`waiting-input / waiting-approval`状態と型付きrequest/responseで保存する。checkpointはroot Harness Runにactive slot、公開Ledger、残予算、期限だけを持たせ、同じRun IDと固定Harness versionで再開する。`approve`は保存済み計画を実行し、`revise`は人のfeedbackをLedgerへ加えて再計画し、`reject`はcancelledにする。Tool承認は同じcheckpoint契約を使う後続拡張とする。
 8. **hard budgetを必須にする。** モデル判定の終了条件だけに依存せず、時間、participant Run、model round、Tool call、並列度、pattern固有round/stall/resetを制限する。
 9. **SDKはAdapterへ隔離する。** 初期は既存Agent Runをleafとして使うLocal Harness Runtimeを実装する。Microsoft Agent Framework連携は同じPort/Event contractのAdapterまたは一方向exportとする。
 
@@ -32,6 +32,7 @@
 - 不正なHandoff edge、未設定Manager、停止条件なしGroup Chatを保存前に拒否できる。
 - 同じHarness definitionをFake、Local、Microsoft Agent Frameworkの各Runtimeでcontract testできる。
 - Harness root、participant Agent Run、Tool traceの3段階で観測できる。
+- waiting状態はSQLiteのroot recordへ原子的に保存され、プロセス再起動後も24時間以内なら同じRun IDを再開できる。再開ごとに実行時間budgetを新しく開始する一方、participant/model/tool budgetはcheckpointから継続する。
 - 新しい集約、repository、Run/Event/Checkpoint、ChatのRunnable抽象が必要になり、既存Agent-as-Toolsだけより実装量は増える。
 - Harness入れ子と汎用Workflow制御ノードは初期版に含めないため、将来の`RunnableRef`一般化とWorkflow統合が別途必要になる。
 

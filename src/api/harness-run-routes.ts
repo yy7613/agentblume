@@ -3,7 +3,7 @@ import type { z } from 'zod';
 import type { QueryHarnessRunsUseCase, RunHarnessUseCase } from '../application/harness/run-harness';
 import { SemVer } from '../domain/tool/semver';
 import { BadRequestError } from './error-mapping';
-import { harnessRunListQuerySchema, harnessRunQuerySchema, runHarnessBodySchema } from './schemas';
+import { cancelHarnessRunBodySchema, harnessRunListQuerySchema, harnessRunQuerySchema, resumeHarnessRunBodySchema, runHarnessBodySchema } from './schemas';
 
 export interface HarnessRunRouteDeps { readonly runHarness: RunHarnessUseCase; readonly queryHarnessRuns: QueryHarnessRunsUseCase; }
 function parseWith<S extends z.ZodType>(schema: S, value: unknown, label: string): z.infer<S> {
@@ -15,7 +15,16 @@ function version(value: string | undefined): SemVer | undefined { if (value === 
 export function registerHarnessRunRoutes(app: FastifyInstance, deps: HarnessRunRouteDeps): void {
   app.post('/harness-runs', async (request) => {
     const body = parseWith(runHarnessBodySchema, request.body, 'invalid body');
-    return { run: await deps.runHarness.execute({ scope: body.scope, harnessId: body.harness.internalId, ...(version(body.harness.version) === undefined ? {} : { version: version(body.harness.version) }), message: body.message, mode: body.mode }, request.raw.signal) };
+    const requestedVersion = version(body.harness.version);
+    return { run: await deps.runHarness.execute({ scope: body.scope, harnessId: body.harness.internalId, ...(requestedVersion === undefined ? {} : { version: requestedVersion }), message: body.message, mode: body.mode }, request.raw.signal) };
+  });
+  app.post<{ Params: { runId: string } }>('/harness-runs/:runId/responses', async (request) => {
+    const body = parseWith(resumeHarnessRunBodySchema, request.body, 'invalid body');
+    return { run: await deps.runHarness.resume({ scope: body.scope, runId: request.params.runId, response: body.response }, request.raw.signal) };
+  });
+  app.post<{ Params: { runId: string } }>('/harness-runs/:runId/cancel', async (request) => {
+    const body = parseWith(cancelHarnessRunBodySchema, request.body, 'invalid body');
+    return { run: await deps.runHarness.cancel(body.scope, request.params.runId) };
   });
   app.get('/harness-runs', async (request) => {
     const query = parseWith(harnessRunListQuerySchema, request.query, 'invalid query');
