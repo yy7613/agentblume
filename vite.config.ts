@@ -19,6 +19,7 @@ export default defineConfig({
       '/harnesses': apiTarget,
       '/harness-drafts': apiTarget,
       '/harness-runs': apiTarget,
+      '/factory-runs': apiTarget,
       '/skills': apiTarget,
       '/skill-drafts': apiTarget,
       '/personas': apiTarget,
