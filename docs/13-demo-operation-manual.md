@@ -43,6 +43,7 @@ npm run dev:sample
 |---|---|---|
 | CSV | `sample-products.csv` | 商品3件のファイルデータソース |
 | JSON | `sample-customers.json` | 顧客2件のファイルデータソース |
+| CSV | `sample-monthly-sales.csv` | 月次売上6行（2リージョン×3ヶ月）のファイルデータソース。Agent Factory（§10）で使う |
 | Tool | `sample-product-catalog` | 商品カタログ3件をAgentへ返す |
 | Skill | `sample-product-analysis` | カタログに基づく回答規則 |
 | Wiki | `sample-product-ops` | 在庫・価格・カテゴリの判断規則 |
@@ -173,7 +174,20 @@ npm run docs:screenshots:live
 
 ライブ撮影は`scripts/lm-studio.local.ps1`を使用し、画像07も更新する。モデルの応答文、token数、Run IDは実行ごとに変わる可能性がある。
 
-## 10. トラブルシューティング
+## 10. Agent Factory を試す
+
+Agent Factory（[docs/16-agent-factory.md](./16-agent-factory.md)）は、データソースと「やりたいこと」の自然文だけからTool・Skill・Agent・検証資産（Persona/Scenario）一式を自動生成し、疑似ユーザー検証の結果から自動で改訂を繰り返す機能である。構造化出力（`structured-output` capability）に対応したモデルがLM Studio側で必要になる。`.\scripts\start-dev.ps1 -SampleData`でデモデータ付き起動し、LM Studioを起動してから次の手順を試す。
+
+1. 左サイドバーの「Factory」タブを開く。
+2. 「やりたいこと」に例えば「月次売上について質問に答え傾向を要約するアシスタント」と入力する。
+3. データソース選択で`sample-monthly-sales.csv`を選ぶ。
+4. 「生成を開始」を押す。
+5. 実行タイムラインで各Stage（Profile → Plan → Tools → Skills → Agent → Validate → Analyze…）の進行を確認する。
+6. `requirePlanApproval`を有効にしていて`waiting-approval`で停止した場合は、提示された計画を確認し承認する。
+7. `succeeded`になったら、レポート（最良イテレーション・候補Agent版・イテレーション別メトリクス）を確認する。
+8. 生成されたTool/Skill/Agent/Scenarioは、それぞれのBuilder画面（ツール/スキル/エージェント/検証）にdraftとして現れる。生成物はすべてdraftのままであり、昇格は行われない。公開・昇格したい場合は既存の品質ゲート画面から人手で承認する。
+
+## 11. トラブルシューティング
 
 ### チャットでモデル未設定エラーになる
 

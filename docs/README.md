@@ -33,6 +33,7 @@
 | 13 | [13-demo-operation-manual.md](./13-demo-operation-manual.md) | デモデータ操作マニュアル |
 | 14 | [14-agent-harness-builder.md](./14-agent-harness-builder.md) | Agent Harness Builder（Sequential / Concurrent / Handoff / Group Chat / Magentic） |
 | 15 | [15-agent-harness-tutorial.md](./15-agent-harness-tutorial.md) | マルチエージェントHarnessの操作チュートリアル |
+| 16 | [16-agent-factory.md](./16-agent-factory.md) | Agent Factory（データソース+目的からの自動生成 × 疑似ユーザー検証による自動改善ループ） |
 
 > **凡例**: 本ドキュメント群では、アイデアに明記された内容を「✅ 記載あり」、本仕様書が補う未決定の提案を「🔷 提案」、採用を決定した提案を「🔶 採用決定」として区別する。
 

@@ -79,6 +79,10 @@ import type {
   HarnessSummaryDto,
   HarnessValidationDto,
   HarnessRunDto,
+  CreateFactoryRunDto,
+  FactoryRunDto,
+  FactoryEventDto,
+  ResolveFactoryRunDto,
 } from './types';
 
 export class ApiError extends Error {
@@ -230,6 +234,36 @@ export class ToolApiClient {
 
   async cancelHarnessRun(runId: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<HarnessRunDto> {
     return (await this.request<{ run: HarnessRunDto }>(`/harness-runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', body: JSON.stringify({ scope }), signal })).run;
+  }
+
+  // Agent Factory（v33）
+  async createFactoryRun(input: CreateFactoryRunDto, signal?: AbortSignal): Promise<FactoryRunDto> {
+    return (await this.request<{ run: FactoryRunDto }>('/factory-runs', { method: 'POST', body: JSON.stringify(input), signal })).run;
+  }
+
+  async listFactoryRuns(scope: TenantScopeDto, options?: { readonly limit?: number; readonly status?: FactoryRunDto['status'] }): Promise<readonly FactoryRunDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (options?.limit !== undefined) query.set('limit', String(options.limit));
+    if (options?.status !== undefined) query.set('status', options.status);
+    return (await this.request<{ runs: FactoryRunDto[] }>(`/factory-runs?${query}`)).runs;
+  }
+
+  async getFactoryRun(scope: TenantScopeDto, runId: string, signal?: AbortSignal): Promise<FactoryRunDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ run: FactoryRunDto }>(`/factory-runs/${encodeURIComponent(runId)}?${query}`, { signal })).run;
+  }
+
+  async getFactoryRunEvents(scope: TenantScopeDto, runId: string, signal?: AbortSignal): Promise<readonly FactoryEventDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ events: FactoryEventDto[] }>(`/factory-runs/${encodeURIComponent(runId)}/events?${query}`, { signal })).events;
+  }
+
+  async respondToFactoryRun(runId: string, input: ResolveFactoryRunDto, signal?: AbortSignal): Promise<FactoryRunDto> {
+    return (await this.request<{ run: FactoryRunDto }>(`/factory-runs/${encodeURIComponent(runId)}/responses`, { method: 'POST', body: JSON.stringify(input), signal })).run;
+  }
+
+  async cancelFactoryRun(runId: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<FactoryRunDto> {
+    return (await this.request<{ run: FactoryRunDto }>(`/factory-runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', body: JSON.stringify({ scope }), signal })).run;
   }
 
   async listDataSources(scope: TenantScopeDto): Promise<readonly DataSourceDto[]> {

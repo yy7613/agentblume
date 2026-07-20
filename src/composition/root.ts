@@ -140,6 +140,23 @@ import { InMemoryHarnessRunRepository } from '../adapters/storage/in-memory-harn
 import { SqliteHarnessRunRepository } from '../adapters/storage/sqlite-harness-run-repository';
 import type { HarnessRunRepository } from '../domain/harness/harness-run-repository';
 import { QueryHarnessRunsUseCase, RunHarnessUseCase } from '../application/harness/run-harness';
+import { InMemoryFactoryRunRepository } from '../adapters/storage/in-memory-factory-run-repository';
+import { SqliteFactoryRunRepository } from '../adapters/storage/sqlite-factory-run-repository';
+import type { FactoryRunRepository } from '../domain/factory/factory-run-repository';
+import { InProcessFactoryWorker } from '../adapters/factory/in-process-factory-worker';
+import { ApplyImprovementsUseCase } from '../application/factory/apply-improvements';
+import { GenerateAgentAssetsUseCase } from '../application/factory/generate-agent-assets';
+import { ProfileDataSourcesUseCase } from '../application/factory/profile-data-sources';
+import { AnalystRole } from '../application/factory/roles/analyst-role';
+import { AssemblerRole } from '../application/factory/roles/assembler-role';
+import { PlannerRole } from '../application/factory/roles/planner-role';
+import { SkillWriterRole } from '../application/factory/roles/skill-writer-role';
+import { ToolSmithRole } from '../application/factory/roles/tool-smith-role';
+import { RunFactoryUseCase } from '../application/factory/run-factory';
+import { CreateFactoryRunUseCase } from '../application/factory/create-factory-run';
+import { ResumeFactoryRunUseCase } from '../application/factory/resume-factory-run';
+import { CancelFactoryRunUseCase } from '../application/factory/cancel-factory-run';
+import { QueryFactoryRunsUseCase } from '../application/factory/query-factory-runs';
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
@@ -156,6 +173,7 @@ export interface AppOptions {
   readonly agentRepository?: AgentRepository;
   readonly harnessRepository?: AgentHarnessRepository;
   readonly harnessRunRepository?: HarnessRunRepository;
+  readonly factoryRunRepository?: FactoryRunRepository;
   readonly skillRepository?: SkillRepository;
   readonly experimentRepository?: ExperimentRepository;
   readonly qualityGateRepository?: QualityGateRepository;
@@ -182,6 +200,7 @@ export interface App {
   readonly agentRepo: AgentRepository;
   readonly harnessRepo: AgentHarnessRepository;
   readonly harnessRunRepo: HarnessRunRepository;
+  readonly factoryRunRepo: FactoryRunRepository;
   readonly skillRepo: SkillRepository;
   readonly personaRepo: PersonaRepository;
   readonly scenarioRepo: ScenarioRepository;
@@ -219,6 +238,13 @@ export interface App {
   readonly compileHarness: CompileHarnessUseCase;
   readonly runHarness: RunHarnessUseCase;
   readonly queryHarnessRuns: QueryHarnessRunsUseCase;
+  readonly profileDataSources: ProfileDataSourcesUseCase;
+  readonly plannerRole: PlannerRole;
+  readonly runFactory: RunFactoryUseCase;
+  readonly createFactoryRun: CreateFactoryRunUseCase;
+  readonly resumeFactoryRun: ResumeFactoryRunUseCase;
+  readonly cancelFactoryRun: CancelFactoryRunUseCase;
+  readonly queryFactoryRuns: QueryFactoryRunsUseCase;
   readonly saveSkill: SaveSkillUseCase;
   readonly querySkills: QuerySkillsUseCase;
   readonly generateSkillPrompt: GenerateSkillPromptUseCase;
@@ -346,6 +372,11 @@ export function createApp(options?: AppOptions): App {
     : profile === 'local'
       ? (() => { const sqlite = new SqliteHarnessRunRepository(path ?? ':memory:'); return { repo: sqlite as HarnessRunRepository, close: () => sqlite.close() }; })()
       : { repo: new InMemoryHarnessRunRepository() as HarnessRunRepository, close: () => {} };
+  const factoryRunAdapter = options?.factoryRunRepository !== undefined
+    ? { repo: options.factoryRunRepository, close: () => {} }
+    : profile === 'local'
+      ? (() => { const sqlite = new SqliteFactoryRunRepository(path ?? ':memory:'); return { repo: sqlite as FactoryRunRepository, close: () => sqlite.close() }; })()
+      : { repo: new InMemoryFactoryRunRepository() as FactoryRunRepository, close: () => {} };
   const sessionAdapter = profile === 'local'
     ? (() => { const sqlite = new SqliteAgentSessionRepository(path ?? ':memory:'); return { repo: sqlite as AgentSessionRepository, close: () => sqlite.close() }; })()
     : { repo: new InMemoryAgentSessionRepository() as AgentSessionRepository, close: () => {} };
@@ -438,6 +469,31 @@ export function createApp(options?: AppOptions): App {
   const experimentWorker = new InProcessExperimentWorker(runExperiment);
   const submitRunFeedback = new SubmitRunFeedbackUseCase(runAdapter.repo, operationsAdapter.repo);
 
+  // Agent Factory（v33）: Stage 0（決定的プロファイル）+ Stage 1（Plannerロール）+ 承認checkpoint +
+  // Stage 2-4（ToolSmith/SkillWriter/Assemblerロール + 既存Save系ユースケースの資産生成、M2）+
+  // Stage 5-6（検証資産の決定的マテリアライズ + 検証実行、M3）+ 改善ループ（Analystロール + 改訂適用 + 停止条件・
+  // レポート、M4）。
+  const saveTool = new SaveToolUseCase(repo, engine, resolveDataSources);
+  const saveAgent = new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo, wikiAdapter.repo);
+  const generateAgentPrompt = new GenerateAgentPromptUseCase(repo, skillAdapter.repo, agentAdapter.repo);
+  const profileDataSources = new ProfileDataSourcesUseCase(dataSourceAdapter.repo, resolveDataSources, engine);
+  const plannerRole = new PlannerRole(modelProvider);
+  const toolSmithRole = new ToolSmithRole(modelProvider);
+  const skillWriterRole = new SkillWriterRole(modelProvider);
+  const assemblerRole = new AssemblerRole(modelProvider);
+  const analystRole = new AnalystRole(modelProvider);
+  const generateAgentAssets = new GenerateAgentAssetsUseCase(toolSmithRole, skillWriterRole, assemblerRole, saveTool, saveSkill, saveAgent, generateAgentPrompt, engine, resolveDataSources);
+  // Stage 5（検証資産）が使うSave系ユースケース。既存の疑似ユーザー検証（validation-routes）と同じ配線を再利用する。
+  const savePersona = new SavePersonaUseCase(personaAdapter.repo);
+  const registerPseudoUserAgent = new RegisterPseudoUserAgentUseCase(personaAdapter.repo, saveAgent);
+  const saveScenario = new SaveScenarioUseCase(scenarioAdapter.repo, agentAdapter.repo, personaAdapter.repo);
+  const applyImprovements = new ApplyImprovementsUseCase(agentAdapter.repo, skillAdapter.repo, repo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine);
+  const runFactory = new RunFactoryUseCase(factoryRunAdapter.repo, profileDataSources, plannerRole, generateAgentAssets, runScenario, savePersona, registerPseudoUserAgent, saveScenario, analystRole, applyImprovements, agentAdapter.repo, skillAdapter.repo, repo);
+  const factoryWorker = new InProcessFactoryWorker(runFactory);
+  const resumeFactoryRun = new ResumeFactoryRunUseCase(factoryRunAdapter.repo, runFactory, factoryWorker);
+  const cancelFactoryRun = new CancelFactoryRunUseCase(factoryRunAdapter.repo, factoryWorker);
+  const queryFactoryRuns = new QueryFactoryRunsUseCase(factoryRunAdapter.repo);
+
   return {
     profile,
     repo,
@@ -449,6 +505,7 @@ export function createApp(options?: AppOptions): App {
     agentRepo: agentAdapter.repo,
     harnessRepo: harnessAdapter.repo,
     harnessRunRepo: harnessRunAdapter.repo,
+    factoryRunRepo: factoryRunAdapter.repo,
     skillRepo: skillAdapter.repo,
     personaRepo: personaAdapter.repo,
     scenarioRepo: scenarioAdapter.repo,
@@ -477,22 +534,29 @@ export function createApp(options?: AppOptions): App {
     deleteDataSource: new DeleteDataSourceUseCase(dataSourceAdapter.repo),
     queryDatabaseConnections: new QueryDatabaseConnectionsUseCase(databaseConnections),
     webSearch,
-    saveAgent: new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo, wikiAdapter.repo),
+    saveAgent,
     queryAgents: new QueryAgentsUseCase(agentAdapter.repo),
-    generateAgentPrompt: new GenerateAgentPromptUseCase(repo, skillAdapter.repo, agentAdapter.repo),
+    generateAgentPrompt,
     saveHarness: new SaveHarnessUseCase(harnessAdapter.repo, agentAdapter.repo),
     queryHarnesses: new QueryHarnessesUseCase(harnessAdapter.repo),
     validateHarness: new ValidateHarnessUseCase(agentAdapter.repo),
     compileHarness: new CompileHarnessUseCase(),
     runHarness: new RunHarnessUseCase(harnessAdapter.repo, harnessRunAdapter.repo, runAgentPreview),
     queryHarnessRuns: new QueryHarnessRunsUseCase(harnessRunAdapter.repo),
+    profileDataSources,
+    plannerRole,
+    runFactory,
+    createFactoryRun: new CreateFactoryRunUseCase(factoryRunAdapter.repo, factoryWorker),
+    resumeFactoryRun,
+    cancelFactoryRun,
+    queryFactoryRuns,
     saveSkill,
     querySkills: new QuerySkillsUseCase(skillAdapter.repo),
     generateSkillPrompt: new GenerateSkillPromptUseCase(repo),
-    savePersona: new SavePersonaUseCase(personaAdapter.repo),
+    savePersona,
     queryPersonas: new QueryPersonasUseCase(personaAdapter.repo),
-    registerPseudoUserAgent: new RegisterPseudoUserAgentUseCase(personaAdapter.repo, new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo, wikiAdapter.repo)),
-    saveScenario: new SaveScenarioUseCase(scenarioAdapter.repo, agentAdapter.repo, personaAdapter.repo),
+    registerPseudoUserAgent,
+    saveScenario,
     queryScenarios: new QueryScenariosUseCase(scenarioAdapter.repo),
     runScenario,
     queryScenarioRuns: new QueryScenarioRunsUseCase(scenarioRunAdapter.repo),
@@ -532,13 +596,16 @@ export function createApp(options?: AppOptions): App {
     queryWikiSpaces: new QueryWikiSpacesUseCase(wikiAdapter.repo),
     draftTool: new DraftToolUseCase(engine, resolveDataSources),
     suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, profile !== 'test' && (process.env['ANALYSIS_ASSISTANT_ENABLED'] ?? 'true') !== 'false' && (process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== ''),
-    saveTool: new SaveToolUseCase(repo, engine, resolveDataSources),
+    saveTool,
     getTool: new GetToolUseCase(repo),
     listToolVersions: new ListToolVersionsUseCase(repo),
     listTools: new ListToolsUseCase(repo),
     previewTool: new PreviewToolUseCase(repo, engine, resolveDataSources),
     close: () => {
       experimentWorker.shutdown();
+      factoryWorker.shutdown();
+      try { factoryRunAdapter.close(); }
+      finally {
       try { harnessRunAdapter.close(); }
       finally {
         try { harnessAdapter.close(); }
@@ -594,6 +661,7 @@ export function createApp(options?: AppOptions): App {
             }
           }
         }
+      }
       }
     },
   };

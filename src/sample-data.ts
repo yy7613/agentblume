@@ -33,6 +33,16 @@ export async function seedSampleData(app: App): Promise<SampleDataResult> {
     { id: 'c-100', name: 'Aki Sato', plan: 'pro', active: true },
     { id: 'c-200', name: 'Ren Ito', plan: 'starter', active: true },
   ], null, 2));
+  // Agent Factory（v33）を試す用: 集計・傾向要約しやすい月次売上CSV（2リージョン × 3ヶ月）。
+  await saveFile('sample-monthly-sales.csv', 'csv', [
+    'month,region,revenue,units',
+    '2026-05,East,120000,400',
+    '2026-05,West,98000,350',
+    '2026-06,East,135000,420',
+    '2026-06,West,101000,360',
+    '2026-07,East,140000,430',
+    '2026-07,West,110000,370',
+  ].join('\n'));
 
   const toolId = 'sample-product-catalog';
   const tool = (await app.listTools.execute(scope)).some((item) => item.internalId === toolId)
@@ -111,5 +121,5 @@ export async function seedSampleData(app: App): Promise<SampleDataResult> {
     });
   }
 
-  return { dataSourceNames: ['sample-products.csv', 'sample-customers.json'], toolId, skillId, agentId, wikiId };
+  return { dataSourceNames: ['sample-products.csv', 'sample-customers.json', 'sample-monthly-sales.csv'], toolId, skillId, agentId, wikiId };
 }

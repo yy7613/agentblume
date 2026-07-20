@@ -605,3 +605,159 @@ export interface ReflectRunDto {
   readonly existingWikiPageId?: string;
   readonly targetWikiId?: string;
 }
+
+// Agent Factory（v33・docs/16-agent-factory.md §6, §9）
+export type FactoryRunStatusDto = 'queued' | 'running' | 'waiting-approval' | 'succeeded' | 'failed' | 'cancelled';
+export type FactoryStageDto =
+  | 'profiling' | 'planning' | 'generating-tools' | 'generating-skills'
+  | 'assembling-agent' | 'generating-validation' | 'validating' | 'analyzing' | 'improving' | 'reporting';
+export type FactoryEventKindDto =
+  | 'stage_started' | 'stage_completed' | 'plan_proposed' | 'approval_requested' | 'approval_resolved'
+  | 'tool_generated' | 'tool_repair_attempted' | 'artifact_saved' | 'scenario_run_completed'
+  | 'analysis_completed' | 'proposal_applied' | 'proposal_rejected' | 'iteration_completed'
+  | 'budget_exceeded' | 'run_completed' | 'run_failed' | 'run_cancelled';
+export interface FactoryVersionRefDto { readonly internalId: string; readonly version: string }
+export interface FactoryEventDto {
+  readonly sequence: number;
+  readonly kind: FactoryEventKindDto;
+  readonly at: string;
+  readonly stage?: FactoryStageDto;
+  readonly iteration?: number;
+  readonly message?: string;
+  readonly ref?: FactoryVersionRefDto;
+}
+export interface FactoryGoalInputDto {
+  readonly goal: string;
+  readonly targetUsers?: string;
+  readonly constraints?: string;
+  readonly language: 'ja' | 'en';
+}
+export interface FactoryOptionsDto {
+  readonly maxIterations: number;
+  readonly personaCount: number;
+  readonly scenarioCount: number;
+  readonly requirePlanApproval: boolean;
+  readonly targets: { readonly minGoalAchievedRate: number; readonly minAvgSatisfaction: number };
+  readonly budget: { readonly maxDurationMs: number; readonly maxRoleCalls: number; readonly maxScenarioRuns: number; readonly maxRepairAttempts: number; readonly maxProposalsPerIteration: number };
+}
+export interface FactoryToolPlanDto {
+  readonly key: string;
+  readonly displayName: string;
+  readonly purpose: string;
+  readonly dataSourceId: string;
+  readonly sideEffect: SideEffectDto;
+  readonly outputShape?: string;
+  readonly argumentSummary?: string;
+}
+export interface FactorySkillPlanDto {
+  readonly key: string;
+  readonly displayName: string;
+  readonly responsibility: string;
+  readonly activationCondition: string;
+  readonly toolKeys: readonly string[];
+}
+export type FactoryPersonaArchetypeDto = 'novice' | 'expert' | 'busy' | 'vague' | 'skeptical' | 'custom';
+export interface FactoryPersonaPlanDto {
+  readonly key: string;
+  readonly archetype: FactoryPersonaArchetypeDto;
+  readonly knowledgeLevel: 'low' | 'mid' | 'high';
+  readonly patience: 'low' | 'mid' | 'high';
+  readonly tone: string;
+  readonly verbosity: 'terse' | 'normal' | 'chatty';
+  readonly language: 'ja' | 'en';
+  readonly extraInstructions?: string;
+}
+export interface FactoryScenarioPlanDto {
+  readonly key: string;
+  readonly goal: string;
+  readonly context?: string;
+  readonly personaKey: string;
+  readonly expectedToolKeys: readonly string[];
+  readonly maxUserTurns: number;
+}
+export interface FactoryPlanDto {
+  readonly agentBrief: { readonly displayName: string; readonly role: string };
+  readonly tools: readonly FactoryToolPlanDto[];
+  readonly skills: readonly FactorySkillPlanDto[];
+  readonly personas: readonly FactoryPersonaPlanDto[];
+  readonly scenarios: readonly FactoryScenarioPlanDto[];
+}
+export interface FactoryPlanCheckpointDto {
+  readonly kind: 'plan-approval';
+  readonly expiresAt: string;
+  readonly prompt: string;
+  readonly plan: FactoryPlanDto;
+}
+export type FactoryFindingSeverityDto = 'info' | 'warning' | 'critical';
+export interface FactoryFindingDto { readonly id: string; readonly severity: FactoryFindingSeverityDto; readonly area: string; readonly detail: string }
+export interface FactoryIterationMetricsDto {
+  readonly iteration: number;
+  readonly goalAchievedRate: number;
+  readonly avgSatisfaction: number;
+  readonly toolHitRate: number;
+  readonly errorRate: number;
+  readonly avgUserTurns: number;
+  readonly scenarioCount: number;
+  readonly usage: { readonly promptTokens?: number; readonly completionTokens?: number; readonly totalTokens?: number };
+  readonly durationMs: number;
+}
+export interface FactoryIterationDto {
+  readonly index: number;
+  readonly agentVersion: string;
+  readonly scenarioRunIds: readonly string[];
+  readonly metrics: FactoryIterationMetricsDto;
+  readonly analysis?: { readonly findings: readonly FactoryFindingDto[]; readonly applied: readonly unknown[]; readonly rejected: readonly unknown[] };
+}
+export interface FactoryArtifactsDto {
+  readonly tools: readonly FactoryVersionRefDto[];
+  readonly skills: readonly FactoryVersionRefDto[];
+  readonly agentVersions: readonly FactoryVersionRefDto[];
+  readonly personas: readonly FactoryVersionRefDto[];
+  readonly pseudoUsers: readonly FactoryVersionRefDto[];
+  readonly scenarios: readonly FactoryVersionRefDto[];
+}
+export interface FactoryReportDto {
+  readonly bestIteration: number;
+  readonly candidate: { readonly agentId: string; readonly version: string };
+  readonly summary: string;
+  readonly openFindings: readonly FactoryFindingDto[];
+  readonly metricsByIteration: readonly FactoryIterationMetricsDto[];
+}
+export interface FactoryRunDto {
+  readonly id: string;
+  readonly scope: TenantScopeDto;
+  readonly input: {
+    readonly goal: FactoryGoalInputDto;
+    readonly dataSourceIds: readonly string[];
+    readonly options: FactoryOptionsDto;
+  };
+  readonly status: FactoryRunStatusDto;
+  readonly stage: FactoryStageDto;
+  readonly plan?: FactoryPlanDto;
+  readonly artifacts: FactoryArtifactsDto;
+  readonly iterations: readonly FactoryIterationDto[];
+  readonly report?: FactoryReportDto;
+  readonly checkpoint?: FactoryPlanCheckpointDto;
+  readonly budget: { readonly consumed: { readonly roleCalls: number; readonly scenarioRuns: number; readonly elapsedMs: number }; readonly limits: FactoryOptionsDto['budget'] };
+  readonly failure?: { readonly stage: FactoryStageDto; readonly reason: string };
+  readonly events: readonly FactoryEventDto[];
+  readonly startedAt: string;
+  readonly finishedAt?: string;
+}
+export interface CreateFactoryRunDto {
+  readonly scope: TenantScopeDto;
+  readonly goal: FactoryGoalInputDto;
+  readonly dataSourceIds: readonly string[];
+  readonly options?: {
+    readonly maxIterations?: number;
+    readonly personaCount?: number;
+    readonly scenarioCount?: number;
+    readonly requirePlanApproval?: boolean;
+    readonly targets?: { readonly minGoalAchievedRate: number; readonly minAvgSatisfaction: number };
+    readonly budget?: FactoryOptionsDto['budget'];
+  };
+}
+export interface ResolveFactoryRunDto {
+  readonly scope: TenantScopeDto;
+  readonly response: { readonly kind: 'plan-approval'; readonly decision: 'approve' | 'revise' | 'reject'; readonly feedback?: string };
+}

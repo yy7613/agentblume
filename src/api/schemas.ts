@@ -504,3 +504,45 @@ export const gateReportListQuerySchema = scopeQuerySchema.extend({ candidateExpe
 export const promotionListQuerySchema = scopeQuerySchema.extend({ agentId: z.string().min(1).optional() });
 export const requestPromotionBodySchema = z.object({ scope: tenantScopeSchema, gateReportId: z.string().min(1), requestedBy: z.string().min(1) });
 export const decidePromotionBodySchema = z.object({ scope: tenantScopeSchema, decidedBy: z.string().min(1), reason: z.string().optional() });
+
+/** POST /factory-runs の body（v33・Agent Factory M1 / docs/16-agent-factory.md §9）。options省略時はサーバー側既定を補完する。
+ * `targets` / `budget` は指定する場合フィールド全体を渡す（`Partial<FactoryOptions>` はトップレベルのみ部分適用）。 */
+const factoryOptionsInputSchema = z.object({
+  maxIterations: z.number().int().min(1).max(10).optional(),
+  personaCount: z.number().int().min(1).max(5).optional(),
+  scenarioCount: z.number().int().min(1).max(10).optional(),
+  requirePlanApproval: z.boolean().optional(),
+  targets: z.object({ minGoalAchievedRate: z.number().min(0).max(1), minAvgSatisfaction: z.number().min(1).max(5) }).optional(),
+  budget: z.object({
+    maxDurationMs: z.number().int().min(1_000),
+    maxRoleCalls: z.number().int().min(1),
+    maxScenarioRuns: z.number().int().min(1),
+    maxRepairAttempts: z.number().int().min(0),
+    maxProposalsPerIteration: z.number().int().min(0),
+  }).optional(),
+});
+export const factoryRunBodySchema = z.object({
+  scope: tenantScopeSchema,
+  goal: z.object({
+    goal: z.string().min(1),
+    targetUsers: z.string().min(1).optional(),
+    constraints: z.string().min(1).optional(),
+    language: z.enum(['ja', 'en']),
+  }),
+  dataSourceIds: z.array(z.string().min(1)).min(1).max(5),
+  options: factoryOptionsInputSchema.optional(),
+});
+export const factoryRunListQuerySchema = scopeQuerySchema.extend({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  status: z.enum(['queued', 'running', 'waiting-approval', 'succeeded', 'failed', 'cancelled']).optional(),
+});
+export const factoryRunQuerySchema = scopeQuerySchema;
+export const resumeFactoryRunBodySchema = z.object({
+  scope: tenantScopeSchema,
+  response: z.object({
+    kind: z.literal('plan-approval'),
+    decision: z.enum(['approve', 'revise', 'reject']),
+    feedback: z.string().min(1).optional(),
+  }),
+});
+export const cancelFactoryRunBodySchema = z.object({ scope: tenantScopeSchema });
