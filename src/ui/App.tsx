@@ -17,7 +17,7 @@ import { useI18n } from './i18n';
 const ValidationPage = lazy(async () => ({ default: (await import('./validation/ValidationPage')).ValidationPage }));
 
 const NAV_ITEMS = [
-  { id: 'Chat', ja: 'チャット' }, { id: 'Inspect', ja: '動作確認' }, { id: 'Agent', ja: 'エージェント' }, { id: 'Harness', ja: 'Harness' }, { id: 'Skill', ja: 'スキル' }, { id: 'Data', ja: 'データソース' }, { id: 'Tool', ja: 'ツール' },
+  { id: 'Chat', ja: 'チャット' }, { id: 'Inspect', ja: '動作確認' }, { id: 'Agent', ja: 'エージェント' }, { id: 'Harness', ja: 'ハーネス' }, { id: 'Skill', ja: 'スキル' }, { id: 'Data', ja: 'データソース' }, { id: 'Tool', ja: 'ツール' },
   { id: 'MCP', ja: 'MCP' }, { id: 'Validation', ja: '検証' }, { id: 'Factory', ja: 'Factory' }, { id: 'Memory', ja: '記憶' }, { id: 'Settings', ja: '設定' }, { id: 'Status', ja: 'ステータス' },
 ] as const;
 type Screen = (typeof NAV_ITEMS)[number]['id'];
