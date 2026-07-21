@@ -5,6 +5,16 @@
 - **スタック**: TypeScript / React 19 / Fastify / Vite / Vitest / Playwright
 - **状態**: プレビュー（ローカル実行向け）
 
+## 画面
+
+サンプルデータを投入して実行中のアプリ（日本語UI）。画像は `npm run docs:screenshots` が実画面を操作して再生成する。操作手順は[デモデータ操作マニュアル](docs/13-demo-operation-manual.md)を参照。
+
+| | |
+|---|---|
+| **チャット** — 保存済みAgentがToolを呼び出して応答（ライブモデル実行） ![チャット実行結果](docs/assets/demo-manual/07-chat-result.png) | **Tool Builder** — ETLノードフローの編集と固定サンプルプレビュー ![Tool Builder](docs/assets/demo-manual/02-tool-preview.png) |
+| **Harness Builder** — マルチエージェント構成をパターン別の構造図で編集（Concurrentのfan-out＋集約） ![Harness Builder](docs/assets/demo-manual/08-harness-builder.png) | **Agent Factory** — やりたいこと＋データソースからAgent一式を自動生成・自動改善 ![Agent Factory](docs/assets/demo-manual/09-factory.png) |
+| **データソース** — CSV/JSON登録とDB接続カタログ ![データソース](docs/assets/demo-manual/01-data-sources.png) | **長期記憶** — Wikiページの編集・検索とAgentへのアタッチ ![長期記憶](docs/assets/demo-manual/04-wiki-memory.png) |
+
 ## ローカル開発
 
 PowerShellからAPIとUIをまとめて起動する。
