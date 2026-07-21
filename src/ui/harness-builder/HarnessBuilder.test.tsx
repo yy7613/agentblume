@@ -20,6 +20,19 @@ function stubClient(): ToolApiClient {
   } as unknown as ToolApiClient;
 }
 
+// saveHarnessの呼び出し引数を検証するテスト用: metadata.versionを返すresolveされたPromiseにしておく。
+function stubClientWithSave(): ToolApiClient {
+  const client = stubClient();
+  (client.saveHarness as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.0.0' } });
+  return client;
+}
+
+async function fillMetadata(internalId: string, displayName: string): Promise<void> {
+  await userEvent.type(screen.getByLabelText('Internal ID'), internalId);
+  await userEvent.type(screen.getByLabelText('Display name'), displayName);
+  await userEvent.type(screen.getByLabelText('Owner'), 'owner@example.com');
+}
+
 describe('HarnessBuilder', () => {
   it('patternを切り替えるとslot名・badge・inspector・canvas構造が変わる', async () => {
     const client = stubClient();
@@ -108,5 +121,124 @@ describe('HarnessBuilder', () => {
 
     // note文言は presets 一覧と inspector の両方に表示されるため getAllByText で確認する。
     expect(screen.getAllByText('順番に受け渡して仕上げる').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('concurrentのaggregationをmechanical(collect/vote)とAI(agent)で切り替えられる', async () => {
+    const client = stubClientWithSave();
+    render(<HarnessBuilder client={client} />);
+    await screen.findByLabelText('Assign agent to Author');
+    await userEvent.click(screen.getByRole('button', { name: /^Concurrent/ }));
+
+    const aggregationSelect = await screen.findByLabelText('Aggregation') as HTMLSelectElement;
+    expect(aggregationSelect.value).toBe('collect');
+
+    // vote: hub chipの表示とtopologyのaggregation値が切り替わる（aggregatorSlotIdは付与しない）。
+    await userEvent.selectOptions(aggregationSelect, 'vote');
+    const canvas = screen.getByLabelText('Harness canvas');
+    expect(within(canvas).getByText('Aggregation: vote')).toBeTruthy();
+
+    // agent: fan-in位置にaggregator専用cardが現れ、参加者columnには含まれない。
+    await userEvent.selectOptions(aggregationSelect, 'agent');
+    const aggregatorSelect = await screen.findByLabelText('Assign agent to Aggregator') as HTMLSelectElement;
+    await userEvent.selectOptions(aggregatorSelect, 'agent-b');
+
+    await fillMetadata('concurrent-agg', 'Concurrent Agg');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Research'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Legal'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Marketing'), 'agent-a');
+
+    const saveButton = screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(false);
+    await userEvent.click(saveButton);
+
+    expect(client.saveHarness).toHaveBeenCalledWith(expect.objectContaining({
+      topology: expect.objectContaining({ pattern: 'concurrent', aggregation: 'agent', aggregatorSlotId: 'aggregator', participantSlotIds: ['research', 'legal', 'marketing'] }),
+      slots: expect.arrayContaining([expect.objectContaining({ id: 'aggregator', assignment: { internalId: 'agent-b', version: '2.0.0' } })]),
+    }));
+  });
+
+  it('vote集約はaggregatorSlotIdを付けずに保存できる', async () => {
+    const client = stubClientWithSave();
+    render(<HarnessBuilder client={client} />);
+    await screen.findByLabelText('Assign agent to Author');
+    await userEvent.click(screen.getByRole('button', { name: /^Concurrent/ }));
+    await userEvent.selectOptions(await screen.findByLabelText('Aggregation'), 'vote');
+
+    await fillMetadata('concurrent-vote', 'Concurrent Vote');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Research'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Legal'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Marketing'), 'agent-a');
+    await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+
+    expect(client.saveHarness).toHaveBeenCalledWith(expect.objectContaining({
+      topology: { pattern: 'concurrent', participantSlotIds: ['research', 'legal', 'marketing'], aggregation: 'vote' },
+    }));
+  });
+
+  it('participant slotを追加・削除でき、最小件数では削除controlが消える', async () => {
+    const client = stubClient();
+    render(<HarnessBuilder client={client} />);
+    await screen.findByLabelText('Assign agent to Author');
+
+    // sequential既定は3 slot。追加すると4番目のparticipantが現れる。
+    await userEvent.click(screen.getByRole('button', { name: '+ Add participant' }));
+    expect(await screen.findByLabelText('Assign agent to Participant 4')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Remove slot Participant 4' }));
+    expect(screen.queryByLabelText('Assign agent to Participant 4')).toBeNull();
+
+    // sequentialの最小件数(2)まで減らすと、残りのslotから削除controlが消える。
+    await userEvent.click(screen.getByRole('button', { name: 'Remove slot Author' }));
+    expect(screen.queryByLabelText('Assign agent to Author')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Remove slot/ })).toBeNull();
+
+    // agent-as-tools / magentic: 固定先頭slot（coordinator/manager）には削除controlが出ない。
+    await userEvent.click(screen.getByRole('button', { name: /^Agent as tools/ }));
+    await screen.findByLabelText('Assign agent to Coordinator');
+    expect(screen.queryByRole('button', { name: 'Remove slot Coordinator' })).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: /^Magentic/ }));
+    await screen.findByLabelText('Assign agent to Manager');
+    expect(screen.queryByRole('button', { name: 'Remove slot Manager' })).toBeNull();
+  });
+
+  it('slot labelを編集すると割り当てselectのaria-labelと保存内容へ反映される', async () => {
+    const client = stubClientWithSave();
+    render(<HarnessBuilder client={client} />);
+    const labelInput = await screen.findByLabelText('Slot label author') as HTMLInputElement;
+    await userEvent.clear(labelInput);
+    await userEvent.type(labelInput, 'Lead Writer');
+
+    expect(await screen.findByLabelText('Assign agent to Lead Writer')).toBeTruthy();
+    expect(screen.queryByLabelText('Assign agent to Author')).toBeNull();
+
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Lead Writer'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Reviewer'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Publisher'), 'agent-b');
+    await fillMetadata('label-edit', 'Label Edit');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+
+    expect(client.saveHarness).toHaveBeenCalledWith(expect.objectContaining({
+      slots: expect.arrayContaining([expect.objectContaining({ id: 'author', label: 'Lead Writer' })]),
+    }));
+  });
+
+  it('concurrent+agent集約はaggregator割り当てが済むまでSaveを無効化する', async () => {
+    const client = stubClient();
+    render(<HarnessBuilder client={client} />);
+    await screen.findByLabelText('Assign agent to Author');
+    await userEvent.click(screen.getByRole('button', { name: /^Concurrent/ }));
+    await fillMetadata('ready-check', 'Ready Check');
+    await userEvent.selectOptions(await screen.findByLabelText('Assign agent to Research'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Legal'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Marketing'), 'agent-a');
+    await userEvent.selectOptions(await screen.findByLabelText('Aggregation'), 'agent');
+
+    const saveButton = screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(true);
+
+    await userEvent.selectOptions(await screen.findByLabelText('Assign agent to Aggregator'), 'agent-b');
+    expect(saveButton.disabled).toBe(false);
   });
 });
