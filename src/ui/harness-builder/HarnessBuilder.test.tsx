@@ -21,19 +21,20 @@ function stubClient(): ToolApiClient {
 }
 
 describe('HarnessBuilder', () => {
-  it('patternを切り替えるとslot名・badge・inspectorが変わる', async () => {
+  it('patternを切り替えるとslot名・badge・inspector・canvas構造が変わる', async () => {
     const client = stubClient();
     const { container } = render(<HarnessBuilder client={client} />);
 
-    // Sequential preset (既定) は author/reviewer/publisher を表示する。
+    // Sequential preset (既定) は author/reviewer/publisher を横一列chainで表示する。
     expect(await screen.findByLabelText('Assign agent to Author')).toBeTruthy();
     expect(screen.getByLabelText('Assign agent to Reviewer')).toBeTruthy();
     expect(screen.getByLabelText('Assign agent to Publisher')).toBeTruthy();
     expect(container.querySelector('.harness-role-badge')).toBeNull();
+    expect(container.querySelector('.harness-canvas--sequential .harness-chain')).toBeTruthy();
 
     await userEvent.click(screen.getByRole('button', { name: /^Magentic/ }));
 
-    // Magenticへ切り替えるとslotがManager/Researcher/Coderへ入れ替わる。
+    // Magenticへ切り替えるとslotがManager/Researcher/Coderへ入れ替わり、hub&spoke構造＋ledger chipが現れる。
     expect(await screen.findByLabelText('Assign agent to Manager')).toBeTruthy();
     expect(screen.getByLabelText('Assign agent to Researcher')).toBeTruthy();
     expect(screen.getByLabelText('Assign agent to Coder')).toBeTruthy();
@@ -43,6 +44,40 @@ describe('HarnessBuilder', () => {
     expect(badge?.textContent).toBe('Manager');
 
     expect(screen.getByText('Max rounds: 6')).toBeTruthy();
+    expect(container.querySelector('.harness-canvas--magentic .harness-hub-layout')).toBeTruthy();
+    expect(screen.getByText('Plan / Progress ledger · max 6 rounds')).toBeTruthy();
+    expect(screen.getAllByText('delegate')).toHaveLength(2);
+  });
+
+  it('patternごとにcanvasの構造（分岐・hub&spoke・handoff route）が異なる', async () => {
+    const client = stubClient();
+    const { container } = render(<HarnessBuilder client={client} />);
+    await screen.findByLabelText('Assign agent to Author');
+
+    // Concurrent: branchが縦に積まれ、slotではないaggregation nodeが現れる。
+    // (canvasへscopeする: inspectorのtopology summaryも同じ正規化文字列"Aggregation: collect"を含むため)
+    await userEvent.click(screen.getByRole('button', { name: /^Concurrent/ }));
+    const concurrentCanvas = await screen.findByLabelText('Harness canvas');
+    expect(within(concurrentCanvas).getByText('Aggregation: collect')).toBeTruthy();
+    expect(container.querySelectorAll('.harness-canvas--concurrent .harness-branch')).toHaveLength(3);
+
+    // Agent as tools: coordinatorがhub、2人のparticipantへdashedのask連携が伸びる。
+    await userEvent.click(screen.getByRole('button', { name: /^Agent as tools/ }));
+    const agentAsToolsCanvas = await screen.findByLabelText('Harness canvas');
+    expect(within(agentAsToolsCanvas).getAllByText('ask')).toHaveLength(2);
+    expect(container.querySelector('.harness-canvas--agent-as-tools .harness-hub-layout')).toBeTruthy();
+
+    // Handoff: start slotから2本のhandoff routeが伸びる。
+    await userEvent.click(screen.getByRole('button', { name: /^Handoff/ }));
+    const handoffCanvas = await screen.findByLabelText('Harness canvas');
+    expect(within(handoffCanvas).getAllByText('handoff')).toHaveLength(2);
+    expect(container.querySelectorAll('.harness-canvas--handoff .harness-handoff-route')).toHaveLength(2);
+
+    // Group Chat: slotではないround-robin hubが現れる。
+    await userEvent.click(screen.getByRole('button', { name: /^Group Chat/ }));
+    const groupChatCanvas = await screen.findByLabelText('Harness canvas');
+    expect(within(groupChatCanvas).getByText('Round-robin · max 3 rounds')).toBeTruthy();
+    expect(container.querySelector('.harness-canvas--group-chat .harness-hub-layout')).toBeTruthy();
   });
 
   it('pattern切り替え後もindex位置のAgent割り当てを保持する', async () => {

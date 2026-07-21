@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentSummaryDto, HarnessPatternDto, HarnessPoliciesDto, HarnessRunDto, HarnessSlotDto, HarnessTopologyDto, HarnessValidationDto, SaveHarnessDto } from '../api/types';
 import { useI18n } from '../i18n';
@@ -77,24 +77,48 @@ function topology(pattern: HarnessPatternDto, slots: readonly HarnessSlotDto[]):
   }
 }
 
-// Canvasのarrow/badge/chipはpatternごとに切り替え、slotを見ただけでtopologyの違いが分かるようにする。
-function arrowSymbol(pattern: HarnessPatternDto, index: number): string {
-  if (pattern === 'concurrent') return '↓';
-  if (index === 0) return '↓';
-  return pattern === 'agent-as-tools' ? '⇠' : '→';
+// Canvasはpatternごとに専用のCSS grid/flex構造で描画し、slotを見ただけでtopologyの違いが分かるようにする（横並び1行には統一しない）。
+function SlotCard({ slot, badge, agents, text, onAssign }: { readonly slot: HarnessSlotDto; readonly badge?: string; readonly agents: readonly AgentSummaryDto[]; readonly text: Translate; readonly onAssign: (agentId: string) => void }) {
+  return <div className="harness-slot">{badge !== undefined && <span className="harness-role-badge">{badge}</span>}<strong>{slot.label}</strong><small>{slot.purpose}</small><select aria-label={`${text('Assign agent to', 'Agentを割り当て')} ${slot.label}`} value={slot.assignment.internalId} onChange={(event) => onAssign(event.target.value)}><option value="">{text('Assign saved Agent…', '保存済みAgentを割り当て…')}</option>{agents.map((agent) => <option key={agent.internalId} value={agent.internalId}>{agent.displayName}@{agent.latestVersion}</option>)}</select><code>{slot.assignment.internalId === '' ? text('unassigned', '未割当') : `${slot.assignment.internalId}@${slot.assignment.version}`}</code></div>;
 }
-function arrowChip(pattern: HarnessPatternDto, index: number, text: Translate): string | undefined {
-  if (index === 0) return undefined;
-  if (pattern === 'agent-as-tools') return text('ask', 'ask');
-  if (pattern === 'handoff') return text('handoff', '移譲');
-  return undefined;
+function Connector({ symbol, label, dashed, vertical }: { readonly symbol: string; readonly label?: string; readonly dashed?: boolean; readonly vertical?: boolean }) {
+  const className = ['harness-connector', vertical === true ? 'harness-connector--vertical' : undefined, dashed === true ? 'harness-connector--dashed' : undefined].filter((part) => part !== undefined).join(' ');
+  return <div className={className}>{label !== undefined && <span className="harness-connector-label">{label}</span>}<span className="harness-connector-glyph" aria-hidden="true">{symbol}</span></div>;
 }
-function terminalChip(pattern: HarnessPatternDto, text: Translate): string | undefined {
+function InputNode({ text }: { readonly text: Translate }) { return <div className="harness-input-node">{text('Input', '入力')}</div>; }
+function OutputNode({ text }: { readonly text: Translate }) { return <div className="harness-output-node">{text('Output', '出力')}</div>; }
+function HubChip({ label }: { readonly label: string }) { return <div className="harness-flow-chip harness-hub-chip">{label}</div>; }
+function branchGlyph(index: number, total: number): string {
+  if (total <= 1) return '→';
+  if (index === 0) return '↗';
+  if (index === total - 1) return '↘';
+  return '→';
+}
+// patternごとの2D構造（sequentialのみ自然に横一列、他は分岐・hub&spoke・fan outをgrid/flexで表現する）。
+function HarnessCanvasBody({ pattern, slots, agents, text, assign, badge }: { readonly pattern: HarnessPatternDto; readonly slots: readonly HarnessSlotDto[]; readonly agents: readonly AgentSummaryDto[]; readonly text: Translate; readonly assign: (slotId: string, agentId: string) => void; readonly badge: string | undefined }) {
+  const card = (slot: HarnessSlotDto, withBadge?: boolean) => <SlotCard key={slot.id} slot={slot} badge={withBadge === true ? badge : undefined} agents={agents} text={text} onAssign={(agentId) => assign(slot.id, agentId)} />;
   switch (pattern) {
-    case 'concurrent': return text('Aggregation: collect', '集約: collect');
-    case 'group-chat': return text('Selector: round-robin · max 3 rounds', '話者選択: round-robin · 最大3round');
-    case 'magentic': return text('Plan / delegate · max 6 rounds', '計画・委譲 · 最大6round');
-    default: return undefined;
+    case 'sequential':
+      return <div className="harness-chain"><InputNode text={text} />{slots.map((slot) => <Fragment key={slot.id}><Connector symbol="→" />{card(slot)}</Fragment>)}<Connector symbol="→" /><OutputNode text={text} /></div>;
+    case 'concurrent':
+      return <div className="harness-fanout"><InputNode text={text} /><div className="harness-branches">{slots.map((slot, index) => <div className="harness-branch" key={slot.id}><Connector symbol={branchGlyph(index, slots.length)} />{card(slot)}</div>)}</div><div className="harness-collect"><Connector symbol="→" /><HubChip label={text('Aggregation: collect', '集約: collect')} /></div><Connector symbol="→" /><OutputNode text={text} /></div>;
+    case 'agent-as-tools': {
+      const [coordinator, ...participants] = slots;
+      if (coordinator === undefined) return null;
+      return <div className="harness-hub-layout"><div className="harness-main-row"><InputNode text={text} /><Connector symbol="→" />{card(coordinator, true)}<Connector symbol="→" /><OutputNode text={text} /></div><div className="harness-spokes">{participants.map((slot) => <div className="harness-spoke" key={slot.id}><Connector symbol="┆" label={text('ask', 'ask')} dashed vertical />{card(slot)}</div>)}</div></div>;
+    }
+    case 'handoff': {
+      const [start, ...targets] = slots;
+      if (start === undefined) return null;
+      return <div className="harness-handoff-row"><InputNode text={text} /><Connector symbol="→" />{card(start, true)}<div className="harness-handoff-routes">{targets.map((slot) => <div className="harness-handoff-route" key={slot.id}><Connector symbol="→" label={text('handoff', '移譲')} />{card(slot)}</div>)}</div><Connector symbol="→" /><OutputNode text={text} /></div>;
+    }
+    case 'group-chat':
+      return <div className="harness-hub-layout"><div className="harness-main-row"><InputNode text={text} /><Connector symbol="→" /><HubChip label={text('Round-robin · max 3 rounds', '回覧 round-robin · 最大3round')} /><Connector symbol="→" /><OutputNode text={text} /></div><div className="harness-spokes">{slots.map((slot) => <div className="harness-spoke" key={slot.id}><Connector symbol="⇅" vertical />{card(slot)}</div>)}</div></div>;
+    case 'magentic': {
+      const [manager, ...participants] = slots;
+      if (manager === undefined) return null;
+      return <div className="harness-hub-layout"><div className="harness-main-row"><InputNode text={text} /><Connector symbol="→" />{card(manager, true)}<Connector symbol="→" /><OutputNode text={text} /></div><div className="harness-ledger-chip">{text('Plan / Progress ledger · max 6 rounds', '計画・進捗台帳 · 最大6round')}</div><div className="harness-spokes">{participants.map((slot) => <div className="harness-spoke" key={slot.id}><Connector symbol="⇅" label={text('delegate', '委譲')} dashed vertical />{card(slot)}</div>)}</div></div>;
+    }
   }
 }
 function roleBadge(pattern: HarnessPatternDto, text: Translate): string | undefined {
@@ -164,7 +188,7 @@ export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
     {error !== undefined && <div className="api-error">{error}</div>}
     <div className="harness-layout"><aside className="harness-presets"><h2>{text('Patterns', 'パターン')}</h2>{patterns.map((item) => <button key={item.id} type="button" className={pattern === item.id ? 'active' : ''} onClick={() => choosePattern(item.id)}><strong>{item.label}</strong><small>{text(item.noteEn, item.noteJa)}</small></button>)}</aside>
       <section className="harness-workspace"><div className="harness-fields"><label>{text('Internal ID', '内部ID')}<input value={internalId} onChange={(event) => { setInternalId(event.target.value); setSavedVersion(undefined); }} placeholder="content-review" /></label><label>{text('Display name', '表示名')}<input value={displayName} onChange={(event) => { setDisplayName(event.target.value); setSavedVersion(undefined); }} placeholder="Content Review" /></label><label>{text('Owner', '所有者')}<input value={owner} onChange={(event) => { setOwner(event.target.value); setSavedVersion(undefined); }} placeholder="team@example.com" /></label></div>
-        <div className="harness-canvas" aria-label={text('Harness canvas', 'Harnessキャンバス')}><div className="harness-input-node">{text('Input', '入力')}</div>{resolvedSlots.map((slot, index) => <div className="harness-slot" key={slot.id}><span className="harness-arrow">{arrowSymbol(pattern, index)}</span>{index === 0 && badge !== undefined && <span className="harness-role-badge">{badge}</span>}<strong>{slot.label}</strong><small>{slot.purpose}</small>{arrowChip(pattern, index, text) !== undefined && <span className="harness-flow-chip">{arrowChip(pattern, index, text)}</span>}<select aria-label={`${text('Assign agent to', 'Agentを割り当て')} ${slot.label}`} value={slot.assignment.internalId} onChange={(event) => assign(slot.id, event.target.value)}><option value="">{text('Assign saved Agent…', '保存済みAgentを割り当て…')}</option>{agents.map((agent) => <option key={agent.internalId} value={agent.internalId}>{agent.displayName}@{agent.latestVersion}</option>)}</select><code>{slot.assignment.internalId === '' ? text('unassigned', '未割当') : `${slot.assignment.internalId}@${slot.assignment.version}`}</code></div>)}{terminalChip(pattern, text) !== undefined && <div className="harness-flow-chip harness-terminal-chip">{terminalChip(pattern, text)}</div>}<div className="harness-output-node">{text('Output', '出力')}</div></div>
+        <div className={`harness-canvas harness-canvas--${pattern}`} aria-label={text('Harness canvas', 'Harnessキャンバス')}><HarnessCanvasBody pattern={pattern} slots={resolvedSlots} agents={agents} text={text} assign={assign} badge={badge} /></div>
         <div className="harness-inspector"><div><span className="eyebrow">{text('Pattern inspector', 'パターン設定')}</span><h2>{selected?.label}</h2><p>{selected !== undefined ? text(selected.noteEn, selected.noteJa) : ''}</p></div><label>{text('Failure policy', '失敗時の方針')}<select value={policy.failure.mode} disabled><option>fail-fast</option></select></label><label>{text('Max parallelism', '最大並列数')}<input value={policy.budget.maxParallelism} disabled /></label><p className="validation-status good">{text('Executable in preview', 'previewで実行可能')}</p><div className="harness-topology-summary">{topologySummaryRows(currentTopology, text).map((row) => <span key={row.key} className="harness-topology-row">{row.label}: {row.value}</span>)}</div></div>
         {validation !== undefined && <div className={validation.valid ? 'harness-validation good' : 'harness-validation bad'}><strong>{validation.valid ? text('Definition is valid', '定義は有効です') : text('Validation issues', '検証エラー')}</strong>{validation.issues.map((issue) => <p key={`${issue.path}:${issue.message}`}>{issue.path}: {issue.message}</p>)}</div>}
         <div className="harness-preview"><div><span className="eyebrow">{text('Saved Harness preview', '保存済みHarnessのプレビュー')}</span><h2>{savedVersion === undefined ? text('Save to run', '保存後に実行') : `${internalId}@${savedVersion}`}</h2></div><textarea aria-label={text('Harness chat message', 'Harnessへのメッセージ')} value={runMessage} onChange={(event) => setRunMessage(event.target.value)} placeholder={text('Ask the Harness…', 'Harnessへ依頼…')} /><button type="button" className="primary" disabled={savedVersion === undefined || runMessage.trim() === '' || busy !== undefined} onClick={() => void preview()}>{busy === 'run' ? text('Running…', '実行中…') : text('Run preview', 'previewを実行')}</button>{run !== undefined && <div className={`harness-run ${run.status}`}><strong>{run.status}</strong><p>{run.response ?? run.failure?.message}</p><small>{run.events.filter((event) => event.kind === 'participant_completed').length} {text('participant runs', '参加Agent実行')}</small></div>}</div>
