@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { CompileHarnessUseCase } from '../application/harness/compile-harness';
+import type { DeleteHarnessUseCase } from '../application/harness/delete-harness';
 import type { QueryHarnessesUseCase } from '../application/harness/query-harnesses';
 import { buildHarness, type SaveHarnessInput, type SaveHarnessUseCase } from '../application/harness/save-harness';
 import type { ValidateHarnessUseCase } from '../application/harness/validate-harness';
@@ -15,6 +16,7 @@ export interface HarnessRouteDeps {
   readonly queryHarnesses: QueryHarnessesUseCase;
   readonly validateHarness: ValidateHarnessUseCase;
   readonly compileHarness: CompileHarnessUseCase;
+  readonly deleteHarness: DeleteHarnessUseCase;
 }
 interface HarnessParams { internalId: string }
 
@@ -57,6 +59,12 @@ export function registerHarnessRoutes(app: FastifyInstance, deps: HarnessRouteDe
     const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
     const versions = await deps.queryHarnesses.versions(query, request.params.internalId);
     return { versions: versions.map((item) => item.toString()) };
+  });
+  // 論理削除（docs §10）。204で成功を返し、未存在/削除済みは deleteHarness が HarnessNotFoundError → 404 へ変換される。
+  app.delete<{ Params: HarnessParams }>('/harnesses/:internalId', async (request, reply) => {
+    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
+    await deps.deleteHarness.execute(query, request.params.internalId);
+    return reply.status(204).send();
   });
   app.post('/harness-drafts/validate', async (request) => ({ validation: await deps.validateHarness.execute(inputFrom(parseWith(saveHarnessBodySchema, request.body, 'invalid body'))) }));
   app.post('/harness-drafts/compile', async (request) => {

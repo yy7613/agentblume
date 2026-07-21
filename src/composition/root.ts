@@ -133,6 +133,7 @@ import { InMemoryAgentHarnessRepository } from '../adapters/storage/in-memory-ha
 import { SqliteAgentHarnessRepository } from '../adapters/storage/sqlite-harness-repository';
 import type { AgentHarnessRepository } from '../domain/harness/harness-repository';
 import { SaveHarnessUseCase } from '../application/harness/save-harness';
+import { DeleteHarnessUseCase } from '../application/harness/delete-harness';
 import { QueryHarnessesUseCase } from '../application/harness/query-harnesses';
 import { ValidateHarnessUseCase } from '../application/harness/validate-harness';
 import { CompileHarnessUseCase } from '../application/harness/compile-harness';
@@ -236,6 +237,7 @@ export interface App {
   readonly queryHarnesses: QueryHarnessesUseCase;
   readonly validateHarness: ValidateHarnessUseCase;
   readonly compileHarness: CompileHarnessUseCase;
+  readonly deleteHarness: DeleteHarnessUseCase;
   readonly runHarness: RunHarnessUseCase;
   readonly queryHarnessRuns: QueryHarnessRunsUseCase;
   readonly profileDataSources: ProfileDataSourcesUseCase;
@@ -541,6 +543,7 @@ export function createApp(options?: AppOptions): App {
     queryHarnesses: new QueryHarnessesUseCase(harnessAdapter.repo),
     validateHarness: new ValidateHarnessUseCase(agentAdapter.repo),
     compileHarness: new CompileHarnessUseCase(),
+    deleteHarness: new DeleteHarnessUseCase(harnessAdapter.repo),
     runHarness: new RunHarnessUseCase(harnessAdapter.repo, harnessRunAdapter.repo, runAgentPreview),
     queryHarnessRuns: new QueryHarnessRunsUseCase(harnessRunAdapter.repo),
     profileDataSources,

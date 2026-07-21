@@ -527,6 +527,16 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .harness-topology-row { padding: 4px 9px; border-radius: 7px; background: #f4f6fb; color: #4c5876; font-size: 10px; }
 .harness-preview { display: grid; grid-template-columns: 1fr minmax(220px, 1.4fr) auto; align-items: end; gap: 10px; padding: 14px; border: 1px solid #dfe5f0; border-radius: 11px; background: #fff; }.harness-preview h2 { margin: 2px 0; color: #35405e; font-size: 13px; }.harness-preview textarea { min-height: 58px; resize: vertical; border: 1px solid #d4dbe8; border-radius: 8px; padding: 8px; color: #26304a; font: inherit; font-size: 12px; }.harness-run { grid-column: 1 / -1; padding: 9px 11px; border-radius: 8px; background: #f4f6fb; color: #485570; font-size: 11px; }.harness-run.succeeded { background: #effaf4; color: #257354; }.harness-run.failed { background: #fff2f3; color: #a23949; }.harness-run p { margin: 4px 0; white-space: pre-wrap; }
 @media (max-width: 980px) { .harness-layout { grid-template-columns: 1fr; }.harness-presets { grid-template-columns: repeat(3, minmax(0, 1fr)); }.harness-fields, .harness-inspector, .harness-preview { grid-template-columns: 1fr; }.harness-preview button { justify-self: start; } }
+/* Harness一覧（Layer 1）。data-source一覧のrow構造を踏襲する。 */
+.harness-back-button { display: block; margin-bottom: 10px; }
+.harness-list { max-width: 980px; }
+.harness-list-rows { display: grid; gap: 8px; }
+.harness-list-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; border-top: 1px solid #e5e9f1; }
+.harness-list-row strong, .harness-list-row code, .harness-list-row small { display: block; }
+.harness-list-row strong { font-size: 13px; }
+.harness-list-row code { margin-top: 4px; color: #68758f; font-size: 10px; }
+.harness-list-row small { margin-top: 5px; color: #8390a8; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.harness-list-actions { display: flex; flex: none; gap: 7px; }
 .wiki-space-manager { margin: 12px 0; padding: 12px; border: 1px solid #dfe4ed; border-radius: 10px; background: #fff; display: grid; gap: 10px; }
 .wiki-space-manager > div:first-child { display: flex; align-items: end; gap: 8px; }
 .wiki-space-manager label { display: grid; gap: 4px; color: #667085; font-size: 11px; }

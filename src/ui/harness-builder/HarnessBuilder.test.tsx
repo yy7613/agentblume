@@ -3,10 +3,35 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
+import type { HarnessPoliciesDto, HarnessSummaryDto, SerializedAgentHarnessDto } from '../api/types';
 import { I18nProvider } from '../i18n';
 import { HarnessBuilder } from './HarnessBuilder';
 
 afterEach(cleanup);
+
+const testPolicies: HarnessPoliciesDto = {
+  budget: { maxDurationMs: 120000, maxParticipantRuns: 20, maxModelRounds: 40, maxToolCalls: 100, maxParallelism: 4 },
+  context: 'task-only',
+  planning: { enabled: false, requireApproval: false },
+  memory: { wikiIds: [], sessionWorkspace: true },
+  approvals: { mode: 'inherit-agent' },
+  failure: { mode: 'fail-fast' },
+};
+
+// 一覧からOpenした時に返す保存済みHarness。handoffのnon-preset id/labelを使い、populateEditorFromHarnessが
+// presetに頼らずsaved label/purpose/assignmentをそのまま復元することを検証する。
+const existingHarnessSummary: HarnessSummaryDto = { internalId: 'existing-harness', displayName: 'Existing Harness', publishName: 'existing_harness', latestVersion: '2.0.0', pattern: 'handoff', state: 'draft' };
+const existingHarnessDto: SerializedAgentHarnessDto = {
+  metadata: { internalId: 'existing-harness', workingName: 'Existing Harness draft', displayName: 'Existing Harness', publishName: 'existing_harness', version: '2.0.0', owner: 'owner@example.com', state: 'draft', tenant: { tenantId: 'local', workspaceId: 'default' } },
+  pattern: 'handoff',
+  slots: [
+    { id: 'intake', label: 'Intake', purpose: 'Understand the request.', assignment: { internalId: 'agent-a', version: '1.0.0' } },
+    { id: 'fulfillment', label: 'Fulfillment', purpose: 'Handle the request.', assignment: { internalId: 'agent-b', version: '2.0.0' } },
+  ],
+  topology: { pattern: 'handoff', startSlotId: 'intake', transitions: [{ fromSlotId: 'intake', toSlotId: 'fulfillment', condition: 'needs fulfillment' }], autonomous: false },
+  policies: testPolicies,
+  output: { format: 'text' },
+};
 
 function stubClient(): ToolApiClient {
   return {
@@ -14,6 +39,9 @@ function stubClient(): ToolApiClient {
       { internalId: 'agent-a', displayName: 'Agent A', publishName: 'agent_a', latestVersion: '1.0.0', kind: 'normal', state: 'draft' },
       { internalId: 'agent-b', displayName: 'Agent B', publishName: 'agent_b', latestVersion: '2.0.0', kind: 'normal', state: 'draft' },
     ]),
+    listHarnesses: vi.fn().mockResolvedValue([]),
+    getHarness: vi.fn(),
+    deleteHarness: vi.fn().mockResolvedValue(undefined),
     validateHarness: vi.fn(),
     saveHarness: vi.fn(),
     runHarness: vi.fn(),
@@ -33,10 +61,20 @@ async function fillMetadata(internalId: string, displayName: string): Promise<vo
   await userEvent.type(screen.getByLabelText('Owner'), 'owner@example.com');
 }
 
+// Layer 1（一覧）が既定viewのため、editorの挙動を検証するテストはNew harnessボタン経由で遷移してから始める。
+async function openNewHarnessEditor(client: ToolApiClient, language: 'en' | 'ja' = 'en') {
+  const label = language === 'ja' ? '新規作成' : 'New harness';
+  const rendered = language === 'ja'
+    ? render(<I18nProvider initialLanguage="ja"><HarnessBuilder client={client} /></I18nProvider>)
+    : render(<HarnessBuilder client={client} />);
+  await userEvent.click(await screen.findByRole('button', { name: label }));
+  return rendered;
+}
+
 describe('HarnessBuilder', () => {
   it('patternを切り替えるとslot名・badge・inspector・canvas構造が変わる', async () => {
     const client = stubClient();
-    const { container } = render(<HarnessBuilder client={client} />);
+    const { container } = await openNewHarnessEditor(client);
 
     // Sequential preset (既定) は author/reviewer/publisher を横一列chainで表示する。
     expect(await screen.findByLabelText('Assign agent to Author')).toBeTruthy();
@@ -64,7 +102,7 @@ describe('HarnessBuilder', () => {
 
   it('patternごとにcanvasの構造（分岐・hub&spoke・handoff route）が異なる', async () => {
     const client = stubClient();
-    const { container } = render(<HarnessBuilder client={client} />);
+    const { container } = await openNewHarnessEditor(client);
     await screen.findByLabelText('Assign agent to Author');
 
     // Concurrent: branchが縦に積まれ、slotではないaggregation nodeが現れる。
@@ -95,7 +133,7 @@ describe('HarnessBuilder', () => {
 
   it('pattern切り替え後もindex位置のAgent割り当てを保持する', async () => {
     const client = stubClient();
-    render(<HarnessBuilder client={client} />);
+    await openNewHarnessEditor(client);
 
     const authorSelect = await screen.findByLabelText('Assign agent to Author') as HTMLSelectElement;
     await userEvent.selectOptions(authorSelect, 'agent-a');
@@ -109,7 +147,7 @@ describe('HarnessBuilder', () => {
 
   it('日本語設定ではslot名・pattern note・入力出力nodeを日本語で表示する', async () => {
     const client = stubClient();
-    render(<I18nProvider initialLanguage="ja"><HarnessBuilder client={client} /></I18nProvider>);
+    await openNewHarnessEditor(client, 'ja');
 
     expect(await screen.findByLabelText('Agentを割り当て 作成者')).toBeTruthy();
     expect(screen.getByLabelText('Agentを割り当て レビュアー')).toBeTruthy();
@@ -125,7 +163,7 @@ describe('HarnessBuilder', () => {
 
   it('concurrentのaggregationをmechanical(collect/vote)とAI(agent)で切り替えられる', async () => {
     const client = stubClientWithSave();
-    render(<HarnessBuilder client={client} />);
+    await openNewHarnessEditor(client);
     await screen.findByLabelText('Assign agent to Author');
     await userEvent.click(screen.getByRole('button', { name: /^Concurrent/ }));
 
@@ -159,7 +197,7 @@ describe('HarnessBuilder', () => {
 
   it('vote集約はaggregatorSlotIdを付けずに保存できる', async () => {
     const client = stubClientWithSave();
-    render(<HarnessBuilder client={client} />);
+    await openNewHarnessEditor(client);
     await screen.findByLabelText('Assign agent to Author');
     await userEvent.click(screen.getByRole('button', { name: /^Concurrent/ }));
     await userEvent.selectOptions(await screen.findByLabelText('Aggregation'), 'vote');
@@ -177,7 +215,7 @@ describe('HarnessBuilder', () => {
 
   it('participant slotを追加・削除でき、最小件数では削除controlが消える', async () => {
     const client = stubClient();
-    render(<HarnessBuilder client={client} />);
+    await openNewHarnessEditor(client);
     await screen.findByLabelText('Assign agent to Author');
 
     // sequential既定は3 slot。追加すると4番目のparticipantが現れる。
@@ -204,7 +242,7 @@ describe('HarnessBuilder', () => {
 
   it('slot labelを編集すると割り当てselectのaria-labelと保存内容へ反映される', async () => {
     const client = stubClientWithSave();
-    render(<HarnessBuilder client={client} />);
+    await openNewHarnessEditor(client);
     const labelInput = await screen.findByLabelText('Slot label author') as HTMLInputElement;
     await userEvent.clear(labelInput);
     await userEvent.type(labelInput, 'Lead Writer');
@@ -226,7 +264,7 @@ describe('HarnessBuilder', () => {
 
   it('concurrent+agent集約はaggregator割り当てが済むまでSaveを無効化する', async () => {
     const client = stubClient();
-    render(<HarnessBuilder client={client} />);
+    await openNewHarnessEditor(client);
     await screen.findByLabelText('Assign agent to Author');
     await userEvent.click(screen.getByRole('button', { name: /^Concurrent/ }));
     await fillMetadata('ready-check', 'Ready Check');
@@ -240,5 +278,71 @@ describe('HarnessBuilder', () => {
 
     await userEvent.selectOptions(await screen.findByLabelText('Assign agent to Aggregator'), 'agent-b');
     expect(saveButton.disabled).toBe(false);
+  });
+
+  describe('一覧（Layer 1）', () => {
+    it('listHarnessesの内容を一覧表示する', async () => {
+      const client = stubClient();
+      (client.listHarnesses as ReturnType<typeof vi.fn>).mockResolvedValue([existingHarnessSummary]);
+      render(<HarnessBuilder client={client} />);
+
+      expect(await screen.findByText('Existing Harness')).toBeTruthy();
+      expect(screen.getByText('existing_harness@2.0.0')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
+    });
+
+    it('Harnessが無い場合はempty stateを表示する', async () => {
+      const client = stubClient();
+      render(<HarnessBuilder client={client} />);
+      expect(await screen.findByText('No harnesses yet.')).toBeTruthy();
+    });
+
+    it('OpenでgetHarnessの内容をeditorへ復元し、Internal IDを読み取り専用にする', async () => {
+      const client = stubClient();
+      (client.listHarnesses as ReturnType<typeof vi.fn>).mockResolvedValue([existingHarnessSummary]);
+      (client.getHarness as ReturnType<typeof vi.fn>).mockResolvedValue(existingHarnessDto);
+      const { container } = render(<HarnessBuilder client={client} />);
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Open' }));
+      expect(client.getHarness).toHaveBeenCalledWith('existing-harness', expect.any(Object));
+
+      // handoffのnon-preset slot（intake/fulfillment）がlabel・assignmentとも保存値のまま復元される。
+      const intakeSelect = await screen.findByLabelText('Assign agent to Intake') as HTMLSelectElement;
+      expect(intakeSelect.value).toBe('agent-a');
+      const fulfillmentSelect = screen.getByLabelText('Assign agent to Fulfillment') as HTMLSelectElement;
+      expect(fulfillmentSelect.value).toBe('agent-b');
+      expect(container.querySelector('.harness-canvas--handoff .harness-handoff-row')).toBeTruthy();
+
+      const internalIdInput = screen.getByLabelText('Internal ID') as HTMLInputElement;
+      expect(internalIdInput.value).toBe('existing-harness');
+      expect(internalIdInput.readOnly).toBe(true);
+    });
+
+    it('Deleteでdeleteharnessを呼び、一覧を再取得する', async () => {
+      const client = stubClient();
+      (client.listHarnesses as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce([existingHarnessSummary])
+        .mockResolvedValueOnce([]);
+      render(<HarnessBuilder client={client} />);
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+
+      expect(client.deleteHarness).toHaveBeenCalledWith('existing-harness', expect.any(Object));
+      expect(client.listHarnesses).toHaveBeenCalledTimes(2);
+      expect(await screen.findByText('No harnesses yet.')).toBeTruthy();
+    });
+
+    it('Back to listでeditorから一覧へ戻り、一覧を再取得する', async () => {
+      const client = stubClient();
+      await openNewHarnessEditor(client);
+      expect(client.listHarnesses).toHaveBeenCalledTimes(1);
+
+      await userEvent.click(screen.getByRole('button', { name: 'Back to list' }));
+
+      expect(await screen.findByRole('heading', { name: 'Harnesses' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'New harness' })).toBeTruthy();
+      expect(client.listHarnesses).toHaveBeenCalledTimes(2);
+    });
   });
 });

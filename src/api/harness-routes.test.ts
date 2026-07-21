@@ -24,6 +24,34 @@ describe('harness routes', () => {
       ...overrides,
     };
   }
+  it('保存済みHarnessを論理削除できる（listからは除外、GETはfindLatestのため404、pinned versionはfindVersionで残る）', async () => {
+    const saved = await server.inject({ method: 'POST', url: '/harnesses', payload: body() });
+    expect(saved.statusCode).toBe(201);
+
+    const deleted = await server.inject({ method: 'DELETE', url: '/harnesses/content-review', query: scope });
+    expect(deleted.statusCode).toBe(204);
+
+    const listed = await server.inject({ method: 'GET', url: '/harnesses', query: scope });
+    expect(listed.json().harnesses).toEqual([]);
+
+    const getLatest = await server.inject({ method: 'GET', url: '/harnesses/content-review', query: scope });
+    expect(getLatest.statusCode).toBe(404);
+    expect(getLatest.json().error).toMatchObject({ code: 'HARNESS_NOT_FOUND' });
+
+    const getPinned = await server.inject({ method: 'GET', url: '/harnesses/content-review', query: { ...scope, version: '1.0.0' } });
+    expect(getPinned.statusCode).toBe(200);
+    expect(getPinned.json().harness.metadata.version).toBe('1.0.0');
+
+    const again = await server.inject({ method: 'DELETE', url: '/harnesses/content-review', query: scope });
+    expect(again.statusCode).toBe(404);
+  });
+
+  it('未存在のHarnessを削除すると404を返す', async () => {
+    const response = await server.inject({ method: 'DELETE', url: '/harnesses/missing-harness', query: scope });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error).toMatchObject({ code: 'HARNESS_NOT_FOUND' });
+  });
+
   it('Harnessをversion保存・取得・Draft検証できる', async () => {
     const validation = await server.inject({ method: 'POST', url: '/harness-drafts/validate', payload: body() });
     expect(validation.statusCode).toBe(200); expect(validation.json().validation).toEqual({ valid: true, issues: [] });

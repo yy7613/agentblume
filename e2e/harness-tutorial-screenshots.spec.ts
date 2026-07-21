@@ -24,6 +24,7 @@ test('Harness BuilderのAgent割当とチャット対象選択を撮影する', 
   await page.goto('/');
   await page.getByRole('button', { name: 'Harness', exact: true }).click();
   await expect(page.getByText('Agent Harness Builder', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '新規作成', exact: true }).click();
   await page.getByLabel('内部ID').fill('tutorial-content-review');
   await page.getByLabel('表示名').fill('商品紹介レビュー');
   await page.getByLabel('所有者').fill('tutorial@example.com');

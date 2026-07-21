@@ -17,4 +17,9 @@ export interface AgentHarnessRepository {
   findLatest(scope: TenantScope, internalId: string): Promise<AgentHarness | null>;
   listVersions(scope: TenantScope, internalId: string): Promise<SemVer[]>;
   list(scope: TenantScope): Promise<HarnessSummary[]>;
+  /**
+   * 論理削除（docs/14-agent-harness-builder.md §10）: 参照Runを壊さないため findVersion は削除後も返す。
+   * list/findLatest からは除外し、listVersions は空配列を返す。戻り値は削除前に存在したか（既に削除済み/未存在なら false）。
+   */
+  delete(scope: TenantScope, internalId: string): Promise<boolean>;
 }

@@ -119,6 +119,7 @@ test('Harness BuilderでAgent割当・検証・保存・Sequential previewまで
   await page.goto('/');
   await page.getByRole('button', { name: 'Harness', exact: true }).click();
   await expect(page.getByText('Agent Harness Builder', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'New harness', exact: true }).click();
   await page.getByLabel('Internal ID').fill('e2e-content-review');
   await page.getByLabel('Display name').fill('E2E Content Review');
   await page.getByLabel('Owner').fill('e2e@example.com');
@@ -145,6 +146,11 @@ test('Harness BuilderでAgent割当・検証・保存・Sequential previewまで
   await page.getByLabel('Harness chat message').fill('Review this product announcement.');
   await page.getByRole('button', { name: 'Run preview', exact: true }).click();
   await expect(page.getByText('Reviewed and ready to publish.')).toBeVisible();
+
+  // Layer 1（一覧）へ戻ると、保存済みHarnessが一覧に現れる。
+  await page.getByRole('button', { name: 'Back to list', exact: true }).click();
+  await expect(page.getByText('E2E Content Review')).toBeVisible();
+  await expect(page.getByText('e2e-content-review@1.0.0')).toBeVisible();
 });
 
 test('Harness Builderで全オーケストレーションpatternへAgentを割り当てて保存できる', async ({ page }) => {
@@ -160,6 +166,7 @@ test('Harness Builderで全オーケストレーションpatternへAgentを割�
   }
   await page.goto('/');
   await page.getByRole('button', { name: 'Harness', exact: true }).click();
+  await page.getByRole('button', { name: 'New harness', exact: true }).click();
   await page.getByLabel('Owner').fill('e2e@example.com');
   await page.getByLabel('Assign agent to Author').selectOption('pattern-author');
   await page.getByLabel('Assign agent to Reviewer').selectOption('pattern-reviewer');

@@ -220,6 +220,17 @@ export class ToolApiClient {
     return (await this.request<{ harnesses: HarnessSummaryDto[] }>(`/harnesses?${query}`)).harnesses;
   }
 
+  async getHarness(internalId: string, scope: TenantScopeDto, version?: string): Promise<SerializedAgentHarnessDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (version !== undefined) query.set('version', version);
+    return (await this.request<{ harness: SerializedAgentHarnessDto }>(`/harnesses/${encodeURIComponent(internalId)}?${query}`)).harness;
+  }
+
+  async deleteHarness(internalId: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/harnesses/${encodeURIComponent(internalId)}?${query}`, { method: 'DELETE' });
+  }
+
   async validateHarness(input: SaveHarnessDto): Promise<HarnessValidationDto> {
     return (await this.request<{ validation: HarnessValidationDto }>('/harness-drafts/validate', { method: 'POST', body: JSON.stringify(input) })).validation;
   }
