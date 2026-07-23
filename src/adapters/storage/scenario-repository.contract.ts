@@ -33,4 +33,19 @@ export async function scenarioRepositoryContract(repo: ScenarioRepository): Prom
   expect(summaries).toHaveLength(1);
   expect(summaries[0]).toMatchObject({ internalId: 'sales-check', displayName: 'New', state: 'draft' });
   expect(summaries[0]?.latestVersion.toString()).toBe('1.10.0');
+
+  // delete(論理削除): listから除外され、findLatestはnullになるが、findVersionは既存versionを返し続ける。
+  await repo.save(createScenario({
+    metadata: { internalId: 'other-scenario', workingName: 'work', displayName: 'Other', publishName: 'other_scenario', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+    target: { agentId: 'agent-1', version: SemVer.of(1, 2, 0) }, persona: { personaId: 'persona-1', version: SemVer.of(1, 0, 0) },
+    goal: 'other', context: 'other', maxUserTurns: 4, survey: DEFAULT_SURVEY,
+  }));
+  await expect(repo.delete(scope, 'sales-check')).resolves.toBe(true);
+  expect((await repo.list(scope)).map((item) => item.internalId)).toEqual(['other-scenario']);
+  await expect(repo.findLatest(scope, 'sales-check')).resolves.toBeNull();
+  await expect(repo.listVersions(scope, 'sales-check')).resolves.toEqual([]);
+  expect((await repo.findVersion(scope, 'sales-check', SemVer.of(1, 0, 0)))?.metadata.internalId).toBe('sales-check');
+  await expect(repo.delete(scope, 'sales-check')).resolves.toBe(false);
+  await expect(repo.delete(scope, 'missing')).resolves.toBe(false);
+  expect((await repo.findLatest(scope, 'other-scenario'))?.metadata.internalId).toBe('other-scenario');
 }

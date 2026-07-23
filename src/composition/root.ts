@@ -22,7 +22,7 @@ import type { ModelProviderPort } from '../application/model/model-provider';
 import { DraftToolUseCase } from '../application/tool/draft-tool';
 import { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
 import { PreviewToolUseCase } from '../application/tool/preview-tool';
-import { GetToolUseCase, ListToolVersionsUseCase, ListToolsUseCase } from '../application/tool/query-tool';
+import { DeleteToolUseCase, GetToolUseCase, ListToolVersionsUseCase, ListToolsUseCase } from '../application/tool/query-tool';
 import { SaveToolUseCase } from '../application/tool/save-tool';
 import { createDefaultRegistry } from '../domain/etl/nodes/index';
 import { ToolValidationError } from '../domain/tool/errors';
@@ -30,6 +30,7 @@ import type { ToolRepository } from '../domain/tool/tool-repository';
 import type { RunRepository } from '../domain/run/run-repository';
 import { InMemoryAgentRepository } from '../adapters/storage/in-memory-agent-repository';
 import { SqliteAgentRepository } from '../adapters/storage/sqlite-agent-repository';
+import { DeleteAgentUseCase } from '../application/agent/delete-agent';
 import { GenerateAgentPromptUseCase } from '../application/agent/generate-agent-prompt';
 import { QueryAgentsUseCase } from '../application/agent/query-agents';
 import { SaveAgentUseCase } from '../application/agent/save-agent';
@@ -37,7 +38,7 @@ import type { AgentRepository } from '../domain/agent/agent-repository';
 import { InMemorySkillRepository } from '../adapters/storage/in-memory-skill-repository';
 import { SqliteSkillRepository } from '../adapters/storage/sqlite-skill-repository';
 import { GenerateSkillPromptUseCase } from '../application/skill/generate-skill-prompt';
-import { QuerySkillsUseCase } from '../application/skill/query-skills';
+import { DeleteSkillUseCase, QuerySkillsUseCase } from '../application/skill/query-skills';
 import { SaveSkillUseCase } from '../application/skill/save-skill';
 import type { SkillRepository } from '../domain/skill/skill-repository';
 import { InMemoryPersonaRepository } from '../adapters/storage/in-memory-persona-repository';
@@ -46,9 +47,9 @@ import { InMemoryScenarioRepository } from '../adapters/storage/in-memory-scenar
 import { SqliteScenarioRepository } from '../adapters/storage/sqlite-scenario-repository';
 import { InMemoryScenarioRunRepository } from '../adapters/storage/in-memory-scenario-run-repository';
 import { SqliteScenarioRunRepository } from '../adapters/storage/sqlite-scenario-run-repository';
-import { QueryPersonasUseCase } from '../application/validation/query-personas';
+import { DeletePersonaUseCase, QueryPersonasUseCase } from '../application/validation/query-personas';
 import { QueryScenarioRunsUseCase } from '../application/validation/query-scenario-runs';
-import { QueryScenariosUseCase } from '../application/validation/query-scenarios';
+import { DeleteScenarioUseCase, QueryScenariosUseCase } from '../application/validation/query-scenarios';
 import { RunScenarioUseCase } from '../application/validation/run-scenario';
 import { RegisterPseudoUserAgentUseCase } from '../application/validation/register-pseudo-user-agent';
 import { EvaluateAgentRunUseCase } from '../application/evaluation/evaluate-agent-run';
@@ -58,7 +59,7 @@ import { SqliteWikiRepository } from '../adapters/storage/sqlite-wiki-repository
 import { InMemoryMemoryProposalRepository } from '../adapters/storage/in-memory-memory-proposal-repository';
 import { SqliteMemoryProposalRepository } from '../adapters/storage/sqlite-memory-proposal-repository';
 import { SaveWikiPageUseCase } from '../application/memory/save-wiki-page';
-import { QueryWikiUseCase } from '../application/memory/query-wiki';
+import { DeleteWikiPageUseCase, QueryWikiUseCase } from '../application/memory/query-wiki';
 import { ReflectRunUseCase } from '../application/memory/reflect-run';
 import { ListProposalsUseCase } from '../application/memory/list-proposals';
 import { ReviewProposalUseCase } from '../application/memory/review-proposal';
@@ -75,9 +76,9 @@ import { InMemoryEvaluatorProfileRepository } from '../adapters/storage/in-memor
 import { SqliteEvaluatorProfileRepository } from '../adapters/storage/sqlite-evaluator-profile-repository';
 import type { EvaluationDatasetRepository, EvaluatorProfileRepository } from '../domain/evaluation/evaluation-asset-repositories';
 import { SaveEvaluationDatasetUseCase } from '../application/evaluation/save-evaluation-dataset';
-import { QueryEvaluationDatasetsUseCase } from '../application/evaluation/query-evaluation-datasets';
+import { DeleteEvaluationDatasetUseCase, QueryEvaluationDatasetsUseCase } from '../application/evaluation/query-evaluation-datasets';
 import { SaveEvaluatorProfileUseCase } from '../application/evaluation/save-evaluator-profile';
-import { QueryEvaluatorProfilesUseCase } from '../application/evaluation/query-evaluator-profiles';
+import { DeleteEvaluatorProfileUseCase, QueryEvaluatorProfilesUseCase } from '../application/evaluation/query-evaluator-profiles';
 import { ExportEvaluationDatasetUseCase, ImportEvaluationCasesUseCase } from '../application/evaluation/evaluation-dataset-transfer';
 import { createHash } from 'node:crypto';
 import { InMemoryExperimentRepository } from '../adapters/storage/in-memory-experiment-repository';
@@ -93,12 +94,12 @@ import { ResumeExperimentUseCase } from '../application/evaluation/resume-experi
 import { InMemoryQualityGateRepository } from '../adapters/storage/in-memory-quality-gate-repository';
 import { SqliteQualityGateRepository } from '../adapters/storage/sqlite-quality-gate-repository';
 import type { QualityGateRepository } from '../domain/evaluation/quality-gate-repository';
-import { CompareExperimentsUseCase, DecidePromotionUseCase, EvaluateQualityGateUseCase, QualityGateExitCodeUseCase, QueryQualityGatesUseCase, RequestPromotionUseCase, SaveGatePolicyUseCase } from '../application/evaluation/quality-gate-actions';
+import { CompareExperimentsUseCase, DecidePromotionUseCase, DeleteGatePolicyUseCase, EvaluateQualityGateUseCase, QualityGateExitCodeUseCase, QueryQualityGatesUseCase, RequestPromotionUseCase, SaveGatePolicyUseCase } from '../application/evaluation/quality-gate-actions';
 import { InMemoryJudgeRubricRepository } from '../adapters/storage/in-memory-judge-rubric-repository';
 import { SqliteJudgeRubricRepository } from '../adapters/storage/sqlite-judge-rubric-repository';
 import type { JudgeRubricRepository } from '../domain/evaluation/evaluation-asset-repositories';
 import { SaveJudgeRubricUseCase } from '../application/evaluation/save-judge-rubric';
-import { QueryJudgeRubricsUseCase } from '../application/evaluation/query-judge-rubrics';
+import { DeleteJudgeRubricUseCase, QueryJudgeRubricsUseCase } from '../application/evaluation/query-judge-rubrics';
 import { StructuredJudgeEvaluator } from '../adapters/evaluation/structured-judge-evaluator';
 import type { JudgeEvaluatorPort } from '../application/evaluation/judge-evaluator';
 import { InMemoryOperationsRepository } from '../adapters/storage/in-memory-operations-repository';
@@ -112,7 +113,7 @@ import type { ModelPriceSnapshot, PricingPort } from '../application/operations/
 import { SubmitRunFeedbackUseCase, QueryRunFeedbackUseCase } from '../application/operations/feedback';
 import { QueryOperationsStatusUseCase } from '../application/operations/query-operations-status';
 import { RetentionUseCase } from '../application/operations/retention';
-import { QueryWikiSpacesUseCase, SaveWikiSpaceUseCase } from '../application/memory/wiki-spaces';
+import { DeleteWikiSpaceUseCase, QueryWikiSpacesUseCase, SaveWikiSpaceUseCase } from '../application/memory/wiki-spaces';
 import { InMemoryAgentSessionRepository } from '../adapters/storage/in-memory-agent-session-repository';
 import { SqliteAgentSessionRepository } from '../adapters/storage/sqlite-agent-session-repository';
 import { InMemorySessionArtifactRepository } from '../adapters/storage/in-memory-session-artifact-repository';
@@ -233,6 +234,7 @@ export interface App {
   readonly saveAgent: SaveAgentUseCase;
   readonly queryAgents: QueryAgentsUseCase;
   readonly generateAgentPrompt: GenerateAgentPromptUseCase;
+  readonly deleteAgent: DeleteAgentUseCase;
   readonly saveHarness: SaveHarnessUseCase;
   readonly queryHarnesses: QueryHarnessesUseCase;
   readonly validateHarness: ValidateHarnessUseCase;
@@ -249,23 +251,29 @@ export interface App {
   readonly queryFactoryRuns: QueryFactoryRunsUseCase;
   readonly saveSkill: SaveSkillUseCase;
   readonly querySkills: QuerySkillsUseCase;
+  readonly deleteSkill: DeleteSkillUseCase;
   readonly generateSkillPrompt: GenerateSkillPromptUseCase;
   readonly savePersona: SavePersonaUseCase;
+  readonly deletePersona: DeletePersonaUseCase;
   readonly registerPseudoUserAgent: RegisterPseudoUserAgentUseCase;
   readonly queryPersonas: QueryPersonasUseCase;
   readonly saveScenario: SaveScenarioUseCase;
   readonly queryScenarios: QueryScenariosUseCase;
+  readonly deleteScenario: DeleteScenarioUseCase;
   readonly runScenario: RunScenarioUseCase;
   readonly queryScenarioRuns: QueryScenarioRunsUseCase;
   readonly evaluateAgentRun: EvaluateAgentRunUseCase;
   readonly saveEvaluationDataset: SaveEvaluationDatasetUseCase;
   readonly queryEvaluationDatasets: QueryEvaluationDatasetsUseCase;
+  readonly deleteEvaluationDataset: DeleteEvaluationDatasetUseCase;
   readonly importEvaluationCases: ImportEvaluationCasesUseCase;
   readonly exportEvaluationDataset: ExportEvaluationDatasetUseCase;
   readonly saveEvaluatorProfile: SaveEvaluatorProfileUseCase;
   readonly queryEvaluatorProfiles: QueryEvaluatorProfilesUseCase;
+  readonly deleteEvaluatorProfile: DeleteEvaluatorProfileUseCase;
   readonly saveJudgeRubric: SaveJudgeRubricUseCase;
   readonly queryJudgeRubrics: QueryJudgeRubricsUseCase;
+  readonly deleteJudgeRubric: DeleteJudgeRubricUseCase;
   readonly runExperiment: RunExperimentUseCase;
   readonly createExperiment: CreateExperimentUseCase;
   readonly queryExperiments: QueryExperimentsUseCase;
@@ -274,6 +282,7 @@ export interface App {
   readonly compareExperiments: CompareExperimentsUseCase;
   readonly saveGatePolicy: SaveGatePolicyUseCase;
   readonly queryQualityGates: QueryQualityGatesUseCase;
+  readonly deleteGatePolicy: DeleteGatePolicyUseCase;
   readonly evaluateQualityGate: EvaluateQualityGateUseCase;
   readonly requestPromotion: RequestPromotionUseCase;
   readonly decidePromotion: DecidePromotionUseCase;
@@ -284,17 +293,20 @@ export interface App {
   readonly retention: RetentionUseCase;
   readonly saveWikiPage: SaveWikiPageUseCase;
   readonly queryWiki: QueryWikiUseCase;
+  readonly deleteWikiPage: DeleteWikiPageUseCase;
   readonly reflectRun: ReflectRunUseCase;
   readonly listProposals: ListProposalsUseCase;
   readonly reviewProposal: ReviewProposalUseCase;
   readonly saveWikiSpace: SaveWikiSpaceUseCase;
   readonly queryWikiSpaces: QueryWikiSpacesUseCase;
+  readonly deleteWikiSpace: DeleteWikiSpaceUseCase;
   readonly draftTool: DraftToolUseCase;
   readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
   readonly saveTool: SaveToolUseCase;
   readonly getTool: GetToolUseCase;
   readonly listToolVersions: ListToolVersionsUseCase;
   readonly listTools: ListToolsUseCase;
+  readonly deleteTool: DeleteToolUseCase;
   readonly previewTool: PreviewToolUseCase;
   /** SqliteToolRepository の close を委譲する（InMemory は no-op）。 */
   close(): void;
@@ -539,6 +551,7 @@ export function createApp(options?: AppOptions): App {
     saveAgent,
     queryAgents: new QueryAgentsUseCase(agentAdapter.repo),
     generateAgentPrompt,
+    deleteAgent: new DeleteAgentUseCase(agentAdapter.repo),
     saveHarness: new SaveHarnessUseCase(harnessAdapter.repo, agentAdapter.repo),
     queryHarnesses: new QueryHarnessesUseCase(harnessAdapter.repo),
     validateHarness: new ValidateHarnessUseCase(agentAdapter.repo),
@@ -555,24 +568,30 @@ export function createApp(options?: AppOptions): App {
     queryFactoryRuns,
     saveSkill,
     querySkills: new QuerySkillsUseCase(skillAdapter.repo),
+    deleteSkill: new DeleteSkillUseCase(skillAdapter.repo),
     generateSkillPrompt: new GenerateSkillPromptUseCase(repo),
     savePersona,
     queryPersonas: new QueryPersonasUseCase(personaAdapter.repo),
+    deletePersona: new DeletePersonaUseCase(personaAdapter.repo),
     registerPseudoUserAgent,
     saveScenario,
     queryScenarios: new QueryScenariosUseCase(scenarioAdapter.repo),
+    deleteScenario: new DeleteScenarioUseCase(scenarioAdapter.repo),
     runScenario,
     queryScenarioRuns: new QueryScenarioRunsUseCase(scenarioRunAdapter.repo),
     // 評価は決定的（Mastra code系スコアラー・オフライン）でスコープ非依存のため profile 非依存に配線する。
     evaluateAgentRun: new EvaluateAgentRunUseCase(evaluator),
     saveEvaluationDataset: new SaveEvaluationDatasetUseCase(evaluationDatasetAdapter.repo, scenarioAdapter.repo),
     queryEvaluationDatasets: new QueryEvaluationDatasetsUseCase(evaluationDatasetAdapter.repo),
+    deleteEvaluationDataset: new DeleteEvaluationDatasetUseCase(evaluationDatasetAdapter.repo),
     importEvaluationCases: new ImportEvaluationCasesUseCase(),
     exportEvaluationDataset: new ExportEvaluationDatasetUseCase(),
     saveEvaluatorProfile: new SaveEvaluatorProfileUseCase(evaluatorProfileAdapter.repo, judgeRubricAdapter.repo),
     queryEvaluatorProfiles: new QueryEvaluatorProfilesUseCase(evaluatorProfileAdapter.repo),
+    deleteEvaluatorProfile: new DeleteEvaluatorProfileUseCase(evaluatorProfileAdapter.repo),
     saveJudgeRubric: new SaveJudgeRubricUseCase(judgeRubricAdapter.repo),
     queryJudgeRubrics: new QueryJudgeRubricsUseCase(judgeRubricAdapter.repo),
+    deleteJudgeRubric: new DeleteJudgeRubricUseCase(judgeRubricAdapter.repo),
     runExperiment,
     createExperiment: new CreateExperimentUseCase(experimentAdapter.repo, evaluationDatasetAdapter.repo, evaluatorProfileAdapter.repo, agentAdapter.repo, experimentWorker, () => snapshot),
     queryExperiments: new QueryExperimentsUseCase(experimentAdapter.repo),
@@ -581,6 +600,7 @@ export function createApp(options?: AppOptions): App {
     compareExperiments: new CompareExperimentsUseCase(experimentAdapter.repo),
     saveGatePolicy: new SaveGatePolicyUseCase(qualityGateAdapter.repo),
     queryQualityGates: new QueryQualityGatesUseCase(qualityGateAdapter.repo),
+    deleteGatePolicy: new DeleteGatePolicyUseCase(qualityGateAdapter.repo),
     evaluateQualityGate: new EvaluateQualityGateUseCase(qualityGateAdapter.repo, experimentAdapter.repo, evaluationDatasetAdapter.repo, undefined, undefined, evaluatorProfileAdapter.repo),
     requestPromotion: new RequestPromotionUseCase(qualityGateAdapter.repo, experimentAdapter.repo, agentAdapter.repo),
     decidePromotion: new DecidePromotionUseCase(qualityGateAdapter.repo, agentAdapter.repo),
@@ -592,17 +612,20 @@ export function createApp(options?: AppOptions): App {
     // 長期記憶（v21）。reflectRun は modelProvider（振り返り）を使用。承認は Wiki 保存 / Skill 蒸留へ委譲。
     saveWikiPage,
     queryWiki: new QueryWikiUseCase(wikiAdapter.repo),
+    deleteWikiPage: new DeleteWikiPageUseCase(wikiAdapter.repo),
     reflectRun: new ReflectRunUseCase(modelProvider, memoryProposalAdapter.repo, wikiAdapter.repo, skillAdapter.repo),
     listProposals: new ListProposalsUseCase(memoryProposalAdapter.repo),
     reviewProposal: new ReviewProposalUseCase(memoryProposalAdapter.repo, saveWikiPage, skillAdapter.repo, saveSkill),
     saveWikiSpace: new SaveWikiSpaceUseCase(wikiAdapter.repo),
     queryWikiSpaces: new QueryWikiSpacesUseCase(wikiAdapter.repo),
+    deleteWikiSpace: new DeleteWikiSpaceUseCase(wikiAdapter.repo),
     draftTool: new DraftToolUseCase(engine, resolveDataSources),
     suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, profile !== 'test' && (process.env['ANALYSIS_ASSISTANT_ENABLED'] ?? 'true') !== 'false' && (process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== ''),
     saveTool,
     getTool: new GetToolUseCase(repo),
     listToolVersions: new ListToolVersionsUseCase(repo),
     listTools: new ListToolsUseCase(repo),
+    deleteTool: new DeleteToolUseCase(repo),
     previewTool: new PreviewToolUseCase(repo, engine, resolveDataSources),
     close: () => {
       experimentWorker.shutdown();

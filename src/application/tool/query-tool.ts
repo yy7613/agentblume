@@ -52,3 +52,15 @@ export class ListToolsUseCase {
   constructor(private readonly repo: ToolRepository) {}
   execute(scope: TenantScope): Promise<ToolSummary[]> { return this.repo.list(scope); }
 }
+
+/**
+ * 保存済みToolの論理削除。repository.delete が false（未存在/削除済み）なら ToolNotFoundError。
+ * findVersion は削除後も返るため、既存の参照Run・Agent/Harness割り当ては壊れない。
+ */
+export class DeleteToolUseCase {
+  constructor(private readonly repo: ToolRepository) {}
+  async execute(scope: TenantScope, internalId: ToolId): Promise<void> {
+    const existed = await this.repo.delete(scope, internalId);
+    if (!existed) throw new ToolNotFoundError(`DeleteTool: tool not found: ${internalId} (tenant ${scope.tenantId}/${scope.workspaceId})`);
+  }
+}

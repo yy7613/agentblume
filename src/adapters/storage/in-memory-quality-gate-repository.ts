@@ -12,11 +12,26 @@ export class InMemoryQualityGateRepository implements QualityGateRepository {
   private readonly policies = new Map<string, SerializedGatePolicy>();
   private readonly reports = new Map<string, SerializedGateReport>();
   private readonly promotions = new Map<string, SerializedPromotionRequest>();
+  private readonly deletedPolicyIds = new Set<string>();
   async savePolicy(policy: GatePolicy): Promise<void> { const key = policyKey(policy.metadata.tenant, policy.metadata.internalId, policy.metadata.version.toString()); if (this.policies.has(key)) throw new QualityGateConflictError(`Gate policy version already exists: ${policy.metadata.internalId}@${policy.metadata.version.toString()}`); this.policies.set(key, serializeGatePolicy(policy)); }
   async findPolicyVersion(scope: TenantScope, internalId: string, version: SemVer): Promise<GatePolicy | null> { const value = this.policies.get(policyKey(scope, internalId, version.toString())); return value === undefined ? null : deserializeGatePolicy(value); }
-  async findLatestPolicy(scope: TenantScope, internalId: string): Promise<GatePolicy | null> { const entries = [...this.policies.values()].filter((value) => tenantKey(value.metadata.tenant) === tenantKey(scope) && value.metadata.internalId === internalId).sort((a, b) => SemVer.parse(b.metadata.version).compare(SemVer.parse(a.metadata.version))); return entries[0] === undefined ? null : deserializeGatePolicy(entries[0]); }
-  async listPolicyVersions(scope: TenantScope, internalId: string): Promise<SemVer[]> { return [...this.policies.values()].filter((value) => tenantKey(value.metadata.tenant) === tenantKey(scope) && value.metadata.internalId === internalId).map((value) => SemVer.parse(value.metadata.version)).sort((a, b) => a.compare(b)); }
-  async listPolicies(scope: TenantScope): Promise<GatePolicySummary[]> { const latest = new Map<string, SerializedGatePolicy>(); for (const value of this.policies.values()) { if (tenantKey(value.metadata.tenant) !== tenantKey(scope)) continue; const current = latest.get(value.metadata.internalId); if (current === undefined || SemVer.parse(value.metadata.version).compare(SemVer.parse(current.metadata.version)) > 0) latest.set(value.metadata.internalId, value); } return [...latest.values()].sort((a, b) => a.metadata.internalId.localeCompare(b.metadata.internalId)).map((value) => ({ internalId: value.metadata.internalId, displayName: value.metadata.displayName, publishName: value.metadata.publishName, latestVersion: SemVer.parse(value.metadata.version), state: value.metadata.state, ruleCount: value.rules.length })); }
+  async findLatestPolicy(scope: TenantScope, internalId: string): Promise<GatePolicy | null> {
+    if (this.deletedPolicyIds.has(recordKey(scope, internalId))) return null;
+    const entries = [...this.policies.values()].filter((value) => tenantKey(value.metadata.tenant) === tenantKey(scope) && value.metadata.internalId === internalId).sort((a, b) => SemVer.parse(b.metadata.version).compare(SemVer.parse(a.metadata.version))); return entries[0] === undefined ? null : deserializeGatePolicy(entries[0]);
+  }
+  async listPolicyVersions(scope: TenantScope, internalId: string): Promise<SemVer[]> {
+    if (this.deletedPolicyIds.has(recordKey(scope, internalId))) return [];
+    return [...this.policies.values()].filter((value) => tenantKey(value.metadata.tenant) === tenantKey(scope) && value.metadata.internalId === internalId).map((value) => SemVer.parse(value.metadata.version)).sort((a, b) => a.compare(b));
+  }
+  async listPolicies(scope: TenantScope): Promise<GatePolicySummary[]> { const latest = new Map<string, SerializedGatePolicy>(); for (const value of this.policies.values()) { if (tenantKey(value.metadata.tenant) !== tenantKey(scope)) continue; if (this.deletedPolicyIds.has(recordKey(scope, value.metadata.internalId))) continue; const current = latest.get(value.metadata.internalId); if (current === undefined || SemVer.parse(value.metadata.version).compare(SemVer.parse(current.metadata.version)) > 0) latest.set(value.metadata.internalId, value); } return [...latest.values()].sort((a, b) => a.metadata.internalId.localeCompare(b.metadata.internalId)).map((value) => ({ internalId: value.metadata.internalId, displayName: value.metadata.displayName, publishName: value.metadata.publishName, latestVersion: SemVer.parse(value.metadata.version), state: value.metadata.state, ruleCount: value.rules.length })); }
+  async deletePolicy(scope: TenantScope, internalId: string): Promise<boolean> {
+    const key = recordKey(scope, internalId);
+    if (this.deletedPolicyIds.has(key)) return false;
+    const existed = [...this.policies.values()].some((value) => tenantKey(value.metadata.tenant) === tenantKey(scope) && value.metadata.internalId === internalId);
+    if (!existed) return false;
+    this.deletedPolicyIds.add(key);
+    return true;
+  }
   async saveReport(report: GateReport): Promise<void> { const key = recordKey(report.scope, report.id); if (this.reports.has(key)) throw new QualityGateConflictError(`Gate report already exists: ${report.id}`); this.reports.set(key, serializeGateReport(report)); }
   async findReport(scope: TenantScope, id: string): Promise<GateReport | null> { const value = this.reports.get(recordKey(scope, id)); return value === undefined ? null : deserializeGateReport(value); }
   async listReports(scope: TenantScope, candidateExperimentId?: string): Promise<GateReport[]> { return [...this.reports.values()].filter((value) => tenantKey(value.scope) === tenantKey(scope) && (candidateExperimentId === undefined || value.candidateExperimentId === candidateExperimentId)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(deserializeGateReport); }

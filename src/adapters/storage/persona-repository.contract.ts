@@ -29,4 +29,18 @@ export async function personaRepositoryContract(repo: PersonaRepository): Promis
   expect(summaries).toHaveLength(1);
   expect(summaries[0]).toMatchObject({ internalId: 'novice-user', displayName: 'New', archetype: 'novice', state: 'draft' });
   expect(summaries[0]?.latestVersion.toString()).toBe('1.10.0');
+
+  // delete(論理削除): listから除外され、findLatestはnullになるが、findVersionは既存versionを返し続ける。
+  await repo.save(createPersona({
+    metadata: { internalId: 'other-persona', workingName: 'work', displayName: 'Other', publishName: 'other_persona', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+    archetype: 'novice', knowledgeLevel: 'low', patience: 'mid', tone: '丁寧', verbosity: 'normal', language: 'ja', extraInstructions: '',
+  }));
+  await expect(repo.delete(scope, 'novice-user')).resolves.toBe(true);
+  expect((await repo.list(scope)).map((item) => item.internalId)).toEqual(['other-persona']);
+  await expect(repo.findLatest(scope, 'novice-user')).resolves.toBeNull();
+  await expect(repo.listVersions(scope, 'novice-user')).resolves.toEqual([]);
+  expect((await repo.findVersion(scope, 'novice-user', SemVer.of(1, 0, 0)))?.metadata.internalId).toBe('novice-user');
+  await expect(repo.delete(scope, 'novice-user')).resolves.toBe(false);
+  await expect(repo.delete(scope, 'missing')).resolves.toBe(false);
+  expect((await repo.findLatest(scope, 'other-persona'))?.metadata.internalId).toBe('other-persona');
 }

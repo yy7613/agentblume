@@ -21,3 +21,15 @@ export class QueryScenariosUseCase {
     return scenario;
   }
 }
+
+/**
+ * 保存済みScenarioの論理削除。repository.delete が false(未存在/削除済み)なら ScenarioNotFoundError。
+ * findVersion は削除後も返るため、既存の参照ScenarioRunは壊れない。
+ */
+export class DeleteScenarioUseCase {
+  constructor(private readonly repo: ScenarioRepository) {}
+  async execute(scope: TenantScope, internalId: string): Promise<void> {
+    const existed = await this.repo.delete(scope, internalId);
+    if (!existed) throw new ScenarioNotFoundError(`DeleteScenario: scenario not found: ${internalId}`);
+  }
+}

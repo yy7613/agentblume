@@ -21,3 +21,15 @@ export class QueryPersonasUseCase {
     return persona;
   }
 }
+
+/**
+ * 保存済みPersonaの論理削除。repository.delete が false(未存在/削除済み)なら PersonaNotFoundError。
+ * findVersion は削除後も返るため、既存の参照Scenarioは壊れない。
+ */
+export class DeletePersonaUseCase {
+  constructor(private readonly repo: PersonaRepository) {}
+  async execute(scope: TenantScope, internalId: string): Promise<void> {
+    const existed = await this.repo.delete(scope, internalId);
+    if (!existed) throw new PersonaNotFoundError(`DeletePersona: persona not found: ${internalId}`);
+  }
+}

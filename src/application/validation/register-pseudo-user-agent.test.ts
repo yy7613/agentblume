@@ -26,6 +26,7 @@ class MapAgents implements AgentRepository {
   async findLatest(_s: TenantScope, id: string): Promise<Agent | null> { return this.byId.get(id) ?? null; }
   async listVersions(_s: TenantScope, id: string): Promise<SemVer[]> { return this.versionsById.get(id) ?? []; }
   async list(): Promise<AgentSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 const noTools = { async save() {}, async findVersion() { return null; }, async findLatest() { return null; }, async listVersions() { return []; }, async list() { return []; } } as unknown as ToolRepository;
 class StaticPersonas implements PersonaRepository {
@@ -35,6 +36,7 @@ class StaticPersonas implements PersonaRepository {
   async findLatest(): Promise<Persona | null> { return this.persona; }
   async listVersions(): Promise<SemVer[]> { return []; }
   async list(): Promise<PersonaSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 
 function useCase(persona: Persona | null, agents = new MapAgents()) {

@@ -23,6 +23,7 @@ class MapAgents implements AgentRepository {
   async findLatest(_s: TenantScope, id: string): Promise<Agent | null> { return this.byId.get(id) ?? null; }
   async listVersions(): Promise<SemVer[]> { return []; }
   async list(): Promise<AgentSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 const noTools = { async save() {}, async findVersion() { return null; }, async findLatest() { return null; }, async listVersions() { return []; }, async list() { return []; } } as unknown as ToolRepository;
 const rootInput = { scope, internalId: 'root', workingName: 'r', displayName: 'R', publishName: 'root', owner: 'owner', kind: 'normal' as const, systemPrompt: 'Delegate.', tools: [] };

@@ -31,6 +31,15 @@ export class QueryQualityGatesUseCase {
   async getPromotion(scope: TenantScope, id: string): Promise<PromotionRequest> { const value = await this.repo.findPromotion(scope, id); if (value === null) throw new QualityGateNotFoundError(`Promotion request not found: ${id}`); return value; }
 }
 
+/** 保存済みGate policyの論理削除。repository.deletePolicy が false(未存在/削除済み)なら QualityGateNotFoundError。 */
+export class DeleteGatePolicyUseCase {
+  constructor(private readonly repo: QualityGateRepository) {}
+  async execute(scope: TenantScope, internalId: string): Promise<void> {
+    const existed = await this.repo.deletePolicy(scope, internalId);
+    if (!existed) throw new QualityGateNotFoundError(`DeleteGatePolicy: policy not found: ${internalId}`);
+  }
+}
+
 export class CompareExperimentsUseCase {
   constructor(private readonly experiments: ExperimentRepository) {}
   async execute(scope: TenantScope, baselineExperimentId: string, candidateExperimentId: string): Promise<ExperimentComparison> {

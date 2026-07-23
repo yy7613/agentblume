@@ -201,5 +201,20 @@ export function toolRepositoryContract(
       await repo.save(makeTool({ scope: scopeA, internalId: 'tool-1', version: SemVer.of(1, 0, 0) }));
       expect(await repo.findVersion(scopeA, 'tool-1', SemVer.of(9, 9, 9))).toBeNull();
     });
+
+    it('delete（論理削除）: listから除外されfindLatestはnullになるが、findVersionは既存versionを返し続ける', async () => {
+      await repo.save(makeTool({ scope: scopeA, internalId: 'tool-1', version: SemVer.of(1, 0, 0) }));
+      await repo.save(makeTool({ scope: scopeA, internalId: 'tool-2', version: SemVer.of(1, 0, 0) }));
+
+      await expect(repo.delete(scopeA, 'tool-1')).resolves.toBe(true);
+
+      expect((await repo.list(scopeA)).map((item) => item.internalId)).toEqual(['tool-2']);
+      expect(await repo.findLatest(scopeA, 'tool-1')).toBeNull();
+      expect(await repo.listVersions(scopeA, 'tool-1')).toEqual([]);
+      expect((await repo.findVersion(scopeA, 'tool-1', SemVer.of(1, 0, 0)))?.metadata.internalId).toBe('tool-1');
+      await expect(repo.delete(scopeA, 'tool-1')).resolves.toBe(false);
+      await expect(repo.delete(scopeA, 'no-such')).resolves.toBe(false);
+      expect((await repo.findLatest(scopeA, 'tool-2'))?.metadata.internalId).toBe('tool-2');
+    });
   });
 }

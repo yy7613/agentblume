@@ -66,6 +66,8 @@ class FakeToolRepository implements ToolRepository {
     // SaveToolUseCase では未使用。
     return [];
   }
+
+  async delete(): Promise<boolean> { return false; }
 }
 
 const scopeA: TenantScope = { tenantId: 'tenant-a', workspaceId: 'ws-1' };

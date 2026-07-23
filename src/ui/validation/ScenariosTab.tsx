@@ -107,6 +107,15 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
     setSurvey(DEFAULT_SURVEY_TEMPLATE.map((question) => ({ ...question })));
   }
 
+  async function remove(internalIdToRemove: string): Promise<void> {
+    setError(undefined);
+    try {
+      await client.deleteScenario(internalIdToRemove, scope);
+      setScenarios(await client.listScenarios(scope));
+      if (editingId === internalIdToRemove) startNew();
+    } catch (cause) { setError(message(cause)); }
+  }
+
   function updateQuestion(index: number, patch: Partial<SurveyQuestionDto>): void {
     setSurvey((questions) => questions.map((question, questionIndex) => {
       if (questionIndex !== index) return question;
@@ -166,9 +175,12 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
       <div className="panel-title"><h2>{text('Scenarios', 'シナリオ')}</h2><button type="button" className="secondary" onClick={startNew}>{text('New scenario', '新規シナリオ')}</button></div>
       <div className="validation-list">
         {scenarios.length === 0 && <p className="empty-state">{text('No saved scenarios.', '保存済みシナリオはありません。')}</p>}
-        {scenarios.map((scenario) => <button type="button" key={scenario.internalId} className={scenario.internalId === editingId ? 'selected' : ''} onClick={() => void edit(scenario)}>
-          <strong>{scenario.displayName}</strong><span className="version-chip">{scenario.latestVersion}</span>
-        </button>)}
+        {scenarios.map((scenario) => <div className="validation-list-row" key={scenario.internalId}>
+          <button type="button" className={scenario.internalId === editingId ? 'selected' : ''} onClick={() => void edit(scenario)}>
+            <strong>{scenario.displayName}</strong><span className="version-chip">{scenario.latestVersion}</span>
+          </button>
+          <button type="button" className="secondary danger" disabled={busy !== undefined} onClick={() => void remove(scenario.internalId)}>{text('Delete', '削除')}</button>
+        </div>)}
       </div>
     </section>
     <section className="workspace-card" aria-label={text('Scenario form', 'シナリオフォーム')}>

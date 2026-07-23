@@ -38,7 +38,7 @@ describe('SavePersona / QueryPersonas', () => {
       findVersion: vi.fn(async (_scope, id, version) => saved.find((persona) => persona.metadata.internalId === id && persona.metadata.version.equals(version)) ?? null),
       findLatest: vi.fn(async (_scope, id) => saved.filter((persona) => persona.metadata.internalId === id).at(-1) ?? null),
       listVersions: vi.fn(async (_scope, id) => saved.filter((persona) => persona.metadata.internalId === id).map((persona) => persona.metadata.version)),
-      list: vi.fn(async () => []),
+      list: vi.fn(async () => []), delete: vi.fn(),
     };
   });
 
@@ -84,14 +84,14 @@ describe('SaveScenario / QueryScenarios', () => {
       findVersion: vi.fn(async (_scope, id, version) => saved.find((scenario) => scenario.metadata.internalId === id && scenario.metadata.version.equals(version)) ?? null),
       findLatest: vi.fn(async (_scope, id) => saved.filter((scenario) => scenario.metadata.internalId === id).at(-1) ?? null),
       listVersions: vi.fn(async (_scope, id) => saved.filter((scenario) => scenario.metadata.internalId === id).map((scenario) => scenario.metadata.version)),
-      list: vi.fn(async () => []),
+      list: vi.fn(async () => []), delete: vi.fn(),
     };
     agents = {
-      save: vi.fn(), findLatest: vi.fn(), listVersions: vi.fn(), list: vi.fn(),
+      save: vi.fn(), findLatest: vi.fn(), listVersions: vi.fn(), list: vi.fn(), delete: vi.fn(),
       findVersion: vi.fn(async (_scope, id, version) => (id === 'agent-1' && version.equals(agentVersion) ? ({} as Agent) : null)),
     };
     personas = {
-      save: vi.fn(), findLatest: vi.fn(), listVersions: vi.fn(), list: vi.fn(),
+      save: vi.fn(), findLatest: vi.fn(), listVersions: vi.fn(), list: vi.fn(), delete: vi.fn(),
       findVersion: vi.fn(async (_scope, id, version) => (id === 'persona-1' && version.equals(personaVersion) ? ({} as Persona) : null)),
     };
   });

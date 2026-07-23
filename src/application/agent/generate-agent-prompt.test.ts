@@ -22,6 +22,7 @@ class FakeTools implements ToolRepository {
   async save(): Promise<void> {}
   async listVersions(): Promise<SemVer[]> { return []; }
   async list(): Promise<ToolSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 
 describe('GenerateAgentPromptUseCase', () => {

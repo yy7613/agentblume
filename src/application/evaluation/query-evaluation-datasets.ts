@@ -14,3 +14,12 @@ export class QueryEvaluationDatasetsUseCase {
     return dataset;
   }
 }
+
+/** 保存済みEvaluation Datasetの論理削除。repository.delete が false(未存在/削除済み)なら EvaluationDatasetNotFoundError。 */
+export class DeleteEvaluationDatasetUseCase {
+  constructor(private readonly repo: EvaluationDatasetRepository) {}
+  async execute(scope: TenantScope, internalId: string): Promise<void> {
+    const existed = await this.repo.delete(scope, internalId);
+    if (!existed) throw new EvaluationDatasetNotFoundError(`DeleteEvaluationDataset: dataset not found: ${internalId}`);
+  }
+}

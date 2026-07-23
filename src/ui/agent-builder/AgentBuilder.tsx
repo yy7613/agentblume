@@ -6,6 +6,10 @@ import { useI18n } from '../i18n';
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
 export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
+  // Layer 1: 保存済みAgent一覧。'list'が既定viewで、new/openでLayer 2（editor）へ遷移する。
+  const [view, setView] = useState<'list' | 'editor'>('list');
+  // editing=true は一覧からOpenした既存Agent。internalIdは別資産を分岐させてしまうため編集不可にする。
+  const [editing, setEditing] = useState(false);
   const [tools, setTools] = useState<readonly ToolSummaryDto[]>([]);
   const [skills, setSkills] = useState<readonly SkillSummaryDto[]>([]);
   const [agents, setAgents] = useState<readonly AgentSummaryDto[]>([]);
@@ -41,15 +45,19 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
     return () => { active = false; };
   }, [client]);
 
-  // サブエージェント委譲候補（他の保存済みAgent）を読み込む。失敗してもTool/Skill読込は妨げない。
+  // 保存済みAgent一覧（Layer 1の一覧表示 兼 サブエージェント委譲候補）を読み込む。
   useEffect(() => {
     let active = true;
-    void client.listAgents(scope).then((items) => { if (active) setAgents(items); }).catch(() => { /* 委譲候補は任意 */ });
+    void client.listAgents(scope).then((items) => { if (active) setAgents(items); }).catch((cause: unknown) => { if (active) setError(message(cause)); });
     return () => { active = false; };
   }, [client]);
+  async function refreshAgents(): Promise<void> {
+    try { setAgents(await client.listAgents(scope)); }
+    catch (cause) { setError(message(cause)); }
+  }
 
-  const refs = useMemo(() => tools.filter((tool) => selectedTools.has(key(tool))).map((tool) => ({ internalId: tool.internalId, version: tool.latestVersion })), [selectedTools, tools]);
-  const skillRefs = useMemo(() => skills.filter((skill) => selectedSkills.has(key(skill))).map((skill) => ({ internalId: skill.internalId, version: skill.latestVersion })), [selectedSkills, skills]);
+  const refs = useMemo(() => tools.filter((tool) => selectedTools.has(tool.internalId)).map((tool) => ({ internalId: tool.internalId, version: tool.latestVersion })), [selectedTools, tools]);
+  const skillRefs = useMemo(() => skills.filter((skill) => selectedSkills.has(skill.internalId)).map((skill) => ({ internalId: skill.internalId, version: skill.latestVersion })), [selectedSkills, skills]);
   // 委譲候補は自分自身を除外する。usage は各サブ必須。
   const selectableAgents = useMemo(() => agents.filter((agent) => agent.internalId !== internalId), [agents, internalId]);
   const subAgentRefs = useMemo(() => selectableAgents.filter((agent) => subAgents.has(agent.internalId))
@@ -105,7 +113,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   const outputValid = !structuredOutput || (outputFields.length > 0 && outputFields.every((field) => field.name.trim() !== '') && new Set(outputFields.map((field) => field.name)).size === outputFields.length);
 
   function toggle(tool: ToolSummaryDto): void {
-    const id = key(tool);
+    const id = tool.internalId;
     setSelectedTools((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id); else next.add(id);
@@ -114,7 +122,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   }
 
   function toggleSkill(skill: SkillSummaryDto): void {
-    const id = key(skill);
+    const id = skill.internalId;
     setSelectedSkills((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id); else next.add(id);
@@ -174,9 +182,73 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
     finally { setBusy(undefined); }
   }
 
+  function resetEditorState(): void {
+    setInternalId(''); setWorkingName(''); setDisplayName(''); setPublishName(''); setOwner('');
+    setKind('normal'); setSystemPrompt('');
+    setSelectedTools(new Set()); setSelectedSkills(new Set()); setSelectedWikis(new Set()); setSubAgents(new Map());
+    setStructuredOutput(false); setOutputFields([{ name: '', type: 'string', required: true }]);
+    setSavedVersion(undefined); setChatMessage(''); setRun(undefined);
+    setEditing(false);
+  }
+  function startNewAgent(): void { resetEditorState(); setError(undefined); setView('editor'); }
+  async function backToList(): Promise<void> { setView('list'); await refreshAgents(); }
+  async function openAgent(target: string): Promise<void> {
+    setBusy('load'); setError(undefined);
+    try {
+      const agent = await client.getAgent(target, scope);
+      populateEditorFromAgent(agent);
+      setView('editor');
+    } catch (cause) { setError(message(cause)); }
+    finally { setBusy(undefined); }
+  }
+  async function removeAgent(target: string): Promise<void> {
+    setBusy('load'); setError(undefined);
+    try { await client.deleteAgent(target, scope); await refreshAgents(); }
+    catch (cause) { setError(message(cause)); }
+    finally { setBusy(undefined); }
+  }
+  // 一覧からOpenした保存済みAgentをeditor stateへ復元する。tool/skillの選択はinternalId基準で、
+  // saveAgent実行時は常に現在のlatestVersionへ再pinされる（保存済みrefのversionをそのまま保持しない）。
+  function populateEditorFromAgent(agent: SerializedAgentDto): void {
+    setInternalId(agent.metadata.internalId);
+    setWorkingName(agent.metadata.workingName);
+    setDisplayName(agent.metadata.displayName);
+    setPublishName(agent.metadata.publishName);
+    setOwner(agent.metadata.owner);
+    setKind(agent.kind);
+    setSystemPrompt(agent.systemPrompt);
+    setSelectedTools(new Set(agent.tools.map((ref) => ref.internalId)));
+    setSelectedSkills(new Set(agent.skills.map((ref) => ref.internalId)));
+    setSelectedWikis(new Set((agent.wikis ?? []).map((ref) => ref.wikiId)));
+    setSubAgents(new Map(agent.agents.map((ref) => [ref.internalId, ref.usage])));
+    if (agent.output !== undefined) { setStructuredOutput(true); setOutputFields([...agent.output.fields]); }
+    else { setStructuredOutput(false); setOutputFields([{ name: '', type: 'string', required: true }]); }
+    setSavedVersion(agent.metadata.version);
+    setChatMessage(''); setRun(undefined);
+    setEditing(true);
+  }
+
+  if (view === 'list') {
+    return <main className="agent-builder agent-list-page">
+      <header className="agent-builder-header">
+        <div><span className="eyebrow">{text('Agent Builder', 'エージェントビルダー')}</span><h1>{text('Agents', 'エージェント一覧')}</h1><p>{text('Generate a system prompt from Skill and Tool metadata, then save the reviewed definition as a new version.', 'スキルとツールのメタデータからシステムプロンプトを生成し、レビュー後の定義を新しいバージョンとして保存します。')}</p></div>
+        <div className="save-actions"><button type="button" className="primary" onClick={startNewAgent}>{text('New agent', '新規作成')}</button></div>
+      </header>
+      {error !== undefined && <div className="api-error">{error}</div>}
+      <section className="workspace-card agent-list">
+        {agents.length === 0 ? <p className="empty-state">{text('No agents yet.', 'エージェントはまだありません。')}</p> : <div className="agent-list-rows">{agents.map((item) => <article className="agent-list-row" key={item.internalId}>
+          <div><strong>{item.displayName}</strong><code>{item.publishName}@{item.latestVersion}</code><small>{item.kind} · {item.state}</small></div>
+          <div className="agent-list-actions">
+            <button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void openAgent(item.internalId)}>{text('Open', '開く')}</button>
+            <button type="button" className="secondary danger" disabled={busy !== undefined} onClick={() => void removeAgent(item.internalId)}>{text('Delete', '削除')}</button>
+          </div>
+        </article>)}</div>}
+      </section>
+    </main>;
+  }
   return <main className="agent-builder">
     <header className="agent-builder-header">
-      <div><span className="eyebrow">{text('Agent Builder', 'エージェントビルダー')}</span><h1>{displayName || text('New Agent', '新しいエージェント')}</h1><p>{text('Generate a system prompt from Skill and Tool metadata, then save the reviewed definition as a new version.', 'スキルとツールのメタデータからシステムプロンプトを生成し、レビュー後の定義を新しいバージョンとして保存します。')}</p></div>
+      <div><button type="button" className="secondary agent-back-button" onClick={() => void backToList()}>{text('Back to list', '一覧へ戻る')}</button><span className="eyebrow">{text('Agent Builder', 'エージェントビルダー')}</span><h1>{displayName || text('New Agent', '新しいエージェント')}</h1><p>{text('Generate a system prompt from Skill and Tool metadata, then save the reviewed definition as a new version.', 'スキルとツールのメタデータからシステムプロンプトを生成し、レビュー後の定義を新しいバージョンとして保存します。')}</p></div>
       <div className="save-actions">
         {savedVersion !== undefined && <span className="version-chip">{text('saved', '保存済み')} {savedVersion}</span>}
         <button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void generate()}>{busy === 'generate' ? text('Generating…', '生成中…') : text('Generate draft', '草案を生成')}</button>
@@ -188,7 +260,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
       <section className="agent-definition-card">
         <h2>{text('Definition', '定義')}</h2>
         <div className="agent-fields">
-          <label>{text('Internal ID', '内部ID')}<input aria-label={text('Agent internal ID', 'エージェント内部ID')} placeholder={text('e.g. support-agent', '例: support-agent')} value={internalId} onChange={(event) => setInternalId(event.target.value)} /></label>
+          <label>{text('Internal ID', '内部ID')}<input aria-label={text('Agent internal ID', 'エージェント内部ID')} placeholder={text('e.g. support-agent', '例: support-agent')} value={internalId} readOnly={editing} title={editing ? text('Internal ID cannot change once saved (it would fork a new asset).', '保存済みの内部IDは変更できません（変更すると別資産になります）。') : undefined} onChange={(event) => { if (editing) return; setInternalId(event.target.value); }} /></label>
           <label>{text('Working name', '作業名')}<input placeholder={text('e.g. Support agent draft', '例: サポートエージェントの下書き')} value={workingName} onChange={(event) => setWorkingName(event.target.value)} /></label>
           <label>{text('Display name', '表示名')}<input aria-label={text('Agent display name', 'エージェント表示名')} placeholder={text('e.g. Support Agent', '例: サポートエージェント')} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
           <label>{text('Publish name', '公開名')}<input placeholder={text('e.g. support_agent', '例: support_agent')} value={publishName} onChange={(event) => setPublishName(event.target.value)} /></label>
@@ -198,13 +270,13 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
         <h2>{text('Skills', 'スキル')} <small>{skillRefs.length} {text('selected', '件選択')}</small></h2>
         <div className="agent-tool-list">
           {busy !== 'load' && skills.length === 0 && <p className="empty-state">保存済みSkillがありません。</p>}
-          {skills.map((skill) => <label key={key(skill)} className="agent-tool-option"><input type="checkbox" checked={selectedSkills.has(key(skill))} onChange={() => toggleSkill(skill)} /><span><strong>{skill.displayName}</strong><code>{skill.publishName}@{skill.latestVersion}</code></span><small>{skill.state}</small></label>)}
+          {skills.map((skill) => <label key={key(skill)} className="agent-tool-option"><input type="checkbox" checked={selectedSkills.has(skill.internalId)} onChange={() => toggleSkill(skill)} /><span><strong>{skill.displayName}</strong><code>{skill.publishName}@{skill.latestVersion}</code></span><small>{skill.state}</small></label>)}
         </div>
         <h2>{text('Tools', 'ツール')} <small>{refs.length} {text('selected', '件選択')}</small></h2>
         <div className="agent-tool-list">
           {busy === 'load' && <p className="empty-state">{text('Loading tools…', 'ツールを読み込み中…')}</p>}
           {busy !== 'load' && tools.length === 0 && <p className="empty-state">保存済みToolがありません。</p>}
-          {tools.map((tool) => <label key={key(tool)} className="agent-tool-option"><input type="checkbox" checked={selectedTools.has(key(tool))} onChange={() => toggle(tool)} /><span><strong>{tool.displayName}</strong><code>{tool.publishName}@{tool.latestVersion}</code></span><small>{tool.state}</small></label>)}
+          {tools.map((tool) => <label key={key(tool)} className="agent-tool-option"><input type="checkbox" checked={selectedTools.has(tool.internalId)} onChange={() => toggle(tool)} /><span><strong>{tool.displayName}</strong><code>{tool.publishName}@{tool.latestVersion}</code></span><small>{tool.state}</small></label>)}
         </div>
         <h2>{text('Sub-agents', 'サブエージェント')} <small>{subAgentRefs.length} {text('selected', '件選択')}</small></h2>
         <p className="agent-subagent-hint">{text('Delegated as an ask_<name> tool. The effective side-effect is validated on save.', 'ask_<名前> ツールとして委譲されます。実効副作用は保存時に検証されます。')}</p>

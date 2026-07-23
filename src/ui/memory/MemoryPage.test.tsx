@@ -21,9 +21,11 @@ function makeClient(overrides: Partial<Record<keyof ToolApiClient, unknown>> = {
   return {
     listWikis: vi.fn().mockResolvedValue([{ id: 'customer-a', name: 'Customer A', description: 'A knowledge', updatedAt: 'now' }]),
     saveWikiSpace: vi.fn().mockResolvedValue({ id: 'customer-b', name: 'Customer B', description: 'B knowledge', tenant: scope, createdAt: 'now', updatedAt: 'now' }),
+    deleteWikiSpace: vi.fn().mockResolvedValue(undefined),
     listWikiPages: vi.fn().mockResolvedValue([summary('p1', 'Cohort SQL', ['sql'])]),
     getWikiPage: vi.fn().mockResolvedValue(page('p1', 'Cohort SQL', 'Filter adults.')),
     saveWikiPage: vi.fn().mockResolvedValue(page('p1', 'Cohort SQL', 'Filter adults.')),
+    deleteWiki: vi.fn().mockResolvedValue(undefined),
     listWiki: vi.fn().mockResolvedValue([summary('p1', 'Cohort SQL', ['sql'])]),
     getWiki: vi.fn().mockResolvedValue(page('p1', 'Cohort SQL', 'Filter adults.')),
     saveWiki: vi.fn().mockResolvedValue(page('p1', 'Cohort SQL', 'Filter adults.')),
@@ -114,5 +116,35 @@ describe('MemoryPage', () => {
     await userEvent.type(screen.getByLabelText('Description'), 'B knowledge');
     await userEvent.click(screen.getByRole('button', { name: 'Save wiki' }));
     await waitFor(() => expect(client.saveWikiSpace).toHaveBeenCalledWith({ scope, id: 'customer-b', name: 'Customer B', description: 'B knowledge' }));
+  });
+
+  it('ページのDeleteでdeleteWikiを呼び、一覧を再取得する', async () => {
+    const client = makeClient();
+    (client.listWikiPages as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([summary('p1', 'Cohort SQL', ['sql'])])
+      .mockResolvedValueOnce([]);
+    render(<MemoryPage client={client} />);
+    await screen.findByRole('button', { name: /Cohort SQL/ });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    expect(client.deleteWiki).toHaveBeenCalledWith('p1', scope);
+    expect(client.listWikiPages).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText('No wiki pages yet.')).toBeTruthy();
+  });
+
+  it('Wiki空間のDelete wikiでdeleteWikiSpaceを呼び、一覧を再取得する', async () => {
+    const client = makeClient();
+    (client.listWikis as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([{ id: 'customer-a', name: 'Customer A', description: 'A knowledge', updatedAt: 'now' }])
+      .mockResolvedValueOnce([]);
+    render(<MemoryPage client={client} />);
+    await screen.findByRole('option', { name: 'Customer A' });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete wiki' }));
+
+    expect(client.deleteWikiSpace).toHaveBeenCalledWith('customer-a', scope);
+    expect(client.listWikis).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('option', { name: 'Customer A' })).toBeNull();
   });
 });

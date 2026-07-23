@@ -12,7 +12,7 @@ const CREATE_TABLE = `
   CREATE TABLE IF NOT EXISTS agents (
     tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, internal_id TEXT NOT NULL,
     version TEXT NOT NULL, major INTEGER NOT NULL, minor INTEGER NOT NULL, patch INTEGER NOT NULL,
-    definition_json TEXT NOT NULL,
+    definition_json TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tenant_id, workspace_id, internal_id, version)
   );
 `;
@@ -21,7 +21,15 @@ function fromJson(value: unknown): Agent { return deserializeAgent(JSON.parse(St
 
 export class SqliteAgentRepository implements AgentRepository {
   private readonly db: DatabaseSync;
-  constructor(path = ':memory:') { this.db = new DatabaseSync(path); this.db.exec(CREATE_TABLE); }
+  constructor(path = ':memory:') {
+    this.db = new DatabaseSync(path);
+    this.db.exec(CREATE_TABLE);
+    // 既存DB向けmigration: deleted列が無ければ追加する（論理削除）。
+    const columns = this.db.prepare(`PRAGMA table_info(agents)`).all();
+    if (!columns.some((column) => String(column['name']) === 'deleted')) {
+      this.db.exec(`ALTER TABLE agents ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0`);
+    }
+  }
   close(): void { this.db.close(); }
 
   async save(agent: Agent): Promise<void> {
@@ -54,19 +62,19 @@ export class SqliteAgentRepository implements AgentRepository {
   }
 
   async findLatest(scope: TenantScope, internalId: string): Promise<Agent | null> {
-    const row = this.db.prepare(`SELECT definition_json FROM agents WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ? ORDER BY major DESC, minor DESC, patch DESC LIMIT 1`)
+    const row = this.db.prepare(`SELECT definition_json FROM agents WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ? AND deleted = 0 ORDER BY major DESC, minor DESC, patch DESC LIMIT 1`)
       .get(scope.tenantId, scope.workspaceId, internalId);
     return row === undefined ? null : fromJson(row['definition_json']);
   }
 
   async listVersions(scope: TenantScope, internalId: string): Promise<SemVer[]> {
-    return this.db.prepare(`SELECT major, minor, patch FROM agents WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ? ORDER BY major, minor, patch`)
+    return this.db.prepare(`SELECT major, minor, patch FROM agents WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ? AND deleted = 0 ORDER BY major, minor, patch`)
       .all(scope.tenantId, scope.workspaceId, internalId)
       .map((row) => SemVer.of(Number(row['major']), Number(row['minor']), Number(row['patch'])));
   }
 
   async list(scope: TenantScope): Promise<AgentSummary[]> {
-    const rows = this.db.prepare(`SELECT a.definition_json FROM agents a WHERE a.tenant_id = ? AND a.workspace_id = ? AND a.version = (SELECT b.version FROM agents b WHERE b.tenant_id = a.tenant_id AND b.workspace_id = a.workspace_id AND b.internal_id = a.internal_id ORDER BY b.major DESC, b.minor DESC, b.patch DESC LIMIT 1) ORDER BY a.internal_id`)
+    const rows = this.db.prepare(`SELECT a.definition_json FROM agents a WHERE a.tenant_id = ? AND a.workspace_id = ? AND a.deleted = 0 AND a.version = (SELECT b.version FROM agents b WHERE b.tenant_id = a.tenant_id AND b.workspace_id = a.workspace_id AND b.internal_id = a.internal_id AND b.deleted = 0 ORDER BY b.major DESC, b.minor DESC, b.patch DESC LIMIT 1) ORDER BY a.internal_id`)
       .all(scope.tenantId, scope.workspaceId);
     return rows.map((row) => {
       const agent = fromJson(row['definition_json']);
@@ -79,5 +87,12 @@ export class SqliteAgentRepository implements AgentRepository {
         state: agent.metadata.state,
       };
     });
+  }
+
+  async delete(scope: TenantScope, internalId: string): Promise<boolean> {
+    const existing = this.db.prepare(`SELECT 1 FROM agents WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ? AND deleted = 0 LIMIT 1`).get(scope.tenantId, scope.workspaceId, internalId);
+    if (existing === undefined) return false;
+    this.db.prepare(`UPDATE agents SET deleted = 1 WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ?`).run(scope.tenantId, scope.workspaceId, internalId);
+    return true;
   }
 }

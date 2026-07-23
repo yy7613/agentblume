@@ -10,9 +10,12 @@ import { AgentNotFoundError } from '../../domain/agent/errors';
 function key(scope: TenantScope, internalId: string, version: string): string {
   return `${tenantKey(scope)} ${internalId} ${version}`;
 }
+function idKey(scope: TenantScope, internalId: string): string { return `${tenantKey(scope)} ${internalId}`; }
 
 export class InMemoryAgentRepository implements AgentRepository {
   private readonly store = new Map<string, SerializedAgent>();
+  // 論理削除された internalId の集合（tenant単位）。findVersion はここを見ず、削除後も既存versionを返し続ける。
+  private readonly deletedIds = new Set<string>();
 
   async save(agent: Agent): Promise<void> {
     const serialized = serializeAgent(agent);
@@ -36,6 +39,7 @@ export class InMemoryAgentRepository implements AgentRepository {
   }
 
   async findLatest(scope: TenantScope, internalId: string): Promise<Agent | null> {
+    if (this.deletedIds.has(idKey(scope, internalId))) return null;
     const values = this.entries(scope, internalId);
     let latest: { version: SemVer; value: SerializedAgent } | undefined;
     for (const value of values) {
@@ -46,6 +50,7 @@ export class InMemoryAgentRepository implements AgentRepository {
   }
 
   async listVersions(scope: TenantScope, internalId: string): Promise<SemVer[]> {
+    if (this.deletedIds.has(idKey(scope, internalId))) return [];
     return this.entries(scope, internalId).map((value) => SemVer.parse(value.metadata.version)).sort((a, b) => a.compare(b));
   }
 
@@ -53,6 +58,7 @@ export class InMemoryAgentRepository implements AgentRepository {
     const latest = new Map<string, { version: SemVer; value: SerializedAgent }>();
     for (const value of this.store.values()) {
       if (tenantKey(value.metadata.tenant) !== tenantKey(scope)) continue;
+      if (this.deletedIds.has(idKey(scope, value.metadata.internalId))) continue;
       const version = SemVer.parse(value.metadata.version);
       const current = latest.get(value.metadata.internalId);
       if (current === undefined || version.compare(current.version) > 0) latest.set(value.metadata.internalId, { version, value });
@@ -65,6 +71,14 @@ export class InMemoryAgentRepository implements AgentRepository {
       kind: value.kind,
       state: value.metadata.state,
     }));
+  }
+
+  async delete(scope: TenantScope, internalId: string): Promise<boolean> {
+    const dkey = idKey(scope, internalId);
+    if (this.deletedIds.has(dkey)) return false;
+    if (this.entries(scope, internalId).length === 0) return false;
+    this.deletedIds.add(dkey);
+    return true;
   }
 
   private entries(scope: TenantScope, internalId: string): SerializedAgent[] {

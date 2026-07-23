@@ -70,4 +70,32 @@ describe('skill routes', () => {
     expect(hidden.statusCode).toBe(404);
     expect(hidden.json().error.code).toBe('SKILL_NOT_FOUND');
   });
+
+  it('保存済みSkillを論理削除できる（listからは除外、GETはfindLatestのため404、pinned versionはfindVersionで残る）', async () => {
+    const saved = await server.inject({ method: 'POST', url: '/skills', payload: body() });
+    expect(saved.statusCode).toBe(201);
+
+    const deleted = await server.inject({ method: 'DELETE', url: '/skills/analysis', query: scope });
+    expect(deleted.statusCode).toBe(204);
+
+    const listed = await server.inject({ method: 'GET', url: '/skills', query: scope });
+    expect(listed.json().skills).toEqual([]);
+
+    const getLatest = await server.inject({ method: 'GET', url: '/skills/analysis', query: scope });
+    expect(getLatest.statusCode).toBe(404);
+    expect(getLatest.json().error).toMatchObject({ code: 'SKILL_NOT_FOUND' });
+
+    const getPinned = await server.inject({ method: 'GET', url: '/skills/analysis', query: { ...scope, version: '1.0.0' } });
+    expect(getPinned.statusCode).toBe(200);
+    expect(getPinned.json().skill.metadata.version).toBe('1.0.0');
+
+    const again = await server.inject({ method: 'DELETE', url: '/skills/analysis', query: scope });
+    expect(again.statusCode).toBe(404);
+  });
+
+  it('未存在のSkillを削除すると404を返す', async () => {
+    const res = await server.inject({ method: 'DELETE', url: '/skills/missing-skill', query: scope });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toMatchObject({ code: 'SKILL_NOT_FOUND' });
+  });
 });

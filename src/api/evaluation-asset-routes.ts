@@ -3,12 +3,12 @@ import type { z } from 'zod';
 import { serializeEvaluationDataset, serializeEvaluatorProfile, serializeJudgeRubric } from '../domain/evaluation/assets-serialization';
 import type { ExportEvaluationDatasetUseCase, ImportEvaluationCasesUseCase } from '../application/evaluation/evaluation-dataset-transfer';
 import { serializeImportedCases } from '../application/evaluation/evaluation-dataset-transfer';
-import type { QueryEvaluationDatasetsUseCase } from '../application/evaluation/query-evaluation-datasets';
-import type { QueryEvaluatorProfilesUseCase } from '../application/evaluation/query-evaluator-profiles';
+import type { DeleteEvaluationDatasetUseCase, QueryEvaluationDatasetsUseCase } from '../application/evaluation/query-evaluation-datasets';
+import type { DeleteEvaluatorProfileUseCase, QueryEvaluatorProfilesUseCase } from '../application/evaluation/query-evaluator-profiles';
 import type { SaveEvaluationDatasetUseCase } from '../application/evaluation/save-evaluation-dataset';
 import type { SaveEvaluatorProfileUseCase } from '../application/evaluation/save-evaluator-profile';
 import type { SaveJudgeRubricUseCase } from '../application/evaluation/save-judge-rubric';
-import type { QueryJudgeRubricsUseCase } from '../application/evaluation/query-judge-rubrics';
+import type { DeleteJudgeRubricUseCase, QueryJudgeRubricsUseCase } from '../application/evaluation/query-judge-rubrics';
 import { SemVer } from '../domain/tool/semver';
 import { BadRequestError } from './error-mapping';
 import {
@@ -19,12 +19,15 @@ import {
 export interface EvaluationAssetRouteDeps {
   readonly saveEvaluationDataset: SaveEvaluationDatasetUseCase;
   readonly queryEvaluationDatasets: QueryEvaluationDatasetsUseCase;
+  readonly deleteEvaluationDataset: DeleteEvaluationDatasetUseCase;
   readonly importEvaluationCases: ImportEvaluationCasesUseCase;
   readonly exportEvaluationDataset: ExportEvaluationDatasetUseCase;
   readonly saveEvaluatorProfile: SaveEvaluatorProfileUseCase;
   readonly queryEvaluatorProfiles: QueryEvaluatorProfilesUseCase;
+  readonly deleteEvaluatorProfile: DeleteEvaluatorProfileUseCase;
   readonly saveJudgeRubric: SaveJudgeRubricUseCase;
   readonly queryJudgeRubrics: QueryJudgeRubricsUseCase;
+  readonly deleteJudgeRubric: DeleteJudgeRubricUseCase;
 }
 
 function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
@@ -66,6 +69,11 @@ export function registerEvaluationAssetRoutes(app: FastifyInstance, deps: Evalua
     const query = parse(versionQuerySchema, request.query);
     return { dataset: serializeEvaluationDataset(await deps.queryEvaluationDatasets.get(query, request.params.internalId, version(query.version))) };
   });
+  app.delete<{ Params: { internalId: string } }>('/evaluation-datasets/:internalId', async (request, reply) => {
+    const query = parse(scopeQuerySchema, request.query);
+    await deps.deleteEvaluationDataset.execute(query, request.params.internalId);
+    return reply.status(204).send();
+  });
 
   app.post('/evaluator-profiles', async (request, reply) => {
     const body = parse(saveEvaluatorProfileBodySchema, request.body);
@@ -83,9 +91,15 @@ export function registerEvaluationAssetRoutes(app: FastifyInstance, deps: Evalua
     const query = parse(versionQuerySchema, request.query);
     return { profile: serializeEvaluatorProfile(await deps.queryEvaluatorProfiles.get(query, request.params.internalId, version(query.version))) };
   });
+  app.delete<{ Params: { internalId: string } }>('/evaluator-profiles/:internalId', async (request, reply) => {
+    const query = parse(scopeQuerySchema, request.query);
+    await deps.deleteEvaluatorProfile.execute(query, request.params.internalId);
+    return reply.status(204).send();
+  });
 
   app.post('/judge-rubrics', async (request, reply) => { const body = parse(saveJudgeRubricBodySchema, request.body); return reply.status(201).send({ rubric: serializeJudgeRubric(await deps.saveJudgeRubric.execute(body)) }); });
   app.get('/judge-rubrics', async (request) => { const query = parse(scopeQuerySchema, request.query); return { rubrics: (await deps.queryJudgeRubrics.list(query)).map((item) => ({ ...item, latestVersion: item.latestVersion.toString() })) }; });
   app.get<{ Params: { internalId: string } }>('/judge-rubrics/:internalId/versions', async (request) => { const query = parse(scopeQuerySchema, request.query); return { versions: (await deps.queryJudgeRubrics.versions(query, request.params.internalId)).map(String) }; });
   app.get<{ Params: { internalId: string } }>('/judge-rubrics/:internalId', async (request) => { const query = parse(versionQuerySchema, request.query); return { rubric: serializeJudgeRubric(await deps.queryJudgeRubrics.get(query, request.params.internalId, version(query.version))) }; });
+  app.delete<{ Params: { internalId: string } }>('/judge-rubrics/:internalId', async (request, reply) => { const query = parse(scopeQuerySchema, request.query); await deps.deleteJudgeRubric.execute(query, request.params.internalId); return reply.status(204).send(); });
 }

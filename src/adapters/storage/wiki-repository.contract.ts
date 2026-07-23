@@ -62,4 +62,17 @@ export async function wikiRepositoryContract(repo: WikiRepository): Promise<void
   expect((await repo.list(scope, 'customer-a')).map((item) => item.id)).toEqual(['policy-a']);
   expect((await repo.search(scope, 'refund policy', 10, ['customer-b'])).map((item) => item.id)).toEqual(['policy-b']);
   expect(await repo.findSpace(other, 'customer-a')).toBeNull();
+
+  // delete: ページ/空間ともに削除後は find/findSpace が null になり、list/listSpaces からも除外される。
+  await expect(repo.delete(scope, 'policy-a')).resolves.toBe(true);
+  expect(await repo.find(scope, 'policy-a')).toBeNull();
+  expect((await repo.list(scope, 'customer-a'))).toEqual([]);
+  await expect(repo.delete(scope, 'policy-a')).resolves.toBe(false);
+  await expect(repo.delete(scope, 'missing-page')).resolves.toBe(false);
+
+  await expect(repo.deleteSpace(scope, 'customer-a')).resolves.toBe(true);
+  expect(await repo.findSpace(scope, 'customer-a')).toBeNull();
+  expect((await repo.listSpaces(scope)).map((space) => space.id)).not.toContain('customer-a');
+  await expect(repo.deleteSpace(scope, 'customer-a')).resolves.toBe(false);
+  await expect(repo.deleteSpace(scope, 'missing-space')).resolves.toBe(false);
 }

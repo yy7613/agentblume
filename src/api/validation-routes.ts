@@ -6,9 +6,9 @@
  */
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
-import type { QueryPersonasUseCase } from '../application/validation/query-personas';
+import type { DeletePersonaUseCase, QueryPersonasUseCase } from '../application/validation/query-personas';
 import type { QueryScenarioRunsUseCase } from '../application/validation/query-scenario-runs';
-import type { QueryScenariosUseCase } from '../application/validation/query-scenarios';
+import type { DeleteScenarioUseCase, QueryScenariosUseCase } from '../application/validation/query-scenarios';
 import type { RunScenarioUseCase } from '../application/validation/run-scenario';
 import type { RegisterPseudoUserAgentUseCase } from '../application/validation/register-pseudo-user-agent';
 import type { SavePersonaUseCase } from '../application/validation/save-persona';
@@ -25,9 +25,11 @@ import {
 export interface ValidationRouteDeps {
   readonly savePersona: SavePersonaUseCase;
   readonly queryPersonas: QueryPersonasUseCase;
+  readonly deletePersona: DeletePersonaUseCase;
   readonly registerPseudoUserAgent: RegisterPseudoUserAgentUseCase;
   readonly saveScenario: SaveScenarioUseCase;
   readonly queryScenarios: QueryScenariosUseCase;
+  readonly deleteScenario: DeleteScenarioUseCase;
   readonly runScenario: RunScenarioUseCase;
   readonly queryScenarioRuns: QueryScenarioRunsUseCase;
 }
@@ -69,6 +71,11 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
     const query = parse(scopeQuerySchema, request.query);
     return { versions: (await deps.queryPersonas.versions(query, request.params.internalId)).map(String) };
   });
+  app.delete<{ Params: IdParams }>('/personas/:internalId', async (request, reply) => {
+    const query = parse(scopeQuerySchema, request.query);
+    await deps.deletePersona.execute(query, request.params.internalId);
+    return reply.status(204).send();
+  });
   // Persona → 疑似ユーザーAgent 登録（v18）。
   app.post<{ Params: IdParams }>('/personas/:internalId/register-agent', async (request, reply) => {
     const body = parse(registerPseudoUserAgentBodySchema, request.body);
@@ -108,6 +115,11 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
   app.get<{ Params: IdParams }>('/scenarios/:internalId/versions', async (request) => {
     const query = parse(scopeQuerySchema, request.query);
     return { versions: (await deps.queryScenarios.versions(query, request.params.internalId)).map(String) };
+  });
+  app.delete<{ Params: IdParams }>('/scenarios/:internalId', async (request, reply) => {
+    const query = parse(scopeQuerySchema, request.query);
+    await deps.deleteScenario.execute(query, request.params.internalId);
+    return reply.status(204).send();
   });
 
   // シナリオ実行（同期）: 疑似ユーザー × 対象Agent の会話 + アンケート。

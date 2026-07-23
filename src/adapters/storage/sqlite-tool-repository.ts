@@ -18,7 +18,7 @@ const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS tools (
     tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, internal_id TEXT NOT NULL,
     version TEXT NOT NULL, major INTEGER NOT NULL, minor INTEGER NOT NULL, patch INTEGER NOT NULL,
-    definition_json TEXT NOT NULL,
+    definition_json TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tenant_id, workspace_id, internal_id, version)
   );
 `;
@@ -35,6 +35,11 @@ export class SqliteToolRepository implements ToolRepository {
   constructor(path: string = ':memory:') {
     this.db = new DatabaseSync(path);
     this.db.exec(CREATE_TABLE_SQL);
+    // 既存DB向けmigration: deleted列が無ければ追加する（論理削除）。
+    const columns = this.db.prepare(`PRAGMA table_info(tools)`).all();
+    if (!columns.some((column) => String(column['name']) === 'deleted')) {
+      this.db.exec(`ALTER TABLE tools ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0`);
+    }
   }
 
   /** DatabaseSync.close をラップする。 */
@@ -86,7 +91,7 @@ export class SqliteToolRepository implements ToolRepository {
     const row = this.db
       .prepare(
         `SELECT definition_json FROM tools
-         WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ?
+         WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ? AND deleted = 0
          ORDER BY major DESC, minor DESC, patch DESC LIMIT 1`,
       )
       .get(scope.tenantId, scope.workspaceId, internalId);
@@ -97,7 +102,7 @@ export class SqliteToolRepository implements ToolRepository {
     const rows = this.db
       .prepare(
         `SELECT major, minor, patch FROM tools
-         WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ?
+         WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ? AND deleted = 0
          ORDER BY major ASC, minor ASC, patch ASC`,
       )
       .all(scope.tenantId, scope.workspaceId, internalId);
@@ -109,11 +114,11 @@ export class SqliteToolRepository implements ToolRepository {
     const rows = this.db
       .prepare(
         `SELECT t.definition_json FROM tools AS t
-         WHERE t.tenant_id = ? AND t.workspace_id = ?
+         WHERE t.tenant_id = ? AND t.workspace_id = ? AND t.deleted = 0
            AND t.version = (
              SELECT s.version FROM tools AS s
              WHERE s.tenant_id = t.tenant_id AND s.workspace_id = t.workspace_id
-               AND s.internal_id = t.internal_id
+               AND s.internal_id = t.internal_id AND s.deleted = 0
              ORDER BY s.major DESC, s.minor DESC, s.patch DESC LIMIT 1
            )
          ORDER BY t.internal_id ASC`,
@@ -130,5 +135,12 @@ export class SqliteToolRepository implements ToolRepository {
         sideEffect: tool.sideEffect,
       };
     });
+  }
+
+  async delete(scope: TenantScope, internalId: ToolId): Promise<boolean> {
+    const existing = this.db.prepare(`SELECT 1 FROM tools WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ? AND deleted = 0 LIMIT 1`).get(scope.tenantId, scope.workspaceId, internalId);
+    if (existing === undefined) return false;
+    this.db.prepare(`UPDATE tools SET deleted = 1 WHERE tenant_id = ? AND workspace_id = ? AND internal_id = ?`).run(scope.tenantId, scope.workspaceId, internalId);
+    return true;
   }
 }

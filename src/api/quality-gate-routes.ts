@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
-import type { CompareExperimentsUseCase, DecidePromotionUseCase, EvaluateQualityGateUseCase, QueryQualityGatesUseCase, RequestPromotionUseCase, SaveGatePolicyUseCase } from '../application/evaluation/quality-gate-actions';
+import type { CompareExperimentsUseCase, DecidePromotionUseCase, DeleteGatePolicyUseCase, EvaluateQualityGateUseCase, QueryQualityGatesUseCase, RequestPromotionUseCase, SaveGatePolicyUseCase } from '../application/evaluation/quality-gate-actions';
 import { serializeGatePolicy, serializeGateReport, serializePromotionRequest } from '../domain/evaluation/quality-gate-serialization';
 import { SemVer } from '../domain/tool/semver';
 import { BadRequestError } from './error-mapping';
@@ -9,6 +9,7 @@ import { decidePromotionBodySchema, evaluateGateBodySchema, experimentComparison
 export interface QualityGateRouteDeps {
   readonly compareExperiments: CompareExperimentsUseCase; readonly saveGatePolicy: SaveGatePolicyUseCase; readonly queryQualityGates: QueryQualityGatesUseCase;
   readonly evaluateQualityGate: EvaluateQualityGateUseCase; readonly requestPromotion: RequestPromotionUseCase; readonly decidePromotion: DecidePromotionUseCase;
+  readonly deleteGatePolicy: DeleteGatePolicyUseCase;
 }
 function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> { const result = schema.safeParse(value); if (!result.success) throw new BadRequestError(`invalid request: ${result.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')}`); return result.data as z.infer<S>; }
 function version(value: string): SemVer { try { return SemVer.parse(value); } catch { throw new BadRequestError(`invalid version string: "${value}"`); } }
@@ -19,6 +20,7 @@ export function registerQualityGateRoutes(app: FastifyInstance, deps: QualityGat
   app.get('/gate-policies', async (request) => { const query = parse(scopeQuerySchema, request.query); return { policies: (await deps.queryQualityGates.listPolicies(query)).map((item) => ({ ...item, latestVersion: item.latestVersion.toString() })) }; });
   app.get<{ Params: { id: string } }>('/gate-policies/:id/versions', async (request) => { const query = parse(scopeQuerySchema, request.query); return { versions: (await deps.queryQualityGates.policyVersions(query, request.params.id)).map(String) }; });
   app.get<{ Params: { id: string } }>('/gate-policies/:id', async (request) => { const query = parse(versionQuerySchema, request.query); return { policy: serializeGatePolicy(await deps.queryQualityGates.getPolicy(query, request.params.id, query.version === undefined ? undefined : version(query.version))) }; });
+  app.delete<{ Params: { id: string } }>('/gate-policies/:id', async (request, reply) => { const query = parse(scopeQuerySchema, request.query); await deps.deleteGatePolicy.execute(query, request.params.id); return reply.status(204).send(); });
   app.post('/gate-reports', async (request, reply) => { const body = parse(evaluateGateBodySchema, request.body); const report = await deps.evaluateQualityGate.execute({ ...body, policy: { id: body.policy.id, version: version(body.policy.version) } }); return reply.status(201).send({ report: serializeGateReport(report) }); });
   app.get('/gate-reports', async (request) => { const query = parse(gateReportListQuerySchema, request.query); return { reports: (await deps.queryQualityGates.listReports(query, query.candidateExperimentId)).map(serializeGateReport) }; });
   app.get<{ Params: { id: string } }>('/gate-reports/:id', async (request) => { const query = parse(scopeQuerySchema, request.query); return { report: serializeGateReport(await deps.queryQualityGates.getReport(query, request.params.id)) }; });

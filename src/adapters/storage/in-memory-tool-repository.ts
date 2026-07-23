@@ -18,10 +18,13 @@ import type { ToolRepository } from '../../domain/tool/tool-repository';
 function entryKey(scope: TenantScope, internalId: ToolId, version: string): string {
   return `${tenantKey(scope)} ${internalId} ${version}`;
 }
+function idKey(scope: TenantScope, internalId: ToolId): string { return `${tenantKey(scope)} ${internalId}`; }
 
 /** メモリ上に SerializedTool を保持する ToolRepository 実装。 */
 export class InMemoryToolRepository implements ToolRepository {
   private readonly store = new Map<string, SerializedTool>();
+  // 論理削除された internalId の集合（tenant単位）。findVersion はここを見ず、削除後も既存versionを返し続ける。
+  private readonly deletedIds = new Set<string>();
 
   async save(tool: Tool): Promise<void> {
     const data = serializeTool(tool);
@@ -40,6 +43,7 @@ export class InMemoryToolRepository implements ToolRepository {
   }
 
   async findLatest(scope: TenantScope, internalId: ToolId): Promise<Tool | null> {
+    if (this.deletedIds.has(idKey(scope, internalId))) return null;
     let latest: { version: SemVer; data: SerializedTool } | null = null;
     for (const data of this.entriesFor(scope, internalId)) {
       const version = SemVer.parse(data.metadata.version);
@@ -51,6 +55,7 @@ export class InMemoryToolRepository implements ToolRepository {
   }
 
   async listVersions(scope: TenantScope, internalId: ToolId): Promise<SemVer[]> {
+    if (this.deletedIds.has(idKey(scope, internalId))) return [];
     const versions: SemVer[] = [];
     for (const data of this.entriesFor(scope, internalId)) {
       versions.push(SemVer.parse(data.metadata.version));
@@ -64,6 +69,7 @@ export class InMemoryToolRepository implements ToolRepository {
     const latestById = new Map<ToolId, { version: SemVer; data: SerializedTool }>();
     for (const data of this.store.values()) {
       if (tenantKey(data.metadata.tenant) !== scopeKey) continue;
+      if (this.deletedIds.has(idKey(scope, data.metadata.internalId))) continue;
       const version = SemVer.parse(data.metadata.version);
       const current = latestById.get(data.metadata.internalId);
       if (current === undefined || version.compare(current.version) > 0) {
@@ -78,6 +84,14 @@ export class InMemoryToolRepository implements ToolRepository {
       state: data.metadata.state,
       sideEffect: data.sideEffect,
     }));
+  }
+
+  async delete(scope: TenantScope, internalId: ToolId): Promise<boolean> {
+    const dkey = idKey(scope, internalId);
+    if (this.deletedIds.has(dkey)) return false;
+    if (this.entriesFor(scope, internalId)[Symbol.iterator]().next().done === true) return false;
+    this.deletedIds.add(dkey);
+    return true;
   }
 
   /** 指定スコープ・internalId に属する SerializedTool を列挙する。 */

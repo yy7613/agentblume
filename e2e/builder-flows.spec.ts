@@ -31,6 +31,7 @@ test('Tool Builderでpreviewを確認してversion保存できる', async ({ pag
   await page.goto('/');
 
   await expect(page.getByText('Tool Builder', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'New tool', exact: true }).click();
   const preview = page.locator('section[aria-label="Preview"]');
   await expect(preview.getByText('Alice')).toBeVisible();
   await expect(preview.getByText('Bob')).toHaveCount(0);
@@ -72,6 +73,7 @@ test('Agent BuilderでTool選択からprompt生成・編集・保存まで完了
   await page.goto('/');
   await page.getByRole('button', { name: 'Agent', exact: true }).click();
   await expect(page.getByText('Agent Builder', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'New agent', exact: true }).click();
   await fillAgentDefinition(page, 'e2e-agent', 'E2E Agent', 'e2e_agent');
   await page.getByRole('checkbox', { name: /E2E Score Tool/ }).check();
   await page.getByRole('checkbox', { name: 'Enable structured output' }).check();
@@ -203,6 +205,7 @@ test('Skill Builderで名前・説明・内容を保存できる', async ({ page
   await page.goto('/');
   await page.getByRole('button', { name: 'Skill', exact: true }).click();
   await expect(page.getByText('Skill Builder', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'New skill', exact: true }).click();
   await fillSkillDefinition(page, 'e2e-analysis-skill', 'E2E Analysis Skill', 'e2e_analysis_skill');
   await page.getByLabel('Skill description').fill('Analyze data and explain the result.');
   await page.getByRole('textbox', { name: 'Skill content' }).fill('Reviewed E2E skill instructions.');

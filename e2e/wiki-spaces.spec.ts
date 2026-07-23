@@ -25,6 +25,7 @@ test('複数Wikiを作成しAgentごとに利用Wikiを指定できる', async (
   await expect(page.getByLabel('Active wiki')).toHaveValue('customer-b');
 
   await page.getByRole('button', { name: 'Agent', exact: true }).click();
+  await page.getByRole('button', { name: 'New agent', exact: true }).click();
   await page.getByLabel('Agent internal ID').fill('customer-a-agent');
   await page.getByLabel('Working name').fill('Customer A agent draft');
   await page.getByLabel('Agent display name').fill('Customer A Agent');

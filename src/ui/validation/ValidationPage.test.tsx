@@ -50,10 +50,11 @@ describe('ValidationPage', () => {
     const report = { id: 'report', scope, policy: { id: 'release', version: '1.0.0' }, baselineExperimentId: 'baseline', candidateExperimentId: 'candidate', status: 'pass', ruleResults: [{ ruleId: 'threshold', passed: true, observed: 0.9, message: 'quality meets threshold' }], createdAt: 'now', expiresAt: 'later' };
     const promotion = { id: 'promotion', scope, agent: { id: 'agent', version: '2.0.0' }, gateReportId: 'report', status: 'pending', requestedBy: 'reviewer', requestedAt: 'now' };
     const compareExperiments = vi.fn().mockResolvedValue(comparison); const evaluateGate = vi.fn().mockResolvedValue(report); const requestPromotion = vi.fn().mockResolvedValue(promotion); const decidePromotion = vi.fn().mockResolvedValue({ ...promotion, status: 'approved' });
+    const getGatePolicy = vi.fn().mockResolvedValue({ metadata: { internalId: 'release', version: '1.0.0' }, reportTtlHours: 24, rules: [{ id: 'threshold', kind: 'metric-threshold', metric: 'quality', operator: 'gte', threshold: 0.8 }, { id: 'regression', kind: 'max-regression', metric: 'quality', maxRegression: 0.05 }] });
     const client = stubClient({
       listExperiments: vi.fn().mockResolvedValue([completed('candidate', '2.0.0'), completed('baseline', '1.0.0')]),
       listGatePolicies: vi.fn().mockResolvedValue([{ internalId: 'release', displayName: 'Release', publishName: 'release', latestVersion: '1.0.0', state: 'draft', ruleCount: 2 }]),
-      listPromotionRequests: vi.fn().mockResolvedValueOnce([]).mockResolvedValue([promotion]), compareExperiments, evaluateGate, requestPromotion, decidePromotion,
+      listPromotionRequests: vi.fn().mockResolvedValueOnce([]).mockResolvedValue([promotion]), compareExperiments, evaluateGate, requestPromotion, decidePromotion, getGatePolicy,
     });
     render(<ValidationPage client={client} />); await userEvent.click(screen.getByRole('tab', { name: 'Quality gates' }));
     await screen.findByRole('button', { name: 'Compare' }); await userEvent.click(screen.getByRole('button', { name: 'Compare' }));
@@ -62,6 +63,53 @@ describe('ValidationPage', () => {
     expect(await screen.findByText('PASS')).toBeTruthy(); await userEvent.click(screen.getByRole('button', { name: 'Request promotion' }));
     await waitFor(() => expect(requestPromotion).toHaveBeenCalledWith('agent', '2.0.0', scope, 'report', 'reviewer'));
     await userEvent.click(await screen.findByRole('button', { name: 'Approve' })); await waitFor(() => expect(decidePromotion).toHaveBeenCalledWith('promotion', 'approve', scope, 'reviewer'));
+  });
+
+  it('Gate policyを切り替えるとgetGatePolicyでルール編集フィールドが復元される', async () => {
+    const getGatePolicy = vi.fn()
+      .mockResolvedValueOnce({ metadata: { internalId: 'release', version: '1.0.0' }, reportTtlHours: 24, rules: [{ id: 'threshold', kind: 'metric-threshold', metric: 'quality', operator: 'gte', threshold: 0.8 }, { id: 'regression', kind: 'max-regression', metric: 'quality', maxRegression: 0.05 }] })
+      .mockResolvedValueOnce({ metadata: { internalId: 'staging', version: '2.0.0' }, reportTtlHours: 24, rules: [{ id: 'threshold', kind: 'metric-threshold', metric: 'latency', operator: 'lte', threshold: 500 }, { id: 'regression', kind: 'max-regression', metric: 'latency', maxRegression: 0.1 }, { id: 'required-tags', kind: 'required-case-pass', tags: ['critical', 'p0'] }] });
+    const client = stubClient({
+      listGatePolicies: vi.fn().mockResolvedValue([
+        { internalId: 'release', displayName: 'Release', publishName: 'release', latestVersion: '1.0.0', state: 'draft', ruleCount: 2 },
+        { internalId: 'staging', displayName: 'Staging', publishName: 'staging', latestVersion: '2.0.0', state: 'draft', ruleCount: 3 },
+      ]),
+      getGatePolicy,
+    });
+    render(<ValidationPage client={client} />);
+    await userEvent.click(screen.getByRole('tab', { name: 'Quality gates' }));
+
+    await waitFor(() => expect(getGatePolicy).toHaveBeenCalledWith('release', scope, '1.0.0'));
+    expect((await screen.findByLabelText('Gate metric') as HTMLInputElement).value).toBe('quality');
+    expect((screen.getByLabelText('Threshold') as HTMLInputElement).value).toBe('0.8');
+    expect((screen.getByLabelText('Maximum regression') as HTMLInputElement).value).toBe('0.05');
+
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Gate policy' }), 'staging');
+    await waitFor(() => expect(getGatePolicy).toHaveBeenCalledWith('staging', scope, '2.0.0'));
+    expect((screen.getByLabelText('Gate policy ID') as HTMLInputElement).value).toBe('staging');
+    expect((screen.getByLabelText('Gate metric') as HTMLInputElement).value).toBe('latency');
+    expect((screen.getByLabelText('Gate threshold operator') as HTMLSelectElement).value).toBe('lte');
+    expect((screen.getByLabelText('Threshold') as HTMLInputElement).value).toBe('500');
+    expect((screen.getByLabelText('Maximum regression') as HTMLInputElement).value).toBe('0.1');
+    expect((screen.getByLabelText('Required tags (comma-separated)') as HTMLInputElement).value).toBe('critical, p0');
+  });
+
+  it('Delete policyでdeleteGatePolicyを呼び、一覧を再取得する', async () => {
+    const deleteGatePolicy = vi.fn().mockResolvedValue(undefined);
+    const getGatePolicy = vi.fn().mockResolvedValue({ metadata: { internalId: 'release', version: '1.0.0' }, reportTtlHours: 24, rules: [{ id: 'threshold', kind: 'metric-threshold', metric: 'quality', operator: 'gte', threshold: 0.8 }] });
+    const listGatePolicies = vi.fn()
+      .mockResolvedValueOnce([{ internalId: 'release', displayName: 'Release', publishName: 'release', latestVersion: '1.0.0', state: 'draft', ruleCount: 1 }])
+      .mockResolvedValueOnce([]);
+    const client = stubClient({ listGatePolicies, getGatePolicy, deleteGatePolicy });
+    render(<ValidationPage client={client} />);
+    await userEvent.click(screen.getByRole('tab', { name: 'Quality gates' }));
+    await waitFor(() => expect(getGatePolicy).toHaveBeenCalledWith('release', scope, '1.0.0'));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete policy' }));
+
+    expect(deleteGatePolicy).toHaveBeenCalledWith('release', scope);
+    expect(listGatePolicies).toHaveBeenCalledTimes(2);
+    expect((screen.getByRole('combobox', { name: 'Gate policy' }) as HTMLSelectElement).value).toBe('');
   });
 
   it('Experimentを作成して進捗・CaseResult・Run traceを表示する', async () => {
@@ -243,6 +291,40 @@ describe('ValidationPage', () => {
     expect(screen.queryByRole('textbox', { name: 'Metric 2 ID' })).toBeNull();
   });
 
+  it('Datasets/Profiles/RubricsそれぞれのDeleteでdeleteXを呼び、一覧を再取得する', async () => {
+    const deleteEvaluationDataset = vi.fn().mockResolvedValue(undefined);
+    const deleteEvaluatorProfile = vi.fn().mockResolvedValue(undefined);
+    const deleteJudgeRubric = vi.fn().mockResolvedValue(undefined);
+    const listEvaluationDatasets = vi.fn()
+      .mockResolvedValueOnce([{ internalId: 'set', displayName: 'Set', publishName: 'set', latestVersion: '1.0.0', state: 'draft', caseCount: 1 }])
+      .mockResolvedValueOnce([]);
+    const listEvaluatorProfiles = vi.fn()
+      .mockResolvedValueOnce([{ internalId: 'profile', displayName: 'Profile', publishName: 'profile', latestVersion: '1.0.0', state: 'draft', metricCount: 1 }])
+      .mockResolvedValueOnce([]);
+    const listJudgeRubrics = vi.fn()
+      .mockResolvedValueOnce([{ internalId: 'rubric', displayName: 'Rubric', publishName: 'rubric', latestVersion: '1.0.0', state: 'draft', criterionCount: 1 }])
+      .mockResolvedValueOnce([]);
+    const client = stubClient({ deleteEvaluationDataset, deleteEvaluatorProfile, deleteJudgeRubric, listEvaluationDatasets, listEvaluatorProfiles, listJudgeRubrics });
+    render(<ValidationPage client={client} />);
+    await userEvent.click(screen.getByRole('tab', { name: 'Datasets' }));
+
+    const deleteButtons = await screen.findAllByRole('button', { name: 'Delete' });
+    expect(deleteButtons).toHaveLength(3);
+    await userEvent.click(deleteButtons[0]!);
+    await userEvent.click(deleteButtons[1]!);
+    await userEvent.click(deleteButtons[2]!);
+
+    expect(deleteEvaluationDataset).toHaveBeenCalledWith('set', scope);
+    expect(deleteEvaluatorProfile).toHaveBeenCalledWith('profile', scope);
+    expect(deleteJudgeRubric).toHaveBeenCalledWith('rubric', scope);
+    expect(listEvaluationDatasets).toHaveBeenCalledTimes(2);
+    expect(listEvaluatorProfiles).toHaveBeenCalledTimes(2);
+    expect(listJudgeRubrics).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText('No evaluation datasets.')).toBeTruthy();
+    expect(screen.getByText('No evaluator profiles.')).toBeTruthy();
+    expect(screen.getByText('No judge rubrics.')).toBeTruthy();
+  });
+
   it('Personaフォームの入力を保存POSTのDTO形へ写像する', async () => {
     const savePersona = vi.fn().mockResolvedValue({ metadata: { internalId: 'novice-user', version: '1.1.0' } });
     const client = stubClient({ savePersona });
@@ -281,6 +363,21 @@ describe('ValidationPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Register pseudo-user agent' }));
     await waitFor(() => expect(registerPseudoUserAgent).toHaveBeenCalledWith('novice-user', { scope }));
     expect(await screen.findByText(/pseudo-novice-user@1\.0\.0/)).toBeTruthy();
+  });
+
+  it('Deleteでdeletepersonaを呼び、一覧を再取得する', async () => {
+    const deletePersona = vi.fn().mockResolvedValue(undefined);
+    const listPersonas = vi.fn()
+      .mockResolvedValueOnce([{ internalId: 'novice-user', displayName: 'Novice user', publishName: 'novice_user', latestVersion: '1.0.0', archetype: 'novice', state: 'draft' }])
+      .mockResolvedValueOnce([]);
+    const client = stubClient({ deletePersona, listPersonas });
+    render(<ValidationPage client={client} />);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+
+    expect(deletePersona).toHaveBeenCalledWith('novice-user', scope);
+    expect(listPersonas).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText('No saved personas.')).toBeTruthy();
   });
 
   it('Scenarioフォーム（survey編集含む）を保存DTOへ写像し、実行でRunsタブへ遷移する', async () => {
@@ -334,6 +431,22 @@ describe('ValidationPage', () => {
     await waitFor(() => expect(runScenario).toHaveBeenCalledWith('sales-summary-scenario', { scope, version: '1.0.0', mode: 'test' }));
     expect(await screen.findByText('No scenario runs yet.')).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Runs' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('Deleteでdeletescenarioを呼び、一覧を再取得する', async () => {
+    const deleteScenario = vi.fn().mockResolvedValue(undefined);
+    const listScenarios = vi.fn()
+      .mockResolvedValueOnce([{ internalId: 'sales-summary-scenario', displayName: 'Sales summary scenario', publishName: 'sales_summary_scenario', latestVersion: '1.0.0', state: 'draft' }])
+      .mockResolvedValueOnce([]);
+    const client = stubClient({ deleteScenario, listScenarios });
+    render(<ValidationPage client={client} />);
+    await userEvent.click(screen.getByRole('tab', { name: 'Scenarios' }));
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+
+    expect(deleteScenario).toHaveBeenCalledWith('sales-summary-scenario', scope);
+    expect(listScenarios).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText('No saved scenarios.')).toBeTruthy();
   });
 
   it('Runs詳細でtranscript・surveyバー・感想・metrics・runIdトレースを表示する', async () => {

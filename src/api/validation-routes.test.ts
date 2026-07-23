@@ -202,4 +202,61 @@ describe('validation routes', () => {
     expect(missingRun.statusCode).toBe(404);
     expect(missingRun.json().error.code).toBe('SCENARIO_RUN_NOT_FOUND');
   });
+
+  it('保存済みPersonaを論理削除できる(listからは除外、GETはfindLatestのため404、pinned versionはfindVersionで残る)', async () => {
+    const saved = await server.inject({ method: 'POST', url: '/personas', payload: personaBody() });
+    expect(saved.statusCode).toBe(201);
+
+    const deleted = await server.inject({ method: 'DELETE', url: '/personas/novice-user', query: scope });
+    expect(deleted.statusCode).toBe(204);
+
+    const listed = await server.inject({ method: 'GET', url: '/personas', query: scope });
+    expect(listed.json().personas).toEqual([]);
+
+    const getLatest = await server.inject({ method: 'GET', url: '/personas/novice-user', query: scope });
+    expect(getLatest.statusCode).toBe(404);
+    expect(getLatest.json().error).toMatchObject({ code: 'PERSONA_NOT_FOUND' });
+
+    const getPinned = await server.inject({ method: 'GET', url: '/personas/novice-user', query: { ...scope, version: '1.0.0' } });
+    expect(getPinned.statusCode).toBe(200);
+    expect(getPinned.json().persona.metadata.version).toBe('1.0.0');
+
+    const again = await server.inject({ method: 'DELETE', url: '/personas/novice-user', query: scope });
+    expect(again.statusCode).toBe(404);
+  });
+
+  it('未存在のPersonaを削除すると404を返す', async () => {
+    const response = await server.inject({ method: 'DELETE', url: '/personas/missing-persona', query: scope });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error).toMatchObject({ code: 'PERSONA_NOT_FOUND' });
+  });
+
+  it('保存済みScenarioを論理削除できる(listからは除外、GETはfindLatestのため404、pinned versionはfindVersionで残る)', async () => {
+    await server.inject({ method: 'POST', url: '/personas', payload: personaBody() });
+    const saved = await server.inject({ method: 'POST', url: '/scenarios', payload: scenarioBody() });
+    expect(saved.statusCode).toBe(201);
+
+    const deleted = await server.inject({ method: 'DELETE', url: '/scenarios/sales-check', query: scope });
+    expect(deleted.statusCode).toBe(204);
+
+    const listed = await server.inject({ method: 'GET', url: '/scenarios', query: scope });
+    expect(listed.json().scenarios).toEqual([]);
+
+    const getLatest = await server.inject({ method: 'GET', url: '/scenarios/sales-check', query: scope });
+    expect(getLatest.statusCode).toBe(404);
+    expect(getLatest.json().error).toMatchObject({ code: 'SCENARIO_NOT_FOUND' });
+
+    const getPinned = await server.inject({ method: 'GET', url: '/scenarios/sales-check', query: { ...scope, version: '1.0.0' } });
+    expect(getPinned.statusCode).toBe(200);
+    expect(getPinned.json().scenario.metadata.version).toBe('1.0.0');
+
+    const again = await server.inject({ method: 'DELETE', url: '/scenarios/sales-check', query: scope });
+    expect(again.statusCode).toBe(404);
+  });
+
+  it('未存在のScenarioを削除すると404を返す', async () => {
+    const response = await server.inject({ method: 'DELETE', url: '/scenarios/missing-scenario', query: scope });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error).toMatchObject({ code: 'SCENARIO_NOT_FOUND' });
+  });
 });

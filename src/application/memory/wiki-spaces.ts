@@ -25,3 +25,12 @@ export class QueryWikiSpacesUseCase {
     return space;
   }
 }
+
+/** 保存済みWiki空間の削除（配下のページは削除しない）。repository.deleteSpace が false なら WikiSpaceNotFoundError。 */
+export class DeleteWikiSpaceUseCase {
+  constructor(private readonly wiki: WikiRepository) {}
+  async execute(scope: TenantScope, id: string): Promise<void> {
+    const existed = await this.wiki.deleteSpace(scope, id);
+    if (!existed) throw new WikiSpaceNotFoundError(`DeleteWikiSpace: wiki not found: ${id}`);
+  }
+}

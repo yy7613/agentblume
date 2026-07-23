@@ -108,6 +108,7 @@ class StaticTools implements ToolRepository {
   async findLatest(): Promise<Tool | null> { return this.tool; }
   async listVersions(): Promise<SemVer[]> { return []; }
   async list(): Promise<ToolSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 
 class StaticAgents implements AgentRepository {
@@ -117,6 +118,7 @@ class StaticAgents implements AgentRepository {
   async findLatest(): Promise<Agent | null> { return this.agent; }
   async listVersions(): Promise<SemVer[]> { return []; }
   async list(): Promise<AgentSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 
 class StaticPersonas implements PersonaRepository {
@@ -126,6 +128,7 @@ class StaticPersonas implements PersonaRepository {
   async findLatest(): Promise<Persona | null> { return this.persona; }
   async listVersions(): Promise<SemVer[]> { return []; }
   async list(): Promise<PersonaSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 
 class StaticScenarios implements ScenarioRepository {
@@ -136,6 +139,7 @@ class StaticScenarios implements ScenarioRepository {
   async findLatest(): Promise<Scenario | null> { return this.scenario; }
   async listVersions(): Promise<SemVer[]> { return []; }
   async list(): Promise<ScenarioSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 
 class MemoryScenarioRuns implements ScenarioRunRepository {

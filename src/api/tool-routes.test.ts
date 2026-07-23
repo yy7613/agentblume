@@ -303,6 +303,36 @@ describe('tool routes', () => {
     });
   });
 
+  describe('DELETE /tools/:internalId', () => {
+    it('保存済みToolを論理削除できる（listからは除外、GETはfindLatestのため404、pinned versionはfindVersionで残る）', async () => {
+      const saved = await postTool(saveBody());
+      expect(saved.statusCode).toBe(201);
+
+      const deleted = await server.inject({ method: 'DELETE', url: '/tools/users-tool', query: SCOPE });
+      expect(deleted.statusCode).toBe(204);
+
+      const listed = await server.inject({ method: 'GET', url: '/tools', query: SCOPE });
+      expect(listed.json().tools).toEqual([]);
+
+      const getLatest = await server.inject({ method: 'GET', url: '/tools/users-tool', query: SCOPE });
+      expect(getLatest.statusCode).toBe(404);
+      expect(getLatest.json().error).toMatchObject({ code: 'TOOL_NOT_FOUND' });
+
+      const getPinned = await server.inject({ method: 'GET', url: '/tools/users-tool', query: { ...SCOPE, version: '1.0.0' } });
+      expect(getPinned.statusCode).toBe(200);
+      expect(getPinned.json().tool.metadata.version).toBe('1.0.0');
+
+      const again = await server.inject({ method: 'DELETE', url: '/tools/users-tool', query: SCOPE });
+      expect(again.statusCode).toBe(404);
+    });
+
+    it('未存在のToolを削除すると404を返す', async () => {
+      const res = await server.inject({ method: 'DELETE', url: '/tools/no-such-tool', query: SCOPE });
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error).toMatchObject({ code: 'TOOL_NOT_FOUND' });
+    });
+  });
+
   describe('テナント分離', () => {
     beforeEach(async () => {
       await postTool(saveBody());

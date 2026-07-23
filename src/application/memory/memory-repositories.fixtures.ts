@@ -27,9 +27,11 @@ export class FakeWikiRepository implements WikiRepository {
   async saveSpace(space: WikiSpace): Promise<void> { this.spaces.set(key(space.tenant, space.id), space); }
   async findSpace(scope: TenantScope, id: string): Promise<WikiSpace | null> { return this.spaces.get(key(scope, id)) ?? null; }
   async listSpaces(scope: TenantScope): Promise<WikiSpaceSummary[]> { return [...this.spaces.values()].filter((space) => inScope(space.tenant, scope)).map(summarizeWikiSpace); }
+  async deleteSpace(scope: TenantScope, id: string): Promise<boolean> { return this.spaces.delete(key(scope, id)); }
   async save(page: WikiPage): Promise<void> { this.store.set(key(page.tenant, page.id), page); }
   async find(scope: TenantScope, id: string): Promise<WikiPage | null> { return this.store.get(key(scope, id)) ?? null; }
   async list(scope: TenantScope, wikiId?: string): Promise<WikiPageSummary[]> { return this.pages(scope).filter((page) => wikiId === undefined || effectiveWikiId(page) === wikiId).map(summarizeWikiPage); }
+  async delete(scope: TenantScope, id: string): Promise<boolean> { return this.store.delete(key(scope, id)); }
   async search(scope: TenantScope, query: string, limit: number, wikiIds?: readonly string[]): Promise<WikiPageSummary[]> {
     const terms = query.toLowerCase().split(/\s+/).filter((term) => term.length > 0);
     return this.pages(scope)
@@ -77,6 +79,7 @@ export class FakeSkillRepository implements SkillRepository {
     }
     return [...latest.values()].map((s) => ({ internalId: s.metadata.internalId, displayName: s.metadata.displayName, publishName: s.metadata.publishName, latestVersion: s.metadata.version, state: s.metadata.state }));
   }
+  async delete(): Promise<boolean> { return false; }
 }
 
 /** SaveSkill が参照Toolを検証する経路用の最小フェイク（登録Toolを findVersion で返す）。 */
@@ -97,4 +100,5 @@ export class FakeToolRepository implements ToolRepository {
   async list(scope: TenantScope): Promise<ToolSummary[]> {
     return this.store.filter((t) => inScope(t.metadata.tenant, scope)).map((t) => ({ internalId: t.metadata.internalId, displayName: t.metadata.displayName, publishName: t.metadata.publishName, latestVersion: t.metadata.version, state: t.metadata.state, sideEffect: t.sideEffect }));
   }
+  async delete(): Promise<boolean> { return false; }
 }

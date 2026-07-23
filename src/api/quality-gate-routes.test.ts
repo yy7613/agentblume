@@ -78,4 +78,24 @@ describe('quality gate routes', () => {
       expect(response.json().report.status).toBe(required ? 'fail' : 'pass');
     }
   });
+
+  it('Gate policyを論理削除でき、listから除外・GETは404・pinned versionはfindPolicyVersionで残る', async () => {
+    const saved = await server.inject({ method: 'POST', url: '/gate-policies', payload: { scope, internalId: 'release', workingName: 'Release', displayName: 'Release', publishName: 'release', owner: 'owner', rules: [{ id: 'threshold', kind: 'metric-threshold', metric: 'quality', operator: 'gte', threshold: 0.8 }] } });
+    expect(saved.statusCode).toBe(201);
+
+    const deleted = await server.inject({ method: 'DELETE', url: '/gate-policies/release?tenantId=tenant&workspaceId=workspace' });
+    expect(deleted.statusCode).toBe(204);
+
+    expect((await server.inject({ method: 'GET', url: '/gate-policies?tenantId=tenant&workspaceId=workspace' })).json().policies).toEqual([]);
+    const getLatest = await server.inject({ method: 'GET', url: '/gate-policies/release?tenantId=tenant&workspaceId=workspace' });
+    expect(getLatest.statusCode).toBe(404);
+    expect(getLatest.json().error).toMatchObject({ code: 'QUALITY_GATE_NOT_FOUND' });
+    const getPinned = await server.inject({ method: 'GET', url: '/gate-policies/release?tenantId=tenant&workspaceId=workspace&version=1.0.0' });
+    expect(getPinned.statusCode).toBe(200);
+
+    const again = await server.inject({ method: 'DELETE', url: '/gate-policies/release?tenantId=tenant&workspaceId=workspace' });
+    expect(again.statusCode).toBe(404);
+    const missing = await server.inject({ method: 'DELETE', url: '/gate-policies/missing?tenantId=tenant&workspaceId=workspace' });
+    expect(missing.statusCode).toBe(404);
+  });
 });

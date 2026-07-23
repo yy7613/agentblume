@@ -24,3 +24,12 @@ export class QueryWikiUseCase {
     return this.wiki.search(scope, query, limit, wikiIds);
   }
 }
+
+/** 保存済みWikiページの削除。repository.delete が false なら WikiPageNotFoundError。 */
+export class DeleteWikiPageUseCase {
+  constructor(private readonly wiki: WikiRepository) {}
+  async execute(scope: TenantScope, id: string): Promise<void> {
+    const existed = await this.wiki.delete(scope, id);
+    if (!existed) throw new WikiPageNotFoundError(`DeleteWiki: wiki page not found: ${id}`);
+  }
+}

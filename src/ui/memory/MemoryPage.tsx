@@ -91,6 +91,24 @@ function WikiTab({ client }: { readonly client: ToolApiClient }) {
     finally { setBusy(false); }
   }, [client, refreshWikis, wikiDraft]);
 
+  const removeSpace = useCallback(async () => {
+    if (selectedWikiId === '') return;
+    setBusy(true); setError(null);
+    try { await client.deleteWikiSpace(selectedWikiId, scope); await refreshWikis(''); }
+    catch (err) { setError(err instanceof Error ? err.message : 'wiki delete failed'); }
+    finally { setBusy(false); }
+  }, [client, selectedWikiId, refreshWikis]);
+
+  const removePage = useCallback(async (id: string) => {
+    setBusy(true); setError(null);
+    try {
+      await client.deleteWiki(id, scope);
+      if (editor.id === id) setEditor(EMPTY_EDITOR);
+      await refresh(query);
+    } catch (err) { setError(err instanceof Error ? err.message : 'delete failed'); }
+    finally { setBusy(false); }
+  }, [client, editor.id, query, refresh]);
+
   const selectWiki = (id: string) => {
     setSelectedWikiId(id);
     const selected = wikis.find((item) => item.id === id);
@@ -101,7 +119,7 @@ function WikiTab({ client }: { readonly client: ToolApiClient }) {
   const canSaveWiki = wikiDraft.id.trim() !== '' && wikiDraft.name.trim() !== '' && !busy;
 
   return <><section className="wiki-space-manager" aria-label={text('Wiki spaces', 'Wiki一覧')}>
-    <div><label>{text('Active wiki', '選択中のWiki')}<select value={selectedWikiId} onChange={(event) => selectWiki(event.target.value)}><option value="">{text('Select a wiki', 'Wikiを選択')}</option>{wikis.map((wiki) => <option key={wiki.id} value={wiki.id}>{wiki.name}</option>)}</select></label><button type="button" className="ghost" onClick={newWiki}>{text('New wiki', '新しいWiki')}</button></div>
+    <div><label>{text('Active wiki', '選択中のWiki')}<select value={selectedWikiId} onChange={(event) => selectWiki(event.target.value)}><option value="">{text('Select a wiki', 'Wikiを選択')}</option>{wikis.map((wiki) => <option key={wiki.id} value={wiki.id}>{wiki.name}</option>)}</select></label><button type="button" className="ghost" onClick={newWiki}>{text('New wiki', '新しいWiki')}</button><button type="button" className="ghost danger" disabled={selectedWikiId === '' || busy} onClick={() => void removeSpace()}>{text('Delete wiki', 'Wikiを削除')}</button></div>
     <div className="wiki-space-editor"><label>{text('Wiki ID', 'Wiki ID')}<input value={wikiDraft.id} disabled={wikis.some((wiki) => wiki.id === wikiDraft.id)} onChange={(event) => setWikiDraft((current) => ({ ...current, id: event.target.value }))} /></label><label>{text('Wiki name', 'Wiki名')}<input value={wikiDraft.name} onChange={(event) => setWikiDraft((current) => ({ ...current, name: event.target.value }))} /></label><label>{text('Description', '説明')}<input value={wikiDraft.description} onChange={(event) => setWikiDraft((current) => ({ ...current, description: event.target.value }))} /></label><button type="button" className="primary" disabled={!canSaveWiki} onClick={() => void saveSpace()}>{text('Save wiki', 'Wikiを保存')}</button></div>
   </section><div className="mem-layout">
     <section className="mem-list-pane">
@@ -117,6 +135,7 @@ function WikiTab({ client }: { readonly client: ToolApiClient }) {
               <span className="mem-badges">{page.tags.map((tag) => <span key={tag} className="mem-tag">{tag}</span>)}</span>
               <small>v{page.version}</small>
             </button>
+            <button type="button" className="ghost danger" disabled={busy} onClick={() => void removePage(page.id)}>{text('Delete', '削除')}</button>
           </li>)}
       </ul>
     </section>

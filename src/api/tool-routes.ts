@@ -10,13 +10,14 @@
  * | POST /tools | 201 { tool } |
  * | GET /tools/:internalId | 200 { tool } |
  * | GET /tools/:internalId/versions | 200 { versions: string[] } |
+ * | DELETE /tools/:internalId | 204 |
  * | POST /tools/:internalId/infer-schema | 200 { tool, propagation } |
  * | POST /tools/:internalId/preview | 200 { tool, result } |
  */
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { PreviewToolUseCase, PreviewToolOptions } from '../application/tool/preview-tool';
-import type { GetToolUseCase, ListToolVersionsUseCase, ListToolsUseCase } from '../application/tool/query-tool';
+import type { DeleteToolUseCase, GetToolUseCase, ListToolVersionsUseCase, ListToolsUseCase } from '../application/tool/query-tool';
 import type { SaveToolUseCase } from '../application/tool/save-tool';
 import { serializeTool } from '../domain/tool/serialization';
 import { SemVer } from '../domain/tool/semver';
@@ -30,6 +31,7 @@ export interface ToolRouteDeps {
   listToolVersions: ListToolVersionsUseCase;
   listTools: ListToolsUseCase;
   previewTool: PreviewToolUseCase;
+  deleteTool: DeleteToolUseCase;
 }
 
 /** :internalId パスパラメータ。 */
@@ -115,6 +117,13 @@ export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): v
     const scope = { tenantId: query.tenantId, workspaceId: query.workspaceId };
     const versions = await deps.listToolVersions.execute(scope, request.params.internalId);
     return { versions: versions.map((v) => v.toString()) };
+  });
+
+  // DELETE /tools/:internalId — 論理削除。未存在/削除済みは deleteTool が ToolNotFoundError → 404 へ変換される。
+  app.delete<{ Params: ToolParams }>('/tools/:internalId', async (request, reply) => {
+    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
+    await deps.deleteTool.execute({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.internalId);
+    return reply.status(204).send();
   });
 
   // POST /tools/:internalId/infer-schema — スキーマ点検（実行なし）。

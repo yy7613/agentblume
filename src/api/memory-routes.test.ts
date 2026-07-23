@@ -89,6 +89,48 @@ describe('memory routes (v21)', () => {
     expect(res.json().error.code).toBe('WIKI_PAGE_NOT_FOUND');
   });
 
+  it('Wikiページを削除でき、GETは404、未存在の削除も404になる', async () => {
+    const saved = await server.inject({ method: 'POST', url: '/wiki', payload: { scope, title: 'Cohort SQL', tags: ['sql'], body: 'age filter' } });
+    const id = saved.json().page.id as string;
+
+    const deleted = await server.inject({ method: 'DELETE', url: `/wiki/${id}?tenantId=tenant&workspaceId=workspace` });
+    expect(deleted.statusCode).toBe(204);
+
+    const list = await server.inject({ method: 'GET', url: '/wiki?tenantId=tenant&workspaceId=workspace' });
+    expect(list.json().pages).toEqual([]);
+    const getDeleted = await server.inject({ method: 'GET', url: `/wiki/${id}?tenantId=tenant&workspaceId=workspace` });
+    expect(getDeleted.statusCode).toBe(404);
+
+    const again = await server.inject({ method: 'DELETE', url: `/wiki/${id}?tenantId=tenant&workspaceId=workspace` });
+    expect(again.statusCode).toBe(404);
+    const missing = await server.inject({ method: 'DELETE', url: '/wiki/missing?tenantId=tenant&workspaceId=workspace' });
+    expect(missing.statusCode).toBe(404);
+  });
+
+  it('Wiki空間を削除でき、GETは404、未存在の削除も404になる(配下のページは削除しない)', async () => {
+    const created = await server.inject({ method: 'POST', url: '/wikis', payload: { scope, id: 'customer-a', name: 'Customer A' } });
+    expect(created.statusCode).toBe(201);
+    const page = await server.inject({ method: 'POST', url: '/wikis/customer-a/pages', payload: { scope, title: 'Refund policy', tags: ['refund'], body: 'Alpha requires a receipt.' } });
+    expect(page.statusCode).toBe(201);
+
+    const deleted = await server.inject({ method: 'DELETE', url: '/wikis/customer-a?tenantId=tenant&workspaceId=workspace' });
+    expect(deleted.statusCode).toBe(204);
+
+    const list = await server.inject({ method: 'GET', url: '/wikis?tenantId=tenant&workspaceId=workspace' });
+    expect(list.json().wikis.map((wiki: { id: string }) => wiki.id)).not.toContain('customer-a');
+    const getDeleted = await server.inject({ method: 'GET', url: '/wikis/customer-a?tenantId=tenant&workspaceId=workspace' });
+    expect(getDeleted.statusCode).toBe(404);
+
+    // 配下のページはWiki空間の削除では消えない。
+    const pages = await server.inject({ method: 'GET', url: '/wikis/customer-a/pages?tenantId=tenant&workspaceId=workspace' });
+    expect(pages.json().pages).toHaveLength(1);
+
+    const again = await server.inject({ method: 'DELETE', url: '/wikis/customer-a?tenantId=tenant&workspaceId=workspace' });
+    expect(again.statusCode).toBe(404);
+    const missing = await server.inject({ method: 'DELETE', url: '/wikis/missing?tenantId=tenant&workspaceId=workspace' });
+    expect(missing.statusCode).toBe(404);
+  });
+
   it('複数Wikiを分離しAgent allowlist内だけを実行contextへ入れる', async () => {
     for (const wiki of [{ id: 'customer-a', name: 'Customer A' }, { id: 'customer-b', name: 'Customer B' }]) {
       const created = await server.inject({ method: 'POST', url: '/wikis', payload: { scope, ...wiki, description: `${wiki.name} knowledge` } });

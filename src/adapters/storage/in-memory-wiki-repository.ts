@@ -32,6 +32,10 @@ export class InMemoryWikiRepository implements WikiRepository {
       .map(summarizeWikiSpace);
   }
 
+  async deleteSpace(scope: TenantScope, id: string): Promise<boolean> {
+    return this.spaces.delete(key(scope, id));
+  }
+
   async save(page: WikiPage): Promise<void> {
     const wikiId = effectiveWikiId(page);
     if (wikiId === DEFAULT_WIKI_ID && await this.findSpace(page.tenant, wikiId) === null) {
@@ -57,6 +61,10 @@ export class InMemoryWikiRepository implements WikiRepository {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, Math.max(0, limit))
       .map(summarizeWikiPage);
+  }
+
+  async delete(scope: TenantScope, id: string): Promise<boolean> {
+    return this.store.delete(key(scope, id));
   }
 
   private pages(scope: TenantScope): WikiPage[] {

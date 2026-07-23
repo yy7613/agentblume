@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
+import type { DeleteAgentUseCase } from '../application/agent/delete-agent';
 import type { GenerateAgentPromptUseCase } from '../application/agent/generate-agent-prompt';
 import type { QueryAgentsUseCase } from '../application/agent/query-agents';
 import type { SaveAgentUseCase } from '../application/agent/save-agent';
@@ -12,6 +13,7 @@ export interface AgentRouteDeps {
   readonly saveAgent: SaveAgentUseCase;
   readonly queryAgents: QueryAgentsUseCase;
   readonly generateAgentPrompt: GenerateAgentPromptUseCase;
+  readonly deleteAgent: DeleteAgentUseCase;
 }
 
 interface AgentParams { internalId: string }
@@ -64,6 +66,13 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
     const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
     const versions = await deps.queryAgents.versions({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.internalId);
     return { versions: versions.map((item) => item.toString()) };
+  });
+
+  // 論理削除。204で成功を返し、未存在/削除済みは deleteAgent が AgentNotFoundError → 404 へ変換される。
+  app.delete<{ Params: AgentParams }>('/agents/:internalId', async (request, reply) => {
+    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
+    await deps.deleteAgent.execute(query, request.params.internalId);
+    return reply.status(204).send();
   });
 
   app.post('/agent-drafts/generate-prompt', async (request) => {

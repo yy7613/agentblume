@@ -9,6 +9,8 @@ export interface QualityGateRepository {
   findLatestPolicy(scope: TenantScope, internalId: string): Promise<GatePolicy | null>;
   listPolicyVersions(scope: TenantScope, internalId: string): Promise<SemVer[]>;
   listPolicies(scope: TenantScope): Promise<GatePolicySummary[]>;
+  /** 論理削除。listPolicies/findLatestPolicyからは除外し、listPolicyVersionsは空配列を返す。findPolicyVersionは削除後も既存versionを返し続ける。戻り値は削除前に存在したか。 */
+  deletePolicy(scope: TenantScope, internalId: string): Promise<boolean>;
   saveReport(report: GateReport): Promise<void>;
   findReport(scope: TenantScope, id: string): Promise<GateReport | null>;
   listReports(scope: TenantScope, candidateExperimentId?: string): Promise<GateReport[]>;

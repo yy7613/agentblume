@@ -7,25 +7,27 @@
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { SaveWikiPageUseCase } from '../application/memory/save-wiki-page';
-import type { QueryWikiUseCase } from '../application/memory/query-wiki';
+import type { DeleteWikiPageUseCase, QueryWikiUseCase } from '../application/memory/query-wiki';
 import type { ReflectRunUseCase } from '../application/memory/reflect-run';
 import type { ListProposalsUseCase } from '../application/memory/list-proposals';
 import type { ReviewProposalUseCase } from '../application/memory/review-proposal';
-import type { QueryWikiSpacesUseCase, SaveWikiSpaceUseCase } from '../application/memory/wiki-spaces';
+import type { DeleteWikiSpaceUseCase, QueryWikiSpacesUseCase, SaveWikiSpaceUseCase } from '../application/memory/wiki-spaces';
 import { serializeMemoryProposal } from '../domain/memory/serialization';
 import { serializeWikiPage } from '../domain/memory/serialization';
 import { serializeWikiSpace } from '../domain/memory/serialization';
 import { BadRequestError } from './error-mapping';
-import { proposalDecisionBodySchema, proposalListQuerySchema, reflectRunBodySchema, saveWikiBodySchema, saveWikiSpaceBodySchema, wikiSearchQuerySchema } from './schemas';
+import { proposalDecisionBodySchema, proposalListQuerySchema, reflectRunBodySchema, saveWikiBodySchema, saveWikiSpaceBodySchema, scopeQuerySchema, wikiSearchQuerySchema } from './schemas';
 
 export interface MemoryRouteDeps {
   readonly saveWikiPage: SaveWikiPageUseCase;
   readonly queryWiki: QueryWikiUseCase;
+  readonly deleteWikiPage: DeleteWikiPageUseCase;
   readonly reflectRun: ReflectRunUseCase;
   readonly listProposals: ListProposalsUseCase;
   readonly reviewProposal: ReviewProposalUseCase;
   readonly saveWikiSpace: SaveWikiSpaceUseCase;
   readonly queryWikiSpaces: QueryWikiSpacesUseCase;
+  readonly deleteWikiSpace: DeleteWikiSpaceUseCase;
 }
 
 function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
@@ -52,6 +54,12 @@ export function registerMemoryRoutes(app: FastifyInstance, deps: MemoryRouteDeps
     return reply.status(201).send({ wiki: serializeWikiSpace(await deps.saveWikiSpace.execute(body)) });
   });
 
+  app.delete<{ Params: { id: string } }>('/wikis/:id', async (request, reply) => {
+    const query = parse(scopeQuerySchema, request.query);
+    await deps.deleteWikiSpace.execute(query, request.params.id);
+    return reply.status(204).send();
+  });
+
   app.get('/wiki', async (request) => {
     const query = parse(wikiSearchQuerySchema, request.query);
     const scope = { tenantId: query.tenantId, workspaceId: query.workspaceId };
@@ -65,6 +73,12 @@ export function registerMemoryRoutes(app: FastifyInstance, deps: MemoryRouteDeps
     const query = parse(wikiSearchQuerySchema, request.query);
     const page = await deps.queryWiki.get({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.id);
     return { page: serializeWikiPage(page) };
+  });
+
+  app.delete<{ Params: { id: string } }>('/wiki/:id', async (request, reply) => {
+    const query = parse(scopeQuerySchema, request.query);
+    await deps.deleteWikiPage.execute(query, request.params.id);
+    return reply.status(204).send();
   });
 
   app.post('/wiki', async (request, reply) => {

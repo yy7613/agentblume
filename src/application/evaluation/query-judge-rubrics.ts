@@ -10,3 +10,12 @@ export class QueryJudgeRubricsUseCase {
   versions(scope: TenantScope, id: string): Promise<SemVer[]> { return this.repo.listVersions(scope, id); }
   async get(scope: TenantScope, id: string, version?: SemVer): Promise<JudgeRubric> { const value = version === undefined ? await this.repo.findLatest(scope, id) : await this.repo.findVersion(scope, id, version); if (value === null) throw new JudgeRubricNotFoundError(`Judge rubric not found: ${id}${version === undefined ? '' : `@${version.toString()}`}`); return value; }
 }
+
+/** 保存済みJudge Rubricの論理削除。repository.delete が false(未存在/削除済み)なら JudgeRubricNotFoundError。 */
+export class DeleteJudgeRubricUseCase {
+  constructor(private readonly repo: JudgeRubricRepository) {}
+  async execute(scope: TenantScope, internalId: string): Promise<void> {
+    const existed = await this.repo.delete(scope, internalId);
+    if (!existed) throw new JudgeRubricNotFoundError(`DeleteJudgeRubric: rubric not found: ${internalId}`);
+  }
+}

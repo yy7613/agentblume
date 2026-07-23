@@ -27,4 +27,18 @@ export async function agentRepositoryContract(repo: AgentRepository): Promise<vo
   const summaries = await repo.list(scope);
   expect(summaries).toHaveLength(1);
   expect(summaries[0]?.latestVersion.toString()).toBe('1.10.0');
+
+  // delete（論理削除）: listから除外され、findLatestはnullになるが、findVersionは既存versionを返し続ける。
+  await repo.save(createAgent({
+    metadata: { internalId: 'agent-2', workingName: 'work', displayName: 'Other', publishName: 'agent-2', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+    kind: 'normal', systemPrompt: 'Prompt', tools: [],
+  }));
+  await expect(repo.delete(scope, 'agent-1')).resolves.toBe(true);
+  expect((await repo.list(scope)).map((item) => item.internalId)).toEqual(['agent-2']);
+  await expect(repo.findLatest(scope, 'agent-1')).resolves.toBeNull();
+  await expect(repo.listVersions(scope, 'agent-1')).resolves.toEqual([]);
+  await expect(repo.findVersion(scope, 'agent-1', SemVer.of(1, 0, 0))).resolves.toMatchObject({ metadata: { internalId: 'agent-1' } });
+  await expect(repo.delete(scope, 'agent-1')).resolves.toBe(false);
+  await expect(repo.delete(scope, 'missing')).resolves.toBe(false);
+  await expect(repo.findLatest(scope, 'agent-2')).resolves.toMatchObject({ metadata: { internalId: 'agent-2' } });
 }

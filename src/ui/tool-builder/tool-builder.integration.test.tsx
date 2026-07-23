@@ -26,9 +26,10 @@ afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe('ToolBuilder preview integration', () => {
   it('Agent context領域でAgent Inputの引数スキーマを編集できる', () => {
-    useToolBuilderStore.getState().addNode('agent-input');
-    const client = { inferDraft: vi.fn(), previewDraft: vi.fn() } as unknown as ToolApiClient;
+    const client = { inferDraft: vi.fn(), previewDraft: vi.fn(), listTools: vi.fn().mockResolvedValue([]) } as unknown as ToolApiClient;
     render(<ToolBuilder client={client} />);
+    fireEvent.click(screen.getByRole('button', { name: 'New tool' }));
+    act(() => useToolBuilderStore.getState().addNode('agent-input'));
     expect(screen.getByRole('table', { name: 'Agent arguments' })).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Argument name 1'), { target: { value: 'minimumAge' } });
     fireEvent.change(screen.getByLabelText('Argument type minimumAge'), { target: { value: 'number' } });
@@ -45,8 +46,10 @@ describe('ToolBuilder preview integration', () => {
     const client = {
       inferDraft: vi.fn().mockResolvedValueOnce(valid).mockResolvedValueOnce(invalid),
       previewDraft: vi.fn().mockResolvedValue(sample),
+      listTools: vi.fn().mockResolvedValue([]),
     } as unknown as ToolApiClient;
     render(<ToolBuilder client={client} />);
+    fireEvent.click(screen.getByRole('button', { name: 'New tool' }));
 
     expect(screen.queryByLabelText('Agent chat')).toBeNull();
     expect(screen.getByLabelText('Agent-facing name')).toBeTruthy();
@@ -86,9 +89,7 @@ describe('ToolBuilder preview integration', () => {
     };
     const inferDraft = vi.fn().mockResolvedValue(joinPropagation);
     const previewDraft = vi.fn().mockResolvedValue(joinPreview);
-    const client = { inferDraft, previewDraft } as unknown as ToolApiClient;
-
-    useToolBuilderStore.getState().loadTool({
+    const toolDto = {
       metadata: { internalId: 'joined', workingName: 'w', displayName: 'Joined', publishName: 'joined', version: '1.0.0', owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },
       sideEffect: 'read-only',
       graph: {
@@ -99,9 +100,19 @@ describe('ToolBuilder preview integration', () => {
         ],
         edges: [{ from: 'left-1', to: 'join-1', toInput: 0 }, { from: 'right-1', to: 'join-1', toInput: 1 }],
       },
-    } as SerializedToolDto);
-    useToolBuilderStore.getState().selectNode('join-1');
+    } as SerializedToolDto;
+    const client = {
+      inferDraft, previewDraft,
+      listTools: vi.fn().mockResolvedValue([{ internalId: 'joined', displayName: 'Joined', publishName: 'joined', latestVersion: '1.0.0', state: 'draft', sideEffect: 'read-only' }]),
+      getTool: vi.fn().mockResolvedValue(toolDto),
+      listVersions: vi.fn().mockResolvedValue(['1.0.0']),
+    } as unknown as ToolApiClient;
+
     render(<ToolBuilder client={client} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); }); // 一覧のlistTools解決を待つ。
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); }); // OpenのgetTool/listVersions解決とeditorへの遷移を待つ。
+    act(() => useToolBuilderStore.getState().selectNode('join-1'));
 
     await act(async () => { await vi.advanceTimersByTimeAsync(300); });
 

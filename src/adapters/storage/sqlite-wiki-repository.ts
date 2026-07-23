@@ -68,6 +68,13 @@ export class SqliteWikiRepository implements WikiRepository {
       .map(summarizeWikiSpace);
   }
 
+  async deleteSpace(scope: TenantScope, id: string): Promise<boolean> {
+    const existing = this.db.prepare(`SELECT 1 FROM wiki_spaces WHERE tenant_id=? AND workspace_id=? AND id=?`).get(scope.tenantId, scope.workspaceId, id);
+    if (existing === undefined) return false;
+    this.db.prepare(`DELETE FROM wiki_spaces WHERE tenant_id=? AND workspace_id=? AND id=?`).run(scope.tenantId, scope.workspaceId, id);
+    return true;
+  }
+
   async save(page: WikiPage): Promise<void> {
     const wikiId = effectiveWikiId(page);
     if (wikiId === DEFAULT_WIKI_ID && await this.findSpace(page.tenant, wikiId) === null) {
@@ -91,6 +98,13 @@ export class SqliteWikiRepository implements WikiRepository {
   async search(scope: TenantScope, query: string, limit: number, wikiIds?: readonly string[]): Promise<WikiPageSummary[]> {
     const terms = query.toLowerCase().split(/\s+/).filter((term) => term.length > 0);
     return this.pages(scope).filter((page) => (wikiIds === undefined || wikiIds.includes(effectiveWikiId(page))) && matches(page, terms)).slice(0, Math.max(0, limit)).map(summarizeWikiPage);
+  }
+
+  async delete(scope: TenantScope, id: string): Promise<boolean> {
+    const existing = this.db.prepare(`SELECT 1 FROM wiki_pages WHERE tenant_id=? AND workspace_id=? AND id=?`).get(scope.tenantId, scope.workspaceId, id);
+    if (existing === undefined) return false;
+    this.db.prepare(`DELETE FROM wiki_pages WHERE tenant_id=? AND workspace_id=? AND id=?`).run(scope.tenantId, scope.workspaceId, id);
+    return true;
   }
 
   private pages(scope: TenantScope): WikiPage[] {

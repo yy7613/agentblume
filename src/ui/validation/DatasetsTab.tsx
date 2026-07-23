@@ -72,6 +72,12 @@ export function DatasetsTab({ client, scope }: { readonly client: ToolApiClient;
     } catch (cause) { setError(message(cause)); } finally { setBusy(undefined); }
   }
 
+  async function removeDataset(target: string): Promise<void> {
+    setBusy('dataset'); setError(undefined);
+    try { await client.deleteEvaluationDataset(target, scope); setDatasets(await client.listEvaluationDatasets(scope)); }
+    catch (cause) { setError(message(cause)); } finally { setBusy(undefined); }
+  }
+
   async function importCases(): Promise<void> {
     setBusy('import'); setError(undefined);
     try { setCases(await client.importEvaluationCases(scope, format, transfer)); setCaseListInputs({}); }
@@ -103,11 +109,22 @@ export function DatasetsTab({ client, scope }: { readonly client: ToolApiClient;
     } catch (cause) { setError(message(cause)); } finally { setBusy(undefined); }
   }
 
+  async function removeProfile(target: string): Promise<void> {
+    setBusy('profile'); setError(undefined);
+    try { await client.deleteEvaluatorProfile(target, scope); setProfiles(await client.listEvaluatorProfiles(scope)); }
+    catch (cause) { setError(message(cause)); } finally { setBusy(undefined); }
+  }
+
   async function editRubric(summary: JudgeRubricSummaryDto): Promise<void> {
     setError(undefined); try { const rubric = await client.getJudgeRubric(summary.internalId, scope); setRubricId(rubric.metadata.internalId); setRubricWorkingName(rubric.metadata.workingName); setRubricDisplayName(rubric.metadata.displayName); setRubricPublishName(rubric.metadata.publishName); setRubricOwner(rubric.metadata.owner); setRubricInstructions(rubric.instructions); setReferencePolicy(rubric.referencePolicy); setCriteria(rubric.criteria.map((criterion) => structuredClone(criterion))); setRubricSavedVersion(rubric.metadata.version); } catch (cause) { setError(message(cause)); }
   }
   async function saveRubric(): Promise<void> {
     setBusy('rubric'); setError(undefined); try { const saved = await client.saveJudgeRubric({ scope, internalId: rubricId, workingName: rubricWorkingName, displayName: rubricDisplayName, publishName: rubricPublishName, owner: rubricOwner, instructions: rubricInstructions, criteria, referencePolicy, bump: rubricBump }); setRubricSavedVersion(saved.metadata.version); setRubrics(await client.listJudgeRubrics(scope)); } catch (cause) { setError(message(cause)); } finally { setBusy(undefined); }
+  }
+  async function removeRubric(target: string): Promise<void> {
+    setBusy('rubric'); setError(undefined);
+    try { await client.deleteJudgeRubric(target, scope); setRubrics(await client.listJudgeRubrics(scope)); }
+    catch (cause) { setError(message(cause)); } finally { setBusy(undefined); }
   }
 
   const metadataValid = [internalId, workingName, displayName, publishName, owner].every((value) => value.trim() !== '');
@@ -120,11 +137,20 @@ export function DatasetsTab({ client, scope }: { readonly client: ToolApiClient;
     <div className="two-column-workspace">
       <section className="workspace-card" aria-label={text('Evaluation asset list', '評価資産一覧')}>
         <h2>{text('Datasets', 'データセット')}</h2>
-        <div className="validation-list">{datasets.length === 0 && <p className="empty-state">{text('No evaluation datasets.', '評価データセットはありません。')}</p>}{datasets.map((item) => <button type="button" key={item.internalId} onClick={() => void editDataset(item)}><strong>{item.displayName}</strong><span className="version-chip">{item.latestVersion}</span><span className="run-meta">{item.caseCount} cases</span></button>)}</div>
+        <div className="validation-list">{datasets.length === 0 && <p className="empty-state">{text('No evaluation datasets.', '評価データセットはありません。')}</p>}{datasets.map((item) => <div className="validation-list-row" key={item.internalId}>
+          <button type="button" onClick={() => void editDataset(item)}><strong>{item.displayName}</strong><span className="version-chip">{item.latestVersion}</span><span className="run-meta">{item.caseCount} cases</span></button>
+          <button type="button" className="secondary danger" disabled={busy !== undefined} onClick={() => void removeDataset(item.internalId)}>{text('Delete', '削除')}</button>
+        </div>)}</div>
         <h2 className="section-gap">{text('Evaluator profiles', '評価プロファイル')}</h2>
-        <div className="validation-list">{profiles.length === 0 && <p className="empty-state">{text('No evaluator profiles.', '評価プロファイルはありません。')}</p>}{profiles.map((item) => <button type="button" key={item.internalId} onClick={() => void editProfile(item)}><strong>{item.displayName}</strong><span className="version-chip">{item.latestVersion}</span><span className="run-meta">{item.metricCount} metrics</span></button>)}</div>
+        <div className="validation-list">{profiles.length === 0 && <p className="empty-state">{text('No evaluator profiles.', '評価プロファイルはありません。')}</p>}{profiles.map((item) => <div className="validation-list-row" key={item.internalId}>
+          <button type="button" onClick={() => void editProfile(item)}><strong>{item.displayName}</strong><span className="version-chip">{item.latestVersion}</span><span className="run-meta">{item.metricCount} metrics</span></button>
+          <button type="button" className="secondary danger" disabled={busy !== undefined} onClick={() => void removeProfile(item.internalId)}>{text('Delete', '削除')}</button>
+        </div>)}</div>
         <h2 className="section-gap">Judge rubrics</h2>
-        <div className="validation-list">{rubrics.length === 0 && <p className="empty-state">No judge rubrics.</p>}{rubrics.map((item) => <button type="button" key={item.internalId} onClick={() => void editRubric(item)}><strong>{item.displayName}</strong><span className="version-chip">{item.latestVersion}</span><span className="run-meta">{item.criterionCount} criteria</span></button>)}</div>
+        <div className="validation-list">{rubrics.length === 0 && <p className="empty-state">No judge rubrics.</p>}{rubrics.map((item) => <div className="validation-list-row" key={item.internalId}>
+          <button type="button" onClick={() => void editRubric(item)}><strong>{item.displayName}</strong><span className="version-chip">{item.latestVersion}</span><span className="run-meta">{item.criterionCount} criteria</span></button>
+          <button type="button" className="secondary danger" disabled={busy !== undefined} onClick={() => void removeRubric(item.internalId)}>{text('Delete', '削除')}</button>
+        </div>)}</div>
       </section>
 
       <div className="evaluation-editors">

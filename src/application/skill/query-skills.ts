@@ -13,3 +13,15 @@ export class QuerySkillsUseCase {
     return skill;
   }
 }
+
+/**
+ * 保存済みSkillの論理削除。repository.delete が false（未存在/削除済み）なら SkillNotFoundError。
+ * findVersion は削除後も返るため、既存の参照Agentは壊れない。
+ */
+export class DeleteSkillUseCase {
+  constructor(private readonly repo: SkillRepository) {}
+  async execute(scope: TenantScope, internalId: string): Promise<void> {
+    const existed = await this.repo.delete(scope, internalId);
+    if (!existed) throw new SkillNotFoundError(`DeleteSkill: skill not found: ${internalId}`);
+  }
+}

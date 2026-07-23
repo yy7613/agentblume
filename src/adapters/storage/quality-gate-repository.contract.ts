@@ -23,4 +23,15 @@ export async function qualityGateRepositoryContract(repo: QualityGateRepository)
   await expect(repo.createPromotion(promotion)).rejects.toBeInstanceOf(QualityGateConflictError);
   await expect(repo.updatePromotion({ ...promotion, id: 'missing' })).rejects.toBeInstanceOf(QualityGateNotFoundError);
   expect(await repo.findLatestPolicy({ tenantId: 'other', workspaceId: 'workspace' }, 'release')).toBeNull(); expect(await repo.findReport(scope, 'missing')).toBeNull(); expect(await repo.findPromotion(scope, 'missing')).toBeNull();
+
+  // deletePolicy(論理削除): listPoliciesから除外され、findLatestPolicyはnullになるが、findPolicyVersionは既存versionを返し続ける。
+  await repo.savePolicy(createGatePolicy({ metadata: { internalId: 'other-policy', workingName: 'Other', displayName: 'Other', publishName: 'other', version: v1, owner: 'owner', state: 'draft', tenant: scope }, rules: [{ id: 'quality', kind: 'metric-threshold', metric: 'quality', operator: 'gte', threshold: 0.8 }], reportTtlHours: 24 }));
+  await expect(repo.deletePolicy(scope, 'release')).resolves.toBe(true);
+  expect((await repo.listPolicies(scope)).map((item) => item.internalId)).toEqual(['other-policy']);
+  await expect(repo.findLatestPolicy(scope, 'release')).resolves.toBeNull();
+  await expect(repo.listPolicyVersions(scope, 'release')).resolves.toEqual([]);
+  expect((await repo.findPolicyVersion(scope, 'release', v1))?.metadata.internalId).toBe('release');
+  await expect(repo.deletePolicy(scope, 'release')).resolves.toBe(false);
+  await expect(repo.deletePolicy(scope, 'missing')).resolves.toBe(false);
+  expect((await repo.findLatestPolicy(scope, 'other-policy'))?.metadata.internalId).toBe('other-policy');
 }

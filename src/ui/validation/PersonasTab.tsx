@@ -60,6 +60,16 @@ export function PersonasTab({ client, scope }: { readonly client: ToolApiClient;
     setExtraInstructions(''); setPromptOverride('');
   }
 
+  async function remove(internalIdToRemove: string): Promise<void> {
+    setBusy(true); setError(undefined);
+    try {
+      await client.deletePersona(internalIdToRemove, scope);
+      setPersonas(await client.listPersonas(scope));
+      if (editingId === internalIdToRemove) startNew();
+    } catch (cause) { setError(message(cause)); }
+    finally { setBusy(false); }
+  }
+
   async function save(): Promise<void> {
     setBusy(true); setError(undefined);
     try {
@@ -96,9 +106,12 @@ export function PersonasTab({ client, scope }: { readonly client: ToolApiClient;
       <div className="panel-title"><h2>{text('Personas', 'ペルソナ')}</h2><button type="button" className="secondary" onClick={startNew}>{text('New persona', '新規ペルソナ')}</button></div>
       <div className="validation-list">
         {personas.length === 0 && <p className="empty-state">{text('No saved personas.', '保存済みペルソナはありません。')}</p>}
-        {personas.map((persona) => <button type="button" key={persona.internalId} className={persona.internalId === editingId ? 'selected' : ''} onClick={() => void edit(persona)}>
-          <span className="archetype-badge">{persona.archetype}</span><strong>{persona.displayName}</strong><span className="version-chip">{persona.latestVersion}</span>
-        </button>)}
+        {personas.map((persona) => <div className="validation-list-row" key={persona.internalId}>
+          <button type="button" className={persona.internalId === editingId ? 'selected' : ''} onClick={() => void edit(persona)}>
+            <span className="archetype-badge">{persona.archetype}</span><strong>{persona.displayName}</strong><span className="version-chip">{persona.latestVersion}</span>
+          </button>
+          <button type="button" className="secondary danger" disabled={busy} onClick={() => void remove(persona.internalId)}>{text('Delete', '削除')}</button>
+        </div>)}
       </div>
     </section>
     <section className="workspace-card" aria-label={text('Persona form', 'ペルソナフォーム')}>

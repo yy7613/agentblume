@@ -157,6 +157,11 @@ export class ToolApiClient {
     return (await this.request<{ tool: SerializedToolDto }>(`/tools/${encodeURIComponent(internalId)}?${query}`)).tool;
   }
 
+  async deleteTool(internalId: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/tools/${encodeURIComponent(internalId)}?${query}`, { method: 'DELETE' });
+  }
+
   async listTools(scope: TenantScopeDto): Promise<readonly ToolSummaryDto[]> {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     return (await this.request<{ tools: ToolSummaryDto[] }>(`/tools?${query}`)).tools;
@@ -186,6 +191,11 @@ export class ToolApiClient {
     })).draft;
   }
 
+  async deleteAgent(internalId: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/agents/${encodeURIComponent(internalId)}?${query}`, { method: 'DELETE' });
+  }
+
   async saveSkill(input: SaveSkillDto): Promise<SerializedSkillDto> {
     return (await this.request<{ skill: SerializedSkillDto }>('/skills', { method: 'POST', body: JSON.stringify(input) })).skill;
   }
@@ -193,6 +203,17 @@ export class ToolApiClient {
   async listSkills(scope: TenantScopeDto): Promise<readonly SkillSummaryDto[]> {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     return (await this.request<{ skills: SkillSummaryDto[] }>(`/skills?${query}`)).skills;
+  }
+
+  async getSkill(internalId: string, scope: TenantScopeDto, version?: string): Promise<SerializedSkillDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (version !== undefined) query.set('version', version);
+    return (await this.request<{ skill: SerializedSkillDto }>(`/skills/${encodeURIComponent(internalId)}?${query}`)).skill;
+  }
+
+  async deleteSkill(internalId: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/skills/${encodeURIComponent(internalId)}?${query}`, { method: 'DELETE' });
   }
 
   async generateSkillPrompt(input: Omit<SaveSkillDto, 'internalId' | 'workingName' | 'publishName' | 'owner' | 'instructions' | 'bump'>): Promise<SkillPromptDraftDto> {
@@ -372,6 +393,11 @@ export class ToolApiClient {
     })).agent;
   }
 
+  async deletePersona(internalId: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/personas/${encodeURIComponent(internalId)}?${query}`, { method: 'DELETE' });
+  }
+
   async evaluate(input: { readonly scope: TenantScopeDto; readonly input: string; readonly output: string; readonly reference?: string }, signal?: AbortSignal): Promise<EvaluationResultDto> {
     return (await this.request<{ evaluation: EvaluationResultDto }>('/evaluations', {
       method: 'POST', body: JSON.stringify(input), signal,
@@ -399,6 +425,11 @@ export class ToolApiClient {
     return (await this.request<{ run: ScenarioRunDto }>(`/scenarios/${encodeURIComponent(internalId)}/run`, {
       method: 'POST', body: JSON.stringify(input), signal,
     })).run;
+  }
+
+  async deleteScenario(internalId: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/scenarios/${encodeURIComponent(internalId)}?${query}`, { method: 'DELETE' });
   }
 
   async listScenarioRuns(scope: TenantScopeDto, scenarioId?: string): Promise<readonly ScenarioRunDto[]> {
@@ -442,6 +473,11 @@ export class ToolApiClient {
     return (await this.request<{ format: string; content: string }>(`/evaluation-datasets/${encodeURIComponent(internalId)}/export?${query}`)).content;
   }
 
+  async deleteEvaluationDataset(internalId: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/evaluation-datasets/${encodeURIComponent(internalId)}?${query}`, { method: 'DELETE' });
+  }
+
   async saveEvaluatorProfile(input: SaveEvaluatorProfileDto): Promise<SerializedEvaluatorProfileDto> {
     return (await this.request<{ profile: SerializedEvaluatorProfileDto }>('/evaluator-profiles', { method: 'POST', body: JSON.stringify(input) })).profile;
   }
@@ -462,6 +498,11 @@ export class ToolApiClient {
     return (await this.request<{ versions: string[] }>(`/evaluator-profiles/${encodeURIComponent(internalId)}/versions?${query}`)).versions;
   }
 
+  async deleteEvaluatorProfile(internalId: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/evaluator-profiles/${encodeURIComponent(internalId)}?${query}`, { method: 'DELETE' });
+  }
+
   async saveJudgeRubric(input: SaveJudgeRubricDto): Promise<SerializedJudgeRubricDto> {
     return (await this.request<{ rubric: SerializedJudgeRubricDto }>('/judge-rubrics', { method: 'POST', body: JSON.stringify(input) })).rubric;
   }
@@ -476,6 +517,11 @@ export class ToolApiClient {
 
   async listJudgeRubricVersions(internalId: string, scope: TenantScopeDto): Promise<readonly string[]> {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId }); return (await this.request<{ versions: string[] }>(`/judge-rubrics/${encodeURIComponent(internalId)}/versions?${query}`)).versions;
+  }
+
+  async deleteJudgeRubric(internalId: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/judge-rubrics/${encodeURIComponent(internalId)}?${query}`, { method: 'DELETE' });
   }
 
   async createExperiment(input: CreateExperimentDto): Promise<ExperimentDto> {
@@ -520,6 +566,11 @@ export class ToolApiClient {
 
   async getGatePolicy(id: string, scope: TenantScopeDto, version?: string): Promise<SerializedGatePolicyDto> {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId }); if (version !== undefined) query.set('version', version); return (await this.request<{ policy: SerializedGatePolicyDto }>(`/gate-policies/${encodeURIComponent(id)}?${query}`)).policy;
+  }
+
+  async deleteGatePolicy(id: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/gate-policies/${encodeURIComponent(id)}?${query}`, { method: 'DELETE' });
   }
 
   async evaluateGate(scope: TenantScopeDto, policy: { readonly id: string; readonly version: string }, candidateExperimentId: string, baselineExperimentId?: string): Promise<GateReportDto> {
@@ -590,6 +641,11 @@ export class ToolApiClient {
     return (await this.request<{ page: WikiPageDto }>('/wiki', { method: 'POST', body: JSON.stringify(input), signal })).page;
   }
 
+  async deleteWiki(id: string, scope: TenantScopeDto): Promise<void> {
+    const params = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/wiki/${encodeURIComponent(id)}?${params}`, { method: 'DELETE' });
+  }
+
   async listWikis(scope: TenantScopeDto, signal?: AbortSignal): Promise<readonly WikiSpaceSummaryDto[]> {
     const params = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     return (await this.request<{ wikis: WikiSpaceSummaryDto[] }>(`/wikis?${params}`, { signal })).wikis;
@@ -602,6 +658,11 @@ export class ToolApiClient {
 
   async saveWikiSpace(input: SaveWikiSpaceDto, signal?: AbortSignal): Promise<WikiSpaceDto> {
     return (await this.request<{ wiki: WikiSpaceDto }>('/wikis', { method: 'POST', body: JSON.stringify(input), signal })).wiki;
+  }
+
+  async deleteWikiSpace(id: string, scope: TenantScopeDto): Promise<void> {
+    const params = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/wikis/${encodeURIComponent(id)}?${params}`, { method: 'DELETE' });
   }
 
   async listWikiPages(wikiId: string, scope: TenantScopeDto, query?: string, signal?: AbortSignal): Promise<readonly WikiPageSummaryDto[]> {

@@ -45,6 +45,7 @@ class StaticRepository implements ToolRepository {
   async findLatest(): Promise<Tool | null> { return this.tool; }
   async listVersions(): Promise<SemVer[]> { return []; }
   async list(): Promise<ToolSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 
 class QueueModel implements ModelProviderPort {
@@ -73,6 +74,7 @@ class StaticAgents implements AgentRepository {
   async findLatest(): Promise<Agent | null> { return this.agent; }
   async listVersions(): Promise<SemVer[]> { return []; }
   async list(): Promise<AgentSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 
 function useCase(tool: Tool | null, model: ModelProviderPort): RunAgentPreviewUseCase {
@@ -334,6 +336,7 @@ class MapAgents implements AgentRepository {
   async findLatest(_s: TenantScope, id: string): Promise<Agent | null> { return this.byId.get(id) ?? null; }
   async listVersions(): Promise<SemVer[]> { return []; }
   async list(): Promise<AgentSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 const agentVersion = SemVer.of(1, 0, 0);
 function subRef(id: string, usage = `delegate ${id}`) { return { internalId: id, version: agentVersion, usage }; }

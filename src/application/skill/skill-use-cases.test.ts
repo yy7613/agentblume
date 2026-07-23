@@ -24,7 +24,7 @@ describe('Skill use cases', () => {
     tools = {
       save: vi.fn(),
       findVersion: vi.fn(async (requestedScope, id, version) => requestedScope.tenantId === scope.tenantId && requestedScope.workspaceId === scope.workspaceId && id === 'scores' && version.equals(ref.version) ? tool : null),
-      findLatest: vi.fn(), listVersions: vi.fn(), list: vi.fn(),
+      findLatest: vi.fn(), listVersions: vi.fn(), list: vi.fn(), delete: vi.fn(),
     };
     saved = [];
     skills = {
@@ -32,7 +32,7 @@ describe('Skill use cases', () => {
       findVersion: vi.fn(async (_scope, id, version) => saved.find((skill) => skill.metadata.internalId === id && skill.metadata.version.equals(version)) ?? null),
       findLatest: vi.fn(async (_scope, id) => saved.filter((skill) => skill.metadata.internalId === id).at(-1) ?? null),
       listVersions: vi.fn(async (_scope, id) => saved.filter((skill) => skill.metadata.internalId === id).map((skill) => skill.metadata.version)),
-      list: vi.fn(),
+      list: vi.fn(), delete: vi.fn(),
     };
   });
 

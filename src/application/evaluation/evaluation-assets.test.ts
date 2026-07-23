@@ -19,6 +19,7 @@ class DatasetRepo implements EvaluationDatasetRepository {
   async findLatest(): Promise<EvaluationDataset | null> { return null; }
   async listVersions(_scope: TenantScope, id: string): Promise<SemVer[]> { return this.values.filter((value) => value.metadata.internalId === id).map((value) => value.metadata.version); }
   async list(): Promise<EvaluationDatasetSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 class ProfileRepo implements EvaluatorProfileRepository {
   readonly values: EvaluatorProfile[] = [];
@@ -27,6 +28,7 @@ class ProfileRepo implements EvaluatorProfileRepository {
   async findLatest(): Promise<EvaluatorProfile | null> { return null; }
   async listVersions(_scope: TenantScope, id: string): Promise<SemVer[]> { return this.values.filter((value) => value.metadata.internalId === id).map((value) => value.metadata.version); }
   async list(): Promise<EvaluatorProfileSummary[]> { return []; }
+  async delete(): Promise<boolean> { return false; }
 }
 
 describe('evaluation asset use cases', () => {

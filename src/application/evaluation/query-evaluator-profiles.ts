@@ -14,3 +14,12 @@ export class QueryEvaluatorProfilesUseCase {
     return profile;
   }
 }
+
+/** 保存済みEvaluator Profileの論理削除。repository.delete が false(未存在/削除済み)なら EvaluatorProfileNotFoundError。 */
+export class DeleteEvaluatorProfileUseCase {
+  constructor(private readonly repo: EvaluatorProfileRepository) {}
+  async execute(scope: TenantScope, internalId: string): Promise<void> {
+    const existed = await this.repo.delete(scope, internalId);
+    if (!existed) throw new EvaluatorProfileNotFoundError(`DeleteEvaluatorProfile: profile not found: ${internalId}`);
+  }
+}

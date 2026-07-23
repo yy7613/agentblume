@@ -38,6 +38,8 @@ export interface EvaluationDatasetRepository {
   findLatest(scope: TenantScope, internalId: string): Promise<EvaluationDataset | null>;
   listVersions(scope: TenantScope, internalId: string): Promise<SemVer[]>;
   list(scope: TenantScope): Promise<EvaluationDatasetSummary[]>;
+  /** 論理削除。list/findLatestからは除外し、listVersionsは空配列を返す。findVersionは削除後も既存versionを返し続ける。戻り値は削除前に存在したか。 */
+  delete(scope: TenantScope, internalId: string): Promise<boolean>;
 }
 
 export interface EvaluatorProfileRepository {
@@ -46,6 +48,8 @@ export interface EvaluatorProfileRepository {
   findLatest(scope: TenantScope, internalId: string): Promise<EvaluatorProfile | null>;
   listVersions(scope: TenantScope, internalId: string): Promise<SemVer[]>;
   list(scope: TenantScope): Promise<EvaluatorProfileSummary[]>;
+  /** 論理削除。list/findLatestからは除外し、listVersionsは空配列を返す。findVersionは削除後も既存versionを返し続ける。戻り値は削除前に存在したか。 */
+  delete(scope: TenantScope, internalId: string): Promise<boolean>;
 }
 
 export interface JudgeRubricRepository {
@@ -54,4 +58,6 @@ export interface JudgeRubricRepository {
   findLatest(scope: TenantScope, internalId: string): Promise<JudgeRubric | null>;
   listVersions(scope: TenantScope, internalId: string): Promise<SemVer[]>;
   list(scope: TenantScope): Promise<JudgeRubricSummary[]>;
+  /** 論理削除。list/findLatestからは除外し、listVersionsは空配列を返す。findVersionは削除後も既存versionを返し続ける。戻り値は削除前に存在したか。 */
+  delete(scope: TenantScope, internalId: string): Promise<boolean>;
 }

@@ -28,4 +28,11 @@ export interface ToolRepository {
 
   /** テナント内の各 internalId の最新サマリを返す。 */
   list(scope: TenantScope): Promise<ToolSummary[]>;
+
+  /**
+   * 論理削除。list/findLatestからは除外し、listVersionsは空配列を返す。
+   * findVersionは削除後も既存versionを返し続ける（既存の参照Run・Agent/Harness割り当てを壊さないため）。
+   * 戻り値は削除前に存在したか（既に削除済み/未存在なら false）。
+   */
+  delete(scope: TenantScope, internalId: ToolId): Promise<boolean>;
 }
