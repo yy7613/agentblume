@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { ExperimentComparisonDto, ExperimentDto, GatePolicySummaryDto, GateReportDto, GateRuleDto, PromotionRequestDto, TenantScopeDto } from '../api/types';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useI18n } from '../i18n';
 
 const errorMessage = (cause: unknown): string => cause instanceof Error ? cause.message : 'Request failed';
@@ -14,6 +15,8 @@ export function QualityTab({ client, scope }: { readonly client: ToolApiClient; 
   const [regressionsOnly, setRegressionsOnly] = useState(false); const [reviewer, setReviewer] = useState('reviewer');
   const [newPolicyId, setNewPolicyId] = useState('release-gate'); const [metric, setMetric] = useState('case-success-rate'); const [operator, setOperator] = useState<'gte' | 'lte'>('gte'); const [threshold, setThreshold] = useState(0.8); const [maxRegression, setMaxRegression] = useState(0.05); const [requiredTags, setRequiredTags] = useState('critical');
   const [busy, setBusy] = useState(false); const [error, setError] = useState<string>();
+  const [pendingPolicyDelete, setPendingPolicyDelete] = useState<{ readonly id: string; readonly name: string }>();
+  const [pendingDecision, setPendingDecision] = useState<{ readonly request: PromotionRequestDto; readonly decision: 'approve' | 'reject' }>();
 
   async function refresh(): Promise<void> {
     const [experimentItems, policyItems, promotionItems] = await Promise.all([client.listExperiments(scope, 'completed'), client.listGatePolicies(scope), client.listPromotionRequests(scope)]);
@@ -29,6 +32,7 @@ export function QualityTab({ client, scope }: { readonly client: ToolApiClient; 
   // 保存済みポリシーの定義を取得し、ルール編集フィールドへ復元する（Openと同等の役割）。
   async function applyPolicyRules(id: string, version: string): Promise<void> {
     if (id === '' || version === '') return;
+    setError(undefined);
     try {
       const policy = await client.getGatePolicy(id, scope, version);
       setNewPolicyId(policy.metadata.internalId);
@@ -70,6 +74,11 @@ export function QualityTab({ client, scope }: { readonly client: ToolApiClient; 
 
   const visibleCases = useMemo(() => comparison?.cases.filter((item) => !regressionsOnly || item.direction === 'regressed') ?? [], [comparison, regressionsOnly]);
   const candidate = experiments.find((item) => item.id === candidateId); const pending = promotions.filter((item) => item.status === 'pending');
+  const decisionTitle = pendingDecision === undefined ? '' : pendingDecision.decision === 'approve' ? text('Approve promotion', '昇格を承認') : text('Return promotion request', '昇格申請を差し戻し');
+  const decisionMessage = pendingDecision === undefined ? '' : pendingDecision.decision === 'approve'
+    ? text(`Approve promoting "${pendingDecision.request.agent.id}@${pendingDecision.request.agent.version}"?`, `"${pendingDecision.request.agent.id}@${pendingDecision.request.agent.version}" の昇格を承認しますか？`)
+    : text(`Return the promotion request for "${pendingDecision.request.agent.id}@${pendingDecision.request.agent.version}"?`, `"${pendingDecision.request.agent.id}@${pendingDecision.request.agent.version}" の昇格申請を差し戻しますか？`);
+  const decisionConfirmLabel = pendingDecision === undefined ? '' : pendingDecision.decision === 'approve' ? text('Approve', '承認') : text('Return', '差し戻し');
   return <>
     {error !== undefined && <div className="api-error" role="alert">{error}</div>}
     <section className="workspace-card" aria-label={text('Quality comparison', '品質比較')}>
@@ -79,8 +88,29 @@ export function QualityTab({ client, scope }: { readonly client: ToolApiClient; 
     </section>
     <div className="two-column-workspace">
       <section className="workspace-card" aria-label={text('Gate policy', 'ゲートポリシー')}><h2>GatePolicy</h2><div className="form-grid"><label>ID<input aria-label="Gate policy ID" value={newPolicyId} onChange={(event) => setNewPolicyId(event.target.value)} /></label><label>Metric<input aria-label="Gate metric" value={metric} onChange={(event) => setMetric(event.target.value)} /></label><label>{text('Threshold operator', '閾値演算子')}<select aria-label="Gate threshold operator" value={operator} onChange={(event) => setOperator(event.target.value as 'gte' | 'lte')}><option value="gte">≥</option><option value="lte">≤</option></select></label><label>{text('Threshold', '閾値')}<input type="number" step="0.01" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} /></label><label>{text('Maximum regression', '最大回帰')}<input type="number" step="0.01" value={maxRegression} onChange={(event) => setMaxRegression(Number(event.target.value))} /></label><label>{text('Required tags (comma-separated)', '必須タグ（カンマ区切り）')}<input value={requiredTags} onChange={(event) => setRequiredTags(event.target.value)} /></label></div><button type="button" className="secondary" disabled={busy || newPolicyId === '' || metric === ''} onClick={() => void savePolicy()}>{text('Save policy version', 'ポリシー版を保存')}</button></section>
-      <section className="workspace-card" aria-label={text('Gate evaluation', 'ゲート判定')}><div className="panel-title"><h2>GateReport</h2><button type="button" className="primary" disabled={busy || policyId === '' || policyVersion === '' || candidateId === ''} onClick={() => void evaluate()}>{text('Evaluate gate', 'ゲート判定')}</button></div><div className="experiment-fields"><label>Policy<select aria-label="Gate policy" value={policyId} onChange={(event) => void selectPolicy(event.target.value)}><option value="">—</option>{policies.map((item) => <option key={item.internalId} value={item.internalId}>{item.displayName}</option>)}</select></label><label>Version<input aria-label="Gate policy version" value={policyVersion} readOnly /></label><label>Reviewer<input aria-label="Promotion reviewer" value={reviewer} onChange={(event) => setReviewer(event.target.value)} /></label><button type="button" className="secondary danger" disabled={busy || policyId === ''} onClick={() => void removePolicy(policyId)}>{text('Delete policy', 'ポリシーを削除')}</button></div>{report !== undefined && <div className={`gate-report ${report.status}`}><strong>{report.status.toUpperCase()}</strong>{report.ruleResults.map((item) => <p key={item.ruleId}>{item.passed ? '✓' : '×'} {item.message}</p>)}{report.status === 'pass' && candidate !== undefined && <button type="button" className="primary" disabled={busy} onClick={() => void promote()}>{text('Request promotion', '昇格申請')}</button>}</div>}</section>
+      <section className="workspace-card" aria-label={text('Gate evaluation', 'ゲート判定')}><div className="panel-title"><h2>GateReport</h2><button type="button" className="primary" disabled={busy || policyId === '' || policyVersion === '' || candidateId === ''} onClick={() => void evaluate()}>{text('Evaluate gate', 'ゲート判定')}</button></div><div className="experiment-fields"><label>Policy<select aria-label="Gate policy" value={policyId} onChange={(event) => void selectPolicy(event.target.value)}><option value="">—</option>{policies.map((item) => <option key={item.internalId} value={item.internalId}>{item.displayName}</option>)}</select></label><label>Version<input aria-label="Gate policy version" value={policyVersion} readOnly /></label><label>Reviewer<input aria-label="Promotion reviewer" value={reviewer} onChange={(event) => setReviewer(event.target.value)} /></label><button type="button" className="secondary danger" disabled={busy || policyId === ''} onClick={() => setPendingPolicyDelete({ id: policyId, name: policies.find((item) => item.internalId === policyId)?.displayName ?? policyId })}>{text('Delete policy', 'ポリシーを削除')}</button></div>{report !== undefined && <div className={`gate-report ${report.status}`}><strong>{report.status.toUpperCase()}</strong>{report.ruleResults.map((item) => <p key={item.ruleId}>{item.passed ? '✓' : '×'} {item.message}</p>)}{report.status === 'pass' && candidate !== undefined && <button type="button" className="primary" disabled={busy} onClick={() => void promote()}>{text('Request promotion', '昇格申請')}</button>}</div>}</section>
     </div>
-    <section className="workspace-card" aria-label={text('Promotion approvals', '昇格承認')}><h2>{text('Promotion approvals', '昇格承認')}</h2>{pending.length === 0 ? <p className="empty-state">{text('No pending requests.', '承認待ちはありません。')}</p> : <div className="validation-list">{pending.map((item) => <div className="promotion-row" key={item.id}><span><strong>{item.agent.id}@{item.agent.version}</strong> · {item.requestedBy}</span><div className="save-actions"><button type="button" className="secondary" disabled={busy} onClick={() => void decide(item, 'reject')}>{text('Return', '差し戻し')}</button><button type="button" className="primary" disabled={busy} onClick={() => void decide(item, 'approve')}>{text('Approve', '承認')}</button></div></div>)}</div>}</section>
+    <section className="workspace-card" aria-label={text('Promotion approvals', '昇格承認')}><h2>{text('Promotion approvals', '昇格承認')}</h2>{pending.length === 0 ? <p className="empty-state">{text('No pending requests.', '承認待ちはありません。')}</p> : <div className="validation-list">{pending.map((item) => <div className="promotion-row" key={item.id}><span><strong>{item.agent.id}@{item.agent.version}</strong> · {item.requestedBy}</span><div className="save-actions"><button type="button" className="secondary" disabled={busy} onClick={() => setPendingDecision({ request: item, decision: 'reject' })}>{text('Return', '差し戻し')}</button><button type="button" className="primary" disabled={busy} onClick={() => setPendingDecision({ request: item, decision: 'approve' })}>{text('Approve', '承認')}</button></div></div>)}</div>}</section>
+    <ConfirmDialog
+      open={pendingPolicyDelete !== undefined}
+      title={text('Delete gate policy', 'ゲートポリシーを削除')}
+      message={text(`Delete "${pendingPolicyDelete?.name ?? ''}"? This cannot be undone.`, `"${pendingPolicyDelete?.name ?? ''}" を削除しますか？この操作は元に戻せません。`)}
+      confirmLabel={text('Delete', '削除')}
+      cancelLabel={text('Cancel', 'キャンセル')}
+      danger
+      busy={busy}
+      onConfirm={() => { if (pendingPolicyDelete === undefined) return; void removePolicy(pendingPolicyDelete.id).then(() => setPendingPolicyDelete(undefined)); }}
+      onCancel={() => setPendingPolicyDelete(undefined)}
+    />
+    <ConfirmDialog
+      open={pendingDecision !== undefined}
+      title={decisionTitle}
+      message={decisionMessage}
+      confirmLabel={decisionConfirmLabel}
+      cancelLabel={text('Cancel', 'キャンセル')}
+      busy={busy}
+      onConfirm={() => { if (pendingDecision === undefined) return; void decide(pendingDecision.request, pendingDecision.decision).then(() => setPendingDecision(undefined)); }}
+      onCancel={() => setPendingDecision(undefined)}
+    />
   </>;
 }

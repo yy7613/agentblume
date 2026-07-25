@@ -47,6 +47,7 @@ npm run dev:sample
 - `-SampleData`: 手動確認用のCSV/JSON、Tool、Skill、Agent、Wikiを投入する。
 - `-ApiPort <1-65535>` / `-UiPort <1-65535>`
 - `-DryRun`: 子プロセスを起動せず、実行予定のコマンドと接続先を表示する。
+- `-Stop`: API/UIポートを占有している開発プロセス(このリポジトリ由来と判定できたもの)を停止して終了する。異常終了などで残留したプロセスの掃除に使う。
 
 テストと検証:
 

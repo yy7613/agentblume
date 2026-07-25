@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
@@ -51,6 +51,80 @@ describe('AgentBuilder', () => {
     expect((screen.getByLabelText('エージェント表示名') as HTMLInputElement).value).toBe('');
     expect((screen.getByLabelText('エージェント表示名') as HTMLInputElement).placeholder).toBe('例: サポートエージェント');
     expect((screen.getByLabelText('システムプロンプト') as HTMLTextAreaElement).placeholder).toBe('エージェントの役割、制約、応答スタイルを記述します。');
+    // 空状態メッセージ・未入力理由も日本語で出す（ベタ書き英語/日本語を残さない）。
+    expect(await screen.findByText('保存済みスキルがありません。')).toBeTruthy();
+    expect(screen.getByText('保存済みツールがありません。')).toBeTruthy();
+    expect(screen.getByText(/内部ID、作業名、表示名、公開名、所有者、システムプロンプトが未入力です。/)).toBeTruthy();
+  });
+
+  it('サーバー必須項目が未入力なら保存できず、未入力の項目名を理由として表示する', async () => {
+    const client = stubClient();
+    const { container } = await openNewAgentEditor(client);
+    const save = screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(container.querySelectorAll('.required-mark').length).toBeGreaterThanOrEqual(6);
+    expect(screen.getByText(/Required fields are empty: Internal ID, Working name, Display name, Publish name, Owner, System prompt/)).toBeTruthy();
+
+    // systemPromptだけ埋めても内部ID等が残るためdisabledのまま（以前はここで押せてサーバー400になっていた）。
+    await userEvent.type(screen.getByRole('textbox', { name: 'System prompt' }), 'You are helpful.');
+    expect(save.disabled).toBe(true);
+    expect(screen.getByText(/Required fields are empty: Internal ID, Working name, Display name, Publish name, Owner/)).toBeTruthy();
+
+    await userEvent.type(screen.getByLabelText('Agent internal ID'), 'support-agent');
+    await userEvent.type(screen.getByLabelText('Working name'), 'Support draft');
+    await userEvent.type(screen.getByLabelText('Agent display name'), 'Support Agent');
+    await userEvent.type(screen.getByLabelText('Publish name'), 'support_agent');
+    await userEvent.type(screen.getByLabelText('Owner'), 'local-user');
+    expect(save.disabled).toBe(false);
+    expect(screen.queryByText(/Required fields are empty/)).toBeNull();
+  });
+
+  it('Tool未選択でも保存はブロックせず、データに答えられない旨の警告を表示する', async () => {
+    const client = stubClient();
+    (client.listTools as ReturnType<typeof vi.fn>).mockResolvedValue([{ internalId: 'scores', displayName: 'Score filter', publishName: 'filter_scores', latestVersion: '2.0.0', state: 'draft', sideEffect: 'read-only' }]);
+    await openNewAgentEditor(client);
+    const warning = 'No Tool is selected. This Agent cannot answer questions that need data.';
+    expect(await screen.findByText(warning)).toBeTruthy();
+
+    await userEvent.click(await screen.findByRole('checkbox', { name: /Score filter/ }));
+    expect(screen.queryByText(warning)).toBeNull();
+  });
+
+  it('Skill・Tool・サブエージェント・Wikiの選択行に種別バッジを付ける', async () => {
+    const client = stubClient();
+    (client.listTools as ReturnType<typeof vi.fn>).mockResolvedValue([{ internalId: 'scores', displayName: 'Score filter', publishName: 'filter_scores', latestVersion: '2.0.0', state: 'draft', sideEffect: 'read-only' }]);
+    (client.listSkills as ReturnType<typeof vi.fn>).mockResolvedValue([{ internalId: 'analysis', displayName: 'Analysis skill', publishName: 'analysis', latestVersion: '1.1.0', state: 'draft' }]);
+    (client.listAgents as ReturnType<typeof vi.fn>).mockResolvedValue([existingAgentSummary]);
+    (client.listWikis as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: 'customer-a', name: 'Customer A', description: 'A knowledge', updatedAt: 'now' }]);
+    await openNewAgentEditor(client);
+
+    const badgeOf = (checkboxName: RegExp) => screen.getByRole('checkbox', { name: checkboxName }).closest('label')?.querySelector('.validation-status')?.textContent;
+    expect(badgeOf(/Analysis skill/)).toBe('Skill');
+    expect(badgeOf(/Score filter/)).toBe('Tool');
+    expect(badgeOf(/Existing Agent/)).toBe('Sub-agent');
+    expect(badgeOf(/Use wiki Customer A/)).toBe('Wiki');
+  });
+
+  it('保存成功をボタン近傍に表示し、traceのerrorは種別と実メッセージを表示する', async () => {
+    const client = stubClient();
+    (client.saveAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.2.0' } });
+    (client.runSavedAgent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      runId: 'run-err', mode: 'preview', response: 'failed', usage: {}, agent: { internalId: 'support-agent', version: '1.2.0' },
+      trace: [{ sequence: 1, kind: 'error', code: 'tool-failed', message: 'scores tool timed out' }],
+    });
+    await openNewAgentEditor(client);
+    await userEvent.type(screen.getByLabelText('Agent internal ID'), 'support-agent');
+    await userEvent.type(screen.getByLabelText('Working name'), 'Support draft');
+    await userEvent.type(screen.getByLabelText('Agent display name'), 'Support Agent');
+    await userEvent.type(screen.getByLabelText('Publish name'), 'support_agent');
+    await userEvent.type(screen.getByLabelText('Owner'), 'local-user');
+    await userEvent.type(screen.getByRole('textbox', { name: 'System prompt' }), 'You are helpful.');
+    await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+    expect(await screen.findByText('Saved · version 1.2.0')).toBeTruthy();
+
+    await userEvent.type(screen.getByLabelText('Agent chat message'), 'Run it');
+    await userEvent.click(screen.getByRole('button', { name: 'Run saved agent' }));
+    expect(await screen.findByText('tool-failed: scores tool timed out')).toBeTruthy();
   });
 
   it('Tool選択から草案生成・編集・version保存まで行う', async () => {
@@ -128,7 +202,7 @@ describe('AgentBuilder', () => {
       expect(internalIdInput.readOnly).toBe(true);
     });
 
-    it('Deleteでdeleteagentを呼び、一覧を再取得する', async () => {
+    it('Deleteは確認ダイアログの承諾後にdeleteAgentを呼び、一覧を再取得する', async () => {
       const client = stubClient();
       (client.listAgents as ReturnType<typeof vi.fn>)
         .mockResolvedValueOnce([existingAgentSummary])
@@ -136,6 +210,17 @@ describe('AgentBuilder', () => {
       render(<AgentBuilder client={client} />);
 
       await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+      // 確認前は削除しない。文言には対象のAgent名が入る。
+      const dialog = screen.getByRole('alertdialog');
+      expect(dialog.textContent).toContain('Existing Agent');
+      expect(client.deleteAgent).not.toHaveBeenCalled();
+
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(client.deleteAgent).not.toHaveBeenCalled();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+      await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
 
       expect(client.deleteAgent).toHaveBeenCalledWith('existing-agent', expect.any(Object));
       expect(client.listAgents).toHaveBeenCalledTimes(2);

@@ -18,6 +18,20 @@ describe('ToolApiClient', () => {
     await expect(new ToolApiClient('', fetcher as typeof fetch).listTools(scope)).resolves.toEqual([]);
   });
 
+  it('content-typeはbodyがある時だけ付与する（body無しDELETEをFastifyが空JSON本文として拒否するため）', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(jsonResponse({ tools: [] }))
+      .mockResolvedValueOnce(jsonResponse({ tool: {} }));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    await client.deleteTool('a/b', scope);
+    await client.listTools(scope);
+    await client.saveTool({ scope, internalId: 'a/b', workingName: 'w', displayName: 'd', publishName: 'p', owner: 'o', sideEffect: 'read-only', graph });
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toEqual({});
+    expect(fetcher.mock.calls[1]?.[1]?.headers).toEqual({});
+    expect(fetcher.mock.calls[2]?.[1]?.headers).toEqual({ 'content-type': 'application/json' });
+  });
+
   it('draft infer/preview を正しい body と AbortSignal で呼ぶ', async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ propagation: { order: ['source'], nodes: {}, hasErrors: false } }))
@@ -54,11 +68,37 @@ describe('ToolApiClient', () => {
     expect(fetcher.mock.calls[2]?.[0]).toContain('version=1.0.0');
   });
 
-  it('非2xxをApiErrorへ正規化する', async () => {
+  it('非2xxをApiErrorへ正規化し、messageはローカライズ・原文はserverMessageへ保持する', async () => {
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'ETL_GRAPH', message: 'broken graph' } }, 422));
     const client = new ToolApiClient('', fetcher as typeof fetch);
     const promise = client.inferDraft(graph);
-    await expect(promise).rejects.toEqual(expect.objectContaining({ status: 422, code: 'ETL_GRAPH', message: 'broken graph', name: 'ApiError' }));
+    await expect(promise).rejects.toEqual(expect.objectContaining({
+      status: 422, code: 'ETL_GRAPH', serverMessage: 'broken graph', name: 'ApiError',
+      message: 'Please check the node connections (broken graph)',
+    }));
+  });
+
+  it('Zod由来の生英語メッセージを画面表示用の文言へ変換する', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({
+      error: { code: 'BAD_REQUEST', message: 'invalid body: internalId: Too small: expected string to have >=1 characters; displayName: Invalid input: expected string, received undefined' },
+    }, 400));
+    const error = await new ToolApiClient('', fetcher as typeof fetch).saveTool({
+      scope, internalId: '', workingName: 'w', displayName: '', publishName: 'p', owner: 'o', sideEffect: 'read-only', graph,
+    }).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'Please check your input (Internal ID: is required, Display name: is required)',
+      serverMessage: expect.stringContaining('Too small'),
+    });
+  });
+
+  it('表示言語が日本語のときは日本語の文言を生成する', async () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn().mockReturnValue('ja') });
+    try {
+      const fetcher = vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'HARNESS_NOT_FOUND', message: 'DeleteHarness: harness not found: support-bot' } }, 404));
+      const error = await new ToolApiClient('', fetcher as typeof fetch).deleteHarness('support-bot', scope).catch((cause: unknown) => cause);
+      expect(error).toMatchObject({ status: 404, message: 'ハーネスが見つかりませんでした（ID: support-bot）' });
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it('HTMLなどJSON以外の応答を、構文エラーではなくAPI応答エラーとして扱う', async () => {

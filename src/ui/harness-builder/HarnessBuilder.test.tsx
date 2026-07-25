@@ -149,6 +149,9 @@ describe('HarnessBuilder', () => {
     const client = stubClient();
     await openNewHarnessEditor(client, 'ja');
 
+    // 見出しの英語素通し（'Agent Harness Builder'）を残さない。
+    expect(screen.getByText('ハーネスビルダー')).toBeTruthy();
+    expect(screen.queryByText('Agent Harness Builder')).toBeNull();
     expect(await screen.findByLabelText('Agentを割り当て 作成者')).toBeTruthy();
     expect(screen.getByLabelText('Agentを割り当て レビュアー')).toBeTruthy();
     expect(screen.getByLabelText('Agentを割り当て 公開担当')).toBeTruthy();
@@ -211,6 +214,8 @@ describe('HarnessBuilder', () => {
     expect(client.saveHarness).toHaveBeenCalledWith(expect.objectContaining({
       topology: { pattern: 'concurrent', participantSlotIds: ['research', 'legal', 'marketing'], aggregation: 'vote' },
     }));
+    // 保存成功は保存ボタン近傍にも明示する。
+    expect(await screen.findByText('Saved · version 1.0.0')).toBeTruthy();
   });
 
   it('participant slotを追加・削除でき、最小件数では削除controlが消える', async () => {
@@ -275,9 +280,65 @@ describe('HarnessBuilder', () => {
 
     const saveButton = screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
     expect(saveButton.disabled).toBe(true);
+    expect(screen.getByText('Assign a saved Agent version to the Aggregator slot.')).toBeTruthy();
 
     await userEvent.selectOptions(await screen.findByLabelText('Assign agent to Aggregator'), 'agent-b');
     expect(saveButton.disabled).toBe(false);
+  });
+
+  it('保存できない理由を、検証ボタンを押さなくてもボタン近傍へ表示する', async () => {
+    const client = stubClient();
+    await openNewHarnessEditor(client);
+    await screen.findByLabelText('Assign agent to Author');
+
+    expect((screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Required fields are empty: Internal ID, Display name, Owner.')).toBeTruthy();
+    expect(screen.getByText('Assign a saved Agent version to every slot: Author, Reviewer, Publisher.')).toBeTruthy();
+
+    await fillMetadata('reason-check', 'Reason Check');
+    expect(screen.queryByText(/Required fields are empty/)).toBeNull();
+
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Author'), 'agent-a');
+    expect(screen.getByText('Assign a saved Agent version to every slot: Reviewer, Publisher.')).toBeTruthy();
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Reviewer'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Publisher'), 'agent-b');
+    expect(screen.queryByText(/Assign a saved Agent version to every slot/)).toBeNull();
+    expect((screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('「previewで実行可能」は検証・保存が通るまで緑表示にしない', async () => {
+    const client = stubClientWithSave();
+    (client.validateHarness as ReturnType<typeof vi.fn>).mockResolvedValue({ valid: true, issues: [] });
+    const { container } = await openNewHarnessEditor(client);
+    await screen.findByLabelText('Assign agent to Author');
+
+    // 全slot未割当では緑バッジを出さない（以前は条件式なしのハードコードで常に緑だった）。
+    expect(screen.queryByText('Executable in preview')).toBeNull();
+    expect(screen.getByText('Definition incomplete')).toBeTruthy();
+    expect(container.querySelector('.harness-inspector .validation-status.good')).toBeNull();
+
+    await fillMetadata('status-check', 'Status Check');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Author'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Reviewer'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Publisher'), 'agent-b');
+    expect(screen.getByText('Not validated yet')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Validate' }));
+    expect(await screen.findByText('Executable in preview')).toBeTruthy();
+    expect(container.querySelector('.harness-inspector .validation-status.good')).toBeTruthy();
+
+    (client.validateHarness as ReturnType<typeof vi.fn>).mockResolvedValue({ valid: false, issues: [{ path: 'topology', message: 'needs two slots' }] });
+    await userEvent.click(screen.getByRole('button', { name: 'Validate' }));
+    expect(await screen.findByText('Validation failed')).toBeTruthy();
+    expect(screen.queryByText('Executable in preview')).toBeNull();
+  });
+
+  it('slot目的文は全文をtitleで読めるようにし、はみ出しは省略記号で示す', async () => {
+    const client = stubClient();
+    await openNewHarnessEditor(client, 'ja');
+    const purpose = await screen.findByLabelText('Slotの目的 author') as HTMLInputElement;
+    expect(purpose.title).toBe('最初の成果物を作成する。');
+    expect(purpose.style.textOverflow).toBe('ellipsis');
   });
 
   describe('一覧（Layer 1）', () => {
@@ -319,7 +380,7 @@ describe('HarnessBuilder', () => {
       expect(internalIdInput.readOnly).toBe(true);
     });
 
-    it('Deleteでdeleteharnessを呼び、一覧を再取得する', async () => {
+    it('Deleteは確認ダイアログの承諾後にdeleteHarnessを呼び、一覧を再取得する', async () => {
       const client = stubClient();
       (client.listHarnesses as ReturnType<typeof vi.fn>)
         .mockResolvedValueOnce([existingHarnessSummary])
@@ -327,6 +388,16 @@ describe('HarnessBuilder', () => {
       render(<HarnessBuilder client={client} />);
 
       await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+      const dialog = screen.getByRole('alertdialog');
+      expect(dialog.textContent).toContain('Existing Harness');
+      expect(client.deleteHarness).not.toHaveBeenCalled();
+
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(client.deleteHarness).not.toHaveBeenCalled();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+      await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
 
       expect(client.deleteHarness).toHaveBeenCalledWith('existing-harness', expect.any(Object));
       expect(client.listHarnesses).toHaveBeenCalledTimes(2);

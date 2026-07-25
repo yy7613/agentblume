@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AnalysisConfigProposalDto, ColumnDto, DataSourceDto, DataType, SchemaDto, SearchProviderDto, TenantScopeDto, ToolGraphDto } from '../api/types';
 import { catalogItem, toInputOf, type ToolNodeType } from './node-catalog';
@@ -69,6 +69,8 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
   if (node === undefined) return <aside className="inspector empty"><h2>{text('Inspector', 'インスペクター')}</h2><p>{text('Select a node.', 'ノードを選択してください。')}</p></aside>;
   const config = node.data.config;
   const setConfig = (patch: Record<string, unknown>) => update(node.id, { ...config, ...patch });
+  // 形が切り替わる設定（filter の 旧形式 ⇄ conditions）はmergeでは古いキーが残るため丸ごと置き換える。
+  const replaceConfig = (next: Record<string, unknown>) => update(node.id, next);
   const type = node.data.nodeType;
   const openDialog = () => { setDialogNodeId(node.id); setDialogDraft(structuredClone(config)); };
   const closeDialog = () => { setDialogNodeId(undefined); setDialogDraft(undefined); };
@@ -91,11 +93,13 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
       {type === 'csv-source' && <details><summary>{text('Advanced CSV editor', '詳細CSV編集')}</summary><CsvFields config={config} setConfig={setConfig} /></details>}
       {type === 'select' && <ColumnMultiSelect label={text('Choose columns', '列を選択')} columns={columns} value={(config['columns'] as string[] | undefined) ?? []} onChange={(next) => setConfig({ columns: next })} />}
       {type === 'select' && <details><summary>{text('Advanced text input', '詳細テキスト入力')}</summary><label>{text('Columns', '列')}<input value={(config['columns'] as string[] | undefined)?.join(', ') ?? ''} onChange={(event) => setConfig({ columns: splitList(event.target.value) })} placeholder="id, name" /></label></details>}
-      {type === 'filter' && <FilterFields config={config} setConfig={setConfig} columns={columns} agentInputColumns={agentInputColumns} />}
+      {type === 'filter' && <FilterFields config={config} replaceConfig={replaceConfig} columns={columns} agentInputColumns={agentInputColumns} />}
       {type === 'rename' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Renames', '列名変更')} <small>{text('one from:to pair per line', '1行に from:to')}</small><textarea rows={8} value={(config['renames'] as {from:string;to:string}[] | undefined)?.map((pair) => `${pair.from}:${pair.to}`).join('\n') ?? ''} onChange={(event) => setConfig({ renames: parsePairs(event.target.value, 'to') })} /></label></details>}
       {type === 'cast' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Casts', '型変換')} <small>{text('one column:type pair per line', '1行に column:type')}</small><textarea rows={8} value={(config['casts'] as {column:string;to:string}[] | undefined)?.map((pair) => `${pair.column}:${pair.to}`).join('\n') ?? ''} onChange={(event) => setConfig({ casts: parsePairs(event.target.value, 'type') })} /></label></details>}
       {type === 'join' && <details><summary>{text('Advanced inline editor', '詳細インライン編集')}</summary><JoinFields config={config} setConfig={setConfig} leftColumns={leftColumns} rightColumns={rightColumns} /></details>}
       {type === 'union' && <label className="check"><input type="checkbox" checked={config['strict'] === true} onChange={(event) => setConfig({ strict: event.target.checked })} /> {text('Strict column match', '列名の完全一致を要求')}</label>}
+      {type === 'limit' && <LimitFields config={config} setConfig={setConfig} />}
+      {type === 'group-by' && <GroupByFields config={config} setConfig={setConfig} columns={columns} />}
       {type === 'sort' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Sort keys', 'ソートキー')} <small>{text('one column:asc|desc:first|last per line (latter parts optional)', '1行に column:asc|desc:first|last（後半は省略可）')}</small><textarea rows={8} value={(config['keys'] as SortKeyDraft[] | undefined)?.map((key) => [key.column, key.direction, key.nulls].filter((part) => part !== undefined).join(':')).join('\n') ?? ''} onChange={(event) => setConfig({ keys: parseSortKeys(event.target.value) })} /></label></details>}
       {type === 'distinct' && <ColumnMultiSelect label={text('Choose distinct columns', '重複判定の列を選択')} columns={columns} value={(config['columns'] as string[] | undefined) ?? []} onChange={(next) => setConfig({ columns: next })} hint={text('No selection uses all columns.', '未選択なら全列を使います。')} />}
       {type === 'distinct' && <details><summary>{text('Advanced text input', '詳細テキスト入力')}</summary><label>{text('Distinct columns', '重複判定の列')}<input value={(config['columns'] as string[] | undefined)?.join(', ') ?? ''} onChange={(event) => setConfig({ columns: splitList(event.target.value) })} placeholder="id, name" /></label></details>}
@@ -373,22 +377,134 @@ function CsvFields({ config, setConfig }: { config: Readonly<Record<string, unkn
   </>;
 }
 
-function FilterFields({ config, setConfig, columns, agentInputColumns }: { config: Readonly<Record<string, unknown>>; setConfig(patch: Record<string, unknown>): void; columns: readonly ColumnDto[]; agentInputColumns: readonly ColumnDto[] }) {
+const FILTER_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull'] as const;
+/** 値を要さない演算子。 */
+const FILTER_VALUELESS_OPS: readonly string[] = ['isNull', 'notNull'];
+
+/** 条件1行。旧形式（単一条件のフラットconfig）も同じ形へ正規化して扱う。 */
+interface FilterConditionDraft {
+  readonly column: string;
+  readonly op: string;
+  readonly value?: unknown;
+  readonly valueBinding?: { readonly source?: string; readonly field?: string };
+}
+
+/** 条件1つ分のキーだけを持つプレーンなconfigへ（undefinedのキーは残さない）。 */
+function filterConditionConfig(condition: FilterConditionDraft): Record<string, unknown> {
+  return {
+    column: condition.column,
+    op: condition.op,
+    ...(condition.value === undefined ? {} : { value: condition.value }),
+    ...(condition.valueBinding === undefined ? {} : { valueBinding: condition.valueBinding }),
+  };
+}
+
+/** 保存済みconfig（旧形式 / conditions形式）を条件配列へ正規化する。 */
+function filterConditionDrafts(config: Readonly<Record<string, unknown>>): FilterConditionDraft[] {
+  const conditions = config['conditions'];
+  const sources = Array.isArray(conditions) && conditions.length > 0 ? (conditions as unknown[]) : [config];
+  return sources.map((source) => {
+    const raw = (source !== null && typeof source === 'object' ? source : {}) as Readonly<Record<string, unknown>>;
+    const binding = raw['valueBinding'] as { source?: string; field?: string } | undefined;
+    return {
+      column: typeof raw['column'] === 'string' ? raw['column'] : '',
+      op: typeof raw['op'] === 'string' ? raw['op'] : 'eq',
+      ...(raw['value'] === undefined ? {} : { value: raw['value'] }),
+      ...(binding === undefined ? {} : { valueBinding: binding }),
+    };
+  });
+}
+
+/**
+ * filter の設定UI。1条件のときは旧形式のフラットconfigを書き戻し（保存済みTool・
+ * agent-input バインディングの互換を保つ）、2条件以上で `{ conditions, combine }` へ切り替える。
+ */
+function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { config: Readonly<Record<string, unknown>>; replaceConfig(next: Record<string, unknown>): void; columns: readonly ColumnDto[]; agentInputColumns: readonly ColumnDto[] }) {
   const { text } = useI18n();
-  const op = String(config['op'] ?? 'eq');
-  const column = String(config['column'] ?? '');
-  const columnType = columns.find((candidate) => candidate.name === column)?.type;
-  const binding = config['valueBinding'] as { source?: string; field?: string } | undefined;
-  const valueSource = binding?.source === 'agent-input' ? 'agent-input' : 'constant';
+  const conditions = filterConditionDrafts(config);
+  const combine = config['combine'] === 'or' ? 'or' : 'and';
+  const multiple = conditions.length > 1;
+  const write = (next: readonly FilterConditionDraft[], nextCombine: string = combine) => {
+    const first = next[0] ?? { column: '', op: 'eq' };
+    replaceConfig(next.length <= 1
+      ? filterConditionConfig(first)
+      : { conditions: next.map(filterConditionConfig), combine: nextCombine });
+  };
+  const patch = (index: number, next: Partial<FilterConditionDraft>) =>
+    write(conditions.map((condition, position) => position === index ? { ...condition, ...next } : condition));
   return <>
-    <label>{text('Column', '列')}<input list="upstream-columns" value={column} onChange={(event) => setConfig({ column: event.target.value })} /></label>
-    <label>{text('Operator', '演算子')}<select value={op} onChange={(event) => setConfig({ op: event.target.value })}>{['eq','neq','gt','gte','lt','lte','contains','isNull','notNull'].map((value) => <option key={value}>{value}</option>)}</select></label>
-    {!['isNull', 'notNull'].includes(op) && <>
-      <label>{text('Condition value', '条件値の取得元')}<select value={valueSource} onChange={(event) => setConfig(event.target.value === 'agent-input' ? { valueBinding: { source: 'agent-input', field: agentInputColumns[0]?.name ?? '' } } : { valueBinding: undefined })}><option value="constant">{text('Fixed value', '固定値')}</option><option value="agent-input">{text('Agent input', 'エージェント入力')}</option></select></label>
-      {valueSource === 'agent-input'
-        ? <label>{text('Agent input field', 'エージェント入力フィールド')}<select aria-label={text('Agent input field', 'エージェント入力フィールド')} value={binding?.field ?? ''} onChange={(event) => setConfig({ valueBinding: { source: 'agent-input', field: event.target.value } })}><option value="">{text('Select an input field', '入力フィールドを選択')}</option>{agentInputColumns.map((input) => <option key={input.name} value={input.name}>{input.name} · {input.type}</option>)}</select>{agentInputColumns.length === 0 && <small className="field-error">{text('Add an Agent Input node and define its schema first.', '先にAgent Inputノードを追加し、スキーマを定義してください。')}</small>}<small>{text('The fixed value remains the design-time preview sample.', '固定値は設計時プレビューのサンプルとして残ります。')}</small></label>
-        : <label>{text('Value', '値')}<input value={String(config['value'] ?? '')} onChange={(event) => setConfig({ value: columnType === 'number' && event.target.value !== '' ? Number(event.target.value) : event.target.value })} /></label>}
-    </>}
+    {multiple && <label>{text('Combine conditions', '条件の結合')}<select aria-label={text('Combine conditions', '条件の結合')} value={combine} onChange={(event) => write(conditions, event.target.value)}><option value="and">{text('Match all (AND)', 'すべて満たす (AND)')}</option><option value="or">{text('Match any (OR)', 'いずれかを満たす (OR)')}</option></select></label>}
+    {conditions.map((condition, index) => {
+      const columnType = columns.find((candidate) => candidate.name === condition.column)?.type;
+      const coerce = (raw: string): unknown => columnType === 'number' && raw !== '' ? Number(raw) : raw;
+      const binding = condition.valueBinding;
+      const valueSource = binding?.source === 'agent-input' ? 'agent-input' : 'constant';
+      const valueField = <label>{text('Value', '値')}<input value={String(condition.value ?? '')} onChange={(event) => patch(index, { value: coerce(event.target.value) })} /></label>;
+      return <Fragment key={index}>
+        {multiple && <strong className="rule-title">{text(`Condition ${index + 1}`, `条件${index + 1}`)}</strong>}
+        <label>{text('Column', '列')}<input list="upstream-columns" value={condition.column} onChange={(event) => patch(index, { column: event.target.value })} /></label>
+        <label>{text('Operator', '演算子')}<select aria-label={text('Operator', '演算子')} value={condition.op} onChange={(event) => patch(index, { op: event.target.value })}>{FILTER_OPS.map((value) => <option key={value}>{value}</option>)}</select></label>
+        {!FILTER_VALUELESS_OPS.includes(condition.op) && (multiple
+          ? valueField
+          : <>
+              <label>{text('Condition value', '条件値の取得元')}<select value={valueSource} onChange={(event) => patch(index, event.target.value === 'agent-input' ? { valueBinding: { source: 'agent-input', field: agentInputColumns[0]?.name ?? '' } } : { valueBinding: undefined })}><option value="constant">{text('Fixed value', '固定値')}</option><option value="agent-input">{text('Agent input', 'エージェント入力')}</option></select></label>
+              {valueSource === 'agent-input'
+                ? <label>{text('Agent input field', 'エージェント入力フィールド')}<select aria-label={text('Agent input field', 'エージェント入力フィールド')} value={binding?.field ?? ''} onChange={(event) => patch(index, { valueBinding: { source: 'agent-input', field: event.target.value } })}><option value="">{text('Select an input field', '入力フィールドを選択')}</option>{agentInputColumns.map((input) => <option key={input.name} value={input.name}>{input.name} · {input.type}</option>)}</select>{agentInputColumns.length === 0 && <small className="field-error">{text('Add an Agent Input node and define its schema first.', '先にAgent Inputノードを追加し、スキーマを定義してください。')}</small>}<small>{text('The fixed value remains the design-time preview sample.', '固定値は設計時プレビューのサンプルとして残ります。')}</small></label>
+                : valueField}
+            </>)}
+        {multiple && <div className="rule-row"><button type="button" aria-label={text('Remove condition', '条件を削除')} onClick={() => write(conditions.filter((_, position) => position !== index))}>×</button></div>}
+      </Fragment>;
+    })}
+    <button type="button" onClick={() => write([...conditions, { column: '', op: 'eq', value: '' }])}>{text('Add condition', '条件を追加')}</button>
+    {multiple && <small>{text('An Agent input binding needs a single condition; multi-condition filters use fixed values.', 'エージェント入力の参照は1条件のときだけ使えます。複数条件では固定値になります。')}</small>}
+  </>;
+}
+
+function LimitFields({ config, setConfig }: { config: Readonly<Record<string, unknown>>; setConfig(patch: Record<string, unknown>): void }) {
+  const { text } = useI18n();
+  return <>
+    <label>{text('Row count', '残す行数')}<input aria-label={text('Row count', '残す行数')} type="number" min={1} max={10000} value={Number(config['count'] ?? 100)} onChange={(event) => setConfig({ count: Number(event.target.value) })} /></label>
+    <label>{text('Skip rows', 'スキップする行数')}<input aria-label={text('Skip rows', 'スキップする行数')} type="number" min={0} value={Number(config['offset'] ?? 0)} onChange={(event) => setConfig({ offset: Number(event.target.value) })} /></label>
+    <p>{text('Put Sort upstream to keep the top N rows.', '上流に並べ替えを置くと上位N件になります。')}</p>
+  </>;
+}
+
+const GROUP_BY_OPS = ['count', 'count-distinct', 'sum', 'mean', 'min', 'max', 'first'] as const;
+/** 対象列を要さない op。 */
+const GROUP_BY_COLUMNLESS_OPS: readonly string[] = ['count'];
+/** 数値列だけを候補にする op。 */
+const GROUP_BY_NUMERIC_OPS: readonly string[] = ['sum', 'mean'];
+
+interface GroupByAggregateDraft { readonly op: string; readonly column?: string; readonly as: string }
+
+/** 既存の出力列名と衝突しない既定名。 */
+function nextAggregateName(aggregates: readonly GroupByAggregateDraft[]): string {
+  const taken = new Set(aggregates.map((aggregate) => aggregate.as));
+  if (!taken.has('count')) return 'count';
+  let index = 2;
+  while (taken.has(`count${index}`)) index += 1;
+  return `count${index}`;
+}
+
+function GroupByFields({ config, setConfig, columns }: { config: Readonly<Record<string, unknown>>; setConfig(patch: Record<string, unknown>): void; columns: readonly ColumnDto[] }) {
+  const { text } = useI18n();
+  const groupBy = Array.isArray(config['groupBy']) ? (config['groupBy'] as string[]) : [];
+  const aggregates = Array.isArray(config['aggregates']) ? (config['aggregates'] as GroupByAggregateDraft[]) : [];
+  const setAggregate = (index: number, next: GroupByAggregateDraft) =>
+    setConfig({ aggregates: aggregates.map((aggregate, position) => position === index ? next : aggregate) });
+  return <>
+    <ColumnMultiSelect label={text('Group columns', 'グループ列')} columns={columns} value={groupBy} onChange={(next) => setConfig({ groupBy: next })} hint={text('One output row per group.', 'グループごとに1行を出力します。')} />
+    <strong className="rule-title">{text('Aggregates', '集計')} <small>{text('count needs no column', 'countは対象列の指定なし')}</small></strong>
+    {aggregates.map((aggregate, index) => {
+      const candidates = GROUP_BY_NUMERIC_OPS.includes(aggregate.op) ? columns.filter((column) => column.type === 'number') : columns;
+      return <div className="rule-row" key={index}>
+        <select aria-label={text('Aggregate operation', '集計方法')} value={aggregate.op} onChange={(event) => setAggregate(index, GROUP_BY_COLUMNLESS_OPS.includes(event.target.value) ? { op: event.target.value, as: aggregate.as } : { ...aggregate, op: event.target.value })}>{GROUP_BY_OPS.map((value) => <option key={value}>{value}</option>)}</select>
+        {!GROUP_BY_COLUMNLESS_OPS.includes(aggregate.op) && <select aria-label={text('Aggregate column', '集計する列')} value={aggregate.column ?? ''} onChange={(event) => setAggregate(index, { ...aggregate, column: event.target.value })}><option value="">{text('Select column', '列を選択')}</option>{candidates.map((column) => <option key={column.name} value={column.name}>{column.name} · {column.type}</option>)}</select>}
+        <input aria-label={text('Output column name', '出力列名')} value={aggregate.as} onChange={(event) => setAggregate(index, { ...aggregate, as: event.target.value })} />
+        <button type="button" aria-label={text('Remove aggregate', '集計を削除')} onClick={() => setConfig({ aggregates: aggregates.filter((_, position) => position !== index) })}>×</button>
+      </div>;
+    })}
+    <button type="button" onClick={() => setConfig({ aggregates: [...aggregates, { op: 'count', as: nextAggregateName(aggregates) }] })}>{text('Add aggregate', '集計を追加')}</button>
   </>;
 }
 
@@ -411,6 +527,7 @@ function JoinFields({ config, setConfig, leftColumns, rightColumns }: { config: 
     ))}
     <button type="button" onClick={() => setConfig({ keys: [...keys, { left: '', right: '' }] })}>{text('Add key', 'キーを追加')}</button>
     <label>{text('Right suffix', '右列サフィックス')}<input value={String(config['rightSuffix'] ?? '_right')} onChange={(event) => setConfig({ rightSuffix: event.target.value })} /></label>
+    <label className="check"><input type="checkbox" checked={config['coerceKeys'] === 'string'} onChange={(event) => setConfig({ coerceKeys: event.target.checked ? 'string' : 'none' })} /> {text('Compare keys as text (join 001 with 1)', 'キーを文字列として比較 (001と1を結合)')}</label>
   </>;
 }
 

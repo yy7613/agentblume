@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentSummaryDto, EvaluationDatasetSummaryDto, EvaluatorProfileSummaryDto, ExperimentCaseResultDto, ExperimentDto, RunRecordDto, TenantScopeDto } from '../api/types';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useI18n } from '../i18n';
 
 const message = (cause: unknown): string => cause instanceof Error ? cause.message : 'Request failed';
@@ -19,6 +20,7 @@ export function ExperimentsTab({ client, scope }: { readonly client: ToolApiClie
   const [results, setResults] = useState<readonly ExperimentCaseResultDto[]>([]);
   const [trace, setTrace] = useState<RunRecordDto>();
   const [busy, setBusy] = useState(false); const [error, setError] = useState<string>();
+  const [pendingCancel, setPendingCancel] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -40,7 +42,8 @@ export function ExperimentsTab({ client, scope }: { readonly client: ToolApiClie
     const refresh = async (): Promise<void> => {
       try {
         const [next, nextResults] = await Promise.all([client.getExperiment(selected.id, scope), client.listExperimentResults(selected.id, scope)]);
-        if (active) { setSelected(next); setResults(nextResults); if (next.status !== 'queued' && next.status !== 'running') setExperiments(await client.listExperiments(scope)); }
+        // 750msポーリングは自動実行のため、成功したら一時的な通信エラーの赤バナーをクリアする。
+        if (active) { setError(undefined); setSelected(next); setResults(nextResults); if (next.status !== 'queued' && next.status !== 'running') setExperiments(await client.listExperiments(scope)); }
       } catch (cause) { if (active) setError(message(cause)); }
     };
     void refresh(); const timer = setInterval(() => void refresh(), 750);
@@ -56,10 +59,10 @@ export function ExperimentsTab({ client, scope }: { readonly client: ToolApiClie
     try { const experiment = await client.createExperiment({ scope, target: { agentId, version: agentVersion }, dataset: { id: datasetId, version: datasetVersion }, evaluatorProfile: { id: profileId, version: profileVersion }, repetitions }); setSelected(experiment); setResults([]); setExperiments(await client.listExperiments(scope)); }
     catch (cause) { setError(message(cause)); } finally { setBusy(false); }
   }
-  async function open(experiment: ExperimentDto): Promise<void> { setSelected(experiment); setTrace(undefined); try { setResults(await client.listExperimentResults(experiment.id, scope)); } catch (cause) { setError(message(cause)); } }
-  async function cancel(): Promise<void> { if (selected === undefined) return; setBusy(true); try { setSelected(await client.cancelExperiment(selected.id, scope)); setExperiments(await client.listExperiments(scope)); } catch (cause) { setError(message(cause)); } finally { setBusy(false); } }
-  async function resume(): Promise<void> { if (selected === undefined) return; setBusy(true); try { setSelected(await client.resumeExperiment(selected.id, scope)); setExperiments(await client.listExperiments(scope)); } catch (cause) { setError(message(cause)); } finally { setBusy(false); } }
-  async function openTrace(runId: string): Promise<void> { try { setTrace(await client.getRunTrace(runId, scope)); } catch (cause) { setError(message(cause)); } }
+  async function open(experiment: ExperimentDto): Promise<void> { setSelected(experiment); setTrace(undefined); setError(undefined); try { setResults(await client.listExperimentResults(experiment.id, scope)); } catch (cause) { setError(message(cause)); } }
+  async function cancel(): Promise<void> { if (selected === undefined) return; setBusy(true); setError(undefined); try { setSelected(await client.cancelExperiment(selected.id, scope)); setExperiments(await client.listExperiments(scope)); } catch (cause) { setError(message(cause)); } finally { setBusy(false); } }
+  async function resume(): Promise<void> { if (selected === undefined) return; setBusy(true); setError(undefined); try { setSelected(await client.resumeExperiment(selected.id, scope)); setExperiments(await client.listExperiments(scope)); } catch (cause) { setError(message(cause)); } finally { setBusy(false); } }
+  async function openTrace(runId: string): Promise<void> { setError(undefined); try { setTrace(await client.getRunTrace(runId, scope)); } catch (cause) { setError(message(cause)); } }
 
   const valid = agentId !== '' && agentVersion !== '' && datasetId !== '' && datasetVersion !== '' && profileId !== '' && profileVersion !== '' && Number.isInteger(repetitions) && repetitions >= 1 && repetitions <= 10;
   const percent = selected === undefined ? 0 : Math.round(selected.progress.completed / selected.progress.total * 100);
@@ -82,7 +85,7 @@ export function ExperimentsTab({ client, scope }: { readonly client: ToolApiClie
       <section className="workspace-card"><h2>{text('Experiments', '実験一覧')}</h2><div className="validation-list">{experiments.length === 0 && <p className="empty-state">{text('No experiments yet.', '実験はまだありません。')}</p>}{experiments.map((item) => <button type="button" key={item.id} className={selected?.id === item.id ? 'selected' : ''} onClick={() => void open(item)}><strong>{item.target.agentId}@{item.target.version}</strong><span className={`experiment-status ${item.status}`}>{item.status}</span><span className="run-meta">{item.progress.completed}/{item.progress.total} · {item.dataset.id}@{item.dataset.version}</span></button>)}</div></section>
       <section className="workspace-card" aria-label={text('Experiment detail', '実験詳細')}>
         {selected === undefined ? <p className="empty-state">{text('Select or run an experiment.', '実験を選択または開始してください。')}</p> : <>
-          <div className="panel-title"><h2>{selected.target.agentId}@{selected.target.version}</h2><div className="save-actions">{(selected.status === 'queued' || selected.status === 'running') && <button type="button" className="secondary" disabled={busy} onClick={() => void cancel()}>{text('Cancel', '取消')}</button>}{(selected.status === 'interrupted' || selected.status === 'failed') && <button type="button" className="primary" disabled={busy} onClick={() => void resume()}>{text('Resume', '再開')}</button>}</div></div>
+          <div className="panel-title"><h2>{selected.target.agentId}@{selected.target.version}</h2><div className="save-actions">{(selected.status === 'queued' || selected.status === 'running') && <button type="button" className="secondary" disabled={busy} onClick={() => setPendingCancel(true)}>{text('Cancel', '取消')}</button>}{(selected.status === 'interrupted' || selected.status === 'failed') && <button type="button" className="primary" disabled={busy} onClick={() => void resume()}>{text('Resume', '再開')}</button>}</div></div>
           <p><span className={`experiment-status ${selected.status}`}>{selected.status}</span> · {selected.snapshot.provider}/{selected.snapshot.model}</p>
           <div className="experiment-progress" role="progressbar" aria-label="Experiment progress" aria-valuemin={0} aria-valuemax={selected.progress.total} aria-valuenow={selected.progress.completed}><div style={{ width: `${percent}%` }} /></div><p>{selected.progress.completed}/{selected.progress.total} ({percent}%)</p>
           {selected.error !== undefined && <div className="api-error">{selected.error.code}: {selected.error.message}</div>}
@@ -91,5 +94,16 @@ export function ExperimentsTab({ client, scope }: { readonly client: ToolApiClie
         </>}
       </section>
     </div>
+    <ConfirmDialog
+      open={pendingCancel}
+      title={text('Cancel experiment', '実験を取消')}
+      message={text('Cancel this running experiment? Completed results are kept, but the run will stop.', 'この実行中の実験を取り消しますか？完了済みの結果は保持されますが、実行は停止します。')}
+      confirmLabel={text('Cancel experiment', '実験を取消')}
+      cancelLabel={text('Keep running', '続行する')}
+      danger
+      busy={busy}
+      onConfirm={() => { void cancel().then(() => setPendingCancel(false)); }}
+      onCancel={() => setPendingCancel(false)}
+    />
   </>;
 }

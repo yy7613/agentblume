@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
@@ -190,5 +190,73 @@ describe('AgentInspectorPage', () => {
     await screen.findByRole('option', { name: /Agent/ });
     expect(screen.queryByText('skill-a')).toBeNull();
     expect(screen.queryByText(/Structured output/)).toBeNull();
+  });
+
+  it('Agent一覧取得の失敗バナーは、その後の読み込みが成功すると消える', async () => {
+    const failing = { listAgents: vi.fn().mockRejectedValue(new Error('offline')), listWiki: vi.fn().mockResolvedValue([]) } as unknown as ToolApiClient;
+    const { rerender } = render(<AgentInspectorPage client={failing} />);
+    expect(await screen.findByText('offline')).toBeTruthy();
+
+    // client差し替え（再接続相当）で一覧取得が成功すると、居座っていたエラーバナーが消える。
+    rerender(<AgentInspectorPage client={makeClient()} />);
+    await waitFor(() => expect(screen.queryByText('offline')).toBeNull());
+    expect(await screen.findByRole('option', { name: /Agent/ })).toBeTruthy();
+  });
+
+  it('実行失敗後、送信したユーザー発話は残りRetryで同じ入力を再送する', async () => {
+    const runSavedAgent = vi.fn().mockRejectedValueOnce(new Error('model unavailable')).mockResolvedValueOnce(run);
+    const client = makeClient({ runSavedAgent });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage('please retry me');
+    expect(await screen.findByText('model unavailable')).toBeTruthy();
+    expect(screen.getByText('please retry me')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect((await screen.findAllByText('42 rows matched')).length).toBeGreaterThan(0);
+    expect(runSavedAgent).toHaveBeenCalledTimes(2);
+    expect((runSavedAgent.mock.calls[1]?.[0] as { message: string }).message).toBe('please retry me');
+  });
+
+  it('評価・蒸留の失敗はins-noneではなくfield-errorで目立たせる', async () => {
+    const evaluate = vi.fn().mockRejectedValue(new Error('eval down'));
+    const reflectRun = vi.fn().mockRejectedValue(new Error('distill down'));
+    const client = makeClient({ evaluate, reflectRun });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Evaluate response' }));
+    const evalError = await screen.findByText('Evaluation failed.');
+    expect(evalError.className).toContain('field-error');
+    expect(evalError.className).not.toContain('ins-none');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Distill to memory' }));
+    const distillError = await screen.findByText('Distillation failed.');
+    expect(distillError.className).toContain('field-error');
+    expect(distillError.className).not.toContain('ins-none');
+  });
+
+  it('busy中は経過秒数を1秒毎に更新して表示する', async () => {
+    let resolveRun: (value: unknown) => void = () => {};
+    const runSavedAgent = vi.fn().mockReturnValue(new Promise((resolve) => { resolveRun = resolve; }));
+    const client = makeClient({ runSavedAgent });
+    render(<AgentInspectorPage client={client} />);
+    // Agent一覧の解決とテキスト入力は実タイマーで済ませてから、経過秒数の検証だけfake timersに切り替える。
+    await screen.findByRole('option', { name: /Agent/ });
+    fireEvent.change(screen.getByLabelText('Inspect message'), { target: { value: 'hello' } });
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByText('Running… 0s')).toBeTruthy();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(screen.getByText('Running… 1s')).toBeTruthy();
+      resolveRun(run);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getAllByText('42 rows matched').length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

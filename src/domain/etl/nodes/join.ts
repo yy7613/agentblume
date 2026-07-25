@@ -12,9 +12,14 @@
  * - execute: ハッシュ結合。キー値が null の行はマッチしない（SQL 準拠。ただし
  *   outer 系では無マッチ行として残す）。複数マッチは直積。行順: 左行順 →
  *   (right/full) 右の無マッチ行順。
+ *   キーペアの型不一致は inferSchema と同条件で `SchemaError`（型検査なしだと
+ *   型タグ付きキーで無言の0行になる）。出力行数が `MAX_JOIN_ROWS` を超えたら
+ *   その時点で打ち切って `SchemaError`（キー誤りによる直積の暴走を防ぐ）。
+ * - `coerceKeys: 'string'` を指定すると型タグを外し、キーを文字列として比較する
+ *   （CSV のゼロ埋め ID が number に推論された `1` と JSON の `'1'` を結合できる）。
  */
 import { z } from 'zod';
-import type { Cell, Column, Row, Schema, Table } from '../../data/types';
+import type { Cell, Column, DataType, Row, Schema, Table } from '../../data/types';
 import { findColumn, hasColumn } from '../../data/schema';
 import { ConfigError, SchemaError } from '../errors';
 import type { EtlNode, NodeKind, SchemaInference, SchemaIssue } from '../node';
@@ -22,6 +27,9 @@ import { zodMessage } from './zod-error';
 
 /** 結合モード。 */
 export type JoinMode = 'inner' | 'left' | 'right' | 'full';
+
+/** 結合キーの比較方法。'string' は型を無視して文字列として比較する。 */
+export type JoinCoerceKeys = 'none' | 'string';
 
 /** 結合キーの1ペア（左列名・右列名）。 */
 export interface JoinKey {
@@ -34,10 +42,18 @@ export interface JoinConfig {
   readonly mode: JoinMode;
   readonly keys: JoinKey[];
   readonly rightSuffix?: string;
+  /** 既定 'none'（型タグ付きの厳密比較）。'string' は文字列化して比較する。 */
+  readonly coerceKeys?: JoinCoerceKeys;
 }
 
 /** 右列名の衝突時に付与する既定サフィックス。 */
 const DEFAULT_RIGHT_SUFFIX = '_right';
+
+/**
+ * 出力行数の上限。キー誤りによる直積（例: 2000×2000）でメモリが枯渇するのを防ぐ。
+ * 超えた時点で打ち切り、`SchemaError` を投げる。
+ */
+export const MAX_JOIN_ROWS = 100_000;
 
 const configSchema = z.object({
   mode: z.enum(['inner', 'left', 'right', 'full']),
@@ -50,6 +66,8 @@ const configSchema = z.object({
     )
     .min(1),
   rightSuffix: z.string().optional(),
+  // 既存の保存済み Tool（coerceKeys なし）をそのまま読めるよう optional のままにする。
+  coerceKeys: z.enum(['none', 'string']).optional(),
 });
 
 /** 行からセルを取り出す（欠損キーは null 扱い）。 */
@@ -57,8 +75,13 @@ function cellOf(row: Row, name: string): Cell {
   return Object.prototype.hasOwnProperty.call(row, name) ? (row[name] ?? null) : null;
 }
 
-/** 非null セルをハッシュキー片に変換する（型タグ付き: 1 と '1' を区別）。 */
-function encodeKeyPart(value: Exclude<Cell, null>): string {
+/**
+ * 非null セルをハッシュキー片に変換する。
+ * - 'none': 型タグ付き（1 と '1' を区別）。
+ * - 'string': 型タグなしの文字列（1 と '1' が一致。Date は ISO 文字列）。
+ */
+function encodeKeyPart(value: Exclude<Cell, null>, coerce: JoinCoerceKeys): string {
+  if (coerce === 'string') return value instanceof Date ? value.toISOString() : String(value);
   if (value instanceof Date) return `date:${value.getTime()}`;
   return `${typeof value}:${String(value)}`;
 }
@@ -67,14 +90,34 @@ function encodeKeyPart(value: Exclude<Cell, null>): string {
  * 指定列群の複合ハッシュキーを作る。
  * いずれかのキー値が null の場合はマッチ不能として null を返す（SQL 準拠）。
  */
-function keyOf(row: Row, columns: readonly string[]): string | null {
+function keyOf(row: Row, columns: readonly string[], coerce: JoinCoerceKeys): string | null {
   const parts: string[] = [];
   for (const name of columns) {
     const value = cellOf(row, name);
     if (value === null) return null;
-    parts.push(encodeKeyPart(value));
+    parts.push(encodeKeyPart(value, coerce));
   }
   return JSON.stringify(parts);
+}
+
+/** issue / エラー文面で共有するキーペアの型ラベル。 */
+function keyTypeLabel(key: JoinKey, leftType: DataType, rightType: DataType): string {
+  return `${key.left} ('${leftType}') vs ${key.right} ('${rightType}')`;
+}
+
+/**
+ * execute 用のキー型検査（inferSchema が error にするのと同一条件・同一文面）。
+ * unknown が絡む場合と coerceKeys:'string' の場合は許容する。
+ */
+function requireKeyTypes(left: Schema, right: Schema, config: JoinConfig): void {
+  if (config.coerceKeys === 'string') return;
+  for (const key of config.keys) {
+    const l = findColumn(left, key.left);
+    const r = findColumn(right, key.right);
+    if (l === undefined || r === undefined) continue;
+    if (l.type === r.type || l.type === 'unknown' || r.type === 'unknown') continue;
+    throw new SchemaError(`join: key type mismatch: ${keyTypeLabel(key, l.type, r.type)}`);
+  }
 }
 
 /** inferSchema / execute で共有する出力計画。 */
@@ -112,16 +155,24 @@ function planJoin(left: Schema, right: Schema, config: JoinConfig): JoinPlan {
       });
     }
     if (l !== undefined && r !== undefined && l.type !== r.type) {
+      const label = keyTypeLabel(key, l.type, r.type);
       if (l.type === 'unknown' || r.type === 'unknown') {
         issues.push({
           severity: 'warning',
-          message: `join: key type may mismatch: ${key.left} ('${l.type}') vs ${key.right} ('${r.type}')`,
+          message: `join: key type may mismatch: ${label}`,
+          column: key.left,
+        });
+      } else if (config.coerceKeys === 'string') {
+        // 文字列比較なら型差はエラーにしない（'1' と 1 は一致する）。
+        issues.push({
+          severity: 'warning',
+          message: `join: keys compared as text: ${label}`,
           column: key.left,
         });
       } else {
         issues.push({
           severity: 'error',
-          message: `join: key type mismatch: ${key.left} ('${l.type}') vs ${key.right} ('${r.type}')`,
+          message: `join: key type mismatch: ${label}`,
           column: key.left,
         });
       }
@@ -202,6 +253,9 @@ class JoinNode implements EtlNode<JoinConfig> {
       throw new SchemaError(`join: key column(s) not found: ${missing.join(', ')}`);
     }
 
+    // 型不一致は無言の0行になるため実行時にも弾く（inferSchema と同条件）。
+    requireKeyTypes(left.schema, right.schema, config);
+
     const plan = planJoin(left.schema, right.schema, config);
     if (plan.conflictColumns.length > 0) {
       throw new SchemaError(
@@ -212,11 +266,12 @@ class JoinNode implements EtlNode<JoinConfig> {
     const leftNames = left.schema.columns.map((c) => c.name);
     const leftKeyCols = config.keys.map((k) => k.left);
     const rightKeyCols = config.keys.map((k) => k.right);
+    const coerce: JoinCoerceKeys = config.coerceKeys ?? 'none';
 
     // 右テーブルのハッシュ索引（null キーの行は索引に入れない = マッチしない）。
     const rightIndex = new Map<string, number[]>();
     right.rows.forEach((row, i) => {
-      const key = keyOf(row, rightKeyCols);
+      const key = keyOf(row, rightKeyCols, coerce);
       if (key === null) return;
       const list = rightIndex.get(key);
       if (list === undefined) rightIndex.set(key, [i]);
@@ -237,17 +292,25 @@ class JoinNode implements EtlNode<JoinConfig> {
     const matchedRight = new Array<boolean>(right.rows.length).fill(false);
     const rows: Row[] = [];
 
+    // 上限超過をインクリメンタルに検出する（全 materialize してから数えない）。
+    const pushRow = (leftRow: Row | undefined, rightRow: Row | undefined): void => {
+      if (rows.length >= MAX_JOIN_ROWS) {
+        throw new SchemaError(`join: output exceeded ${MAX_JOIN_ROWS} rows; check join keys`);
+      }
+      rows.push(buildRow(leftRow, rightRow));
+    };
+
     // 左行順に走査。複数マッチは直積（右の行順）。
     for (const leftRow of left.rows) {
-      const key = keyOf(leftRow, leftKeyCols);
+      const key = keyOf(leftRow, leftKeyCols, coerce);
       const matches = key === null ? undefined : rightIndex.get(key);
       if (matches !== undefined && matches.length > 0) {
         for (const i of matches) {
           matchedRight[i] = true;
-          rows.push(buildRow(leftRow, right.rows[i]));
+          pushRow(leftRow, right.rows[i]);
         }
       } else if (config.mode === 'left' || config.mode === 'full') {
-        rows.push(buildRow(leftRow, undefined));
+        pushRow(leftRow, undefined);
       }
     }
 
@@ -255,7 +318,7 @@ class JoinNode implements EtlNode<JoinConfig> {
     if (config.mode === 'right' || config.mode === 'full') {
       right.rows.forEach((rightRow, i) => {
         if (matchedRight[i] !== true) {
-          rows.push(buildRow(undefined, rightRow));
+          pushRow(undefined, rightRow);
         }
       });
     }

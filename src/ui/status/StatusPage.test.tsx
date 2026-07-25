@@ -67,5 +67,24 @@ describe('StatusPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /Save feedback|フィードバックを保存/ }));
     await waitFor(() => expect(submitRunFeedback).toHaveBeenCalledWith('run-observed', expect.objectContaining({ thumb: 'down', rating: 2, comment: 'wrong', issueTags: ['incorrect'] })));
     expect((await screen.findByRole('status')).textContent).toMatch(/Saved|保存しました/);
+
+    // コメント再編集で「保存しました」表示がリセットされ、誤って最新扱いされない。
+    await userEvent.type(screen.getByLabelText(/Comment|コメント/), '!');
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('トレース選択に失敗した後、別の選択が成功すると前回のエラーが消える（role=alertの誤通知防止）', async () => {
+    const summaryA = { runId: 'run-a', status: 'failed', mode: 'preview', tool: { internalId: 'tool-a', version: '1.0.0' }, startedAt: '2026-07-03T00:00:00Z', traceEventCount: 0 };
+    const summaryB = { runId: 'run-b', status: 'succeeded', mode: 'preview', tool: { internalId: 'tool-b', version: '1.0.0' }, startedAt: '2026-07-03T00:00:00Z', traceEventCount: 1 };
+    const recordB = { ...summaryB, scope: { tenantId: 'local', workspaceId: 'default' }, trace: [{ sequence: 1, kind: 'model-response', content: 'ok' }] };
+    const getRunTrace = vi.fn().mockRejectedValueOnce(new Error('trace unavailable')).mockResolvedValueOnce(recordB);
+    const client = { listRuns: vi.fn().mockResolvedValue([summaryA, summaryB]), getRunTrace } as unknown as ToolApiClient;
+    render(<StatusPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /tool-a/ }));
+    expect(await screen.findByText('trace unavailable')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: /tool-b/ }));
+    await waitFor(() => expect(screen.queryByText('trace unavailable')).toBeNull());
+    expect(await screen.findByText('run-b')).toBeTruthy();
   });
 });

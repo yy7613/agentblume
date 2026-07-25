@@ -29,7 +29,7 @@ async function fillSkillDefinition(page: import('@playwright/test').Page, intern
 
 test('Tool Builderでpreviewを確認してversion保存できる', async ({ page }) => {
   await page.goto('/');
-
+  await page.getByRole('button', { name: 'Tool', exact: true }).click();
   await expect(page.getByText('Tool Builder', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'New tool', exact: true }).click();
   const preview = page.locator('section[aria-label="Preview"]');
@@ -292,6 +292,7 @@ test('Chat・MCP・Validation・Memory・Settingsの全ナビが実操作でき�
   await expect(page.getByRole('heading', { name: '実行環境設定' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'ツール', exact: true })).toBeVisible();
   await page.reload();
+  await page.getByRole('button', { name: 'ツール', exact: true }).click();
   await expect(page.getByText('ツールビルダー', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem('agentcontext.language'))).toBe('ja');
 });

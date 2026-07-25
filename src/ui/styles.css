@@ -16,6 +16,10 @@ button:disabled { cursor: default; }
 .app-nav button { border: 0; background: transparent; color: inherit; text-align: left; border-radius: 8px; padding: 10px 12px; display: flex; align-items: center; gap: 10px; }
 .app-nav button.active { color: white; background: #222b48; }
 .app-nav button:disabled { opacity: .55; }
+.app-nav button.nav-chat { border: 1px solid #2c375e; background: #141b33; color: #dbe2f5; margin-bottom: 6px; }
+.app-nav button.nav-chat.active { color: white; background: #222b48; border-color: #3a436f; }
+.nav-group { display: flex; flex-direction: column; gap: 4px; }
+.nav-group-label { font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #64708b; margin: 10px 12px 2px; }
 .nav-dot { width: 7px; height: 7px; border: 1px solid currentColor; border-radius: 50%; }
 .app-nav .active .nav-dot { background: #7c8cff; border-color: #7c8cff; box-shadow: 0 0 0 3px #3a436f; }
 .app-nav > small { margin-top: auto; padding: 10px; color: #64708b; letter-spacing: .08em; }
@@ -623,3 +627,20 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 .finding-severity.warning { background: #fff1d7; color: #97640c; }
 .finding-severity.critical { background: #fce8ea; color: #b43a46; }
 .ins-attach-item small { color: #8390a8; }
+
+/* 共通フィードバック部品（UX改善: 確認ダイアログ・成功/情報通知・必須マーク） */
+.confirm-backdrop { position: fixed; inset: 0; background: rgba(20, 26, 43, .45); display: flex; align-items: center; justify-content: center; z-index: 60; }
+.confirm-dialog { background: white; border-radius: 10px; padding: 18px 20px; width: min(420px, calc(100vw - 48px)); box-shadow: 0 12px 32px rgba(20, 26, 43, .25); }
+.confirm-dialog h3 { margin: 0 0 8px; font-size: 14px; color: #202940; }
+.confirm-message { font-size: 12px; color: #48557a; line-height: 1.6; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.confirm-actions button { height: 32px; padding: 0 14px; border-radius: 7px; border: 1px solid #d9deea; background: white; }
+.confirm-actions button.danger { background: #fce8ea; border-color: #e7b6be; color: #aa3444; font-weight: 700; }
+.confirm-actions button.primary { background: #4d5ef2; border-color: #4d5ef2; color: white; font-weight: 700; }
+.inline-feedback { padding: 8px 10px; border-radius: 6px; font-size: 12px; margin: 6px 0; }
+.inline-feedback.success { background: #e4f5ef; color: #137058; }
+.inline-feedback.info { background: #e9eefc; color: #33499c; }
+.inline-feedback.error { background: #fce8ea; color: #a62f3e; }
+.required-mark { color: #b43a46; margin-left: 3px; font-weight: 700; }
+.api-error { font-size: 12px; font-weight: 600; }
+.cc-alert.notice { background: #e9eefc; color: #33499c; }

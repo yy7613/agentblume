@@ -28,6 +28,20 @@ describe('node catalog', () => {
     expect(catalogItem('replace').defaultConfig).toEqual({ rules: [] });
   });
 
+  it('group-byは分析カテゴリ、limitは変換カテゴリで、妥当な初期configを持つ', () => {
+    expect(catalogItem('group-by').kind).toBe('analyze');
+    expect(catalogItem('group-by').defaultConfig).toEqual({ groupBy: [], aggregates: [{ op: 'count', as: 'count' }] });
+    expect(catalogItem('limit').kind).toBe('transform');
+    expect(catalogItem('limit').defaultConfig).toEqual({ count: 100, offset: 0 });
+    // 単一入力なのでキャンバス側（canConnect）の入力ポート判定は既定の1本になる。
+    expect(catalogItem('group-by').inputArity).toBe(1);
+    expect(catalogItem('limit').inputArity).toBe(1);
+  });
+
+  it('filterの既定configは旧形式（単一条件フラット）のままで後方互換を保つ', () => {
+    expect(catalogItem('filter').defaultConfig).toEqual({ column: '', op: 'eq', value: '' });
+  });
+
   it('inputArityはsource=0/通常transform=1/join・union=2', () => {
     for (const item of NODE_CATALOG) {
       if (item.kind === 'source') expect(item.inputArity).toBe(0);

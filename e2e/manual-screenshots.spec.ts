@@ -16,6 +16,7 @@ test('デモデータの実画面を操作してマニュアル画像を生成�
   page.setDefaultTimeout(10_000);
   await page.addInitScript(() => localStorage.setItem('agentcontext.language', 'ja'));
   await page.goto('/');
+  await page.getByRole('button', { name: 'ツール', exact: true }).click();
   await expect(page.getByText('ツールビルダー', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'データソース', exact: true }).click();

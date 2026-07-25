@@ -16,6 +16,24 @@ vi.mock('./data-sources/DataSourcesPage', () => ({ DataSourcesPage: () => <main>
 afterEach(cleanup);
 
 describe('App navigation', () => {
+  it('初期画面はチャット(サンプルAgentですぐ試せる導線)', () => {
+    render(<App client={{} as ToolApiClient} />);
+    expect(screen.getByText('Chat page')).toBeTruthy();
+  });
+
+  it('ナビを作る/確かめる/運用の3グループで表示する', () => {
+    render(<App client={{} as ToolApiClient} />);
+    expect(screen.getByText('Build')).toBeTruthy();
+    expect(screen.getByText('Check')).toBeTruthy();
+    expect(screen.getByText('Operate')).toBeTruthy();
+  });
+
+  it('チャットはナビ最上部の独立ボタンとして表示する', () => {
+    render(<App client={{} as ToolApiClient} />);
+    const [first] = screen.getAllByRole('button');
+    expect(first?.textContent).toBe('Chat');
+  });
+
   it('Status画面を有効なナビとして開く', async () => {
     const client = { listRuns: vi.fn().mockResolvedValue([]) } as unknown as ToolApiClient;
     render(<App client={client} />);

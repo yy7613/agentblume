@@ -183,4 +183,114 @@ describe('FactoryPage', () => {
     expect(screen.getByText('Tools: 1')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   });
+
+  it('goal・データソース未選択の間はStartボタン近傍に理由ヒントを出す', async () => {
+    const client = stubClient();
+    render(<FactoryPage client={client} />);
+    await screen.findByText('Sales CSV');
+    expect(screen.getByText('Enter a goal and select at least one data source.')).toBeTruthy();
+
+    await userEvent.type(screen.getByLabelText('Factory goal'), 'Answer sales questions');
+    expect(screen.getByText('Select at least one data source.')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /Sales CSV/ }));
+    expect(screen.queryByText('Select at least one data source.')).toBeNull();
+    expect(screen.queryByText('Enter a goal and select at least one data source.')).toBeNull();
+  });
+
+  it('実行中のrunがある間はStartボタンを無効化し理由を表示する（多重起票防止）', async () => {
+    const running = baseRun({ status: 'running' });
+    const client = stubClient({
+      listFactoryRuns: vi.fn().mockResolvedValue([running]),
+      getFactoryRun: vi.fn().mockResolvedValue(running),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+    });
+    render(<FactoryPage client={client} />);
+    await screen.findByText('Sales CSV');
+    await userEvent.type(screen.getByLabelText('Factory goal'), 'Another goal');
+    await userEvent.click(screen.getByRole('checkbox', { name: /Sales CSV/ }));
+
+    const startButton = screen.getByRole('button', { name: 'Start factory run' });
+    expect((startButton as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('A factory run is already in progress. Wait for it to finish before starting another.')).toBeTruthy();
+  });
+
+  it('ポーリングが一時的に失敗しても、次の成功でエラーバナーが消える', async () => {
+    const running = baseRun({ status: 'running' });
+    const getFactoryRun = vi.fn().mockRejectedValueOnce(new Error('network blip')).mockResolvedValue(running);
+    const getFactoryRunEvents = vi.fn().mockResolvedValue([]);
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([running]), getFactoryRun, getFactoryRunEvents });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    expect(await screen.findByText('network blip')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText('network blip')).toBeNull(), { timeout: 3000 });
+  }, 8000);
+
+  it('runのstatus・タイムラインのイベント名/ステージを翻訳ラベルで表示する', async () => {
+    const waiting = baseRun({
+      status: 'waiting-approval',
+      stage: 'planning',
+      plan,
+      checkpoint: { kind: 'plan-approval', expiresAt: '2026-07-21T00:00:00.000Z', prompt: 'Approve this plan?', plan },
+      events: [{ sequence: 1, kind: 'stage_started', at: '2026-07-20T00:00:00.010Z', stage: 'planning' }],
+    });
+    const client = stubClient({
+      listFactoryRuns: vi.fn().mockResolvedValue([waiting]),
+      getFactoryRun: vi.fn().mockResolvedValue(waiting),
+      getFactoryRunEvents: vi.fn().mockResolvedValue(waiting.events),
+    });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Sales Assistant/ }));
+    // status enumの生値ではなく翻訳ラベルで出す。
+    expect(screen.getAllByText('Waiting for approval').length).toBeGreaterThan(0);
+    expect(screen.queryByText('waiting-approval')).toBeNull();
+    // ステージも翻訳済み。
+    expect(screen.getByText('Stage: Planning')).toBeTruthy();
+    // タイムラインのイベント名も翻訳済み。
+    expect(screen.getByText('Stage started')).toBeTruthy();
+    expect(screen.queryByText('stage_started')).toBeNull();
+  });
+
+  it('実行中のrunはrun開始からの経過時間を表示する', async () => {
+    const startedAt = new Date(Date.now() - 5000).toISOString();
+    const running = baseRun({ status: 'running', startedAt });
+    const client = stubClient({
+      listFactoryRuns: vi.fn().mockResolvedValue([running]),
+      getFactoryRun: vi.fn().mockResolvedValue(running),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+    });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    expect(await screen.findByText(/Elapsed: \d+s/)).toBeTruthy();
+  });
+
+  it('終了済みのrunでは経過時間を表示しない', async () => {
+    const succeeded = baseRun({ status: 'succeeded' });
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([succeeded]) });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText(/Stage:/);
+    expect(screen.queryByText(/Elapsed:/)).toBeNull();
+  });
+
+  it('取消ボタンはConfirmDialogでの確認を経てからcancelFactoryRunを呼ぶ', async () => {
+    const running = baseRun({ status: 'running' });
+    const cancelled: FactoryRunDto = { ...running, status: 'cancelled' };
+    const cancelFactoryRun = vi.fn().mockResolvedValue(cancelled);
+    const client = stubClient({
+      listFactoryRuns: vi.fn().mockResolvedValue([running]),
+      getFactoryRun: vi.fn().mockResolvedValue(running),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+      cancelFactoryRun,
+    });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByRole('alertdialog')).toBeTruthy();
+    expect(cancelFactoryRun).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel run' }));
+    await waitFor(() => expect(cancelFactoryRun).toHaveBeenCalledWith('run-1', scope));
+  });
 });

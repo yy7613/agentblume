@@ -23,4 +23,22 @@ describe('SettingsPage', () => {
     expect(localStorage.getItem('agentcontext.language')).toBe('ja');
     expect(document.documentElement.lang).toBe('ja');
   });
+
+  it('ヘルスチェック失敗時にconsole.errorへ記録し、再確認ボタンで再実行できる', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const health = vi.fn().mockRejectedValueOnce(new Error('network down')).mockResolvedValueOnce({ status: 'ok' });
+      const client = { health } as unknown as ToolApiClient;
+      render(<SettingsPage client={client} />);
+      expect(await screen.findByText('offline')).toBeTruthy();
+      expect(consoleError).toHaveBeenCalled();
+      const retry = screen.getByRole('button', { name: 'Retry' });
+      await userEvent.click(retry);
+      await waitFor(() => expect(health).toHaveBeenCalledTimes(2));
+      expect(await screen.findByText('ok')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 });

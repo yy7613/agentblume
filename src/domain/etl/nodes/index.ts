@@ -3,7 +3,8 @@
  *
  * v1 の 7 ノード（agent-input / json-source / csv-source / select / filter /
  * rename / cast）と v15 の 6 ノード（join / union / sort / distinct /
- * fill-null / replace）を register 済みの NodeRegistry を生成する。
+ * fill-null / replace）、および出力・分析系ノード（group-by / limit を含む）を
+ * register 済みの NodeRegistry を生成する。
  * 依存の向き: registry ← nodes（registry.ts は本ファイルを import しない）。
  */
 import { NodeRegistry } from '../registry';
@@ -17,7 +18,9 @@ import { castNode } from './cast';
 import { joinNode } from './join';
 import { unionNode } from './union';
 import { sortNode } from './sort';
+import { limitNode } from './limit';
 import { distinctNode } from './distinct';
+import { groupByNode } from './group-by';
 import { fillNullNode } from './fill-null';
 import { replaceNode } from './replace';
 import { agentOutputNode } from './agent-output';
@@ -36,7 +39,7 @@ export type { CsvSourceConfig } from './csv-source';
 export { selectNode } from './select';
 export type { SelectConfig } from './select';
 export { filterNode } from './filter';
-export type { FilterConfig, FilterOp } from './filter';
+export type { FilterCombine, FilterCondition, FilterConditionsConfig, FilterConfig, FilterOp } from './filter';
 export { renameNode } from './rename';
 export type { RenameConfig } from './rename';
 export { castNode } from './cast';
@@ -49,8 +52,13 @@ export { unionNode } from './union';
 export type { UnionConfig } from './union';
 export { sortNode } from './sort';
 export type { SortConfig, SortKey } from './sort';
+export { limitNode } from './limit';
+export type { LimitConfig } from './limit';
 export { distinctNode } from './distinct';
 export type { DistinctConfig } from './distinct';
+export { groupByNode } from './group-by';
+export type { GroupByAggregate, GroupByConfig, GroupByOp } from './group-by';
+export { GROUP_BY_OPS } from './group-by';
 export { fillNullNode } from './fill-null';
 export type { FillNullConfig, FillRule, FillStrategy } from './fill-null';
 export { replaceNode } from './replace';
@@ -85,7 +93,9 @@ export function createDefaultRegistry(): NodeRegistry {
   registry.register(joinNode);
   registry.register(unionNode);
   registry.register(sortNode);
+  registry.register(limitNode);
   registry.register(distinctNode);
+  registry.register(groupByNode);
   registry.register(fillNullNode);
   registry.register(replaceNode);
   registry.register(agentOutputNode);

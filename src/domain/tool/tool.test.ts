@@ -78,6 +78,14 @@ describe('createTool (immutability / no mutation of input)', () => {
     expect(toolConfig.rows[0]!.a).toBe(1);
   });
 
+  it('keeps and clones the optional canvas position', () => {
+    const position = { x: 80, y: 120 };
+    const graph: ToolGraph = { nodes: [{ id: 'n1', type: 'json-source', config: {}, position }], edges: [] };
+    const tool = createTool({ ...baseProps(), graph });
+    position.x = 999;
+    expect(tool.graph.nodes[0]?.position).toEqual({ x: 80, y: 120 });
+  });
+
   it('clones schema arrays', () => {
     const inputSchema = { columns: [{ name: 'a', type: 'number' as const, nullable: false }] };
     const tool = createTool({ ...baseProps(), inputSchema });

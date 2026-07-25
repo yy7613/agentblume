@@ -16,17 +16,20 @@ import { useI18n } from './i18n';
 
 const ValidationPage = lazy(async () => ({ default: (await import('./validation/ValidationPage')).ValidationPage }));
 
-const NAV_ITEMS = [
-  { id: 'Chat', ja: 'チャット' }, { id: 'Inspect', ja: '動作確認' }, { id: 'Agent', ja: 'エージェント' }, { id: 'Harness', ja: 'ハーネス' }, { id: 'Skill', ja: 'スキル' }, { id: 'Data', ja: 'データソース' }, { id: 'Tool', ja: 'ツール' },
-  { id: 'MCP', ja: 'MCP' }, { id: 'Validation', ja: '検証' }, { id: 'Factory', ja: 'Factory' }, { id: 'Memory', ja: '記憶' }, { id: 'Settings', ja: '設定' }, { id: 'Status', ja: 'ステータス' },
+// チャットは主役画面として単独で最上部、以降は作成フロー(Data→Tool→Skill→Agent→Harness→Factory)の順にグルーピングして提示する(UXレビュー反映)
+const CHAT_ITEM = { id: 'Chat', ja: 'チャット' } as const;
+const NAV_GROUPS = [
+  { en: 'Build', ja: '作る', items: [{ id: 'Data', ja: 'データソース' }, { id: 'Tool', ja: 'ツール' }, { id: 'Skill', ja: 'スキル' }, { id: 'Agent', ja: 'エージェント' }, { id: 'Harness', ja: 'ハーネス' }, { id: 'Factory', ja: '自動生成 (Factory)' }] },
+  { en: 'Check', ja: '確かめる', items: [{ id: 'Inspect', ja: '動作確認' }, { id: 'Validation', ja: '検証' }] },
+  { en: 'Operate', ja: '運用', items: [{ id: 'Memory', ja: '記憶' }, { id: 'MCP', ja: 'MCP' }, { id: 'Status', ja: 'ステータス' }, { id: 'Settings', ja: '設定' }] },
 ] as const;
-type Screen = (typeof NAV_ITEMS)[number]['id'];
+type Screen = (typeof CHAT_ITEM)['id'] | (typeof NAV_GROUPS)[number]['items'][number]['id'];
 
 export function App({ client }: { readonly client: ToolApiClient }) {
-  const [screen, setScreen] = useState<Screen>('Tool');
+  const [screen, setScreen] = useState<Screen>('Chat');
   const { text } = useI18n();
   return <div className="app-shell">
-    <nav className="app-nav"><div className="brand"><span>AB</span><strong>agentblume</strong></div>{NAV_ITEMS.map((item) => <button key={item.id} type="button" className={item.id === screen ? 'active' : ''} onClick={() => setScreen(item.id)}><span className="nav-dot" />{text(item.id, item.ja)}</button>)}<small>LOCAL · PREVIEW</small></nav>
+    <nav className="app-nav"><div className="brand"><span>AB</span><strong>agentblume</strong></div><button type="button" className={`nav-chat${CHAT_ITEM.id === screen ? ' active' : ''}`} onClick={() => setScreen(CHAT_ITEM.id)}><span className="nav-dot" />{text(CHAT_ITEM.id, CHAT_ITEM.ja)}</button>{NAV_GROUPS.map((group) => <div key={group.en} className="nav-group"><small className="nav-group-label">{text(group.en, group.ja)}</small>{group.items.map((item) => <button key={item.id} type="button" className={item.id === screen ? 'active' : ''} onClick={() => setScreen(item.id)}><span className="nav-dot" />{text(item.id, item.ja)}</button>)}</div>)}<small>LOCAL · PREVIEW</small></nav>
     {screen === 'Tool' ? <ToolBuilder client={client} /> : screen === 'Agent' ? <AgentBuilder client={client} /> : screen === 'Harness' ? <HarnessBuilder client={client} /> : screen === 'Skill' ? <SkillBuilder client={client} /> : screen === 'Chat' ? <ChatPage client={client} /> : screen === 'Inspect' ? <AgentInspectorPage client={client} /> : screen === 'Data' ? <DataSourcesPage client={client} /> : screen === 'MCP' ? <McpPage client={client} /> : screen === 'Validation' ? <Suspense fallback={<main className="workspace-page"><p className="empty-state">{text('Loading validation…', '検証画面を読み込み中…')}</p></main>}><ValidationPage client={client} /></Suspense> : screen === 'Factory' ? <FactoryPage client={client} /> : screen === 'Memory' ? <MemoryPage client={client} /> : screen === 'Settings' ? <SettingsPage client={client} /> : <StatusPage client={client} />}
   </div>;
 }

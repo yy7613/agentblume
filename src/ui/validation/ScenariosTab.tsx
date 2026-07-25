@@ -3,6 +3,7 @@ import type { ToolApiClient } from '../api/tool-api';
 import type {
   AgentSummaryDto, PersonaSummaryDto, ScenarioSummaryDto, SurveyQuestionDto, SurveyQuestionKindDto, TenantScopeDto,
 } from '../api/types';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useI18n } from '../i18n';
 
 // UIはHTTP境界の外なので domain の DEFAULT_SURVEY を直接importできない（依存ルール）。
@@ -45,8 +46,9 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
   const [survey, setSurvey] = useState<readonly SurveyQuestionDto[]>(DEFAULT_SURVEY_TEMPLATE.map((question) => ({ ...question })));
   const [bump, setBump] = useState<'major' | 'minor' | 'patch'>('patch');
   const [savedVersion, setSavedVersion] = useState<string>();
-  const [busy, setBusy] = useState<'save' | 'run'>();
+  const [busy, setBusy] = useState<'save' | 'run' | 'delete'>();
   const [error, setError] = useState<string>();
+  const [pendingDelete, setPendingDelete] = useState<{ readonly id: string; readonly name: string }>();
 
   useEffect(() => {
     let active = true;
@@ -60,7 +62,7 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
   const pseudoAgents = agents.filter((agent) => agent.kind === 'pseudo-user');
 
   async function selectAgent(nextAgentId: string): Promise<void> {
-    setAgentId(nextAgentId); setAgentVersions([]); setAgentVersion('');
+    setAgentId(nextAgentId); setAgentVersions([]); setAgentVersion(''); setError(undefined);
     if (nextAgentId === '') return;
     const summary = agents.find((agent) => agent.internalId === nextAgentId);
     try {
@@ -108,12 +110,13 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
   }
 
   async function remove(internalIdToRemove: string): Promise<void> {
-    setError(undefined);
+    setBusy('delete'); setError(undefined);
     try {
       await client.deleteScenario(internalIdToRemove, scope);
       setScenarios(await client.listScenarios(scope));
       if (editingId === internalIdToRemove) startNew();
     } catch (cause) { setError(message(cause)); }
+    finally { setBusy(undefined); }
   }
 
   function updateQuestion(index: number, patch: Partial<SurveyQuestionDto>): void {
@@ -179,7 +182,7 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
           <button type="button" className={scenario.internalId === editingId ? 'selected' : ''} onClick={() => void edit(scenario)}>
             <strong>{scenario.displayName}</strong><span className="version-chip">{scenario.latestVersion}</span>
           </button>
-          <button type="button" className="secondary danger" disabled={busy !== undefined} onClick={() => void remove(scenario.internalId)}>{text('Delete', '削除')}</button>
+          <button type="button" className="secondary danger" disabled={busy !== undefined} onClick={() => setPendingDelete({ id: scenario.internalId, name: scenario.displayName })}>{text('Delete', '削除')}</button>
         </div>)}
       </div>
     </section>
@@ -226,6 +229,17 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
       <p className="empty-state">{text('Save a version first, then run the scenario. The run appears in the Runs tab when it finishes.', '先にバージョンを保存してからシナリオを実行してください。完了するとRunsタブに結果が表示されます。')}</p>
     </section>
     </div>
+    <ConfirmDialog
+      open={pendingDelete !== undefined}
+      title={text('Delete scenario', 'シナリオを削除')}
+      message={text(`Delete "${pendingDelete?.name ?? ''}"? This cannot be undone.`, `"${pendingDelete?.name ?? ''}" を削除しますか？この操作は元に戻せません。`)}
+      confirmLabel={text('Delete', '削除')}
+      cancelLabel={text('Cancel', 'キャンセル')}
+      danger
+      busy={busy === 'delete'}
+      onConfirm={() => { if (pendingDelete === undefined) return; void remove(pendingDelete.id).then(() => setPendingDelete(undefined)); }}
+      onCancel={() => setPendingDelete(undefined)}
+    />
   </>;
 }
 

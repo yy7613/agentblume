@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { ToolSummaryDto } from '../api/types';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useI18n } from '../i18n';
 import { FlowCanvas } from './FlowCanvas';
 import { MetadataBar } from './MetadataBar';
@@ -23,6 +24,8 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
   const [tools, setTools] = useState<readonly ToolSummaryDto[]>([]);
   const [busy, setBusy] = useState(false);
   const [listError, setListError] = useState<string>();
+  // 削除は確認してから実行する（取り消せない操作を1クリックで走らせない）。
+  const [pendingDelete, setPendingDelete] = useState<ToolSummaryDto>();
 
   useEffect(() => {
     let active = true;
@@ -55,7 +58,7 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
     setBusy(true); setListError(undefined);
     try { await client.deleteTool(internalId, scope); await refreshTools(); }
     catch (cause) { setListError(message(cause)); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setPendingDelete(undefined); }
   }
 
   if (view === 'list') {
@@ -70,10 +73,14 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
           <div><strong>{item.displayName}</strong><code>{item.publishName}@{item.latestVersion}</code><small>{item.sideEffect} · {item.state}</small></div>
           <div className="agent-list-actions">
             <button type="button" className="secondary" disabled={busy} onClick={() => void openTool(item.internalId)}>{text('Open', '開く')}</button>
-            <button type="button" className="secondary danger" disabled={busy} onClick={() => void removeTool(item.internalId)}>{text('Delete', '削除')}</button>
+            <button type="button" className="secondary danger" disabled={busy} onClick={() => setPendingDelete(item)}>{text('Delete', '削除')}</button>
           </div>
         </article>)}</div>}
       </section>
+      <ConfirmDialog open={pendingDelete !== undefined} title={text('Delete tool', 'ツールを削除')}
+        message={text(`Delete "${pendingDelete?.displayName ?? ''}" (${pendingDelete?.publishName ?? ''})? It disappears from this list and Agents can no longer reference it.`, `「${pendingDelete?.displayName ?? ''}」(${pendingDelete?.publishName ?? ''})を削除しますか？一覧から消え、エージェントから参照できなくなります。`)}
+        confirmLabel={text('Delete', '削除')} cancelLabel={text('Cancel', 'キャンセル')} danger busy={busy}
+        onConfirm={() => { if (pendingDelete !== undefined) void removeTool(pendingDelete.internalId); }} onCancel={() => setPendingDelete(undefined)} />
     </main>;
   }
   return <div className="tool-builder-shell">

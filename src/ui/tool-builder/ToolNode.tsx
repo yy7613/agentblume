@@ -1,5 +1,6 @@
 import { type CSSProperties } from 'react';
 import { Handle, Position, useStore, type NodeProps } from '@xyflow/react';
+import { localizeSchemaIssueMessage } from '../api/error-messages';
 import { catalogItem, inputHandleId } from './node-catalog';
 import { useToolBuilderStore, type ToolFlowNode } from './store';
 import { useI18n } from '../i18n';
@@ -27,7 +28,7 @@ export function constantSizeHandleStyle(zoom: number, extra?: CSSProperties): CS
 export function ToolNode({ id, data, selected }: NodeProps<ToolFlowNode>) {
   const inference = useToolBuilderStore((state) => state.propagation?.nodes[id]);
   const zoom = useStore((state) => state.transform[2]);
-  const { text } = useI18n();
+  const { text, language } = useI18n();
   const hasError = inference?.issues.some((issue) => issue.severity === 'error') ?? false;
   const item = catalogItem(data.nodeType);
   const isSource = item.kind === 'source';
@@ -51,7 +52,7 @@ export function ToolNode({ id, data, selected }: NodeProps<ToolFlowNode>) {
         <span className={`state-badge state-${inference.state}`}>{STATE_LABEL[inference.state]}</span>
       )}
       {inference?.issues.map((issue, index) => (
-        <small className={`node-issue ${issue.severity}`} key={`${issue.message}-${index}`}>{issue.message}</small>
+        <small className={`node-issue ${issue.severity}`} key={`${issue.message}-${index}`}>{localizeSchemaIssueMessage(issue.message, language)}</small>
       ))}
       {item.kind !== 'sink' && <Handle type="source" position={Position.Right} style={constantSizeHandleStyle(zoom)} />}
     </div>

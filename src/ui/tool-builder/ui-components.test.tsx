@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, type ToolApiClient } from '../api/tool-api';
 import type { PreviewResultDto, PropagationResultDto, SerializedToolDto } from '../api/types';
+import { I18nProvider } from '../i18n';
 import { MetadataBar } from './MetadataBar';
 import { NodeInspector } from './NodeInspector';
 import { PreviewPanel } from './PreviewPanel';
@@ -228,8 +229,8 @@ describe('PreviewPanel', () => {
     expect(screen.getByRole('cell', { name: '30' })).toBeTruthy();
   });
 
-  it('API errorとschema issueを表示する', () => {
-    useToolBuilderStore.getState().setError('server offline');
+  it('自動検証のAPI errorとschema issueを表示する', () => {
+    useToolBuilderStore.getState().setDraftIssue('server offline');
     useToolBuilderStore.getState().setPropagation({
       ...propagation,
       hasErrors: true,
@@ -239,7 +240,53 @@ describe('PreviewPanel', () => {
     expect(screen.getByRole('alert').textContent).toContain('server offline');
     expect(screen.getByText('missing age')).toBeTruthy();
   });
+
+  it('保存失敗はプレビュー領域に表示しない', () => {
+    useToolBuilderStore.getState().setSaveError('SaveTool: invalid metadata');
+    render(<PreviewPanel />);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('日本語UIではnode issueの英語定型文を日本語化して表示する', () => {
+    useToolBuilderStore.getState().setPropagation({
+      ...propagation,
+      hasErrors: true,
+      nodes: {
+        ...propagation.nodes,
+        'filter-1': {
+          ...propagation.nodes['filter-1']!,
+          issues: [
+            { severity: 'error', message: "chart-output: mapping 'timeColumn' is required" },
+            { severity: 'error', message: "join: key type mismatch: id ('string') vs id ('number')" },
+          ],
+        },
+      },
+    });
+    render(<I18nProvider initialLanguage="ja"><PreviewPanel /></I18nProvider>);
+    expect(screen.getByText("chart-output: 「timeColumn」の設定が必要です")).toBeTruthy();
+    expect(screen.getByText('結合キーの型が一致しません: id (文字列) と id (数値)')).toBeTruthy();
+    expect(screen.queryByText("chart-output: mapping 'timeColumn' is required")).toBeNull();
+  });
+
+  it('英語UIではnode issueを原文のまま表示する（詳細を握りつぶさない）', () => {
+    useToolBuilderStore.getState().setPropagation({
+      ...propagation,
+      hasErrors: true,
+      nodes: { ...propagation.nodes, 'filter-1': { ...propagation.nodes['filter-1']!, issues: [{ severity: 'error', message: "chart-output: mapping 'timeColumn' is required" }] } },
+    });
+    render(<PreviewPanel />);
+    expect(screen.getByText("chart-output: mapping 'timeColumn' is required")).toBeTruthy();
+  });
 });
+
+function fillRequiredMetadata(): void {
+  const { setMetadata } = useToolBuilderStore.getState();
+  setMetadata('internalId', 'customer-filter');
+  setMetadata('workingName', 'Customer filter draft');
+  setMetadata('displayName', 'Customer filter');
+  setMetadata('publishName', 'adult_customers');
+  setMetadata('owner', 'owner@example.com');
+}
 
 describe('MetadataBar', () => {
   it('updates editable metadata, including the session-write side-effect selector', () => {
@@ -260,6 +307,7 @@ describe('MetadataBar', () => {
 
   it('明示Saveだけが保存APIを呼びversion履歴を更新する', async () => {
     useToolBuilderStore.getState().setPropagation(propagation);
+    fillRequiredMetadata();
     const metadata = useToolBuilderStore.getState().metadata;
     const tool = {
       metadata: { ...metadata, tenant: { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId }, version: '1.0.0', state: 'draft' },
@@ -278,6 +326,7 @@ describe('MetadataBar', () => {
   });
 
   it('agent-inputとterminal propagationからInput/Output Schemaを保存する', async () => {
+    fillRequiredMetadata();
     const metadata = useToolBuilderStore.getState().metadata;
     const input = { columns: [{ name: 'query', type: 'string' as const, nullable: false }] };
     useToolBuilderStore.getState().loadTool({
@@ -311,6 +360,58 @@ describe('MetadataBar', () => {
     render(<MetadataBar client={client} />);
     await userEvent.click(screen.getByRole('button', { name: 'Versions' }));
     await waitFor(() => expect(useToolBuilderStore.getState().versions).toEqual(['1.0.0', '1.0.1']));
+  });
+
+  it('必須項目に印を付け、未入力なら保存を無効化して理由を近傍に示す', () => {
+    render(<MetadataBar client={{} as ToolApiClient} />);
+    expect(document.querySelectorAll('.required-mark')).toHaveLength(5);
+    const save = () => screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
+    expect(save().disabled).toBe(true);
+    expect(screen.getByText('Internal ID, Working name, Display name, Publish name, Owner required to save.')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Internal ID'), { target: { value: 'customer-filter' } });
+    fireEvent.change(screen.getByLabelText('Working name'), { target: { value: 'draft' } });
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Customer filter' } });
+    fireEvent.change(screen.getByLabelText('Publish name'), { target: { value: 'adult_customers' } });
+    expect(save().disabled).toBe(true);
+    expect(screen.getByText('Owner required to save.')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Owner'), { target: { value: 'owner@example.com' } });
+    expect(save().disabled).toBe(false);
+    expect(screen.queryByText(/required to save/)).toBeNull();
+  });
+
+  it('保存失敗を保存ボタン近傍に出し、状態バッジを草案検証のままにして再保存できる', async () => {
+    fillRequiredMetadata();
+    const client = {
+      saveTool: vi.fn().mockRejectedValue(new Error('SaveTool: graph validation failed')),
+      listVersions: vi.fn().mockResolvedValue([]),
+    } as unknown as ToolApiClient;
+    render(<><MetadataBar client={client} /><PreviewPanel /></>);
+    await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+
+    await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(1));
+    expect(document.querySelector('.metadata-bar .api-error')?.textContent).toBe('SaveTool: graph validation failed');
+    expect(document.querySelector('.preview-panel .api-error')).toBeNull();
+    // 保存失敗はメタデータ起因なので、草案バッジを「問題あり」にしない。
+    expect(document.querySelector('.validation-status')?.className).toContain('good');
+    // 行き止まりにしない: 失敗直後も保存ボタンは押せる。
+    expect((screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+    await waitFor(() => expect(client.saveTool).toHaveBeenCalledTimes(2));
+  });
+
+  it('保存成功をバージョン付きで保存ボタン近傍に知らせる', async () => {
+    fillRequiredMetadata();
+    const metadata = useToolBuilderStore.getState().metadata;
+    const tool = {
+      metadata: { ...metadata, tenant: { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId }, version: '1.0.1', state: 'draft' },
+      sideEffect: metadata.sideEffect, graph: { nodes: [], edges: [] },
+    } as unknown as SerializedToolDto;
+    const client = { saveTool: vi.fn().mockResolvedValue(tool), listVersions: vi.fn().mockResolvedValue(['1.0.0', '1.0.1']) } as unknown as ToolApiClient;
+    render(<MetadataBar client={client} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+    expect((await screen.findByRole('status')).textContent).toBe('Saved version 1.0.1');
   });
 });
 

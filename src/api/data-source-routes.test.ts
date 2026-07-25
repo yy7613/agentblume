@@ -31,9 +31,21 @@ describe('data source routes', () => {
 
   it('不正JSONと未構成connectionIdを400にする', async () => {
     const json = await server.inject({ method: 'POST', url: '/data-sources/files', payload: { scope, name: 'bad.json', format: 'json', content: '{' } });
-    expect(json.statusCode).toBe(400); expect(json.json().error.code).toBe('DATA_SOURCE_VALIDATION');
+    expect(json.statusCode).toBe(400); expect(json.json().error.code).toBe('INVALID_FILE_CONTENT');
     const database = await server.inject({ method: 'POST', url: '/data-sources/databases', payload: { scope, name: 'Unknown', connectionId: 'unknown' } });
     expect(database.statusCode).toBe(400); expect(database.json().error.code).toBe('DATA_SOURCE_VALIDATION');
+  });
+
+  it('壊れたCSVと壊れたJSONを400 INVALID_FILE_CONTENTにする', async () => {
+    const binaryContent = `id,name\n1,A${String.fromCharCode(0)}B`;
+    const binary = await server.inject({ method: 'POST', url: '/data-sources/files', payload: { scope, name: 'binary.csv', format: 'csv', content: binaryContent } });
+    expect(binary.statusCode).toBe(400); expect(binary.json().error.code).toBe('INVALID_FILE_CONTENT');
+    expect(binary.json().error.message).toMatch(/csv content could not be parsed/);
+    const noHeader = await server.inject({ method: 'POST', url: '/data-sources/files', payload: { scope, name: 'no-header.csv', format: 'csv', content: '\n1,2,3' } });
+    expect(noHeader.statusCode).toBe(400); expect(noHeader.json().error.code).toBe('INVALID_FILE_CONTENT');
+    const badJson = await server.inject({ method: 'POST', url: '/data-sources/files', payload: { scope, name: 'bad2.json', format: 'json', content: 'not-json' } });
+    expect(badJson.statusCode).toBe(400); expect(badJson.json().error.code).toBe('INVALID_FILE_CONTENT');
+    expect(badJson.json().error.message).toMatch(/json content could not be parsed/);
   });
 
   it('登録CSVをdataSourceIdでTool draft・保存済みToolへ安全に接続する', async () => {

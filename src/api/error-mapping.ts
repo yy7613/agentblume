@@ -24,6 +24,7 @@ import { MemoryDomainError, MemoryProposalNotFoundError, WikiPageNotFoundError, 
 import { FeedbackValidationError } from '../domain/operations/errors';
 import { AgentSessionClosedError, AgentSessionExpiredError, AgentSessionNotFoundError, SessionArtifactNotFoundError, SessionDomainError, SessionQuotaExceededError } from '../domain/session/errors';
 import { DataSourceValidationError } from '../application/data-source/manage-data-sources';
+import { InvalidFileContentError } from '../domain/data-source/errors';
 import { WebSearchValidationError } from '../application/search/web-search';
 import { HarnessNotFoundError, HarnessRunError, HarnessRunNotFoundError, HarnessValidationError, HarnessVersionConflictError } from '../domain/harness/errors';
 import { FactoryNotFoundError, FactoryValidationError } from '../domain/factory/errors';
@@ -64,6 +65,7 @@ function httpError(status: number, code: string, message: string): HttpError {
  * | ConfigError | 422 | ETL_CONFIG |
  * | SchemaError | 422 | ETL_SCHEMA |
  * | BadRequestError | 400 | BAD_REQUEST |
+ * | InvalidFileContentError | 400 | INVALID_FILE_CONTENT |
  * | UnsafeToolError | 403 | UNSAFE_TOOL |
  * | ToolArgumentsError / AgentRunError | 422 | TOOL_ARGUMENTS / AGENT_RUN |
  * | ModelProviderError | 502 | MODEL_PROVIDER |
@@ -127,6 +129,7 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof SessionQuotaExceededError) return httpError(413, err.code, err.message);
   if (err instanceof SessionDomainError) return httpError(400, err.code, err.message);
   if (err instanceof DataSourceValidationError) return httpError(400, err.code, err.message);
+  if (err instanceof InvalidFileContentError) return httpError(400, err.code, err.message);
 
   // Agent Factory ドメイン（v33）: NotFoundは404、その他の不変条件違反は400。
   if (err instanceof FactoryNotFoundError) return httpError(404, err.code, err.message);

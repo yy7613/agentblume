@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, EvaluationResultDto, RunTraceEventDto, SerializedAgentDto, WikiPageSummaryDto } from '../api/types';
 import { useI18n } from '../i18n';
+import { useElapsedSeconds } from '../chat/useElapsedSeconds';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
@@ -12,7 +13,7 @@ type DistillState = 'loading' | 'error' | { readonly count: number };
 type Turn =
   | { readonly role: 'user'; readonly text: string }
   | { readonly role: 'assistant'; readonly run: AgentPreviewRunDto; readonly elapsedMs: number }
-  | { readonly role: 'error'; readonly text: string; readonly elapsedMs: number };
+  | { readonly role: 'error'; readonly text: string; readonly elapsedMs: number; readonly onRetry?: () => void };
 
 const sparkIcon = (
   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
@@ -45,11 +46,13 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { text } = useI18n();
+  const elapsedSeconds = useElapsedSeconds(busy);
 
   useEffect(() => {
     let active = true;
+    setLoadError(undefined);
     void client.listAgents(scope)
-      .then((all) => { if (!active) return; const items = all.filter((agent) => agent.kind !== 'pseudo-user'); setAgents(items); setSelectedId((current) => current || items[0]?.internalId || ''); })
+      .then((all) => { if (!active) return; const items = all.filter((agent) => agent.kind !== 'pseudo-user'); setAgents(items); setSelectedId((current) => current || items[0]?.internalId || ''); setLoadError(undefined); })
       .catch((cause: unknown) => { if (active) setLoadError(messageOf(cause)); });
     return () => { active = false; };
   }, [client]);
@@ -59,7 +62,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
     if (selectedId === '') { setDefinition(undefined); return; }
     const controller = new AbortController();
     void client.getAgent(selectedId, scope, undefined, controller.signal)
-      .then((def) => { if (!controller.signal.aborted) setDefinition(def); })
+      .then((def) => { if (!controller.signal.aborted) { setDefinition(def); setLoadError(undefined); } })
       .catch(() => { if (!controller.signal.aborted) setDefinition(undefined); });
     return () => controller.abort();
   }, [client, selectedId]);
@@ -77,19 +80,19 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   useEffect(() => { const node = threadRef.current; if (node !== null) node.scrollTop = node.scrollHeight; }, [turns, busy]);
   useEffect(() => { const el = inputRef.current; if (el === null) return; el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 168)}px`; }, [message]);
 
-  async function send(): Promise<void> {
-    const content = message.trim();
+  async function send(retry?: { readonly content: string }): Promise<void> {
+    const content = retry === undefined ? message.trim() : retry.content;
     if (agent === undefined || content === '' || busy) return;
-    setBusy(true);
+    setBusy(true); setLoadError(undefined);
     setTurns((prev) => [...prev, { role: 'user', text: content }]);
-    setMessage('');
+    if (retry === undefined) setMessage('');
     const startedAt = performance.now();
     try {
       const memoryPageIds = [...attached];
       const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview', ...(memoryPageIds.length > 0 ? { memoryPageIds } : {}) });
       setTurns((prev) => [...prev, { role: 'assistant', run, elapsedMs: performance.now() - startedAt }]);
     } catch (cause) {
-      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt }]);
+      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt, onRetry: () => void send({ content }) }]);
     } finally {
       setBusy(false);
     }
@@ -170,7 +173,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
           ) : (
             turns.map((turn, index) => {
               const inputText = turn.role === 'assistant' ? lastUserBefore(turns, index) : '';
-              return <TurnView key={index} turn={turn} agentName={agentName} text={text}
+              return <TurnView key={index} turn={turn} agentName={agentName} text={text} busy={busy}
                 inputText={inputText}
                 evaluation={evaluations.get(index)}
                 onEvaluate={() => { if (turn.role === 'assistant') void evaluate(index, inputText, turn.run.response); }}
@@ -184,6 +187,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
               <div className="cc-bubble">
                 <span className="cc-name">{agentName}</span>
                 <span className="cc-typing" aria-label={text('Running…', '実行中…')}><i /><i /><i /></span>
+                <span className="cc-meta">{text(`Running… ${elapsedSeconds}s`, `実行中… ${elapsedSeconds}秒`)}</span>
               </div>
             </div>
           )}
@@ -259,8 +263,8 @@ function lastUserBefore(turns: readonly Turn[], index: number): string {
   return '';
 }
 
-function TurnView({ turn, agentName, text, inputText, evaluation, onEvaluate, distillation, onDistill }: {
-  readonly turn: Turn; readonly agentName: string; readonly text: Translate;
+function TurnView({ turn, agentName, text, busy, inputText, evaluation, onEvaluate, distillation, onDistill }: {
+  readonly turn: Turn; readonly agentName: string; readonly text: Translate; readonly busy: boolean;
   readonly inputText: string;
   readonly evaluation: EvaluationResultDto | 'loading' | 'error' | undefined;
   readonly onEvaluate: () => void;
@@ -283,6 +287,7 @@ function TurnView({ turn, agentName, text, inputText, evaluation, onEvaluate, di
           <span className="cc-name">{text('Error', 'エラー')}</span>
           <p role="alert">{turn.text}</p>
           <span className="cc-meta">{text('Elapsed', '所要時間')} {formatSeconds(turn.elapsedMs)}s</span>
+          {turn.onRetry !== undefined && <button type="button" className="secondary" disabled={busy} onClick={turn.onRetry}>{text('Retry', '再試行')}</button>}
         </div>
       </div>
     );
@@ -343,7 +348,7 @@ function TurnView({ turn, agentName, text, inputText, evaluation, onEvaluate, di
             <button type="button" className="secondary ins-eval-btn" disabled={inputText === ''} onClick={onEvaluate}>{text('Evaluate response', '応答を評価')}</button>
           )}
           {evaluation === 'loading' && <p className="ins-none">{text('Scoring…', '採点中…')}</p>}
-          {evaluation === 'error' && <p className="ins-none">{text('Evaluation failed.', '評価に失敗しました。')}</p>}
+          {evaluation === 'error' && <p className="field-error">{text('Evaluation failed.', '評価に失敗しました。')}</p>}
           {typeof evaluation === 'object' && (
             <div className="ins-eval-scores">
               <div className="ins-eval-avg">{text('Average', '平均')} {Math.round(evaluation.average * 100)}%</div>
@@ -364,7 +369,7 @@ function TurnView({ turn, agentName, text, inputText, evaluation, onEvaluate, di
             <button type="button" className="secondary ins-eval-btn" disabled={inputText === ''} onClick={onDistill}>{text('Distill to memory', '記憶へ蒸留')}</button>
           )}
           {distillation === 'loading' && <p className="ins-none">{text('Reflecting…', '振り返り中…')}</p>}
-          {distillation === 'error' && <p className="ins-none">{text('Distillation failed.', '蒸留に失敗しました。')}</p>}
+          {distillation === 'error' && <p className="field-error">{text('Distillation failed.', '蒸留に失敗しました。')}</p>}
           {typeof distillation === 'object' && (
             <p className="ins-distill-result">{distillation.count === 0
               ? text('No memory worth proposing.', '提案する記憶はありませんでした。')

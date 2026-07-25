@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
 import type { PreviewResultDto, PropagationResultDto, SerializedToolDto } from '../api/types';
@@ -38,6 +38,22 @@ describe('ToolBuilder preview integration', () => {
     expect((input?.data.config['schema'] as { columns: { name: string; type: string }[] }).columns).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'minimumAge', type: 'number' }), expect.objectContaining({ name: 'argument2', type: 'string' })]));
   });
 
+  it('パレット追加ノードはstarterのIDと衝突せず、座標付きでdraft APIへ渡る', async () => {
+    const inferDraft = vi.fn().mockResolvedValue(valid);
+    const client = {
+      inferDraft, previewDraft: vi.fn().mockResolvedValue(sample), listTools: vi.fn().mockResolvedValue([]),
+    } as unknown as ToolApiClient;
+    render(<ToolBuilder client={client} />);
+    fireEvent.click(screen.getByRole('button', { name: 'New tool' }));
+    // starterは source-1 / filter-1。同じ型を追加してもIDが重複しない（React keyの衝突でノードが消えない）。
+    act(() => useToolBuilderStore.getState().addNode('filter'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+
+    const sent = inferDraft.mock.calls.at(-1)?.[0] as { nodes: { id: string; position?: { x: number; y: number } }[] };
+    expect(sent.nodes.map((node) => node.id)).toEqual(['source-1', 'filter-1', 'filter-2']);
+    expect(sent.nodes.every((node) => node.position !== undefined)).toBe(true);
+  });
+
   it('debounce infer→previewでsampleを描画し、次のissueではpreviewを抑止する', async () => {
     const invalid: PropagationResultDto = {
       ...valid, hasErrors: true,
@@ -66,6 +82,30 @@ describe('ToolBuilder preview integration', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(300); });
     expect(screen.getAllByText('age is missing').length).toBeGreaterThan(0);
     expect(client.previewDraft).toHaveBeenCalledOnce();
+  });
+
+  it('一覧のツール削除は確認ダイアログを経てから実行する', async () => {
+    const deleteTool = vi.fn().mockResolvedValue(undefined);
+    const client = {
+      inferDraft: vi.fn(), previewDraft: vi.fn(), deleteTool,
+      listTools: vi.fn().mockResolvedValue([{ internalId: 'customer-filter', displayName: 'Customer filter', publishName: 'adult_customers', latestVersion: '1.0.0', state: 'draft', sideEffect: 'read-only' }]),
+    } as unknown as ToolApiClient;
+    render(<ToolBuilder client={client} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); }); // 一覧のlistTools解決を待つ。
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    const dialog = screen.getByRole('alertdialog', { name: 'Delete tool' });
+    expect(dialog.textContent).toContain('Customer filter');
+    expect(dialog.textContent).toContain('adult_customers');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(deleteTool).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(deleteTool).toHaveBeenCalledWith('customer-filter', { tenantId: 'local', workspaceId: 'default' });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
   it('2ソース→joinのグラフをtoInput付きでdraft APIへ流し、join結果の行を描画する', async () => {

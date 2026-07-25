@@ -245,4 +245,31 @@ describe('SaveToolUseCase', () => {
     expect(tool.metadata.tenant).toEqual(scopeA);
     expect(tool.graph).toEqual(validGraph);
   });
+
+  it('workspace-output / graph-output / chart-output はいずれもsideEffect read-onlyでの保存を拒否する（G21）', async () => {
+    const { usecase, repo } = makeSut();
+    const source = { id: 'src', type: 'json-source' as const, config: { rows: [{ a: 1, b: 2 }] } };
+
+    const workspaceGraph: ToolGraph = {
+      nodes: [source, { id: 'sink', type: 'workspace-output', config: { name: 'ws', artifactKind: 'table', writeMode: 'create', onConflict: 'new-revision', previewRows: 1 } }],
+      edges: [{ from: 'src', to: 'sink' }],
+    };
+    const graphOutputGraph: ToolGraph = {
+      nodes: [source, { id: 'sink', type: 'graph-output', config: { name: 'graph', writeMode: 'create', onConflict: 'new-revision', previewRows: 1, graph: { sourceColumn: 'a', targetColumn: 'b' } } }],
+      edges: [{ from: 'src', to: 'sink' }],
+    };
+    const chartGraph: ToolGraph = {
+      nodes: [source, { id: 'sink', type: 'chart-output', config: { configVersion: 1, name: 'chart', chartType: 'scatter', mapping: { xColumn: 'a', yColumn: 'b' }, maxPoints: 100, downsample: 'none', writeMode: 'create', onConflict: 'new-revision', previewRows: 1 } }],
+      edges: [{ from: 'src', to: 'sink' }],
+    };
+
+    await expect(usecase.execute(makeInput({ internalId: 'ws-tool', graph: workspaceGraph, sideEffect: 'read-only' }))).rejects.toThrow(ToolValidationError);
+    await expect(usecase.execute(makeInput({ internalId: 'graph-tool', graph: graphOutputGraph, sideEffect: 'read-only' }))).rejects.toThrow(ToolValidationError);
+    // G21: chart-output はこの3条件のうち唯一漏れていたsink種別。read-only保存を拒否できることを確認する。
+    await expect(usecase.execute(makeInput({ internalId: 'chart-tool', graph: chartGraph, sideEffect: 'read-only' }))).rejects.toThrow(ToolValidationError);
+    expect(repo.size).toBe(0);
+
+    const saved = await usecase.execute(makeInput({ internalId: 'chart-tool-ok', graph: chartGraph, sideEffect: 'session-write' }));
+    expect(saved.sideEffect).toBe('session-write');
+  });
 });

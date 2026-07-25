@@ -4,6 +4,7 @@ const scope = { tenantId: 'local', workspaceId: 'default' };
 
 test('Tool BuilderでGraph outputを構造化Dialogから設定して保存できる', async ({ page }) => {
   await page.goto('/');
+  await page.getByRole('button', { name: 'Tool', exact: true }).click();
   await page.getByRole('button', { name: 'New tool', exact: true }).click();
   // 初期グラフのschema伝播が完了してから追加する。追加時に選択中filterの列を初期マッピングへ使うため。
   await expect(page.locator('section[aria-label="Preview"]').getByText('Alice', { exact: true })).toBeVisible();

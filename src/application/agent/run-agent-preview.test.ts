@@ -179,6 +179,51 @@ describe('RunAgentPreviewUseCase', () => {
     expect(run.trace.filter((event) => event.kind === 'tool-result').map((event) => event.name)).toEqual(['workspace_tool', 'workspace_list', 'workspace_describe', 'workspace_query', 'workspace_read']);
   });
 
+  it('chart-output はworkspace/graph-outputと同列でrowLimitが10000になる（G21: preview truncationが5000点downsampleより先に効かない）', async () => {
+    const rows = Array.from({ length: 150 }, (_, index) => ({ id: index, value: index }));
+    const chartTool = createTool({
+      metadata: { internalId: 'chart-tool', workingName: 'chart-tool', displayName: 'Chart tool', publishName: 'chart_tool', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'session-write',
+      graph: { nodes: [
+        { id: 'source', type: 'json-source', config: { rows } },
+        { id: 'sink', type: 'chart-output', config: { configVersion: 1, name: 'chart', chartType: 'scatter', mapping: { xColumn: 'id', yColumn: 'value' }, maxPoints: 5000, downsample: 'none', writeMode: 'create', onConflict: 'new-revision', previewRows: 1 } },
+      ], edges: [{ from: 'source', to: 'sink' }] },
+    });
+    const model = new QueueModel([
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'call-1', name: 'chart_tool', arguments: {} }] }, finishReason: 'tool_calls' },
+      { message: { role: 'assistant', content: 'stored' }, finishReason: 'stop' },
+    ]);
+    const sessions = new InMemoryAgentSessionRepository();
+    const artifacts = new InMemorySessionArtifactRepository();
+    const runtime = new RunAgentPreviewUseCase(new StaticRepository(chartTool), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-chart', () => new Date('2026-07-11T00:00:00.000Z'), undefined, undefined, undefined, undefined, sessions, artifacts);
+    const run = await runtime.execute({ ...input, toolId: 'chart-tool' });
+    const toolResult = run.trace.find((event) => event.kind === 'tool-result');
+    // 修正前は preview rowLimit が既定100に落ち、sinkノードが150行のうち100行へtruncateされていた。
+    expect(toolResult?.nodes).toContainEqual({ nodeId: 'sink', rowCount: 150, truncated: false });
+    const stored = await artifacts.list(scope, run.sessionId as string);
+    expect(stored).toHaveLength(1);
+    const found = await artifacts.find(scope, run.sessionId as string, stored[0]!.id);
+    expect(found?.payload).toMatchObject({ sourceRowCount: 150, sampled: false });
+  });
+
+  it('Agentは自分が出力したchart-output Artifactをworkspace_*ツールで参照できる（G21: workspaceDefinitionsにchart-outputが含まれる）', async () => {
+    const chartTool = createTool({
+      metadata: { internalId: 'chart-tool', workingName: 'chart-tool', displayName: 'Chart tool', publishName: 'chart_tool', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'session-write',
+      graph: { nodes: [
+        { id: 'source', type: 'json-source', config: { rows: [{ id: 1, value: 10 }] } },
+        { id: 'sink', type: 'chart-output', config: { configVersion: 1, name: 'chart', chartType: 'scatter', mapping: { xColumn: 'id', yColumn: 'value' }, maxPoints: 100, downsample: 'none', writeMode: 'create', onConflict: 'new-revision', previewRows: 1 } },
+      ], edges: [{ from: 'source', to: 'sink' }] },
+    });
+    const model = new QueueModel([{ message: { role: 'assistant', content: 'ok' }, finishReason: 'stop' }]);
+    const sessions = new InMemoryAgentSessionRepository();
+    const artifacts = new InMemorySessionArtifactRepository();
+    const runtime = new RunAgentPreviewUseCase(new StaticRepository(chartTool), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-chart-ws', () => new Date('2026-07-11T00:00:00.000Z'), undefined, undefined, undefined, undefined, sessions, artifacts);
+    await runtime.execute({ ...input, toolId: 'chart-tool' });
+    // chart-output しかない場合でも workspace_* ツールが公開される（従来は workspace/graph-output限定で漏れていた）。
+    expect(model.requests[0]?.tools?.map((definition) => definition.name)).toEqual(expect.arrayContaining(['workspace_list', 'workspace_describe', 'workspace_read', 'workspace_query']));
+  });
+
   it('workspace_query は選択・比較・集計をデータ専用 DSL として実行する', () => {
     const payload = {
       schema: { columns: [

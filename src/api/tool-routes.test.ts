@@ -120,6 +120,43 @@ describe('tool routes', () => {
       expect(res.json().error.message).toContain('no-such-column');
     });
 
+    it('ノード座標(position)を保存し、GETで往復できる', async () => {
+      const base = makeGraph(['id', 'name']);
+      const graph: ToolGraph = {
+        ...base,
+        nodes: base.nodes.map((node, index) => ({ ...node, position: { x: 100 + index * 300, y: 240 } })),
+      };
+      const saved = await postTool(saveBody({ graph }));
+      expect(saved.statusCode).toBe(201);
+      expect(saved.json().tool.graph.nodes.map((n: { position?: unknown }) => n.position)).toEqual([
+        { x: 100, y: 240 }, { x: 400, y: 240 },
+      ]);
+
+      const got = await server.inject({ method: 'GET', url: '/tools/users-tool', query: { ...SCOPE } });
+      expect(got.statusCode).toBe(200);
+      expect(got.json().tool.graph.nodes.map((n: { position?: unknown }) => n.position)).toEqual([
+        { x: 100, y: 240 }, { x: 400, y: 240 },
+      ]);
+    });
+
+    it('position無しのグラフはpositionを持たないまま保存される（後方互換）', async () => {
+      const res = await postTool(saveBody());
+      expect(res.statusCode).toBe(201);
+      expect(res.json().tool.graph.nodes.every((n: object) => !('position' in n))).toBe(true);
+    });
+
+    it('nodes 201件 / edges 401件 → 400 BAD_REQUEST（グラフ上限）', async () => {
+      const nodes = Array.from({ length: 201 }, (_, index) => ({ id: `n${index}`, type: 'json-source', config: { rows: [] } }));
+      const tooManyNodes = await postTool(saveBody({ graph: { nodes, edges: [] } }));
+      expect(tooManyNodes.statusCode).toBe(400);
+      expect(tooManyNodes.json().error.code).toBe('BAD_REQUEST');
+
+      const edges = Array.from({ length: 401 }, () => ({ from: 'src', to: 'sel' }));
+      const tooManyEdges = await postTool(saveBody({ graph: { ...makeGraph(['id']), edges } }));
+      expect(tooManyEdges.statusCode).toBe(400);
+      expect(tooManyEdges.json().error.code).toBe('BAD_REQUEST');
+    });
+
     it('未知ノード type → 422 ETL_GRAPH', async () => {
       const graph: ToolGraph = {
         nodes: [{ id: 'x', type: 'no-such-node', config: {} }],

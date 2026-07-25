@@ -58,6 +58,8 @@ function cloneGraph(graph: ToolGraph): ToolGraph {
       id: node.id,
       type: node.type,
       config: cloneConfig(node.config),
+      // 編集UIの配置は実行に影響しないが、往復で失わないよう複製して保持する。
+      ...(node.position === undefined ? {} : { position: { x: node.position.x, y: node.position.y } }),
     })),
     edges: graph.edges.map((edge) =>
       edge.toInput === undefined

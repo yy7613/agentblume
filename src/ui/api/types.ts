@@ -10,7 +10,9 @@ export interface ColumnDto {
 }
 export interface SchemaDto { readonly columns: readonly ColumnDto[] }
 export interface TableDto { readonly schema: SchemaDto; readonly rows: readonly JsonRow[] }
-export interface GraphNodeDto { readonly id: string; readonly type: string; readonly config: unknown }
+/** キャンバス上の配置。保存して手動整列を保つためのメタデータで、ETL実行には影響しない。 */
+export interface GraphNodePositionDto { readonly x: number; readonly y: number }
+export interface GraphNodeDto { readonly id: string; readonly type: string; readonly config: unknown; readonly position?: GraphNodePositionDto }
 export interface GraphEdgeDto { readonly from: string; readonly to: string; readonly toInput?: number }
 export interface ToolGraphDto { readonly nodes: readonly GraphNodeDto[]; readonly edges: readonly GraphEdgeDto[] }
 

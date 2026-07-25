@@ -15,7 +15,9 @@ param(
 
   [switch]$SampleData,
 
-  [switch]$DryRun
+  [switch]$DryRun,
+
+  [switch]$Stop
 )
 
 Set-StrictMode -Version Latest
@@ -199,6 +201,9 @@ function Start-LoggedProcess {
   $psi.UseShellExecute = $false
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true
+  # stdinも切り離す。継承させるとvite等が親コンソールの入力をrawモードにし、
+  # Ctrl+C停止時にエコー無効などの壊れた状態が残ってコンソールが操作不能になる。
+  $psi.RedirectStandardInput = $true
   $psi.CreateNoWindow = $true
 
   foreach ($pair in $Environment.GetEnumerator()) {
@@ -235,6 +240,7 @@ function Start-LoggedProcess {
     Name = $Name
     Process = $process
     Subscriptions = $subscriptions
+    TrackedPids = @{}
   }
 }
 
@@ -254,6 +260,27 @@ function Stop-LoggedProcess {
   if (-not $Entry.Process.HasExited) {
     $Entry.Process.Kill($true)
     $null = $Entry.Process.WaitForExit(5000)
+  }
+
+  # Kill($true)はkill時点のツリーしか辿れないため、追跡済みの子孫でJob登録前に切り離されたものを個別に停止する。
+  foreach ($trackedId in @($Entry.TrackedPids.Keys)) {
+    $leftover = Get-Process -Id $trackedId -ErrorAction SilentlyContinue
+    if ($null -eq $leftover) {
+      continue
+    }
+    if (-not (Test-RepoProcess -ProcessId $trackedId)) {
+      continue
+    }
+    try {
+      $leftover.Kill($true)
+      $null = $leftover.WaitForExit(3000)
+    }
+    catch {
+      Write-Warning "$($Entry.Name) の子プロセス (PID $trackedId) を停止できませんでした: $_"
+    }
+    finally {
+      $leftover.Dispose()
+    }
   }
 
   $Entry.Process.Dispose()
@@ -395,6 +422,150 @@ function Assert-PortAvailable {
   }
 }
 
+function Get-DescendantProcessIds {
+  param(
+    [Parameter(Mandatory = $true)]
+    [int]$RootProcessId
+  )
+
+  if (-not $IsWindows) {
+    return @()
+  }
+
+  $all = Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId -ErrorAction SilentlyContinue
+  if ($null -eq $all) {
+    return @()
+  }
+
+  $childrenByParent = @{}
+  foreach ($processInfo in $all) {
+    $parent = [int]$processInfo.ParentProcessId
+    if (-not $childrenByParent.ContainsKey($parent)) {
+      $childrenByParent[$parent] = [System.Collections.Generic.List[int]]::new()
+    }
+    $childrenByParent[$parent].Add([int]$processInfo.ProcessId)
+  }
+
+  $result = [System.Collections.Generic.List[int]]::new()
+  $queue = [System.Collections.Generic.Queue[int]]::new()
+  $queue.Enqueue($RootProcessId)
+  while ($queue.Count -gt 0) {
+    $current = $queue.Dequeue()
+    if (-not $childrenByParent.ContainsKey($current)) {
+      continue
+    }
+    foreach ($childId in $childrenByParent[$current]) {
+      if (-not $result.Contains($childId)) {
+        $result.Add($childId)
+        $queue.Enqueue($childId)
+      }
+    }
+  }
+  return $result
+}
+
+# npm.cmd は起動直後に実サーバー(node/vite)をspawnするため、Job Object登録が親npmだけだと
+# 子孫が登録前に生まれてJobの外へ逃げ、親の停止後も残留する。子孫を定期的にJobへ追い登録する。
+function Update-TrackedDescendants {
+  param(
+    [Parameter(Mandatory = $true)]
+    $Entry,
+
+    [Parameter(Mandatory = $true)]
+    [IntPtr]$JobHandle
+  )
+
+  if ($Entry.Process.HasExited) {
+    return
+  }
+
+  foreach ($descendantId in (Get-DescendantProcessIds -RootProcessId $Entry.Process.Id)) {
+    if ($Entry.TrackedPids.ContainsKey($descendantId)) {
+      continue
+    }
+    $Entry.TrackedPids[$descendantId] = $true
+    if ($JobHandle -eq [IntPtr]::Zero) {
+      continue
+    }
+    $descendant = Get-Process -Id $descendantId -ErrorAction SilentlyContinue
+    if ($null -ne $descendant) {
+      # 既にJob内(親から継承済み)の場合は失敗するが問題ない。
+      [void][NativeJobObject]::AssignProcessToJobObject($JobHandle, $descendant.Handle)
+    }
+  }
+}
+
+function Test-RepoProcess {
+  param(
+    [Parameter(Mandatory = $true)]
+    [int]$ProcessId
+  )
+
+  if (-not $IsWindows) {
+    return $true
+  }
+
+  $processInfo = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$ProcessId" -Property CommandLine -ErrorAction SilentlyContinue
+  if ($null -eq $processInfo) {
+    return $false
+  }
+  $commandLine = [string]$processInfo.CommandLine
+  if ($commandLine.Length -eq 0) {
+    return $false
+  }
+  if ($commandLine.ToLowerInvariant().Contains($repoRoot.ToLowerInvariant())) {
+    return $true
+  }
+  # npm run 系はコマンドラインに相対パスしか残らないことがあるため、開発プロセスの特徴で補完判定する。
+  return $commandLine -match 'vite|--import tsx|server\.ts|dev:ui|run serve'
+}
+
+function Stop-RepoPortOwner {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Name,
+
+    [Parameter(Mandatory = $true)]
+    [int]$Port,
+
+    [switch]$Silent
+  )
+
+  $owner = Get-PortOwnerInfo -Port $Port
+  if ($null -eq $owner) {
+    if (-not $Silent) {
+      Write-Host "$Name ポート $Port は使用されていません。"
+    }
+    return
+  }
+
+  if (-not (Test-RepoProcess -ProcessId $owner.Pid)) {
+    Write-Warning "$Name ポート $Port の占有プロセス $($owner.Label) はこのリポジトリの開発プロセスに見えないため停止しません。必要なら手動で停止してください。"
+    return
+  }
+
+  Stop-ProcessTree -Owner $owner
+  try {
+    Wait-ForPortRelease -Port $Port
+    Write-Host "$Name ポート $Port を解放しました。"
+  }
+  catch {
+    Write-Warning "$Name ポート $Port の解放を確認できませんでした: $_"
+  }
+}
+
+# 残留プロセスの掃除モード: このスクリプトが起動した(とみなせる)ポート占有プロセスを停止して終了する。
+if ($Stop) {
+  if (-not $UiOnly) {
+    Stop-RepoPortOwner -Name 'API' -Port $ApiPort
+  }
+  if (-not $ApiOnly) {
+    Stop-RepoPortOwner -Name 'UI' -Port $UiPort
+  }
+  Close-ProcessJobObject -JobHandle $processJob
+  exit 0
+}
+
 $restartExistingApi = $false
 $existingApiOwner = $null
 if (-not $UiOnly) {
@@ -520,6 +691,7 @@ try {
     $started += Start-LoggedProcess -Name $target.Name -Arguments $target.Arguments -Environment $target.Environment
   }
 
+  $sweepCounter = 0
   :monitor while ($true) {
     foreach ($entry in $started) {
       if ($entry.Process.HasExited) {
@@ -533,14 +705,47 @@ try {
       }
     }
 
+    # 起動直後(約10秒)は毎回、それ以降は4秒間隔で子孫をJobへ追い登録する(vite再起動等の遅れて生まれる子も拾う)。
+    if ($sweepCounter -lt 20 -or ($sweepCounter % 8) -eq 0) {
+      foreach ($entry in $started) {
+        Update-TrackedDescendants -Entry $entry -JobHandle $processJob
+      }
+    }
+    $sweepCounter++
+
     Start-Sleep -Milliseconds 500
   }
 }
 finally {
   foreach ($entry in $started) {
-    Stop-LoggedProcess -Entry $entry
+    try {
+      Stop-LoggedProcess -Entry $entry
+    }
+    catch {
+      Write-Warning "$($entry.Name) の停止処理でエラー: $_"
+    }
+  }
+  # 追跡から漏れた残留があってもポートを確実に返す(このリポジトリの開発プロセスと判定できたものだけ停止)。
+  if ($started.Count -gt 0) {
+    if (-not $UiOnly) {
+      Stop-RepoPortOwner -Name 'API' -Port $ApiPort -Silent
+    }
+    if (-not $ApiOnly) {
+      Stop-RepoPortOwner -Name 'UI' -Port $UiPort -Silent
+    }
   }
   Close-ProcessJobObject -JobHandle $processJob
+  # 子プロセスの巻き添えでコンソール状態が乱れた場合に備えた防御的な復元。
+  try {
+    [Console]::TreatControlCAsInput = $false
+    [Console]::CursorVisible = $true
+  }
+  catch {
+    # コンソールが無い実行環境(リダイレクト実行等)では設定できないが問題ない。
+  }
+  if ($started.Count -gt 0) {
+    Write-Host 'すべての子プロセスを停止しました。'
+  }
 }
 
 exit $exitCode

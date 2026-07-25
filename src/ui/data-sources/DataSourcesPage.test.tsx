@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
@@ -28,7 +28,11 @@ describe('DataSourcesPage', () => {
     await waitFor(() => expect(client.testDatabaseConnection).toHaveBeenCalledWith('sales', { tenantId: 'local', workspaceId: 'default' }));
     expect(await screen.findByText('Connection available')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.textContent).toContain('Sales');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(client.deleteDataSource).toHaveBeenCalledWith('db-1', { tenantId: 'local', workspaceId: 'default' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
   it('選択したCSVを本文付きでバックエンドへアップロードする', async () => {
@@ -42,6 +46,7 @@ describe('DataSourcesPage', () => {
     fireEvent.change(screen.getByLabelText('Data file'), { target: { files: [file] } });
     await userEvent.click(screen.getByRole('button', { name: 'Upload' }));
     await waitFor(() => expect(client.uploadDataSourceFile).toHaveBeenCalledWith({ scope: { tenantId: 'local', workspaceId: 'default' }, name: 'customers.csv', format: 'csv', content: 'id,name\n1,A' }));
+    expect(await screen.findByText('Registered "customers.csv".')).toBeTruthy();
   });
 
   it('不正な拡張子とAPIエラーを画面に表示する', async () => {
@@ -54,5 +59,20 @@ describe('DataSourcesPage', () => {
     fireEvent.change(screen.getByLabelText('Data file'), { target: { files: [file] } });
     await userEvent.click(screen.getByRole('button', { name: 'Upload' }));
     expect(await screen.findByText('Select a CSV or JSON file.')).toBeTruthy();
+  });
+
+  it('ソース名を空にするとファイル名を使う旨のヒントを表示し、削除確認をキャンセルできる', async () => {
+    const client = {
+      listDataSources: vi.fn().mockResolvedValue([{ id: 'db-1', tenant: { tenantId: 'local', workspaceId: 'default' }, name: 'Sales', kind: 'database', connectionId: 'sales', driver: 'postgresql', createdAt: '', updatedAt: '' }]),
+      listDatabaseConnections: vi.fn().mockResolvedValue([]), deleteDataSource: vi.fn(),
+    } as unknown as ToolApiClient;
+    render(<DataSourcesPage client={client} />);
+    expect(screen.getByLabelText('File source name').getAttribute('placeholder')).toBe('Leave empty to use the file name');
+    await screen.findByText('Sales');
+    await userEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    const dialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(client.deleteDataSource).not.toHaveBeenCalled();
   });
 });

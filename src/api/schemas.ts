@@ -23,22 +23,28 @@ export const tenantScopeSchema = z.object({
   workspaceId: z.string().min(1),
 });
 
-/** ToolGraph の構造検証（config は unknown のまま通す）。 */
+/**
+ * ToolGraph の構造検証（config は unknown のまま通す）。
+ *
+ * - `position` は編集UIのキャンバス座標。省略可（旧クライアント互換）で、実行には影響しない。
+ * - nodes/edges の要素数は上限を設ける（巨大グラフでの検証・実行コストを入口で断つ）。
+ */
 export const graphSchema = z.object({
   nodes: z.array(
     z.object({
       id: z.string(),
       type: z.string(),
       config: z.unknown(),
+      position: z.object({ x: z.number(), y: z.number() }).optional(),
     }),
-  ),
+  ).max(200),
   edges: z.array(
     z.object({
       from: z.string(),
       to: z.string(),
       toInput: z.number().optional(),
     }),
-  ),
+  ).max(400),
 });
 
 /** Schema（列定義）の構造検証。 */

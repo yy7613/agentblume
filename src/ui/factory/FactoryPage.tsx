@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { CreateFactoryRunDto, DataSourceDto, FactoryEventDto, FactoryRunDto } from '../api/types';
 import { useI18n } from '../i18n';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 const TERMINAL_STATUSES: ReadonlySet<FactoryRunDto['status']> = new Set(['succeeded', 'failed', 'cancelled']);
+
+type Translate = (english: string, japanese: string) => string;
 
 function message(cause: unknown): string { return cause instanceof Error ? cause.message : 'Request failed'; }
 function isTerminal(status: FactoryRunDto['status']): boolean { return TERMINAL_STATUSES.has(status); }
@@ -13,6 +16,61 @@ function runLabel(run: FactoryRunDto): string {
   if (name !== undefined && name.trim() !== '') return name;
   const goal = run.input.goal.goal;
   return goal.length > 48 ? `${goal.slice(0, 48)}…` : goal;
+}
+
+function statusLabel(status: FactoryRunDto['status'], text: Translate): string {
+  switch (status) {
+    case 'queued': return text('Queued', 'キュー待ち');
+    case 'running': return text('Running', '実行中');
+    case 'waiting-approval': return text('Waiting for approval', '承認待ち');
+    case 'succeeded': return text('Succeeded', '成功');
+    case 'failed': return text('Failed', '失敗');
+    case 'cancelled': return text('Cancelled', '取消済み');
+  }
+}
+
+function stageLabel(stage: FactoryRunDto['stage'], text: Translate): string {
+  switch (stage) {
+    case 'profiling': return text('Profiling', 'データ把握');
+    case 'planning': return text('Planning', '計画');
+    case 'generating-tools': return text('Generating tools', 'ツール生成');
+    case 'generating-skills': return text('Generating skills', 'スキル生成');
+    case 'assembling-agent': return text('Assembling agent', 'エージェント組み立て');
+    case 'generating-validation': return text('Generating validation assets', '検証資産の生成');
+    case 'validating': return text('Validating', '検証');
+    case 'analyzing': return text('Analyzing', '分析');
+    case 'improving': return text('Improving', '改善');
+    case 'reporting': return text('Reporting', 'レポート作成');
+  }
+}
+
+function eventKindLabel(kind: FactoryEventDto['kind'], text: Translate): string {
+  switch (kind) {
+    case 'stage_started': return text('Stage started', '開始');
+    case 'stage_completed': return text('Stage completed', '完了');
+    case 'plan_proposed': return text('Plan proposed', '計画案を提示');
+    case 'approval_requested': return text('Approval requested', '承認をリクエスト');
+    case 'approval_resolved': return text('Approval resolved', '承認結果を反映');
+    case 'tool_generated': return text('Tool generated', 'ツールを生成');
+    case 'tool_repair_attempted': return text('Tool repair attempted', 'ツールの修復を試行');
+    case 'artifact_saved': return text('Artifact saved', '資産を保存');
+    case 'scenario_run_completed': return text('Scenario run completed', 'シナリオ実行が完了');
+    case 'analysis_completed': return text('Analysis completed', '分析が完了');
+    case 'proposal_applied': return text('Proposal applied', '提案を適用');
+    case 'proposal_rejected': return text('Proposal rejected', '提案を却下');
+    case 'iteration_completed': return text('Iteration completed', 'イテレーションが完了');
+    case 'budget_exceeded': return text('Budget exceeded', '予算超過');
+    case 'run_completed': return text('Run completed', '実行完了');
+    case 'run_failed': return text('Run failed', '実行失敗');
+    case 'run_cancelled': return text('Run cancelled', '実行取消');
+  }
+}
+
+function formatElapsed(ms: number, text: Translate): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? text(`${minutes}m ${seconds}s`, `${minutes}分${seconds}秒`) : text(`${seconds}s`, `${seconds}秒`);
 }
 
 /**
@@ -44,6 +102,8 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
   const [reviseFeedback, setReviseFeedback] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
     let active = true;
@@ -64,12 +124,21 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
         setSelectedRun(run);
         setEvents(runEvents);
         setRuns((current) => current.map((item) => item.id === run.id ? run : item));
+        setActionError(undefined);
       } catch (cause) { if (active) setActionError(message(cause)); }
     };
     void refresh();
     const timer = setInterval(() => void refresh(), 1000);
     return () => { active = false; clearInterval(timer); };
   }, [client, selectedRunId, selectedRun?.status]);
+
+  // 実行中のrunの「生きているか」を判断できるよう、run開始からの経過時間を1秒毎に更新する。
+  useEffect(() => {
+    if (selectedRun === undefined || isTerminal(selectedRun.status)) return;
+    setNowMs(Date.now());
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [selectedRun?.id, selectedRun?.status]);
 
   function toggleSource(id: string): void {
     setSelectedSourceIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
@@ -79,8 +148,20 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
     setSelectedRunId(run.id); setSelectedRun(run); setEvents(run.events); setReviseFeedback(''); setActionError(undefined);
   }
 
+  const hasActiveRun = runs.some((run) => !isTerminal(run.status));
+  const canStart = goal.trim() !== '' && selectedSourceIds.size > 0;
+
+  function startDisabledReason(): string | undefined {
+    if (starting) return undefined;
+    if (hasActiveRun) return text('A factory run is already in progress. Wait for it to finish before starting another.', '実行中のFactory runがあります。完了してから次を開始してください。');
+    if (goal.trim() === '' && selectedSourceIds.size === 0) return text('Enter a goal and select at least one data source.', 'やりたいことを入力し、データソースを1つ以上選択してください。');
+    if (goal.trim() === '') return text('Enter a goal.', 'やりたいことを入力してください。');
+    if (selectedSourceIds.size === 0) return text('Select at least one data source.', 'データソースを1つ以上選択してください。');
+    return undefined;
+  }
+
   async function startRun(): Promise<void> {
-    if (!canStart || starting) return;
+    if (!canStart || starting || hasActiveRun) return;
     setStarting(true); setStartError(undefined);
     try {
       const input: CreateFactoryRunDto = {
@@ -120,7 +201,7 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
     finally { setBusy(false); }
   }
 
-  const canStart = goal.trim() !== '' && selectedSourceIds.size > 0;
+  const disabledReason = startDisabledReason();
 
   return <main className="workspace-page factory-page">
     <header className="workspace-header"><div><span className="eyebrow">Factory</span><h1>{text('Agent Factory', 'Agent Factory')}</h1><p>{text(
@@ -152,14 +233,15 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
             <label>{text('Scenario count', 'シナリオ数')}<input aria-label={text('Factory scenario count', 'Factoryシナリオ数')} type="number" min={1} max={10} value={scenarioCount} onChange={(event) => setScenarioCount(Number(event.target.value))} /></label>
             <label className="checkbox-label"><input type="checkbox" aria-label={text('Factory require plan approval', 'Factory計画承認を必須にする')} checked={requirePlanApproval} onChange={(event) => setRequirePlanApproval(event.target.checked)} /> {text('Require plan approval before generating', '生成前に計画承認を必須にする')}</label>
           </details>
-          <button type="button" className="primary" disabled={!canStart || starting} onClick={() => void startRun()}>{starting ? text('Starting…', '起票中…') : text('Start factory run', '生成を開始')}</button>
+          <button type="button" className="primary" disabled={!canStart || starting || hasActiveRun} onClick={() => void startRun()}>{starting ? text('Starting…', '起票中…') : text('Start factory run', '生成を開始')}</button>
+          {disabledReason !== undefined && <p className="empty-state">{disabledReason}</p>}
         </section>
         <section className="workspace-card" aria-label={text('Factory run history', 'Factory実行履歴')}>
           <h2>{text('Run history', '実行履歴')}</h2>
           <div className="validation-list">
             {runs.length === 0 && <p className="empty-state">{text('No factory runs yet.', 'Factory実行はまだありません。')}</p>}
             {runs.map((run) => <button type="button" key={run.id} className={run.id === selectedRunId ? 'selected' : ''} onClick={() => selectRun(run)}>
-              <strong>{runLabel(run)}</strong><span className={`run-status ${run.status}`}>{run.status}</span><span className="run-meta">{run.id}</span>
+              <strong>{runLabel(run)}</strong><span className={`run-status ${run.status}`}>{statusLabel(run.status, text)}</span><span className="run-meta">{run.id}</span>
             </button>)}
           </div>
         </section>
@@ -171,17 +253,18 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
           <div className="panel-title">
             <h2>{runLabel(selectedRun)}</h2>
             <div className="save-actions">
-              <span className={`run-status ${selectedRun.status}`}>{selectedRun.status}</span>
-              <span className="run-meta">{text('Stage', 'ステージ')}: {selectedRun.stage}</span>
-              {!isTerminal(selectedRun.status) && <button type="button" className="secondary danger" disabled={busy} onClick={() => void cancelRun()}>{text('Cancel', '取消')}</button>}
+              <span className={`run-status ${selectedRun.status}`}>{statusLabel(selectedRun.status, text)}</span>
+              <span className="run-meta">{text('Stage', 'ステージ')}: {stageLabel(selectedRun.stage, text)}</span>
+              {!isTerminal(selectedRun.status) && <span className="run-meta">{text('Elapsed', '経過')}: {formatElapsed(nowMs - new Date(selectedRun.startedAt).getTime(), text)}</span>}
+              {!isTerminal(selectedRun.status) && <button type="button" className="secondary danger" disabled={busy} onClick={() => setConfirmCancel(true)}>{text('Cancel', '取消')}</button>}
             </div>
           </div>
 
-          {selectedRun.failure !== undefined && <div className="api-error" role="alert">{selectedRun.failure.stage}: {selectedRun.failure.reason}</div>}
+          {selectedRun.failure !== undefined && <div className="api-error" role="alert">{stageLabel(selectedRun.failure.stage, text)}: {selectedRun.failure.reason}</div>}
 
           <h3>{text('Timeline', 'タイムライン')}</h3>
           {events.length === 0 ? <p className="empty-state">{text('No events yet.', 'イベントはまだありません。')}</p> : <ol className="factory-timeline">
-            {events.map((event) => <li key={event.sequence}><span className="factory-event-kind">{event.kind}</span>{event.stage !== undefined && <span> · {event.stage}</span>}{event.iteration !== undefined && <span> · it.{event.iteration}</span>}{event.message !== undefined && <span> · {event.message}</span>}</li>)}
+            {events.map((event) => <li key={event.sequence}><span className="factory-event-kind">{eventKindLabel(event.kind, text)}</span>{event.stage !== undefined && <span> · {stageLabel(event.stage, text)}</span>}{event.iteration !== undefined && <span> · it.{event.iteration}</span>}{event.message !== undefined && <span> · {event.message}</span>}</li>)}
           </ol>}
 
           {selectedRun.status === 'waiting-approval' && selectedRun.checkpoint !== undefined && <div className="notice-card" aria-label={text('Plan approval', '計画承認')}>
@@ -228,6 +311,17 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
               'すべての生成資産はdraftです。エージェント・ツール・スキル・検証の各画面から開いて確認・編集し、既存の検証／品質ゲート画面から昇格してください。この画面に昇格操作はありません。',
             )}</p>
           </div>}
+          <ConfirmDialog
+            open={confirmCancel}
+            title={text('Cancel this factory run?', 'このFactory runを取消しますか？')}
+            message={text('The run will stop and cannot be resumed.', 'この実行は停止し、再開できません。')}
+            confirmLabel={text('Cancel run', '実行を取消')}
+            cancelLabel={text('Keep running', '続行する')}
+            danger
+            busy={busy}
+            onConfirm={() => { setConfirmCancel(false); void cancelRun(); }}
+            onCancel={() => setConfirmCancel(false)}
+          />
         </>}
       </section>
     </div>

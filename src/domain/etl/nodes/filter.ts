@@ -1,12 +1,22 @@
 /**
- * ドメイン: v1 ノード `filter`（実装契約 §9.4）
+ * ドメイン: v1 ノード `filter`（実装契約 §9.4 / 複数条件拡張）
  *
  * kind: transform / arity: 1。
  * 述語で行をフィルタする。スキーマは不変。
- * - inferSchema: `column` 存在必須（欠損 → error/mismatch）。`gt|gte|lt|lte` は列型が
- *   number|date 必須（違反 → 型不一致 error + mismatch）。それ以外は入力スキーマ
- *   そのまま state:'confirmed'。
- * - execute: 述語で行を残す。eq/neq=厳密等価（Date は時刻値比較）; 大小=数値/日付比較;
+ *
+ * config は2形式を受理する（後方互換）:
+ * - 旧形式（1ノード1条件のフラット config）: `{ column, op, value?, valueBinding? }`。
+ *   保存済み Tool・スターターグラフ・Factory生成物がこの形なので受理し続け、
+ *   validateConfig もこの形のまま返す（application層が root の valueBinding を読む）。
+ * - 新形式（複数条件）: `{ conditions: [{ column, op, value?, valueBinding? }], combine: 'and'|'or' }`。
+ *   `combine` 省略時は 'and'。これで「東京 or 大阪」が1ノードで表せる。
+ *
+ * inferSchema / execute は両形式を条件配列へ正規化して処理する。
+ * - inferSchema: 各条件の `column` 存在必須（欠損 → error/mismatch）。`gt|gte|lt|lte` は
+ *   列型が number|date 必須（違反 → 型不一致 error + mismatch）。問題が無ければ入力
+ *   スキーマそのまま state:'confirmed'。複数条件では全条件分の issue を集約する。
+ * - execute: combine に応じて全条件 AND / いずれか OR で行を残す。
+ *   eq/neq=厳密等価（Date は時刻値比較）; 大小=数値/日付比較;
  *   contains=文字列包含（String化）; isNull/notNull。
  */
 import { z } from 'zod';
@@ -19,14 +29,27 @@ import { zodMessage } from './zod-error';
 /** フィルタ演算子。 */
 export type FilterOp = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains' | 'isNull' | 'notNull';
 
-/** `filter` の設定。 */
-export interface FilterConfig {
+/** 複数条件の結合方法。 */
+export type FilterCombine = 'and' | 'or';
+
+/** 条件1つ。旧形式のフラット config もこの形（1条件）として扱う。 */
+export interface FilterCondition {
   readonly column: string;
   readonly op: FilterOp;
   readonly value?: Cell;
   /** 実行時に Agent Tool の引数で value を上書きする参照。設計時は value をsampleに使う。 */
   readonly valueBinding?: { readonly source: 'agent-input'; readonly field: string };
 }
+
+/** 新形式（複数条件 + AND/OR）の設定。 */
+export interface FilterConditionsConfig {
+  readonly conditions: readonly FilterCondition[];
+  /** 省略時は 'and'。 */
+  readonly combine?: FilterCombine;
+}
+
+/** `filter` の設定。旧形式（単一条件フラット）と新形式（conditions）の両方。 */
+export type FilterConfig = FilterCondition | FilterConditionsConfig;
 
 /** 順序比較を要する演算子（列型 number|date が必須）。 */
 const ORDER_OPS: ReadonlySet<FilterOp> = new Set(['gt', 'gte', 'lt', 'lte']);
@@ -39,12 +62,31 @@ const cellSchema: z.ZodType<Cell> = z.union([
   z.null(),
 ]);
 
-const configSchema = z.object({
+const conditionSchema = z.object({
   column: z.string(),
   op: z.enum(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull']),
   value: cellSchema.optional(),
   valueBinding: z.object({ source: z.literal('agent-input'), field: z.string().min(1) }).optional(),
 });
+
+const conditionsSchema = z.object({
+  conditions: z.array(conditionSchema).min(1),
+  combine: z.enum(['and', 'or']).default('and'),
+});
+
+/** 新形式（conditions を持つ）か。z.union を使わず形で分岐し、Zod の詳細メッセージを保つ。 */
+function hasConditions(config: unknown): boolean {
+  return typeof config === 'object' && config !== null && Object.prototype.hasOwnProperty.call(config, 'conditions');
+}
+
+/** 設定を「条件配列 + 結合方法」へ正規化する（旧形式は1条件として扱う）。 */
+function normalize(config: FilterConfig): { readonly conditions: readonly FilterCondition[]; readonly combine: FilterCombine } {
+  if (hasConditions(config)) {
+    const conditions = config as FilterConditionsConfig;
+    return { conditions: conditions.conditions, combine: conditions.combine ?? 'and' };
+  }
+  return { conditions: [config as FilterCondition], combine: 'and' };
+}
 
 /** Cell を順序比較用の数値に変換する（number はそのまま / Date は時刻値 / 他は NaN）。 */
 function toComparable(value: Cell): number {
@@ -91,39 +133,54 @@ function evaluate(cell: Cell, op: FilterOp, value: Cell): boolean {
   }
 }
 
+/** 1条件のスキーマ検証（列存在 / 順序演算子の列型）。 */
+function conditionIssues(input: Schema, condition: FilterCondition): SchemaIssue[] {
+  const col = findColumn(input, condition.column);
+  if (col === undefined) {
+    return [{
+      severity: 'error',
+      message: `filter: column not found: ${condition.column}`,
+      column: condition.column,
+    }];
+  }
+  if (ORDER_OPS.has(condition.op) && col.type !== 'number' && col.type !== 'date') {
+    return [{
+      severity: 'error',
+      message: `filter: operator '${condition.op}' requires column type number|date, but '${condition.column}' is '${col.type}'`,
+      column: condition.column,
+    }];
+  }
+  return [];
+}
+
+/** 1行 × 1条件の判定（欠損キーは null 扱い）。 */
+function matches(row: Row, condition: FilterCondition): boolean {
+  const cell = Object.prototype.hasOwnProperty.call(row, condition.column)
+    ? (row[condition.column] ?? null)
+    : null;
+  return evaluate(cell, condition.op, condition.value ?? null);
+}
+
 class FilterNode implements EtlNode<FilterConfig> {
   readonly type = 'filter';
   readonly kind: NodeKind = 'transform';
   readonly inputArity = 1 as const;
 
   validateConfig(config: unknown): FilterConfig {
-    const parsed = configSchema.safeParse(config);
+    // 形で分岐し、それぞれ単一スキーマで検証する（z.union だと詳細が 'Invalid input' に潰れる）。
+    const schema = hasConditions(config) ? conditionsSchema : conditionSchema;
+    const parsed = schema.safeParse(config);
     if (!parsed.success) {
       throw new ConfigError(`filter: invalid config: ${zodMessage(parsed.error)}`);
     }
-    return parsed.data;
+    // 旧形式は旧形式のまま返す（保存済み config の形を変えない）。
+    return parsed.data as FilterConfig;
   }
 
   inferSchema(inputs: readonly Schema[], config: FilterConfig): SchemaInference {
     const input = inputs[0] ?? { columns: [] };
-    const issues: SchemaIssue[] = [];
-
-    const col = findColumn(input, config.column);
-    if (col === undefined) {
-      issues.push({
-        severity: 'error',
-        message: `filter: column not found: ${config.column}`,
-        column: config.column,
-      });
-      return { schema: input, state: 'mismatch', issues };
-    }
-
-    if (ORDER_OPS.has(config.op) && col.type !== 'number' && col.type !== 'date') {
-      issues.push({
-        severity: 'error',
-        message: `filter: operator '${config.op}' requires column type number|date, but '${config.column}' is '${col.type}'`,
-        column: config.column,
-      });
+    const issues = normalize(config).conditions.flatMap((condition) => conditionIssues(input, condition));
+    if (issues.length > 0) {
       return { schema: input, state: 'mismatch', issues };
     }
 
@@ -133,14 +190,11 @@ class FilterNode implements EtlNode<FilterConfig> {
 
   execute(inputs: readonly Table[], config: FilterConfig): Table {
     const input = inputs[0] ?? { schema: { columns: [] }, rows: [] };
-    const value = config.value ?? null;
+    const { conditions, combine } = normalize(config);
 
-    const rows: Row[] = input.rows.filter((row: Row) => {
-      const cell = Object.prototype.hasOwnProperty.call(row, config.column)
-        ? (row[config.column] ?? null)
-        : null;
-      return evaluate(cell, config.op, value);
-    });
+    const rows: Row[] = input.rows.filter((row: Row) => combine === 'or'
+      ? conditions.some((condition) => matches(row, condition))
+      : conditions.every((condition) => matches(row, condition)));
 
     // スキーマ不変。行配列は filter が新規生成。
     return { schema: input.schema, rows };

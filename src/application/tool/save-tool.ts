@@ -51,7 +51,7 @@ export class SaveToolUseCase {
   ) {}
 
   async execute(input: SaveToolInput): Promise<Tool> {
-    const requiresSessionWrite = input.graph.nodes.some((node) => node.type === 'workspace-output' || node.type === 'graph-output' || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference'));
+    const requiresSessionWrite = hasSessionStorageSink(input.graph);
     if (requiresSessionWrite && input.sideEffect === 'read-only') {
       throw new ToolValidationError('SaveTool: workspace output requires sideEffect session-write or stronger');
     }
@@ -104,6 +104,17 @@ export class SaveToolUseCase {
     // 5. 生成した Tool を返す。
     return tool;
   }
+}
+
+/**
+ * ツールのグラフが、セッションへ成果物を書き込む終端（workspace-output / graph-output /
+ * chart-output、または agent-output の overflow=store-and-reference）を持つかどうか。
+ * これらの終端を持つToolは最低 session-write の sideEffect を要求する。
+ */
+function hasSessionStorageSink(graph: ToolGraph): boolean {
+  return graph.nodes.some((node) =>
+    node.type === 'workspace-output' || node.type === 'graph-output' || node.type === 'chart-output'
+    || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference'));
 }
 
 function validateAgentInputBindings(graph: ToolGraph, inputSchema: Schema | undefined): void {

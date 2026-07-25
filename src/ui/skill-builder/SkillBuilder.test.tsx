@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
@@ -36,6 +36,17 @@ async function openNewSkillEditor(client: ToolApiClient) {
   return rendered;
 }
 
+// saveSkillのサーバー必須項目をすべて埋める（保存ボタンの活性条件と同じ集合）。
+async function fillRequiredFields(): Promise<void> {
+  await userEvent.type(screen.getByLabelText('Skill internal ID'), 'data-analysis');
+  await userEvent.type(screen.getByLabelText('Skill working name'), 'Data analysis draft');
+  await userEvent.type(screen.getByLabelText('Skill display name'), 'Data analysis');
+  await userEvent.type(screen.getByLabelText('Skill publish name'), 'data_analysis');
+  await userEvent.type(screen.getByLabelText('Skill owner'), 'local-user');
+  await userEvent.type(screen.getByLabelText('Skill description'), 'Analyze supplied data.');
+  await userEvent.type(screen.getByLabelText('Skill content'), 'Use the supplied data and explain the result.');
+}
+
 describe('SkillBuilder', () => {
   it('保存設定と、名前・説明・内容だけのAgentコンテキストを別の領域に表示する', async () => {
     const client = stubClient();
@@ -54,18 +65,31 @@ describe('SkillBuilder', () => {
     const client = stubClient();
     (client.saveSkill as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.0.0' } });
     await openNewSkillEditor(client);
-    await userEvent.type(screen.getByLabelText('Skill internal ID'), 'data-analysis');
-    await userEvent.type(screen.getByLabelText('Working name'), 'Data analysis draft');
-    await userEvent.type(screen.getByLabelText('Skill display name'), 'Data analysis');
-    await userEvent.type(screen.getByLabelText('Publish name'), 'data_analysis');
-    await userEvent.type(screen.getByLabelText('Owner'), 'local-user');
-    await userEvent.type(screen.getByLabelText('Skill description'), 'Analyze supplied data.');
-    await userEvent.type(screen.getByLabelText('Skill content'), 'Use the supplied data and explain the result.');
+    await fillRequiredFields();
     await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
     await waitFor(() => expect(client.saveSkill).toHaveBeenCalledWith(expect.objectContaining({
       internalId: 'data-analysis', responsibility: 'Analyze supplied data.', activationCondition: 'Analyze supplied data.', instructions: 'Use the supplied data and explain the result.', tools: [],
     })));
     expect(await screen.findByText('saved 1.0.0')).toBeTruthy();
+    // 保存成功は右上のピルだけでなく、保存ボタン近傍にも明示する。
+    expect(await screen.findByText('Saved · version 1.0.0')).toBeTruthy();
+  });
+
+  it('スキル名だけ空でも保存できず、未入力の項目名を理由として表示する', async () => {
+    const client = stubClient();
+    const { container } = await openNewSkillEditor(client);
+    const save = screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(container.querySelectorAll('.required-mark').length).toBeGreaterThanOrEqual(7);
+    expect(screen.getByText(/Required fields are empty: Internal ID, Working name, Skill name, Publish name, Owner, Skill description, Skill content/)).toBeTruthy();
+
+    await fillRequiredFields();
+    expect(save.disabled).toBe(false);
+
+    // スキル名（displayName）だけ空にすると、以前は押せてサーバー400になっていた。
+    await userEvent.clear(screen.getByLabelText('Skill display name'));
+    expect(save.disabled).toBe(true);
+    expect(screen.getByText('Required fields are empty: Skill name.')).toBeTruthy();
   });
 
   describe('一覧（Layer 1）', () => {
@@ -104,7 +128,7 @@ describe('SkillBuilder', () => {
       expect(internalIdInput.readOnly).toBe(true);
     });
 
-    it('Deleteでdeleteskillを呼び、一覧を再取得する', async () => {
+    it('Deleteは確認ダイアログの承諾後にdeleteSkillを呼び、一覧を再取得する', async () => {
       const client = stubClient();
       (client.listSkills as ReturnType<typeof vi.fn>)
         .mockResolvedValueOnce([existingSkillSummary])
@@ -112,6 +136,16 @@ describe('SkillBuilder', () => {
       render(<SkillBuilder client={client} />);
 
       await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+      const dialog = screen.getByRole('alertdialog');
+      expect(dialog.textContent).toContain('Existing Skill');
+      expect(client.deleteSkill).not.toHaveBeenCalled();
+
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(client.deleteSkill).not.toHaveBeenCalled();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+      await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
 
       expect(client.deleteSkill).toHaveBeenCalledWith('existing-skill', expect.any(Object));
       expect(client.listSkills).toHaveBeenCalledTimes(2);

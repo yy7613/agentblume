@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Cell, Row, Schema, SchemaState, Table } from '../../domain/data/types';
-import { GraphError } from '../../domain/etl/errors';
+import { ConfigError, GraphError } from '../../domain/etl/errors';
 import { SchemaError } from '../../domain/etl/errors';
 import type { EtlNode, SchemaInference, SchemaIssue } from '../../domain/etl/node';
 import { NodeRegistry } from '../../domain/etl/registry';
@@ -184,6 +184,64 @@ const passthroughNode: EtlNode<Record<string, never>> = {
   },
 };
 
+/**
+ * strict スタブ（inputArity: 1）。columns が空だと validateConfig が ConfigError を
+ * 投げる。Zod の `min(1)` 制約を持つ分析系ノード（設定未完了のまま追加された直後）
+ * を再現し、フォルト分離の検証に使う。
+ */
+const strictNode: EtlNode<SelectConfig> = {
+  type: 'stub-strict',
+  kind: 'analyze',
+  inputArity: 1,
+  validateConfig(config: unknown): SelectConfig {
+    const raw = config as { columns?: readonly string[] };
+    if (raw.columns === undefined || raw.columns.length === 0) {
+      throw new ConfigError('stub-strict: columns: Too small: expected array to have >=1 items');
+    }
+    return { columns: raw.columns };
+  },
+  inferSchema(inputs: readonly Schema[], config: SelectConfig): SchemaInference {
+    return selectNode.inferSchema(inputs, config);
+  },
+  execute(inputs: readonly Table[], config: SelectConfig): Table {
+    return selectNode.execute(inputs, config);
+  },
+};
+
+/** sink スタブ（inputArity: 1）。入力をそのまま返す終端ノード。 */
+const sinkNode: EtlNode<Record<string, never>> = {
+  ...passthroughNode,
+  type: 'stub-sink',
+  kind: 'sink',
+};
+
+/**
+ * 2入力の join スタブ（inputArity: 2）。
+ * inferSchema: 入力スキーマの列を toInput 順に連結。
+ * execute: 左右の行を toInput 順に連結（順序確認用）。
+ */
+interface JoinConfig {
+  readonly _?: never;
+}
+const joinNode: EtlNode<JoinConfig> = {
+  type: 'stub-join',
+  kind: 'transform',
+  inputArity: 2,
+  validateConfig(): JoinConfig {
+    return {};
+  },
+  inferSchema(inputs: readonly Schema[]): SchemaInference {
+    const cols = inputs.flatMap((s) => s.columns);
+    return { schema: { columns: cols }, state: 'confirmed', issues: [] };
+  },
+  execute(inputs: readonly Table[]): Table {
+    const left = inputs[0] ?? { schema: { columns: [] }, rows: [] };
+    const right = inputs[1] ?? { schema: { columns: [] }, rows: [] };
+    const cols = [...left.schema.columns, ...right.schema.columns];
+    return { schema: { columns: cols }, rows: [...left.rows, ...right.rows] };
+  },
+};
+
 /** 全スタブを登録した新規レジストリ。 */
 function makeRegistry(): NodeRegistry {
   const registry = new NodeRegistry();
@@ -191,6 +249,9 @@ function makeRegistry(): NodeRegistry {
   registry.register(selectNode);
   registry.register(filterNode);
   registry.register(passthroughNode);
+  registry.register(strictNode);
+  registry.register(sinkNode);
+  registry.register(joinNode);
   return registry;
 }
 
@@ -366,6 +427,186 @@ describe('EtlEngine.propagateSchemas', () => {
   });
 });
 
+describe('EtlEngine.propagateSchemas フォルト分離（config 不正ノード）', () => {
+  it('config 不正ノードは mismatch + error issue になり、他ノードの推論は継続する', () => {
+    const engine = makeEngine();
+    // bad（設定未完了）と sel（正常）が join で合流する。bad が壊れていても
+    // 別系統（s2 → sel）の推論は最後まで走る。
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's1', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+        { id: 'bad', type: 'stub-strict', config: {} },
+        { id: 's2', type: 'stub-source', config: sourceConfig(schemaOf('b', 'c'), 'confirmed', []) },
+        { id: 'sel', type: 'stub-select', config: { columns: ['b'] } satisfies SelectConfig },
+        { id: 'j', type: 'stub-join', config: {} },
+      ],
+      edges: [
+        { from: 's1', to: 'bad' },
+        { from: 's2', to: 'sel' },
+        { from: 'bad', to: 'j', toInput: 0 },
+        { from: 'sel', to: 'j', toInput: 1 },
+      ],
+    };
+
+    const result = engine.propagateSchemas(graph);
+
+    // 全ノードが推論結果を持つ（グラフ全体のアボートが起きない）。
+    expect(result.order).toEqual(['s1', 'bad', 's2', 'sel', 'j']);
+    expect(Object.keys(result.nodes).sort()).toEqual(['bad', 'j', 's1', 's2', 'sel']);
+    expect(result.hasErrors).toBe(true);
+
+    // 失敗ノードは mismatch + ConfigError 由来の error issue（nodeId 入り）。
+    expect(result.nodes['bad']?.state).toBe('mismatch');
+    expect(columnNames(result.nodes['bad']!.schema)).toEqual([]);
+    const badIssues = result.nodes['bad']?.issues ?? [];
+    expect(badIssues).toHaveLength(1);
+    expect(badIssues[0]?.severity).toBe('error');
+    expect(badIssues[0]?.message).toContain("node 'bad' has invalid config:");
+    expect(badIssues[0]?.message).toContain('Too small');
+
+    // 無関係な系統は通常どおり推論される（UI の列候補が失われない）。
+    expect(columnNames(result.nodes['s2']!.schema)).toEqual(['b', 'c']);
+    expect(columnNames(result.nodes['sel']!.schema)).toEqual(['b']);
+    expect(result.nodes['sel']?.state).toBe('confirmed');
+    expect(result.nodes['sel']?.issues).toEqual([]);
+  });
+
+  it('config 不正ノードの直下は推論をスキップし、上流原因の issue を1件だけ持つ', () => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+        { id: 'bad', type: 'stub-strict', config: { columns: [] } },
+        { id: 'p1', type: 'stub-pass', config: {} },
+        { id: 'p2', type: 'stub-pass', config: {} },
+      ],
+      edges: [
+        { from: 's', to: 'bad' },
+        { from: 'bad', to: 'p1' },
+        { from: 'p1', to: 'p2' },
+      ],
+    };
+
+    const result = engine.propagateSchemas(graph);
+
+    // 直下 p1 には原因ノードを指す issue が1件。
+    expect(result.nodes['p1']?.issues).toEqual([
+      { severity: 'error', message: "upstream node 'bad' has invalid config" },
+    ]);
+    expect(columnNames(result.nodes['p1']!.schema)).toEqual([]);
+    expect(result.nodes['p1']?.state).toBe('mismatch');
+
+    // さらに下流 p2 には同じ issue を連鎖させない（重複表示を避ける）。
+    expect(result.nodes['p2']?.issues).toEqual([]);
+    expect(columnNames(result.nodes['p2']!.schema)).toEqual([]);
+    expect(result.nodes['p2']?.state).toBe('mismatch');
+    expect(result.hasErrors).toBe(true);
+  });
+
+  it('同一の不正上流から2本入力を受ける多入力ノードでも issue は1件に畳む', () => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+        { id: 'bad', type: 'stub-strict', config: {} },
+        { id: 'j', type: 'stub-join', config: {} },
+      ],
+      edges: [
+        { from: 's', to: 'bad' },
+        { from: 'bad', to: 'j', toInput: 0 },
+        { from: 'bad', to: 'j', toInput: 1 },
+      ],
+    };
+
+    const result = engine.propagateSchemas(graph);
+
+    expect(result.nodes['j']?.issues).toEqual([
+      { severity: 'error', message: "upstream node 'bad' has invalid config" },
+    ]);
+  });
+
+  it('複数の config 不正ノードはそれぞれ独立に記録される', () => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's1', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+        { id: 'bad1', type: 'stub-strict', config: {} },
+        { id: 's2', type: 'stub-source', config: sourceConfig(schemaOf('b'), 'confirmed', []) },
+        { id: 'bad2', type: 'stub-strict', config: {} },
+        { id: 'j', type: 'stub-join', config: {} },
+      ],
+      edges: [
+        { from: 's1', to: 'bad1' },
+        { from: 's2', to: 'bad2' },
+        { from: 'bad1', to: 'j', toInput: 0 },
+        { from: 'bad2', to: 'j', toInput: 1 },
+      ],
+    };
+
+    const result = engine.propagateSchemas(graph);
+
+    expect(result.nodes['bad1']?.state).toBe('mismatch');
+    expect(result.nodes['bad2']?.state).toBe('mismatch');
+    // join は両方の上流を原因として列挙する。
+    expect((result.nodes['j']?.issues ?? []).map((issue) => issue.message)).toEqual([
+      "upstream node 'bad1' has invalid config",
+      "upstream node 'bad2' has invalid config",
+    ]);
+  });
+
+  it('config 不正でも上流ノード自身の state/schema は保持される', () => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'inferred', []) },
+        { id: 'bad', type: 'stub-strict', config: {} },
+      ],
+      edges: [{ from: 's', to: 'bad' }],
+    };
+
+    const result = engine.propagateSchemas(graph);
+
+    expect(result.nodes['s']?.state).toBe('inferred');
+    expect(columnNames(result.nodes['s']!.schema)).toEqual(['a']);
+  });
+
+  it('Error 以外が投げられても issue に文字列化して隔離する', () => {
+    const registry = makeRegistry();
+    registry.register({
+      ...strictNode,
+      type: 'stub-throw-string',
+      validateConfig(): SelectConfig {
+        // eslint 的には非推奨だが、非 Error を投げるノードでも壊れないことの確認。
+        throw 'boom';
+      },
+    });
+    const engine = new EtlEngine(registry);
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+        { id: 'bad', type: 'stub-throw-string', config: {} },
+      ],
+      edges: [{ from: 's', to: 'bad' }],
+    };
+
+    const result = engine.propagateSchemas(graph);
+    expect(result.nodes['bad']?.issues[0]?.message).toBe("node 'bad' has invalid config: boom");
+    expect(result.hasErrors).toBe(true);
+  });
+
+  it('preview は従来どおり ConfigError を投げる（実行系は厳格）', () => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+        { id: 'bad', type: 'stub-strict', config: {} },
+      ],
+      edges: [{ from: 's', to: 'bad' }],
+    };
+    expect(() => engine.preview(graph)).toThrow(ConfigError);
+  });
+});
+
 describe('EtlEngine.preview', () => {
   const rowsOf = (...vals: number[]): Row[] => vals.map((v) => ({ age: v } as Row));
 
@@ -484,7 +725,7 @@ describe('EtlEngine グラフ検証（GraphError）', () => {
         { from: 'b', to: 'a' },
       ],
     };
-    expect(() => engine.propagateSchemas(graph)).toThrow(GraphError);
+    expect(() => engine.propagateSchemas(graph)).toThrow(/graph has a cycle/);
   });
 
   it('終端が複数（分岐して合流しない）は GraphError', () => {
@@ -504,9 +745,10 @@ describe('EtlEngine グラフ検証（GraphError）', () => {
     expect(() => engine.preview(graph)).toThrow(/exactly one terminal/);
   });
 
-  it('閉路は GraphError（3ノードの循環、独立終端付き）', () => {
+  it('閉路は入次数エラーより先に「graph has a cycle」で報告する', () => {
     const engine = makeEngine();
-    // 閉路 a→b→c→b を含む。topologicalSort が検出。
+    // 閉路 a→b→c→b を含む。b の入次数は 2（arity 1）だが、原因は閉路なので
+    // 入次数の誤診断（expects 1 input but has in-degree 2）を出してはいけない。
     const graph: ToolGraph = {
       nodes: [
         { id: 'a', type: 'stub-source', config: sourceConfig(schemaOf('x'), 'confirmed', []) },
@@ -520,6 +762,45 @@ describe('EtlEngine グラフ検証（GraphError）', () => {
       ],
     };
     expect(() => engine.propagateSchemas(graph)).toThrow(GraphError);
+    expect(() => engine.propagateSchemas(graph)).toThrow(/graph has a cycle/);
+    expect(() => engine.propagateSchemas(graph)).not.toThrow(/in-degree/);
+    expect(() => engine.preview(graph)).toThrow(/graph has a cycle/);
+  });
+
+  it('自己ループ（f→f）も閉路として報告する', () => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('x'), 'confirmed', []) },
+        { id: 'f', type: 'stub-pass', config: {} },
+      ],
+      edges: [
+        { from: 's', to: 'f' },
+        { from: 'f', to: 'f' },
+      ],
+    };
+    expect(() => engine.propagateSchemas(graph)).toThrow(/graph has a cycle/);
+  });
+
+  it('相互接続（a↔b）は入次数エラーではなく閉路として報告する', () => {
+    const engine = makeEngine();
+    // s→a と b→a で a の入次数は 2（arity 1）になるが、原因は a↔b の閉路。
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('x'), 'confirmed', []) },
+        { id: 'a', type: 'stub-pass', config: {} },
+        { id: 'b', type: 'stub-pass', config: {} },
+        { id: 't', type: 'stub-pass', config: {} },
+      ],
+      edges: [
+        { from: 's', to: 'a' },
+        { from: 'a', to: 'b' },
+        { from: 'b', to: 'a' },
+        { from: 'b', to: 't' },
+      ],
+    };
+    expect(() => engine.propagateSchemas(graph)).toThrow(/graph has a cycle/);
+    expect(() => engine.propagateSchemas(graph)).not.toThrow(/in-degree/);
   });
 
   it('未知 type のノードは GraphError（registry.get 経由）', () => {
@@ -582,41 +863,8 @@ describe('EtlEngine グラフ検証（GraphError）', () => {
 });
 
 describe('EtlEngine 多入力（toInput 順の入力収集）', () => {
-  /**
-   * 2入力の join スタブ（inputArity: 2）。
-   * inferSchema: 入力スキーマの列を toInput 順に連結。
-   * execute: 左入力の行数分、左右の age/tag を合成した行を返す（順序確認用）。
-   */
-  interface JoinConfig {
-    readonly _?: never;
-  }
-  const joinNode: EtlNode<JoinConfig> = {
-    type: 'stub-join',
-    kind: 'transform',
-    inputArity: 2,
-    validateConfig(): JoinConfig {
-      return {};
-    },
-    inferSchema(inputs: readonly Schema[]): SchemaInference {
-      const cols = inputs.flatMap((s) => s.columns);
-      return { schema: { columns: cols }, state: 'confirmed', issues: [] };
-    },
-    execute(inputs: readonly Table[]): Table {
-      const left = inputs[0] ?? { schema: { columns: [] }, rows: [] };
-      const right = inputs[1] ?? { schema: { columns: [] }, rows: [] };
-      const cols = [...left.schema.columns, ...right.schema.columns];
-      return { schema: { columns: cols }, rows: [...left.rows, ...right.rows] };
-    },
-  };
-
-  function joinRegistry(): NodeRegistry {
-    const r = makeRegistry();
-    r.register(joinNode);
-    return r;
-  }
-
   it('toInput でポート順が決まる（宣言順が逆でも toInput 昇順で入力を並べる）', () => {
-    const engine = new EtlEngine(joinRegistry());
+    const engine = makeEngine();
     const leftSchema: Schema = { columns: [{ name: 'L', type: 'string', nullable: false }] };
     const rightSchema: Schema = { columns: [{ name: 'R', type: 'string', nullable: false }] };
     const graph: ToolGraph = {
@@ -641,7 +889,7 @@ describe('EtlEngine 多入力（toInput 順の入力収集）', () => {
   });
 
   it('2入力ノードは入次数2でなければ GraphError', () => {
-    const engine = new EtlEngine(joinRegistry());
+    const engine = makeEngine();
     const leftSchema: Schema = { columns: [{ name: 'L', type: 'string', nullable: false }] };
     const graph: ToolGraph = {
       nodes: [
@@ -652,5 +900,156 @@ describe('EtlEngine 多入力（toInput 順の入力収集）', () => {
     };
     expect(() => engine.propagateSchemas(graph)).toThrow(GraphError);
     expect(() => engine.propagateSchemas(graph)).toThrow(/expects 2 input/);
+  });
+});
+
+describe('EtlEngine 入力ポート（toInput）検証', () => {
+  /** 2ソース + join の骨組み（edges だけ差し替えて使う）。 */
+  function joinGraph(edges: ToolGraph['edges']): ToolGraph {
+    return {
+      nodes: [
+        { id: 'left', type: 'stub-source', config: sourceConfig(schemaOf('L'), 'confirmed', []) },
+        { id: 'right', type: 'stub-source', config: sourceConfig(schemaOf('R'), 'confirmed', []) },
+        { id: 'j', type: 'stub-join', config: {} },
+      ],
+      edges,
+    };
+  }
+
+  it('inputArity を超える toInput は GraphError（単一入力ノードに toInput:5）', () => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+        { id: 'sel', type: 'stub-select', config: { columns: ['a'] } satisfies SelectConfig },
+      ],
+      edges: [{ from: 's', to: 'sel', toInput: 5 }],
+    };
+    expect(() => engine.propagateSchemas(graph)).toThrow(GraphError);
+    expect(() => engine.propagateSchemas(graph)).toThrow(
+      "edge to 'sel' uses input port 5 but node type 'stub-select' accepts 1 input(s)",
+    );
+    expect(() => engine.preview(graph)).toThrow(GraphError);
+  });
+
+  it('負の toInput は GraphError', () => {
+    const engine = makeEngine();
+    const graph = joinGraph([
+      { from: 'left', to: 'j', toInput: -1 },
+      { from: 'right', to: 'j', toInput: 1 },
+    ]);
+    expect(() => engine.propagateSchemas(graph)).toThrow(
+      "edge to 'j' uses input port -1 but node type 'stub-join' accepts 2 input(s)",
+    );
+  });
+
+  it('整数でない toInput は GraphError', () => {
+    const engine = makeEngine();
+    const graph = joinGraph([
+      { from: 'left', to: 'j', toInput: 0 },
+      { from: 'right', to: 'j', toInput: 1.5 },
+    ]);
+    expect(() => engine.propagateSchemas(graph)).toThrow(
+      "edge to 'j' uses input port 1.5 but node type 'stub-join' accepts 2 input(s)",
+    );
+  });
+
+  it('同一入力ポートへの複数エッジは GraphError（両エッジ toInput:0）', () => {
+    const engine = makeEngine();
+    const graph = joinGraph([
+      { from: 'left', to: 'j', toInput: 0 },
+      { from: 'right', to: 'j', toInput: 0 },
+    ]);
+    expect(() => engine.propagateSchemas(graph)).toThrow(GraphError);
+    expect(() => engine.propagateSchemas(graph)).toThrow("node 'j' has multiple edges on input port 0");
+    expect(() => engine.preview(graph)).toThrow(GraphError);
+  });
+
+  it('多入力ノードへの toInput 未指定は GraphError（明示を要求する）', () => {
+    const engine = makeEngine();
+    const graph = joinGraph([
+      { from: 'left', to: 'j', toInput: 0 },
+      { from: 'right', to: 'j' },
+    ]);
+    expect(() => engine.propagateSchemas(graph)).toThrow(GraphError);
+    expect(() => engine.propagateSchemas(graph)).toThrow(
+      "node 'j' (type 'stub-join') requires explicit input ports on incoming edges",
+    );
+  });
+
+  it('両エッジ toInput 未指定の多入力ノードも「明示を要求」で報告する', () => {
+    const engine = makeEngine();
+    const graph = joinGraph([
+      { from: 'left', to: 'j' },
+      { from: 'right', to: 'j' },
+    ]);
+    expect(() => engine.propagateSchemas(graph)).toThrow(
+      "node 'j' (type 'stub-join') requires explicit input ports on incoming edges",
+    );
+  });
+
+  it('単一入力ノードへの toInput 省略は後方互換で許容する', () => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', [{ a: 'x' }]) },
+        { id: 'sel', type: 'stub-select', config: { columns: ['a'] } satisfies SelectConfig },
+        { id: 'p', type: 'stub-pass', config: {} },
+      ],
+      // toInput を一切指定しない従来形式。
+      edges: [
+        { from: 's', to: 'sel' },
+        { from: 'sel', to: 'p' },
+      ],
+    };
+    expect(engine.propagateSchemas(graph).hasErrors).toBe(false);
+    expect(engine.preview(graph).output.rows).toEqual([{ a: 'x' }]);
+  });
+
+  it('明示 toInput:0 の単一入力エッジも許容する', () => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+        { id: 'p', type: 'stub-pass', config: {} },
+      ],
+      edges: [{ from: 's', to: 'p', toInput: 0 }],
+    };
+    expect(engine.propagateSchemas(graph).hasErrors).toBe(false);
+  });
+});
+
+describe('EtlEngine sink ノードの終端制約', () => {
+  it('sink の後段にノードを接続すると GraphError', () => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+        { id: 'out', type: 'stub-sink', config: {} },
+        { id: 'p', type: 'stub-pass', config: {} },
+      ],
+      edges: [
+        { from: 's', to: 'out' },
+        { from: 'out', to: 'p' },
+      ],
+    };
+    expect(() => engine.propagateSchemas(graph)).toThrow(GraphError);
+    expect(() => engine.propagateSchemas(graph)).toThrow(
+      "sink node 'out' must be terminal (no downstream nodes)",
+    );
+    expect(() => engine.preview(graph)).toThrow(GraphError);
+  });
+
+  it('終端が sink のグラフは通る', () => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', [{ a: 'x' }]) },
+        { id: 'out', type: 'stub-sink', config: {} },
+      ],
+      edges: [{ from: 's', to: 'out' }],
+    };
+    expect(engine.propagateSchemas(graph).order).toEqual(['s', 'out']);
+    expect(engine.preview(graph).terminalId).toBe('out');
   });
 });

@@ -17,6 +17,7 @@ import { ModelProviderError } from '../application/model/model-provider';
 import { RunFailedError } from '../application/agent/errors';
 import { RunNotFoundError } from '../domain/run/errors';
 import { SkillNotFoundError, SkillValidationError, SkillVersionConflictError } from '../domain/skill/errors';
+import { InvalidFileContentError } from '../domain/data-source/errors';
 
 describe('toHttpError', () => {
   it.each([
@@ -35,6 +36,7 @@ describe('toHttpError', () => {
     [new SkillNotFoundError('missing skill'), 404, 'SKILL_NOT_FOUND', 'missing skill'],
     [new SkillVersionConflictError('dup skill'), 409, 'SKILL_VERSION_CONFLICT', 'dup skill'],
     [new SkillValidationError('bad skill'), 400, 'SKILL_VALIDATION', 'bad skill'],
+    [new InvalidFileContentError('bad content'), 400, 'INVALID_FILE_CONTENT', 'bad content'],
   ] as const)(
     '%s → status=%i code=%s',
     (err, status, code, message) => {

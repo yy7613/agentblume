@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { DataSourceDto, DatabaseConnectionDto, DatabaseConnectionStatusDto } from '../api/types';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { InlineFeedback } from '../components/InlineFeedback';
 import { useI18n } from '../i18n';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
@@ -24,6 +26,8 @@ export function DataSourcesPage({ client }: { readonly client: ToolApiClient }) 
   const [defaultSchema, setDefaultSchema] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [uploadedName, setUploadedName] = useState<string>();
+  const [pendingDelete, setPendingDelete] = useState<{ readonly id: string; readonly name: string }>();
 
   const refresh = useCallback(async () => {
     try {
@@ -38,10 +42,12 @@ export function DataSourcesPage({ client }: { readonly client: ToolApiClient }) 
     if (selectedFile === undefined) return;
     const format = sourceFormat(selectedFile);
     if (format === undefined) { setError(text('Select a CSV or JSON file.', 'CSV または JSON ファイルを選択してください。')); return; }
-    setBusy(true); setError(undefined);
+    const name = fileName.trim() || selectedFile.name;
+    setBusy(true); setError(undefined); setUploadedName(undefined);
     try {
-      await client.uploadDataSourceFile({ scope, name: fileName.trim() || selectedFile.name, format, content: await selectedFile.text() });
+      await client.uploadDataSourceFile({ scope, name, format, content: await selectedFile.text() });
       setSelectedFile(undefined); setFileName('');
+      setUploadedName(name);
       await refresh();
     } catch (cause) { setError(errorText(cause)); }
     finally { setBusy(false); }
@@ -78,8 +84,9 @@ export function DataSourcesPage({ client }: { readonly client: ToolApiClient }) 
     <div className="data-sources-grid">
       <section className="workspace-card"><h2>{text('Upload file', 'ファイルをアップロード')}</h2><p className="data-source-hint">{text('The file body is retained by the backend. Up to 5 MB per CSV or JSON file.', 'ファイル本文はバックエンドで保持します。CSV／JSONを1ファイル最大5 MBまで登録できます。')}</p>
         <label>{text('CSV or JSON file', 'CSV または JSON ファイル')}<input aria-label={text('Data file', 'データファイル')} type="file" accept=".csv,.json,application/json,text/csv" onChange={(event) => { const file = event.currentTarget.files?.[0]; setSelectedFile(file); setFileName(file?.name ?? ''); }} /></label>
-        <label>{text('Source name', 'ソース名')}<input aria-label={text('File source name', 'ファイルソース名')} placeholder={text('Shown in Tool Builder', 'ツール画面に表示する名前')} value={fileName} onChange={(event) => setFileName(event.target.value)} /></label>
+        <label>{text('Source name', 'ソース名')}<input aria-label={text('File source name', 'ファイルソース名')} placeholder={text('Leave empty to use the file name', '空の場合はファイル名を使用します')} value={fileName} onChange={(event) => setFileName(event.target.value)} /></label>
         <button type="button" className="primary" disabled={busy || selectedFile === undefined} onClick={() => void upload()}>{text('Upload', 'アップロード')}</button>
+        {uploadedName !== undefined && <InlineFeedback kind="success" autoHideMs={4000} onDismiss={() => setUploadedName(undefined)}>{text(`Registered "${uploadedName}".`, `"${uploadedName}" を登録しました`)}</InlineFeedback>}
       </section>
       <section className="workspace-card"><h2>{text('Database connection', 'データベース接続')}</h2><p className="data-source-hint">{text('Only connection IDs configured by the backend are selectable. Passwords and connection strings never enter this browser.', 'バックエンドで構成済みの接続IDだけを選択できます。パスワードや接続文字列はブラウザに入力・表示されません。')}</p>
         <label>{text('Configured connection', '構成済みの接続')}<select aria-label={text('Database connection ID', 'データベース接続ID')} value={connectionId} onChange={(event) => setConnectionId(event.target.value)}><option value="">{text('Select a connection', '接続を選択')}</option>{connections.map((connection) => <option key={connection.id} value={connection.id}>{connection.id} · {connection.driver}</option>)}</select></label>
@@ -92,8 +99,19 @@ export function DataSourcesPage({ client }: { readonly client: ToolApiClient }) 
     <section className="workspace-card data-source-list"><h2>{text('Registered sources', '登録済みソース')}</h2>
       {sources.length === 0 ? <p className="empty-state">{text('No data sources yet.', 'データソースはまだありません。')}</p> : <div className="data-source-rows">{sources.map((source) => {
         const status = source.kind === 'database' ? statuses[source.connectionId] : undefined;
-        return <article className="data-source-row" key={source.id}><div><strong>{source.name}</strong><code>{source.kind === 'file' ? `${source.format.toUpperCase()} · ${bytes(source.sizeBytes)}` : `${source.driver} · ${source.connectionId}${source.defaultSchema === undefined ? '' : ` · ${source.defaultSchema}`}`}</code>{status !== undefined && <small className={status.available ? 'connection-ready' : 'connection-unavailable'}>{status.available ? text('Connection available', '接続可能') : `${text('Unavailable', '利用不可')}: ${status.error ?? ''}`}</small>}</div><div className="data-source-actions">{source.kind === 'database' && <button type="button" className="secondary" disabled={busy} onClick={() => void test(source.connectionId)}>{text('Test', '接続テスト')}</button>}<button type="button" className="secondary danger" disabled={busy} onClick={() => void remove(source.id)}>{text('Remove', '削除')}</button></div></article>;
+        return <article className="data-source-row" key={source.id}><div><strong>{source.name}</strong><code>{source.kind === 'file' ? `${source.format.toUpperCase()} · ${bytes(source.sizeBytes)}` : `${source.driver} · ${source.connectionId}${source.defaultSchema === undefined ? '' : ` · ${source.defaultSchema}`}`}</code>{status !== undefined && <small className={status.available ? 'connection-ready' : 'connection-unavailable'}>{status.available ? text('Connection available', '接続可能') : `${text('Unavailable', '利用不可')}: ${status.error ?? ''}`}</small>}</div><div className="data-source-actions">{source.kind === 'database' && <button type="button" className="secondary" disabled={busy} onClick={() => void test(source.connectionId)}>{text('Test', '接続テスト')}</button>}<button type="button" className="secondary danger" disabled={busy} onClick={() => setPendingDelete({ id: source.id, name: source.name })}>{text('Remove', '削除')}</button></div></article>;
       })}</div>}
     </section>
+    <ConfirmDialog
+      open={pendingDelete !== undefined}
+      title={text('Remove data source', 'データソースの削除')}
+      message={text(`Remove "${pendingDelete?.name ?? ''}"? This cannot be undone.`, `"${pendingDelete?.name ?? ''}" を削除しますか？この操作は元に戻せません。`)}
+      confirmLabel={text('Remove', '削除')}
+      cancelLabel={text('Cancel', 'キャンセル')}
+      danger
+      busy={busy}
+      onConfirm={() => { if (pendingDelete === undefined) return; void remove(pendingDelete.id).then(() => setPendingDelete(undefined)); }}
+      onCancel={() => setPendingDelete(undefined)}
+    />
   </main>;
 }

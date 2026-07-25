@@ -3,6 +3,7 @@ import type { ToolApiClient } from '../api/tool-api';
 import type { OperationsStatusDto, RunFeedbackDto, RunRecordDto, RunSummaryDto, RunTraceEventDto } from '../api/types';
 import { useToolBuilderStore } from '../tool-builder/store';
 import { useI18n } from '../i18n';
+import { InlineFeedback } from '../components/InlineFeedback';
 
 export function StatusPage({ client }: { readonly client: ToolApiClient }) {
   const metadata = useToolBuilderStore((state) => state.metadata);
@@ -33,6 +34,7 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
   useEffect(() => { void refresh(); }, [refresh]);
 
   async function select(runId: string): Promise<void> {
+    setError(undefined);
     try {
       const run = await client.getRunTrace(runId, scope); setSelected(run); setFeedbackSaved(false);
       if (typeof client.getRunFeedback === 'function') {
@@ -41,6 +43,11 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
       }
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Trace lookup failed'); }
   }
+
+  function editThumb(next: 'up' | 'down'): void { setThumb(next); setFeedbackSaved(false); }
+  function editRating(next: number): void { setRating(next); setFeedbackSaved(false); }
+  function editComment(next: string): void { setComment(next); setFeedbackSaved(false); }
+  function editIssueTags(next: string): void { setIssueTags(next); setFeedbackSaved(false); }
 
   async function saveFeedback(): Promise<void> {
     if (selected === undefined || typeof client.submitRunFeedback !== 'function') return;
@@ -66,7 +73,7 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
           <dl className="run-observation"><div><dt>{text('Purpose', '目的')}</dt><dd>{selected.purpose ?? 'interactive'}</dd></div><div><dt>{text('Model', 'モデル')}</dt><dd>{selected.model === undefined ? text('unknown', '不明') : `${selected.model.provider} / ${selected.model.model}`}</dd></div><div><dt>{text('Latency', 'レイテンシ')}</dt><dd>{selected.latency === undefined ? '—' : `${selected.latency.totalMs.toFixed(1)} ms (model ${selected.latency.modelMs.toFixed(1)} / tool ${selected.latency.toolMs.toFixed(1)})`}</dd></div><div><dt>{text('Estimated cost', '推定コスト')}</dt><dd>{selected.estimatedCost === undefined ? text('unavailable', '未算出') : `$${selected.estimatedCost.amount.toFixed(6)} ${selected.estimatedCost.currency}`}</dd></div></dl>
           {selected.response !== undefined && <div className="chat-response"><span>{text('Response', '応答')}</span>{selected.structuredResponse === undefined ? <p>{selected.response}</p> : <pre>{JSON.stringify(selected.structuredResponse, null, 2)}</pre>}</div>}
           {selected.failure !== undefined && <div className="api-error"><strong>{selected.failure.code}</strong> {selected.failure.message}</div>}
-          {selected.agent?.version !== undefined && <section className="run-feedback" aria-label={text('Run feedback', '実行フィードバック')}><h3>{text('Feedback', 'フィードバック')}</h3><div className="feedback-thumbs"><button type="button" className={thumb === 'up' ? 'selected' : 'secondary'} onClick={() => setThumb('up')}>👍 {text('Good', '良い')}</button><button type="button" className={thumb === 'down' ? 'selected' : 'secondary'} onClick={() => setThumb('down')}>👎 {text('Needs work', '要改善')}</button></div><label>{text('Rating', '評価')}<select value={rating} onChange={(event) => setRating(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}</select></label><label>{text('Issue tags (comma separated)', '課題タグ（カンマ区切り）')}<input value={issueTags} onChange={(event) => setIssueTags(event.target.value)} placeholder="incorrect, unsafe, slow" /></label><label>{text('Comment', 'コメント')}<textarea value={comment} maxLength={2000} onChange={(event) => setComment(event.target.value)} /></label><button type="button" onClick={() => void saveFeedback()}>{feedback === undefined ? text('Save feedback', 'フィードバックを保存') : text('Update feedback', 'フィードバックを更新')}</button>{feedbackSaved && <span role="status">{text('Saved', '保存しました')}</span>}</section>}
+          {selected.agent?.version !== undefined && <section className="run-feedback" aria-label={text('Run feedback', '実行フィードバック')}><h3>{text('Feedback', 'フィードバック')}</h3><div className="feedback-thumbs"><button type="button" className={thumb === 'up' ? 'selected' : 'secondary'} onClick={() => editThumb('up')}>👍 {text('Good', '良い')}</button><button type="button" className={thumb === 'down' ? 'selected' : 'secondary'} onClick={() => editThumb('down')}>👎 {text('Needs work', '要改善')}</button></div><label>{text('Rating', '評価')}<select value={rating} onChange={(event) => editRating(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}</select></label><label>{text('Issue tags (comma separated)', '課題タグ（カンマ区切り）')}<input value={issueTags} onChange={(event) => editIssueTags(event.target.value)} placeholder="incorrect, unsafe, slow" /></label><label>{text('Comment', 'コメント')}<textarea value={comment} maxLength={2000} onChange={(event) => editComment(event.target.value)} /></label><button type="button" onClick={() => void saveFeedback()}>{feedback === undefined ? text('Save feedback', 'フィードバックを保存') : text('Update feedback', 'フィードバックを更新')}</button>{feedbackSaved && <InlineFeedback kind="success" autoHideMs={3000} onDismiss={() => setFeedbackSaved(false)}>{text('Saved', '保存しました')}</InlineFeedback>}</section>}
           <div className="trace-list">{selected.trace.map((event) => <StatusTraceEvent key={event.sequence} event={event} onOpenChild={(runId) => void select(runId)} />)}</div>
         </>}
       </section>

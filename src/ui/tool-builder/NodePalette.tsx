@@ -19,6 +19,7 @@ export function NodePalette({ client }: { readonly client?: ToolApiClient }) {
       {(['source', 'transform', 'analyze', 'sink'] as const).map((kind) => (
         <section key={kind}>
           <h3>{kind === 'source' ? text('source', '入力') : kind === 'transform' ? text('transform', '変換') : kind === 'analyze' ? text('analysis', '分析') : text('output', '出力')}</h3>
+          {kind === 'sink' && <small className="empty-state">{text('Only one output node can be the end of a graph.', '出力ノードはグラフの終端に1つだけ置けます。')}</small>}
           {NODE_CATALOG.filter((item) => item.kind === kind && (item.type !== 'web-search-source' || providers.length > 0)).map((item) => (
             <button key={item.type} type="button" onClick={() => addNode(item.type)} title={text(item.description, item.descriptionJa)}>
               <span>{text(item.label, item.labelJa)}</span><small>{text(item.description, item.descriptionJa)}</small>

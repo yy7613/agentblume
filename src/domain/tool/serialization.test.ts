@@ -69,6 +69,24 @@ describe('round-trip (serialize → JSON → parse → deserialize)', () => {
     expect(restored.outputSchema).toEqual(original.outputSchema);
   });
 
+  it('keeps optional canvas positions through the round-trip', () => {
+    const tool = createTool({
+      metadata: metadata(),
+      sideEffect: 'read-only',
+      graph: {
+        nodes: [
+          { id: 'n1', type: 'json-source', config: {}, position: { x: 80, y: 120 } },
+          { id: 'n2', type: 'select', config: { columns: [] } },
+        ],
+        edges: [{ from: 'n1', to: 'n2' }],
+      },
+    });
+    const restored = deserializeTool(JSON.parse(JSON.stringify(serializeTool(tool))));
+    expect(restored.graph.nodes[0]?.position).toEqual({ x: 80, y: 120 });
+    // position を持たないノードはフィールド自体を増やさない（既存データと同じ形）。
+    expect(restored.graph.nodes[1]).not.toHaveProperty('position');
+  });
+
   it('round-trips a tool without optional schemas', () => {
     const tool = createTool({
       metadata: metadata(),

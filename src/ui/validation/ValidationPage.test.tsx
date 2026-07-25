@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
@@ -44,7 +44,7 @@ describe('ValidationPage', () => {
     await waitFor(() => expect(client.listScenarioRuns).toHaveBeenCalledWith(scope));
   });
 
-  it('品質比較、gate判定、昇格申請、承認を操作する', async () => {
+  it('品質比較、gate判定、昇格申請、承認を操作する（承認は確認ダイアログ経由）', async () => {
     const completed = (id: string, version: string) => ({ id, scope, target: { agentId: 'agent', version }, dataset: { id: 'set', version: '1.0.0' }, evaluatorProfile: { id: 'profile', version: '1.0.0' }, repetitions: 2, status: 'completed', snapshot: { provider: 'test', model: 'model', modelConfigHash: 'hash' }, progress: { completed: 2, total: 2 }, createdAt: 'now' });
     const comparison = { baselineExperimentId: 'baseline', candidateExperimentId: 'candidate', baseline: { experimentId: 'baseline', caseCount: 2, metrics: {} }, candidate: { experimentId: 'candidate', caseCount: 2, metrics: {} }, metrics: [{ metric: 'quality', preference: 'higher', baseline: { count: 2, mean: 0.5, median: 0.5, p50: 0.5, p95: 0.5, stddev: 0, min: 0.5, max: 0.5, samples: [0.5, 0.5] }, candidate: { count: 2, mean: 0.9, median: 0.9, p50: 0.9, p95: 0.9, stddev: 0, min: 0.9, max: 0.9, samples: [0.9, 0.9] }, delta: 0.4, direction: 'improved' }], cases: [{ caseId: 'critical', repetition: 1, baselineStatus: 'succeeded', candidateStatus: 'succeeded', baselineScore: 0.5, candidateScore: 0.9, delta: 0.4, direction: 'improved' }] };
     const report = { id: 'report', scope, policy: { id: 'release', version: '1.0.0' }, baselineExperimentId: 'baseline', candidateExperimentId: 'candidate', status: 'pass', ruleResults: [{ ruleId: 'threshold', passed: true, observed: 0.9, message: 'quality meets threshold' }], createdAt: 'now', expiresAt: 'later' };
@@ -62,7 +62,10 @@ describe('ValidationPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Evaluate gate' })); await waitFor(() => expect(evaluateGate).toHaveBeenCalledWith(scope, { id: 'release', version: '1.0.0' }, 'candidate', 'baseline'));
     expect(await screen.findByText('PASS')).toBeTruthy(); await userEvent.click(screen.getByRole('button', { name: 'Request promotion' }));
     await waitFor(() => expect(requestPromotion).toHaveBeenCalledWith('agent', '2.0.0', scope, 'report', 'reviewer'));
-    await userEvent.click(await screen.findByRole('button', { name: 'Approve' })); await waitFor(() => expect(decidePromotion).toHaveBeenCalledWith('promotion', 'approve', scope, 'reviewer'));
+    await userEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+    const decisionDialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(decisionDialog).getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(decidePromotion).toHaveBeenCalledWith('promotion', 'approve', scope, 'reviewer'));
   });
 
   it('Gate policyを切り替えるとgetGatePolicyでルール編集フィールドが復元される', async () => {
@@ -94,7 +97,7 @@ describe('ValidationPage', () => {
     expect((screen.getByLabelText('Required tags (comma-separated)') as HTMLInputElement).value).toBe('critical, p0');
   });
 
-  it('Delete policyでdeleteGatePolicyを呼び、一覧を再取得する', async () => {
+  it('Delete policyでdeleteGatePolicyを呼び、一覧を再取得する（確認ダイアログ経由）', async () => {
     const deleteGatePolicy = vi.fn().mockResolvedValue(undefined);
     const getGatePolicy = vi.fn().mockResolvedValue({ metadata: { internalId: 'release', version: '1.0.0' }, reportTtlHours: 24, rules: [{ id: 'threshold', kind: 'metric-threshold', metric: 'quality', operator: 'gte', threshold: 0.8 }] });
     const listGatePolicies = vi.fn()
@@ -106,6 +109,9 @@ describe('ValidationPage', () => {
     await waitFor(() => expect(getGatePolicy).toHaveBeenCalledWith('release', scope, '1.0.0'));
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete policy' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.textContent).toContain('Release');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
 
     expect(deleteGatePolicy).toHaveBeenCalledWith('release', scope);
     expect(listGatePolicies).toHaveBeenCalledTimes(2);
@@ -140,7 +146,7 @@ describe('ValidationPage', () => {
     expect(await screen.findByText('1 · model-response')).toBeTruthy();
   });
 
-  it('Experimentの版選択・cancel・interrupted resumeを操作する', async () => {
+  it('Experimentの版選択・cancel・interrupted resumeを操作する（cancelは確認ダイアログ経由）', async () => {
     const base = { scope, dataset: { id: 'set-a', version: '1.0.0' }, evaluatorProfile: { id: 'profile-a', version: '1.0.0' }, repetitions: 1, snapshot: { provider: 'test', model: 'model', modelConfigHash: 'hash' }, progress: { completed: 0, total: 1 }, createdAt: 'now' };
     const running = { ...base, id: 'running', target: { agentId: 'agent-run', version: '1.0.0' }, status: 'running' };
     const interrupted = { ...base, id: 'interrupted', target: { agentId: 'agent-stop', version: '1.0.0' }, status: 'interrupted', error: { code: 'PROCESS_INTERRUPTED', message: 'stopped' } };
@@ -173,6 +179,8 @@ describe('ValidationPage', () => {
     await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Experiment profile version' }), '1.0.0');
     await userEvent.click(screen.getByRole('button', { name: /agent-run@1.0.0/ }));
     await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    const cancelDialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(cancelDialog).getByRole('button', { name: 'Cancel experiment' }));
     await waitFor(() => expect(cancelExperiment).toHaveBeenCalledWith('running', scope));
     await userEvent.click(screen.getByRole('button', { name: /agent-stop@1.0.0/ }));
     await userEvent.click(await screen.findByRole('button', { name: 'Resume' }));
@@ -291,7 +299,7 @@ describe('ValidationPage', () => {
     expect(screen.queryByRole('textbox', { name: 'Metric 2 ID' })).toBeNull();
   });
 
-  it('Datasets/Profiles/RubricsそれぞれのDeleteでdeleteXを呼び、一覧を再取得する', async () => {
+  it('Datasets/Profiles/RubricsそれぞれのDeleteでdeleteXを呼び、一覧を再取得する（確認ダイアログ経由）', async () => {
     const deleteEvaluationDataset = vi.fn().mockResolvedValue(undefined);
     const deleteEvaluatorProfile = vi.fn().mockResolvedValue(undefined);
     const deleteJudgeRubric = vi.fn().mockResolvedValue(undefined);
@@ -308,21 +316,28 @@ describe('ValidationPage', () => {
     render(<ValidationPage client={client} />);
     await userEvent.click(screen.getByRole('tab', { name: 'Datasets' }));
 
-    const deleteButtons = await screen.findAllByRole('button', { name: 'Delete' });
-    expect(deleteButtons).toHaveLength(3);
-    await userEvent.click(deleteButtons[0]!);
-    await userEvent.click(deleteButtons[1]!);
-    await userEvent.click(deleteButtons[2]!);
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Delete' }))[0]!);
+    let dialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(deleteEvaluationDataset).toHaveBeenCalledWith('set', scope));
+    expect(await screen.findByText('No evaluation datasets.')).toBeTruthy();
 
-    expect(deleteEvaluationDataset).toHaveBeenCalledWith('set', scope);
-    expect(deleteEvaluatorProfile).toHaveBeenCalledWith('profile', scope);
-    expect(deleteJudgeRubric).toHaveBeenCalledWith('rubric', scope);
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Delete' }))[0]!);
+    dialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(deleteEvaluatorProfile).toHaveBeenCalledWith('profile', scope));
+    expect(await screen.findByText('No evaluator profiles.')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    dialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(deleteJudgeRubric).toHaveBeenCalledWith('rubric', scope));
+
     expect(listEvaluationDatasets).toHaveBeenCalledTimes(2);
     expect(listEvaluatorProfiles).toHaveBeenCalledTimes(2);
     expect(listJudgeRubrics).toHaveBeenCalledTimes(2);
-    expect(await screen.findByText('No evaluation datasets.')).toBeTruthy();
     expect(screen.getByText('No evaluator profiles.')).toBeTruthy();
-    expect(screen.getByText('No judge rubrics.')).toBeTruthy();
+    expect(await screen.findByText('No judge rubrics.')).toBeTruthy();
   });
 
   it('Personaフォームの入力を保存POSTのDTO形へ写像する', async () => {
@@ -365,7 +380,7 @@ describe('ValidationPage', () => {
     expect(await screen.findByText(/pseudo-novice-user@1\.0\.0/)).toBeTruthy();
   });
 
-  it('Deleteでdeletepersonaを呼び、一覧を再取得する', async () => {
+  it('Deleteでdeletepersonaを呼び、一覧を再取得する（確認ダイアログ経由、キャンセルでは呼ばれない）', async () => {
     const deletePersona = vi.fn().mockResolvedValue(undefined);
     const listPersonas = vi.fn()
       .mockResolvedValueOnce([{ internalId: 'novice-user', displayName: 'Novice user', publishName: 'novice_user', latestVersion: '1.0.0', archetype: 'novice', state: 'draft' }])
@@ -374,6 +389,12 @@ describe('ValidationPage', () => {
     render(<ValidationPage client={client} />);
 
     await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(deletePersona).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
 
     expect(deletePersona).toHaveBeenCalledWith('novice-user', scope);
     expect(listPersonas).toHaveBeenCalledTimes(2);
@@ -433,7 +454,7 @@ describe('ValidationPage', () => {
     expect(screen.getByRole('tab', { name: 'Runs' }).getAttribute('aria-selected')).toBe('true');
   });
 
-  it('Deleteでdeletescenarioを呼び、一覧を再取得する', async () => {
+  it('Deleteでdeletescenarioを呼び、一覧を再取得する（確認ダイアログ経由）', async () => {
     const deleteScenario = vi.fn().mockResolvedValue(undefined);
     const listScenarios = vi.fn()
       .mockResolvedValueOnce([{ internalId: 'sales-summary-scenario', displayName: 'Sales summary scenario', publishName: 'sales_summary_scenario', latestVersion: '1.0.0', state: 'draft' }])
@@ -443,6 +464,9 @@ describe('ValidationPage', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Scenarios' }));
 
     await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.textContent).toContain('Sales summary scenario');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
 
     expect(deleteScenario).toHaveBeenCalledWith('sales-summary-scenario', scope);
     expect(listScenarios).toHaveBeenCalledTimes(2);

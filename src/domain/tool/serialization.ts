@@ -61,6 +61,8 @@ const graphSchema = z.object({
       id: z.string(),
       type: z.string(),
       config: z.unknown(),
+      // 編集UIのキャンバス座標。position を持たない既存データも復元できるよう optional。
+      position: z.object({ x: z.number(), y: z.number() }).optional(),
     }),
   ),
   edges: z.array(
@@ -112,7 +114,11 @@ export function serializeTool(tool: Tool): SerializedTool {
     },
     sideEffect: tool.sideEffect,
     graph: {
-      nodes: tool.graph.nodes.map((n) => ({ id: n.id, type: n.type, config: n.config })),
+      nodes: tool.graph.nodes.map((n) =>
+        n.position === undefined
+          ? { id: n.id, type: n.type, config: n.config }
+          : { id: n.id, type: n.type, config: n.config, position: { x: n.position.x, y: n.position.y } },
+      ),
       edges: tool.graph.edges.map((e) =>
         e.toInput === undefined
           ? { from: e.from, to: e.to }

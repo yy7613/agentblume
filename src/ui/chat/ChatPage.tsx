@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, AgentSummaryDto, HarnessRunDto, HarnessSummaryDto, RunImageAttachmentDto, RunTraceEventDto, SessionArtifactDto } from '../api/types';
 import { useI18n } from '../i18n';
+import { useElapsedSeconds } from './useElapsedSeconds';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
@@ -10,7 +11,7 @@ type Translate = (english: string, japanese: string) => string;
 type ChatTurn =
   | { readonly role: 'user'; readonly text: string; readonly images: readonly RunImageAttachmentDto[] }
   | { readonly role: 'assistant'; readonly run: AgentPreviewRunDto | HarnessRunDto }
-  | { readonly role: 'error'; readonly text: string };
+  | { readonly role: 'error'; readonly text: string; readonly onRetry?: () => void };
 
 const sparkIcon = (
   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
@@ -53,6 +54,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const { text } = useI18n();
+  const elapsedSeconds = useElapsedSeconds(busy);
 
   useEffect(() => {
     let active = true;
@@ -83,13 +85,13 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   // コンポーザーを入力量に合わせて自動で高さ調整する（Copilot風の伸縮入力欄）。
   useEffect(() => { const el = inputRef.current; if (el === null) return; el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 168)}px`; }, [message]);
 
-  async function send(): Promise<void> {
-    const content = message.trim();
+  async function send(retry?: { readonly content: string; readonly images: readonly RunImageAttachmentDto[] }): Promise<void> {
+    const content = retry === undefined ? message.trim() : retry.content;
     if (target === undefined || content === '' || busy) return;
     setBusy(true);
-    const attachedImages = images;
+    const attachedImages = retry === undefined ? images : retry.images;
     setTurns((prev) => [...prev, { role: 'user', text: content, images: attachedImages }]);
-    setMessage(''); setImages([]);
+    if (retry === undefined) { setMessage(''); setImages([]); }
     try {
       let activeSessionId = target.kind === 'agent' ? sessionId : undefined;
       const sessions = client as Partial<ToolApiClient>;
@@ -110,7 +112,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       if (isHarnessRun(run)) setActiveHarnessRun(run.status === 'waiting-input' || run.status === 'waiting-approval' ? run : undefined);
       if (activeSessionId !== undefined && typeof sessions.listSessionArtifacts === 'function') void sessions.listSessionArtifacts(activeSessionId, scope).then(setArtifacts).catch(() => {});
     } catch (cause) {
-      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause) }]);
+      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), onRetry: () => void send({ content, images: attachedImages }) }]);
     } finally {
       setBusy(false);
     }
@@ -166,7 +168,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       setTurns((prev) => [...prev, { role: 'assistant', run }]);
       setActiveHarnessRun(run.status === 'waiting-input' || run.status === 'waiting-approval' ? run : undefined);
     } catch (cause) {
-      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause) }]);
+      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), onRetry: () => void respondToApproval(decision) }]);
     } finally {
       setBusy(false);
     }
@@ -180,7 +182,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       setTurns((prev) => [...prev, { role: 'assistant', run }]);
       setActiveHarnessRun(undefined);
     } catch (cause) {
-      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause) }]);
+      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), onRetry: () => void cancelInteractiveHarness() }]);
     } finally {
       setBusy(false);
     }
@@ -224,7 +226,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
               )}
             </div>
           ) : (
-            turns.map((turn, index) => <Turn key={index} turn={turn} agentName={agentName} text={text} />)
+            turns.map((turn, index) => <Turn key={index} turn={turn} agentName={agentName} text={text} busy={busy} />)
           )}
           {busy && turns.length > 0 && (
             <div className="cc-msg assistant">
@@ -232,6 +234,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
               <div className="cc-bubble">
                 <span className="cc-name">{agentName}</span>
                 <span className="cc-typing" aria-label={text('Running…', '実行中…')}><i /><i /><i /></span>
+                <span className="cc-meta">{text(`Running… ${elapsedSeconds}s`, `実行中… ${elapsedSeconds}秒`)}</span>
               </div>
             </div>
           )}
@@ -239,12 +242,12 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       </div>
 
       <form className="cc-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
-        {activeHarnessRun?.status === 'waiting-approval' && <div className="cc-alert">
+        {activeHarnessRun?.status === 'waiting-approval' && <div className="cc-alert notice">
           <span>{text('The Magentic plan is waiting for approval. Enter feedback to request a revision.', 'Magenticの計画は承認待ちです。入力して送信すると修正依頼になります。')}</span>
           <button type="button" className="cc-new" disabled={busy} onClick={() => void respondToApproval('approve')}>{text('Approve plan', '計画を承認')}</button>
           <button type="button" className="cc-new" disabled={busy} onClick={() => void respondToApproval('reject')}>{text('Reject and cancel', '却下して中止')}</button>
         </div>}
-        {activeHarnessRun?.status === 'waiting-input' && <div className="cc-alert">
+        {activeHarnessRun?.status === 'waiting-input' && <div className="cc-alert notice">
           <span>{activeHarnessRun.checkpoint?.kind === 'handoff-input' ? activeHarnessRun.checkpoint.prompt : text('The Harness is waiting for your message.', 'Harnessは入力待ちです。')}</span>
           <button type="button" className="cc-new" disabled={busy} onClick={() => void cancelInteractiveHarness()}>{text('Cancel run', '実行を中止')}</button>
         </div>}
@@ -300,7 +303,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   );
 }
 
-function Turn({ turn, agentName, text }: { readonly turn: ChatTurn; readonly agentName: string; readonly text: Translate }) {
+function Turn({ turn, agentName, text, busy }: { readonly turn: ChatTurn; readonly agentName: string; readonly text: Translate; readonly busy: boolean }) {
   if (turn.role === 'user') {
     return (
       <div className="cc-msg user">
@@ -313,7 +316,11 @@ function Turn({ turn, agentName, text }: { readonly turn: ChatTurn; readonly age
     return (
       <div className="cc-msg error">
         <span className="cc-avatar error" aria-hidden="true">!</span>
-        <div className="cc-bubble"><span className="cc-name">{text('Error', 'エラー')}</span><p role="alert">{turn.text}</p></div>
+        <div className="cc-bubble">
+          <span className="cc-name">{text('Error', 'エラー')}</span>
+          <p role="alert">{turn.text}</p>
+          {turn.onRetry !== undefined && <button type="button" className="secondary" disabled={busy} onClick={turn.onRetry}>{text('Retry', '再試行')}</button>}
+        </div>
       </div>
     );
   }
@@ -410,11 +417,11 @@ function ChartDialog({ artifact, payload, text, onClose }: { readonly artifact: 
   const labelColumn = stringMapping(payload.mapping, 'timeColumn', 'xColumn', 'categoryColumn');
   const points = payload.rows.map((row, index) => ({ x: labelColumn === undefined ? String(index + 1) : String(row[labelColumn] ?? ''), y: valueColumn === undefined ? undefined : number(row[valueColumn]) })).filter((point): point is { x: string; y: number } => point.y !== undefined);
   const numericValues = valueColumn === undefined ? [] : payload.rows.map((row) => number(row[valueColumn])).filter((value): value is number => value !== undefined);
-  return <div className="chart-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="chart-dialog" role="dialog" aria-modal="true" aria-label={text('Chart preview', 'チャートプレビュー')}><header><div><span className="eyebrow">{payload.chartType}</span><h2>{payload.title ?? artifact.name}</h2></div><button type="button" className="ghost" aria-label={text('Close chart', 'チャートを閉じる')} onClick={onClose}>×</button></header>{payload.chartType === 'histogram' ? <HistogramSvg values={numericValues} /> : payload.chartType === 'box-plot' ? <BoxPlotSvg values={numericValues} /> : payload.chartType === 'correlation-heatmap' ? <HeatmapSvg rows={payload.rows} mapping={payload.mapping} /> : <ChartSvg points={points} type={payload.chartType} />}<p>{text(`${payload.sourceRowCount} source rows · ${payload.rows.length} rendered points`, `元データ ${payload.sourceRowCount}行 · 描画 ${payload.rows.length}ポイント`)}{payload.sampled ? text(' · sampled', ' · 間引き済み') : ''}</p><details><summary>{text('Chart mapping', 'チャート対応')}</summary><pre>{JSON.stringify(payload.mapping, null, 2)}</pre></details></section></div>;
+  return <div className="chart-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="chart-dialog" role="dialog" aria-modal="true" aria-label={text('Chart preview', 'チャートプレビュー')}><header><div><span className="eyebrow">{payload.chartType}</span><h2>{payload.title ?? artifact.name}</h2></div><button type="button" className="ghost" aria-label={text('Close chart', 'チャートを閉じる')} onClick={onClose}>×</button></header>{payload.chartType === 'histogram' ? <HistogramSvg values={numericValues} text={text} /> : payload.chartType === 'box-plot' ? <BoxPlotSvg values={numericValues} text={text} /> : payload.chartType === 'correlation-heatmap' ? <HeatmapSvg rows={payload.rows} mapping={payload.mapping} text={text} /> : <ChartSvg points={points} type={payload.chartType} text={text} />}<p>{text(`${payload.sourceRowCount} source rows · ${payload.rows.length} rendered points`, `元データ ${payload.sourceRowCount}行 · 描画 ${payload.rows.length}ポイント`)}{payload.sampled ? text(' · sampled', ' · 間引き済み') : ''}</p><details><summary>{text('Chart mapping', 'チャート対応')}</summary><pre>{JSON.stringify(payload.mapping, null, 2)}</pre></details></section></div>;
 }
 function stringMapping(mapping: ChartPayload['mapping'], ...keys: readonly string[]): string | undefined { for (const key of keys) { const value = mapping[key]; if (typeof value === 'string') return value; } return undefined; }
 function number(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined; }
-function ChartSvg({ points, type }: { readonly points: readonly { x: string; y: number }[]; readonly type: string }) { if (points.length === 0) return <p className="empty-state">No numeric chart points.</p>; const width = 640; const height = 280; const min = Math.min(...points.map((point) => point.y)); const max = Math.max(...points.map((point) => point.y)); const range = max - min || 1; const x = (index: number) => 36 + index * ((width - 56) / Math.max(1, points.length - 1)); const y = (value: number) => height - 28 - ((value - min) / range) * (height - 52); const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(index)},${y(point.y)}`).join(' '); return <svg className="chart-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${type} chart`}><line x1="36" y1="12" x2="36" y2={height - 28} /><line x1="36" y1={height - 28} x2={width - 12} y2={height - 28} />{type === 'scatter' || type === 'outlier-overlay' ? points.map((point, index) => <circle key={index} cx={x(index)} cy={y(point.y)} r="4" />) : <path d={path} fill="none" strokeWidth="3" />}</svg>; }
-function HistogramSvg({ values }: { readonly values: readonly number[] }) { if (values.length === 0) return <p className="empty-state">No numeric chart points.</p>; const count = Math.min(12, Math.max(1, Math.ceil(Math.sqrt(values.length)))); const min = Math.min(...values); const max = Math.max(...values); const step = (max - min || 1) / count; const bins = new Array<number>(count).fill(0); values.forEach((value) => { bins[Math.min(count - 1, Math.floor((value - min) / step))]! += 1; }); const peak = Math.max(...bins, 1); return <svg className="chart-svg" viewBox="0 0 640 280" role="img" aria-label="histogram chart">{bins.map((bin, index) => <rect key={index} x={36 + index * (570 / count)} y={252 - (bin / peak) * 220} width={Math.max(2, 570 / count - 4)} height={(bin / peak) * 220} />)}</svg>; }
-function BoxPlotSvg({ values }: { readonly values: readonly number[] }) { if (values.length === 0) return <p className="empty-state">No numeric chart points.</p>; const sorted = [...values].sort((a, b) => a - b); const at = (q: number) => { const p = (sorted.length - 1) * q; const a = sorted[Math.floor(p)]!; const b = sorted[Math.ceil(p)]!; return a + (b - a) * (p - Math.floor(p)); }; const min = sorted[0]!; const max = sorted[sorted.length - 1]!; const q1 = at(.25); const median = at(.5); const q3 = at(.75); const scale = (value: number) => 40 + ((value - min) / (max - min || 1)) * 560; return <svg className="chart-svg" viewBox="0 0 640 280" role="img" aria-label="box plot chart"><line x1={scale(min)} y1="140" x2={scale(max)} y2="140" /><line x1={scale(min)} y1="110" x2={scale(min)} y2="170" /><line x1={scale(max)} y1="110" x2={scale(max)} y2="170" /><rect x={scale(q1)} y="100" width={Math.max(2, scale(q3) - scale(q1))} height="80" /><line x1={scale(median)} y1="100" x2={scale(median)} y2="180" /></svg>; }
-function HeatmapSvg({ rows, mapping }: { readonly rows: readonly Readonly<Record<string, unknown>>[]; readonly mapping: ChartPayload['mapping'] }) { const x = stringMapping(mapping, 'xColumn'); const y = stringMapping(mapping, 'yColumn'); const coefficient = stringMapping(mapping, 'coefficientColumn'); if (x === undefined || y === undefined || coefficient === undefined) return <p className="empty-state">Chart mapping is incomplete.</p>; const xs = [...new Set(rows.map((row) => String(row[x] ?? '')))].filter(Boolean); const ys = [...new Set(rows.map((row) => String(row[y] ?? '')))].filter(Boolean); if (xs.length === 0 || ys.length === 0) return <p className="empty-state">No correlation pairs.</p>; const cells = new Map(rows.map((row) => [`${row[x]}\u0000${row[y]}`, number(row[coefficient]) ?? 0])); const size = Math.min(48, 520 / Math.max(xs.length, ys.length)); const color = (value: number) => value >= 0 ? `rgb(${Math.round(255 - value * 110)},${Math.round(255 - value * 40)},255)` : `rgb(255,${Math.round(255 + value * 100)},${Math.round(255 + value * 100)})`; return <svg className="chart-svg" viewBox={`0 0 ${Math.max(640, xs.length * size + 100)} ${Math.max(280, ys.length * size + 80)}`} role="img" aria-label="correlation heatmap">{ys.flatMap((yv, yi) => xs.map((xv, xi) => <rect key={`${xv}-${yv}`} x={70 + xi * size} y={24 + yi * size} width={size - 1} height={size - 1} fill={color(cells.get(`${xv}\u0000${yv}`) ?? cells.get(`${yv}\u0000${xv}`) ?? 0)} />))}</svg>; }
+function ChartSvg({ points, type, text }: { readonly points: readonly { x: string; y: number }[]; readonly type: string; readonly text: Translate }) { if (points.length === 0) return <p className="empty-state">{text('No numeric chart points.', '数値のチャートポイントがありません。')}</p>; const width = 640; const height = 280; const min = Math.min(...points.map((point) => point.y)); const max = Math.max(...points.map((point) => point.y)); const range = max - min || 1; const x = (index: number) => 36 + index * ((width - 56) / Math.max(1, points.length - 1)); const y = (value: number) => height - 28 - ((value - min) / range) * (height - 52); const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(index)},${y(point.y)}`).join(' '); return <svg className="chart-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${type} chart`}><line x1="36" y1="12" x2="36" y2={height - 28} /><line x1="36" y1={height - 28} x2={width - 12} y2={height - 28} />{type === 'scatter' || type === 'outlier-overlay' ? points.map((point, index) => <circle key={index} cx={x(index)} cy={y(point.y)} r="4" />) : <path d={path} fill="none" strokeWidth="3" />}</svg>; }
+function HistogramSvg({ values, text }: { readonly values: readonly number[]; readonly text: Translate }) { if (values.length === 0) return <p className="empty-state">{text('No numeric chart points.', '数値のチャートポイントがありません。')}</p>; const count = Math.min(12, Math.max(1, Math.ceil(Math.sqrt(values.length)))); const min = Math.min(...values); const max = Math.max(...values); const step = (max - min || 1) / count; const bins = new Array<number>(count).fill(0); values.forEach((value) => { bins[Math.min(count - 1, Math.floor((value - min) / step))]! += 1; }); const peak = Math.max(...bins, 1); return <svg className="chart-svg" viewBox="0 0 640 280" role="img" aria-label="histogram chart">{bins.map((bin, index) => <rect key={index} x={36 + index * (570 / count)} y={252 - (bin / peak) * 220} width={Math.max(2, 570 / count - 4)} height={(bin / peak) * 220} />)}</svg>; }
+function BoxPlotSvg({ values, text }: { readonly values: readonly number[]; readonly text: Translate }) { if (values.length === 0) return <p className="empty-state">{text('No numeric chart points.', '数値のチャートポイントがありません。')}</p>; const sorted = [...values].sort((a, b) => a - b); const at = (q: number) => { const p = (sorted.length - 1) * q; const a = sorted[Math.floor(p)]!; const b = sorted[Math.ceil(p)]!; return a + (b - a) * (p - Math.floor(p)); }; const min = sorted[0]!; const max = sorted[sorted.length - 1]!; const q1 = at(.25); const median = at(.5); const q3 = at(.75); const scale = (value: number) => 40 + ((value - min) / (max - min || 1)) * 560; return <svg className="chart-svg" viewBox="0 0 640 280" role="img" aria-label="box plot chart"><line x1={scale(min)} y1="140" x2={scale(max)} y2="140" /><line x1={scale(min)} y1="110" x2={scale(min)} y2="170" /><line x1={scale(max)} y1="110" x2={scale(max)} y2="170" /><rect x={scale(q1)} y="100" width={Math.max(2, scale(q3) - scale(q1))} height="80" /><line x1={scale(median)} y1="100" x2={scale(median)} y2="180" /></svg>; }
+function HeatmapSvg({ rows, mapping, text }: { readonly rows: readonly Readonly<Record<string, unknown>>[]; readonly mapping: ChartPayload['mapping']; readonly text: Translate }) { const x = stringMapping(mapping, 'xColumn'); const y = stringMapping(mapping, 'yColumn'); const coefficient = stringMapping(mapping, 'coefficientColumn'); if (x === undefined || y === undefined || coefficient === undefined) return <p className="empty-state">{text('Chart mapping is incomplete.', 'チャートの対応付けが不完全です。')}</p>; const xs = [...new Set(rows.map((row) => String(row[x] ?? '')))].filter(Boolean); const ys = [...new Set(rows.map((row) => String(row[y] ?? '')))].filter(Boolean); if (xs.length === 0 || ys.length === 0) return <p className="empty-state">{text('No correlation pairs.', '相関ペアがありません。')}</p>; const cells = new Map(rows.map((row) => [`${row[x]}\u0000${row[y]}`, number(row[coefficient]) ?? 0])); const size = Math.min(48, 520 / Math.max(xs.length, ys.length)); const color = (value: number) => value >= 0 ? `rgb(${Math.round(255 - value * 110)},${Math.round(255 - value * 40)},255)` : `rgb(255,${Math.round(255 + value * 100)},${Math.round(255 + value * 100)})`; return <svg className="chart-svg" viewBox={`0 0 ${Math.max(640, xs.length * size + 100)} ${Math.max(280, ys.length * size + 80)}`} role="img" aria-label="correlation heatmap">{ys.flatMap((yv, yi) => xs.map((xv, xi) => <rect key={`${xv}-${yv}`} x={70 + xi * size} y={24 + yi * size} width={size - 1} height={size - 1} fill={color(cells.get(`${xv}\u0000${yv}`) ?? cells.get(`${yv}\u0000${xv}`) ?? 0)} />))}</svg>; }

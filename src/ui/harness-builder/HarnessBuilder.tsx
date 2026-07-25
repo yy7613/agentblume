@@ -1,6 +1,8 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentSummaryDto, HarnessPatternDto, HarnessPoliciesDto, HarnessRunDto, HarnessSlotDto, HarnessSummaryDto, HarnessTopologyDto, HarnessValidationDto, SaveHarnessDto, SerializedAgentHarnessDto } from '../api/types';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { InlineFeedback } from '../components/InlineFeedback';
 import { useI18n } from '../i18n';
 
 type Translate = (english: string, japanese: string) => string;
@@ -130,8 +132,9 @@ function SlotCard({ slot, badge, agents, text, onAssign, removable, onRemove, on
   return <div className="harness-slot">
     {badge !== undefined && <span className="harness-role-badge">{badge}</span>}
     {removable && <button type="button" className="harness-slot-remove" aria-label={`${text('Remove slot', 'Slotを削除')} ${slot.label}`} onClick={onRemove}>×</button>}
-    <input className="harness-slot-label-input" aria-label={`${text('Slot label', 'Slot名')} ${slot.id}`} value={slot.label} onChange={(event) => onLabelChange(event.target.value)} />
-    <input className="harness-slot-purpose-input" aria-label={`${text('Slot purpose', 'Slotの目的')} ${slot.id}`} value={slot.purpose} onChange={(event) => onPurposeChange(event.target.value)} />
+    <input className="harness-slot-label-input" aria-label={`${text('Slot label', 'Slot名')} ${slot.id}`} title={slot.label} value={slot.label} onChange={(event) => onLabelChange(event.target.value)} />
+    {/* 目的文はcard幅で切れるため、途中で切れた事が分かるよう省略記号を出し、全文はtitleで読めるようにする。 */}
+    <input className="harness-slot-purpose-input" aria-label={`${text('Slot purpose', 'Slotの目的')} ${slot.id}`} title={slot.purpose} style={{ textOverflow: 'ellipsis' }} value={slot.purpose} onChange={(event) => onPurposeChange(event.target.value)} />
     <select aria-label={`${text('Assign agent to', 'Agentを割り当て')} ${slot.label}`} value={slot.assignment.internalId} onChange={(event) => onAssign(event.target.value)}>
       <option value="">{text('Assign saved Agent…', '保存済みAgentを割り当て…')}</option>
       {agents.map((agent) => <option key={agent.internalId} value={agent.internalId}>{agent.displayName}@{agent.latestVersion}</option>)}
@@ -147,7 +150,7 @@ function AggregatorCard({ label, purpose, assignment, agents, text, onAssign }: 
   return <div className="harness-slot harness-slot--aggregator">
     <span className="harness-role-badge">{text('Aggregator', '集約役')}</span>
     <strong>{label}</strong>
-    <small>{purpose}</small>
+    <small title={purpose} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{purpose}</small>
     <select aria-label={`${text('Assign agent to', 'Agentを割り当て')} ${label}`} value={assignment.internalId} onChange={(event) => onAssign(event.target.value)}>
       <option value="">{text('Assign saved Agent…', '保存済みAgentを割り当て…')}</option>
       {agents.map((agent) => <option key={agent.internalId} value={agent.internalId}>{agent.displayName}@{agent.latestVersion}</option>)}
@@ -194,7 +197,7 @@ function HarnessCanvasBody({ pattern, slots, agents, text, assign, badge, onRemo
     case 'agent-as-tools': {
       const [coordinator, ...participants] = slots;
       if (coordinator === undefined) return null;
-      return <div className="harness-hub-layout"><div className="harness-main-row"><InputNode text={text} /><Connector symbol="→" />{card(coordinator, 0, true)}<Connector symbol="→" /><OutputNode text={text} /></div><div className="harness-spokes">{participants.map((slot, index) => <div className="harness-spoke" key={slot.id}><Connector symbol="┆" label={text('ask', 'ask')} dashed vertical />{card(slot, index + 1)}</div>)}{addButton}</div></div>;
+      return <div className="harness-hub-layout"><div className="harness-main-row"><InputNode text={text} /><Connector symbol="→" />{card(coordinator, 0, true)}<Connector symbol="→" /><OutputNode text={text} /></div><div className="harness-spokes">{participants.map((slot, index) => <div className="harness-spoke" key={slot.id}><Connector symbol="┆" label={text('ask', 'ask委譲')} dashed vertical />{card(slot, index + 1)}</div>)}{addButton}</div></div>;
     }
     case 'handoff': {
       const [start, ...targets] = slots;
@@ -252,7 +255,7 @@ function topologySummaryRows(current: HarnessTopologyDto, text: Translate, aggre
 function message(cause: unknown, text: Translate): string { return cause instanceof Error ? cause.message : text('Request failed', 'リクエストが失敗しました'); }
 
 export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
-  const { text } = useI18n();
+  const { text, language } = useI18n();
   // Layer 1: 保存済みHarness一覧。'list'が既定viewで、new/openでLayer 2（editor）へ遷移する。
   const [view, setView] = useState<'list' | 'editor'>('list');
   const [harnesses, setHarnesses] = useState<readonly HarnessSummaryDto[]>([]);
@@ -266,6 +269,9 @@ export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
   const [busy, setBusy] = useState<'load' | 'validate' | 'save' | 'run'>(); const [error, setError] = useState<string>();
   const [aggregation, setAggregation] = useState<AggregationMode>('collect');
   const [aggregatorAssignment, setAggregatorAssignment] = useState<HarnessSlotDto['assignment']>({ internalId: '', version: '' });
+  // 保存成功フィードバックと削除確認の対象（削除文言に表示名を入れるためsummaryごと保持する）。
+  const [saveNotice, setSaveNotice] = useState<string>(); const [pendingDelete, setPendingDelete] = useState<HarnessSummaryDto>();
+  const dismissSaveNotice = useCallback(() => setSaveNotice(undefined), []);
   useEffect(() => { let active = true; setBusy('load'); void client.listAgents(scope).then((items) => { if (active) setAgents(items); }).catch((cause: unknown) => { if (active) setError(message(cause, text)); }).finally(() => { if (active) setBusy(undefined); }); return () => { active = false; }; }, [client, text]);
   useEffect(() => { let active = true; void client.listHarnesses(scope).then((items) => { if (active) setHarnesses(items); }).catch((cause: unknown) => { if (active) setError(message(cause, text)); }); return () => { active = false; }; }, [client, text]);
   async function refreshHarnesses(): Promise<void> {
@@ -275,7 +281,7 @@ export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
   function resetEditorState(): void {
     setPattern('sequential'); setSlotStates(initialSlotStates('sequential'));
     setInternalId(''); setDisplayName(''); setOwner('');
-    setSavedVersion(undefined); setValidation(undefined); setRunMessage(''); setRun(undefined);
+    setSavedVersion(undefined); setValidation(undefined); setRunMessage(''); setRun(undefined); setSaveNotice(undefined);
     setAggregation('collect'); setAggregatorAssignment({ internalId: '', version: '' });
     setEditing(false);
   }
@@ -290,10 +296,11 @@ export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
     } catch (cause) { setError(message(cause, text)); }
     finally { setBusy(undefined); }
   }
+  // 削除はConfirmDialogの確認後だけ実行する（一覧行のDeleteはpendingDeleteを立てるだけ）。
   async function removeHarness(target: string): Promise<void> {
     setBusy('load'); setError(undefined);
-    try { await client.deleteHarness(target, scope); await refreshHarnesses(); }
-    catch (cause) { setError(message(cause, text)); }
+    try { await client.deleteHarness(target, scope); setPendingDelete(undefined); await refreshHarnesses(); }
+    catch (cause) { setError(message(cause, text)); setPendingDelete(undefined); }
     finally { setBusy(undefined); }
   }
   // 一覧からOpenした保存済みHarnessをeditor stateへ復元する。slotはtopology順（agent-as-tools/handoff/magenticは固定先頭slotが先頭）。
@@ -318,7 +325,7 @@ export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
       setAggregatorAssignment({ internalId: '', version: '' });
     }
     setSavedVersion(harness.metadata.version);
-    setValidation(undefined); setRun(undefined); setRunMessage('');
+    setValidation(undefined); setRun(undefined); setRunMessage(''); setSaveNotice(undefined);
     setEditing(true);
   }
   const selected = useMemo(() => patterns.find((item) => item.id === pattern), [pattern]);
@@ -329,6 +336,26 @@ export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
   const currentTopology = useMemo(() => topology(pattern, saveSlots, aggregation), [pattern, saveSlots, aggregation]);
   const aggregatorReady = pattern !== 'concurrent' || aggregation !== 'agent' || aggregatorAssignment.internalId !== '';
   const ready = internalId.trim() !== '' && displayName.trim() !== '' && owner.trim() !== '' && slotStates.every((slot) => slot.assignment.internalId !== '') && aggregatorReady;
+  // 保存ボタンが押せない理由。検証ボタンを押さなくても見えるよう、ボタン近傍へ常時表示する。
+  const blockingReasons = useMemo(() => {
+    const separator = language === 'ja' ? '、' : ', ';
+    const reasons: string[] = [];
+    const missing: string[] = [];
+    if (internalId.trim() === '') missing.push(text('Internal ID', '内部ID'));
+    if (displayName.trim() === '') missing.push(text('Display name', '表示名'));
+    if (owner.trim() === '') missing.push(text('Owner', '所有者'));
+    if (missing.length > 0) reasons.push(text(`Required fields are empty: ${missing.join(separator)}.`, `${missing.join(separator)}が未入力です。`));
+    const unassigned = resolvedSlots.filter((slot) => slot.assignment.internalId === '').map((slot) => slot.label);
+    if (unassigned.length > 0) reasons.push(text(`Assign a saved Agent version to every slot: ${unassigned.join(separator)}.`, `保存済みAgentのversionが未割当のslotがあります: ${unassigned.join(separator)}。`));
+    if (!aggregatorReady) reasons.push(text('Assign a saved Agent version to the Aggregator slot.', '集約役のslotへ保存済みAgentのversionを割り当ててください。'));
+    return reasons;
+  }, [internalId, displayName, owner, resolvedSlots, aggregatorReady, text, language]);
+  // 「previewで実行可能」は検証・保存が通った時だけ緑にする（未検証・未充足では中立/エラー表示）。
+  const previewStatus = validation?.valid === true
+    ? { className: 'validation-status good', label: text('Executable in preview', 'previewで実行可能') }
+    : validation !== undefined ? { className: 'validation-status bad', label: text('Validation failed', '検証エラーあり') }
+      : ready ? { className: 'validation-status', label: text('Not validated yet', '未検証') }
+        : { className: 'validation-status', label: text('Definition incomplete', '定義が未完成') };
   const input = useMemo<SaveHarnessDto>(() => ({ scope, internalId, workingName: `${displayName || internalId} draft`, displayName, publishName: internalId.replace(/[^A-Za-z0-9_-]/g, '_'), owner, pattern, slots: saveSlots, topology: currentTopology, policies: policy, output: { format: 'text' } }), [internalId, displayName, owner, pattern, saveSlots, currentTopology]);
   function choosePattern(next: HarnessPatternDto): void {
     const nextPreset = slotPresets[next];
@@ -374,31 +401,40 @@ export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
     setValidation(undefined); setSavedVersion(undefined);
   }
   async function validate(): Promise<void> { if (!ready) { setValidation({ valid: false, issues: [{ path: '(definition)', message: text('Fill names and assign every slot to a saved Agent version.', '名前を入力し、全slotへ保存済みAgent versionを割り当ててください。') }] }); return; } setBusy('validate'); setError(undefined); try { setValidation(await client.validateHarness(input)); } catch (cause) { setError(message(cause, text)); } finally { setBusy(undefined); } }
-  async function save(): Promise<void> { if (!ready) return; setBusy('save'); setError(undefined); try { const harness = await client.saveHarness(input); setSavedVersion(harness.metadata.version); setValidation({ valid: true, issues: [] }); } catch (cause) { setError(message(cause, text)); } finally { setBusy(undefined); } }
+  async function save(): Promise<void> { if (!ready) return; setBusy('save'); setError(undefined); setSaveNotice(undefined); try { const harness = await client.saveHarness(input); setSavedVersion(harness.metadata.version); setValidation({ valid: true, issues: [] }); setSaveNotice(text(`Saved · version ${harness.metadata.version}`, `保存しました バージョン ${harness.metadata.version}`)); } catch (cause) { setError(message(cause, text)); } finally { setBusy(undefined); } }
   async function preview(): Promise<void> { if (savedVersion === undefined || runMessage.trim() === '') return; setBusy('run'); setError(undefined); try { setRun(await client.runHarness({ scope, harness: { internalId, version: savedVersion }, message: runMessage, mode: 'preview' })); } catch (cause) { setError(message(cause, text)); } finally { setBusy(undefined); } }
   const badge = roleBadge(pattern, text);
   if (view === 'list') {
     return <main className="harness-builder harness-list-page">
-      <header className="harness-builder-header"><div><span className="eyebrow">{text('Agent Harness Builder', 'Agent Harness Builder')}</span><h1>{text('Harnesses', 'Harness一覧')}</h1><p>{text('Compose saved Agent versions into a typed orchestration pattern.', '保存済みAgentのversionを型付きオーケストレーションへ組み立てます。')}</p></div><div className="save-actions"><button type="button" className="primary" onClick={startNewHarness}>{text('New harness', '新規作成')}</button></div></header>
+      <header className="harness-builder-header"><div><span className="eyebrow">{text('Agent Harness Builder', 'ハーネスビルダー')}</span><h1>{text('Harnesses', 'Harness一覧')}</h1><p>{text('Compose saved Agent versions into a typed orchestration pattern.', '保存済みAgentのversionを型付きオーケストレーションへ組み立てます。')}</p></div><div className="save-actions"><button type="button" className="primary" onClick={startNewHarness}>{text('New harness', '新規作成')}</button></div></header>
       {error !== undefined && <div className="api-error">{error}</div>}
       <section className="workspace-card harness-list">
         {harnesses.length === 0 ? <p className="empty-state">{text('No harnesses yet.', 'Harnessはまだありません。')}</p> : <div className="harness-list-rows">{harnesses.map((item) => <article className="harness-list-row" key={item.internalId}>
           <div><strong>{item.displayName}</strong><code>{item.publishName}@{item.latestVersion}</code><small>{item.pattern} · {item.state}</small></div>
           <div className="harness-list-actions">
             <button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void openHarness(item.internalId)}>{text('Open', '開く')}</button>
-            <button type="button" className="secondary danger" disabled={busy !== undefined} onClick={() => void removeHarness(item.internalId)}>{text('Delete', '削除')}</button>
+            <button type="button" className="secondary danger" disabled={busy !== undefined} onClick={() => setPendingDelete(item)}>{text('Delete', '削除')}</button>
           </div>
         </article>)}</div>}
       </section>
+      <ConfirmDialog open={pendingDelete !== undefined} title={text('Delete harness', 'Harnessを削除')}
+        message={text(`Delete "${pendingDelete?.displayName ?? ''}"? It disappears from this list. Saved versions are kept in history.`, `「${pendingDelete?.displayName ?? ''}」を削除しますか？一覧から表示されなくなります（保存済みバージョンは履歴に残ります）。`)}
+        confirmLabel={text('Delete', '削除')} cancelLabel={text('Cancel', 'キャンセル')} danger busy={busy !== undefined}
+        onConfirm={() => { if (pendingDelete !== undefined) void removeHarness(pendingDelete.internalId); }} onCancel={() => setPendingDelete(undefined)} />
     </main>;
   }
   return <main className="harness-builder">
-    <header className="harness-builder-header"><div><button type="button" className="secondary harness-back-button" onClick={() => void backToList()}>{text('Back to list', '一覧へ戻る')}</button><span className="eyebrow">{text('Agent Harness Builder', 'Agent Harness Builder')}</span><h1>{displayName || text('New Harness', '新しいHarness')}</h1><p>{text('Assign saved Agent versions to a typed orchestration pattern.', '保存済みAgentのversionを、型付きオーケストレーションのslotへ割り当てます。')}</p></div><div className="save-actions"><button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void validate()}>{busy === 'validate' ? text('Validating…', '検証中…') : text('Validate', '検証')}</button><button type="button" className="primary" disabled={!ready || busy !== undefined} onClick={() => void save()}>{busy === 'save' ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button></div></header>
+    <header className="harness-builder-header"><div><button type="button" className="secondary harness-back-button" onClick={() => void backToList()}>{text('Back to list', '一覧へ戻る')}</button><span className="eyebrow">{text('Agent Harness Builder', 'ハーネスビルダー')}</span><h1>{displayName || text('New Harness', '新しいHarness')}</h1><p>{text('Assign saved Agent versions to a typed orchestration pattern.', '保存済みAgentのversionを、型付きオーケストレーションのslotへ割り当てます。')}</p></div><div className="save-actions"><button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void validate()}>{busy === 'validate' ? text('Validating…', '検証中…') : text('Validate', '検証')}</button><button type="button" className="primary" disabled={!ready || busy !== undefined} title={blockingReasons.length > 0 ? blockingReasons.join(' ') : undefined} onClick={() => void save()}>{busy === 'save' ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button></div></header>
+    {/* 保存ボタン近傍のフィードバック: 未充足理由（検証を押さなくても見える）と保存成功。 */}
+    <div className="harness-save-feedback">
+      {blockingReasons.map((reason) => <InlineFeedback kind="info" key={reason}>{reason}</InlineFeedback>)}
+      {saveNotice !== undefined && <InlineFeedback kind="success" autoHideMs={4000} onDismiss={dismissSaveNotice}>{saveNotice}</InlineFeedback>}
+    </div>
     {error !== undefined && <div className="api-error">{error}</div>}
     <div className="harness-layout"><aside className="harness-presets"><h2>{text('Patterns', 'パターン')}</h2>{patterns.map((item) => <button key={item.id} type="button" className={pattern === item.id ? 'active' : ''} onClick={() => choosePattern(item.id)}><strong>{item.label}</strong><small>{text(item.noteEn, item.noteJa)}</small></button>)}</aside>
-      <section className="harness-workspace"><div className="harness-fields"><label>{text('Internal ID', '内部ID')}<input value={internalId} readOnly={editing} title={editing ? text('Internal ID cannot change once saved (it would fork a new asset).', '保存済みの内部IDは変更できません（変更すると別資産になります）。') : undefined} onChange={(event) => { if (editing) return; setInternalId(event.target.value); setSavedVersion(undefined); }} placeholder="content-review" /></label><label>{text('Display name', '表示名')}<input value={displayName} onChange={(event) => { setDisplayName(event.target.value); setSavedVersion(undefined); }} placeholder="Content Review" /></label><label>{text('Owner', '所有者')}<input value={owner} onChange={(event) => { setOwner(event.target.value); setSavedVersion(undefined); }} placeholder="team@example.com" /></label></div>
+      <section className="harness-workspace"><div className="harness-fields"><label>{text('Internal ID', '内部ID')}<span className="required-mark">*</span><input aria-label={text('Internal ID', '内部ID')} value={internalId} readOnly={editing} title={editing ? text('Internal ID cannot change once saved (it would fork a new asset).', '保存済みの内部IDは変更できません（変更すると別資産になります）。') : undefined} onChange={(event) => { if (editing) return; setInternalId(event.target.value); setSavedVersion(undefined); }} placeholder="content-review" /></label><label>{text('Display name', '表示名')}<span className="required-mark">*</span><input aria-label={text('Display name', '表示名')} value={displayName} onChange={(event) => { setDisplayName(event.target.value); setSavedVersion(undefined); }} placeholder="Content Review" /></label><label>{text('Owner', '所有者')}<span className="required-mark">*</span><input aria-label={text('Owner', '所有者')} value={owner} onChange={(event) => { setOwner(event.target.value); setSavedVersion(undefined); }} placeholder="team@example.com" /></label></div>
         <div className={`harness-canvas harness-canvas--${pattern}`} aria-label={text('Harness canvas', 'Harnessキャンバス')}><HarnessCanvasBody pattern={pattern} slots={resolvedSlots} agents={agents} text={text} assign={assign} badge={badge} onRemoveSlot={removeSlot} onLabelChange={editSlotLabel} onPurposeChange={editSlotPurpose} onAddParticipant={addParticipant} aggregation={aggregation} aggregatorSlot={aggregatorSlot} onAggregatorAssign={assignAggregator} /></div>
-        <div className={`harness-inspector${pattern === 'concurrent' ? ' harness-inspector--concurrent' : ''}`}><div><span className="eyebrow">{text('Pattern inspector', 'パターン設定')}</span><h2>{selected?.label}</h2><p>{selected !== undefined ? text(selected.noteEn, selected.noteJa) : ''}</p></div><label>{text('Failure policy', '失敗時の方針')}<select value={policy.failure.mode} disabled><option>fail-fast</option></select></label><label>{text('Max parallelism', '最大並列数')}<input value={policy.budget.maxParallelism} disabled /></label>{pattern === 'concurrent' && <label>{text('Aggregation', '集約方法')}<select value={aggregation} onChange={(event) => chooseAggregation(event.target.value as AggregationMode)}><option value="collect">{text('Concatenate mechanically (collect)', '機械的に連結 (collect)')}</option><option value="vote">{text('Majority vote (vote)', '投票で決定 (vote)')}</option><option value="agent">{text('Synthesize with an Agent (agent)', 'Agentで統合 (agent)')}</option></select></label>}<p className="validation-status good">{text('Executable in preview', 'previewで実行可能')}</p><div className="harness-topology-summary">{topologySummaryRows(currentTopology, text, aggregatorAssignment).map((row) => <span key={row.key} className="harness-topology-row">{row.label}: {row.value}</span>)}</div></div>
+        <div className={`harness-inspector${pattern === 'concurrent' ? ' harness-inspector--concurrent' : ''}`}><div><span className="eyebrow">{text('Pattern inspector', 'パターン設定')}</span><h2>{selected?.label}</h2><p>{selected !== undefined ? text(selected.noteEn, selected.noteJa) : ''}</p></div><label>{text('Failure policy', '失敗時の方針')}<select value={policy.failure.mode} disabled><option>fail-fast</option></select></label><label>{text('Max parallelism', '最大並列数')}<input value={policy.budget.maxParallelism} disabled /></label>{pattern === 'concurrent' && <label>{text('Aggregation', '集約方法')}<select value={aggregation} onChange={(event) => chooseAggregation(event.target.value as AggregationMode)}><option value="collect">{text('Concatenate mechanically (collect)', '機械的に連結 (collect)')}</option><option value="vote">{text('Majority vote (vote)', '投票で決定 (vote)')}</option><option value="agent">{text('Synthesize with an Agent (agent)', 'Agentで統合 (agent)')}</option></select></label>}<p className={previewStatus.className}>{previewStatus.label}</p><div className="harness-topology-summary">{topologySummaryRows(currentTopology, text, aggregatorAssignment).map((row) => <span key={row.key} className="harness-topology-row">{row.label}: {row.value}</span>)}</div></div>
         {validation !== undefined && <div className={validation.valid ? 'harness-validation good' : 'harness-validation bad'}><strong>{validation.valid ? text('Definition is valid', '定義は有効です') : text('Validation issues', '検証エラー')}</strong>{validation.issues.map((issue) => <p key={`${issue.path}:${issue.message}`}>{issue.path}: {issue.message}</p>)}</div>}
         <div className="harness-preview"><div><span className="eyebrow">{text('Saved Harness preview', '保存済みHarnessのプレビュー')}</span><h2>{savedVersion === undefined ? text('Save to run', '保存後に実行') : `${internalId}@${savedVersion}`}</h2></div><textarea aria-label={text('Harness chat message', 'Harnessへのメッセージ')} value={runMessage} onChange={(event) => setRunMessage(event.target.value)} placeholder={text('Ask the Harness…', 'Harnessへ依頼…')} /><button type="button" className="primary" disabled={savedVersion === undefined || runMessage.trim() === '' || busy !== undefined} onClick={() => void preview()}>{busy === 'run' ? text('Running…', '実行中…') : text('Run preview', 'previewを実行')}</button>{run !== undefined && <div className={`harness-run ${run.status}`}><strong>{run.status}</strong><p>{run.response ?? run.failure?.message}</p><small>{run.events.filter((event) => event.kind === 'participant_completed').length} {text('participant runs', '参加Agent実行')}</small></div>}</div>
       </section></div>

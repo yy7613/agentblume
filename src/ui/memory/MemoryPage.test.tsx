@@ -68,24 +68,33 @@ describe('MemoryPage', () => {
     await userEvent.type(screen.getByLabelText('Tags (comma-separated)'), 'a, b');
     await userEvent.click(saveBtn);
     await waitFor(() => expect(client.saveWikiPage).toHaveBeenCalledWith('customer-a', expect.objectContaining({ wikiId: 'customer-a', title: 'New note', body: 'Some knowledge.', tags: ['a', 'b'] })));
+    expect(await screen.findByText('Saved "Cohort SQL".')).toBeTruthy();
   });
 
-  it('提案タブで draft を承認すると再取得する', async () => {
+  it('提案タブで draft を承認すると再取得する（承認は確認ダイアログ経由）', async () => {
     const client = makeClient();
     render(<MemoryPage client={client} />);
     await userEvent.click(screen.getByRole('tab', { name: 'Proposals' }));
     const card = (await screen.findByText('capture cohort rule')).closest('li') as HTMLElement;
     expect(within(card).getByText('Filter age>=18.')).toBeTruthy();
     await userEvent.click(within(card).getByRole('button', { name: 'Approve' }));
+    const dialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(client.approveProposal).toHaveBeenCalledWith('m1', scope));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
-  it('提案タブで却下できる', async () => {
+  it('提案タブで却下できる（却下は確認ダイアログ経由、キャンセルでは呼ばれない）', async () => {
     const client = makeClient();
     render(<MemoryPage client={client} />);
     await userEvent.click(screen.getByRole('tab', { name: 'Proposals' }));
     await screen.findByText('capture cohort rule');
     await userEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    const dialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(client.rejectProposal).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reject' }));
     await waitFor(() => expect(client.rejectProposal).toHaveBeenCalledWith('m1', scope));
   });
 
@@ -104,6 +113,20 @@ describe('MemoryPage', () => {
     const client = makeClient({ listWikiPages: vi.fn().mockRejectedValue(new Error('boom')) });
     render(<MemoryPage client={client} />);
     expect((await screen.findByRole('alert')).textContent).toContain('boom');
+  });
+
+  it('Wiki管理(Save wiki)のエラーはWiki管理セクション直下に表示し、ページ編集エラーとは独立する', async () => {
+    const client = makeClient({ saveWikiSpace: vi.fn().mockRejectedValue(new Error('wiki space boom')) });
+    render(<MemoryPage client={client} />);
+    await screen.findByRole('option', { name: 'Customer A' });
+    await userEvent.click(screen.getByRole('button', { name: 'New wiki' }));
+    await userEvent.type(screen.getByLabelText('Wiki ID'), 'customer-b');
+    await userEvent.type(screen.getByLabelText('Wiki name'), 'Customer B');
+    await userEvent.click(screen.getByRole('button', { name: 'Save wiki' }));
+    const wikiErrorNode = await screen.findByText('wiki space boom');
+    // Wiki管理セクション(wiki-space-manager)の内側に表示され、下部のページ編集パネル(mem-editor)には出ない。
+    expect(wikiErrorNode.closest('.wiki-space-manager')).not.toBeNull();
+    expect(wikiErrorNode.closest('.mem-editor')).toBeNull();
   });
 
   it('新しいWikiを作成して知識領域を分離できる', async () => {
@@ -127,6 +150,9 @@ describe('MemoryPage', () => {
     await screen.findByRole('button', { name: /Cohort SQL/ });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.textContent).toContain('Cohort SQL');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
 
     expect(client.deleteWiki).toHaveBeenCalledWith('p1', scope);
     expect(client.listWikiPages).toHaveBeenCalledTimes(2);
@@ -142,6 +168,9 @@ describe('MemoryPage', () => {
     await screen.findByRole('option', { name: 'Customer A' });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete wiki' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.textContent).toContain('Customer A');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
 
     expect(client.deleteWikiSpace).toHaveBeenCalledWith('customer-a', scope);
     expect(client.listWikis).toHaveBeenCalledTimes(2);

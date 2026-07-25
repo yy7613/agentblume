@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { SerializedToolDto } from '../api/types';
-import { currentGraph, flowToGraph, useToolBuilderStore } from './store';
+import { currentGraph, flowToGraph, missingRequiredMetadata, useToolBuilderStore } from './store';
 
 beforeEach(() => useToolBuilderStore.getState().reset());
 
@@ -9,6 +9,98 @@ describe('tool builder store', () => {
     const graph = currentGraph();
     expect(graph.nodes.map((node) => node.type)).toEqual(['json-source', 'filter']);
     expect(graph.edges).toEqual([{ from: 'source-1', to: 'filter-1' }]);
+  });
+
+  it('starterの固定IDと衝突しない番号まで進めてノードIDを採番する', () => {
+    // starterは source-1 / filter-1 なので、filter追加は filter-1 を飛ばして filter-2 になる。
+    useToolBuilderStore.getState().addNode('filter');
+    expect(useToolBuilderStore.getState().selectedNodeId).toBe('filter-2');
+    useToolBuilderStore.getState().addNode('filter');
+    expect(useToolBuilderStore.getState().selectedNodeId).toBe('filter-3');
+
+    const ids = useToolBuilderStore.getState().nodes.map((node) => node.id);
+    expect(ids).toEqual(['source-1', 'filter-1', 'filter-2', 'filter-3']);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('読み込んだToolのIDと衝突しない空き番号から採番を続ける', () => {
+    useToolBuilderStore.getState().loadTool({
+      metadata: { internalId: 'loaded', workingName: 'w', displayName: 'L', publishName: 'l', version: '1.0.0', owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },
+      sideEffect: 'read-only',
+      graph: {
+        nodes: [{ id: 'select-1', type: 'select', config: { columns: [] } }, { id: 'select-3', type: 'select', config: { columns: [] } }],
+        edges: [],
+      },
+    } as SerializedToolDto);
+
+    useToolBuilderStore.getState().addNode('select');
+    expect(useToolBuilderStore.getState().selectedNodeId).toBe('select-2');
+    useToolBuilderStore.getState().addNode('select');
+    expect(useToolBuilderStore.getState().selectedNodeId).toBe('select-4');
+  });
+
+  it('手動整列したノード座標をDTOへ書き出し、保存済みDTOから復元する', () => {
+    useToolBuilderStore.getState().onNodesChange([{ type: 'position', id: 'filter-1', position: { x: 500.4, y: 320.6 } }]);
+    const graph = currentGraph();
+    // 小数のドラッグ座標は丸めて保存する（保存payloadを座標のゆらぎで変えない）。
+    expect(graph.nodes.map((node) => node.position)).toEqual([{ x: 80, y: 120 }, { x: 500, y: 321 }]);
+
+    useToolBuilderStore.getState().reset();
+    useToolBuilderStore.getState().loadTool({
+      metadata: { internalId: 'laid-out', workingName: 'w', displayName: 'L', publishName: 'l', version: '1.0.0', owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },
+      sideEffect: 'read-only', graph,
+    } as SerializedToolDto);
+    expect(useToolBuilderStore.getState().nodes.map((node) => node.position)).toEqual([{ x: 80, y: 120 }, { x: 500, y: 321 }]);
+  });
+
+  it('position無しの保存済みDTOは従来の自動グリッドへ配置する（後方互換）', () => {
+    useToolBuilderStore.getState().loadTool({
+      metadata: { internalId: 'legacy', workingName: 'w', displayName: 'L', publishName: 'l', version: '1.0.0', owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },
+      sideEffect: 'read-only',
+      graph: {
+        nodes: [
+          { id: 'a', type: 'json-source', config: { rows: [] } },
+          { id: 'b', type: 'filter', config: { column: 'age', op: 'gte', value: 1 } },
+          { id: 'c', type: 'select', config: { columns: [] } },
+        ],
+        edges: [],
+      },
+    } as SerializedToolDto);
+    expect(useToolBuilderStore.getState().nodes.map((node) => node.position)).toEqual([
+      { x: 80, y: 120 }, { x: 360, y: 120 }, { x: 640, y: 120 },
+    ]);
+  });
+
+  it('positionが一部だけのDTOでは保存済み座標を優先し、残りを重ならない位置へ退避する', () => {
+    useToolBuilderStore.getState().loadTool({
+      metadata: { internalId: 'mixed', workingName: 'w', displayName: 'M', publishName: 'm', version: '1.0.0', owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },
+      sideEffect: 'read-only',
+      graph: {
+        nodes: [
+          { id: 'a', type: 'json-source', config: { rows: [] } },
+          { id: 'b', type: 'filter', config: { column: 'age', op: 'gte', value: 1 }, position: { x: 80, y: 120 } },
+        ],
+        edges: [],
+      },
+    } as SerializedToolDto);
+    // 自動グリッドの既定位置(80,120)はbが占有済みなので、aは下方向へずれる。
+    expect(useToolBuilderStore.getState().nodes.map((node) => node.position)).toEqual([{ x: 80, y: 260 }, { x: 80, y: 120 }]);
+  });
+
+  it('未選択のパレット追加は既存ノードと重ならない位置へ置く', () => {
+    useToolBuilderStore.getState().selectNode(undefined);
+    useToolBuilderStore.getState().addNode('csv-source');
+    // 先頭列の起点(80,120)はsource-1が占有済みなので、下方向の空きへ置く。
+    expect(useToolBuilderStore.getState().nodes.at(-1)?.position).toEqual({ x: 80, y: 260 });
+  });
+
+  it('選択ノードの右隣が占有済みなら下方向へずらして配置する', () => {
+    useToolBuilderStore.getState().addNode('select'); // filter-1(390,120)の右隣 → (670,120)
+    expect(useToolBuilderStore.getState().nodes.at(-1)?.position).toEqual({ x: 670, y: 120 });
+
+    useToolBuilderStore.getState().selectNode('filter-1');
+    useToolBuilderStore.getState().addNode('sort');
+    expect(useToolBuilderStore.getState().nodes.at(-1)?.position).toEqual({ x: 670, y: 260 });
   });
 
   it('選択ノードの後ろへtransformを追加しconfigを不変更新する', () => {
@@ -68,11 +160,63 @@ describe('tool builder store', () => {
     state.onNodesChange([{ type: 'select', id: 'source-1', selected: true }]);
     state.onEdgesChange([{ type: 'remove', id: 'source-1-filter-1' }]);
     state.setPreviewLoading(true);
-    state.setError('broken');
+    state.setDraftIssue('broken');
     state.setSavedVersion('1.0.0', ['1.0.0']);
-    expect(useToolBuilderStore.getState()).toMatchObject({ previewLoading: true, error: 'broken', currentVersion: '1.0.0' });
+    expect(useToolBuilderStore.getState()).toMatchObject({ previewLoading: true, draftIssue: 'broken', currentVersion: '1.0.0' });
     expect(useToolBuilderStore.getState().edges).toEqual([]);
     expect(flowToGraph(useToolBuilderStore.getState().nodes, [])).toHaveProperty('edges', []);
+  });
+
+  it('保存失敗と自動検証の失敗を別stateで保持する', () => {
+    useToolBuilderStore.getState().setSaveError('SaveTool: invalid metadata');
+    useToolBuilderStore.getState().setDraftIssue('draft check failed');
+    expect(useToolBuilderStore.getState()).toMatchObject({ saveError: 'SaveTool: invalid metadata', draftIssue: 'draft check failed' });
+    // 自動検証がdraftIssueを消しても保存失敗メッセージは残る（読む前に消えない）。
+    useToolBuilderStore.getState().setDraftIssue(undefined);
+    expect(useToolBuilderStore.getState()).toMatchObject({ saveError: 'SaveTool: invalid metadata', draftIssue: undefined });
+  });
+
+  it('保存内容が変わると保存失敗メッセージを消し、選択だけの変更では残す', () => {
+    const setSaveError = () => useToolBuilderStore.getState().setSaveError('failed');
+
+    setSaveError();
+    useToolBuilderStore.getState().onNodesChange([{ type: 'select', id: 'source-1', selected: true }]);
+    expect(useToolBuilderStore.getState().saveError).toBe('failed');
+    useToolBuilderStore.getState().onNodesChange([{ type: 'remove', id: 'source-1' }]);
+    expect(useToolBuilderStore.getState().saveError).toBeUndefined();
+
+    for (const change of [
+      () => useToolBuilderStore.getState().setMetadata('owner', 'owner@example.com'),
+      () => useToolBuilderStore.getState().addNode('select'),
+      () => useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'age', op: 'gte', value: 20 }),
+      () => useToolBuilderStore.getState().onConnect({ source: 'filter-1', target: 'filter-1', sourceHandle: null, targetHandle: null }),
+      () => useToolBuilderStore.getState().onEdgesChange([{ type: 'remove', id: 'source-1-filter-1' }]),
+    ]) {
+      setSaveError();
+      change();
+      expect(useToolBuilderStore.getState().saveError).toBeUndefined();
+    }
+  });
+
+  it('保存済みDTOの読み込みで保存失敗と草案の問題を両方消す', () => {
+    useToolBuilderStore.getState().setSaveError('failed');
+    useToolBuilderStore.getState().setDraftIssue('draft issue');
+    useToolBuilderStore.getState().loadTool({
+      metadata: { internalId: 'loaded', workingName: 'w', displayName: 'Loaded', publishName: 'loaded', version: '1.0.0', owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },
+      sideEffect: 'read-only', graph: { nodes: [], edges: [] },
+    } as SerializedToolDto);
+    expect(useToolBuilderStore.getState()).toMatchObject({ saveError: undefined, draftIssue: undefined });
+  });
+
+  it('未入力の必須メタデータだけを保存前チェックとして返す', () => {
+    expect(missingRequiredMetadata(useToolBuilderStore.getState().metadata)).toEqual(['internalId', 'workingName', 'displayName', 'publishName', 'owner']);
+    for (const [key, value] of [['internalId', 'tool'], ['workingName', 'draft'], ['displayName', 'Tool'], ['publishName', 'tool_v1'], ['owner', ' ']] as const) {
+      useToolBuilderStore.getState().setMetadata(key, value);
+    }
+    // 空白だけの入力は未入力として扱う。
+    expect(missingRequiredMetadata(useToolBuilderStore.getState().metadata)).toEqual(['owner']);
+    useToolBuilderStore.getState().setMetadata('owner', 'owner@example.com');
+    expect(missingRequiredMetadata(useToolBuilderStore.getState().metadata)).toEqual([]);
   });
 
   it('Tool identity変更時は保存versionを引き継がない', () => {

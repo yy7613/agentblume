@@ -3,6 +3,7 @@ import type { TenantScope } from '../../domain/tool/ids';
 import type { DataSource, DatabaseConnectionStatus, DatabaseConnectionSummary } from '../../domain/data-source/data-source';
 import type { Row } from '../../domain/data/types';
 import type { DataSourceRepository } from '../../domain/data-source/data-source-repository';
+import { validateFileContent } from '../../domain/data-source/file-content-validation';
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
@@ -35,9 +36,8 @@ export class SaveFileDataSourceUseCase {
     const sizeBytes = Buffer.byteLength(input.content, 'utf8');
     if (sizeBytes === 0) throw new DataSourceValidationError('file content must not be empty');
     if (sizeBytes > MAX_FILE_BYTES) throw new DataSourceValidationError(`file content exceeds ${MAX_FILE_BYTES} bytes`);
-    if (input.format === 'json') {
-      try { JSON.parse(input.content); } catch { throw new DataSourceValidationError('JSON file content is invalid'); }
-    }
+    // 壊れたCSV/JSON（バイナリ混入・null文字・パース不能）を登録前に検出する（UX改善）。
+    validateFileContent(input.format, input.content);
     const timestamp = this.now().toISOString();
     const source: DataSource = {
       id: this.makeId(), tenant: input.scope, name, kind: 'file', format: input.format,

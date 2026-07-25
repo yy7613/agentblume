@@ -84,15 +84,20 @@ import type {
   FactoryEventDto,
   ResolveFactoryRunDto,
 } from './types';
+import { localizeApiErrorMessage } from './error-messages';
 
+/**
+ * message はローカライズ済み（各画面が err.message をそのまま表示するため）。
+ * 原文は serverMessage に保持する。
+ */
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
-    message: string,
+    readonly serverMessage: string,
     readonly runId?: string,
   ) {
-    super(message);
+    super(localizeApiErrorMessage({ status, code, serverMessage }));
     this.name = 'ApiError';
   }
 }
@@ -699,9 +704,10 @@ export class ToolApiClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    // body 無し（DELETE 等）に content-type を付けると Fastify が空JSON本文として 400/500 にする。
     const response = await this.fetcher(`${this.baseUrl}${path}`, {
       ...init,
-      headers: { 'content-type': 'application/json', ...init.headers },
+      headers: { ...(init.body === undefined || init.body === null ? {} : { 'content-type': 'application/json' }), ...init.headers },
     });
     let body: unknown = {};
     if (response.status !== 204) {

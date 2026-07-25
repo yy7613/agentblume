@@ -44,7 +44,7 @@ describe('filter: validateConfig', () => {
 
   it('accepts a config without value (isNull)', () => {
     const cfg = filterNode.validateConfig({ column: 'name', op: 'isNull' });
-    expect(cfg.value).toBeUndefined();
+    expect(cfg).toEqual({ column: 'name', op: 'isNull' });
   });
 
   it('throws ConfigError on an unknown op', () => {
@@ -55,6 +55,40 @@ describe('filter: validateConfig', () => {
 
   it('throws ConfigError when column missing', () => {
     expect(() => filterNode.validateConfig({ op: 'eq' })).toThrowError(ConfigError);
+  });
+
+  it('keeps the legacy flat shape unchanged (saved Tools must not be rewritten)', () => {
+    expect(filterNode.validateConfig({ column: 'name', op: 'contains', value: 'li' }))
+      .toEqual({ column: 'name', op: 'contains', value: 'li' });
+  });
+
+  it('accepts the multi-condition shape and defaults combine to and', () => {
+    expect(filterNode.validateConfig({ conditions: [{ column: 'age', op: 'gte', value: 18 }] }))
+      .toEqual({ conditions: [{ column: 'age', op: 'gte', value: 18 }], combine: 'and' });
+    expect(filterNode.validateConfig({
+      conditions: [{ column: 'name', op: 'eq', value: 'Alice' }, { column: 'name', op: 'eq', value: 'Bob' }],
+      combine: 'or',
+    })).toMatchObject({ combine: 'or' });
+  });
+
+  it('accepts a per-condition Agent input binding', () => {
+    expect(filterNode.validateConfig({
+      conditions: [{ column: 'age', op: 'gte', value: 18, valueBinding: { source: 'agent-input', field: 'minimumAge' } }],
+      combine: 'and',
+    })).toMatchObject({ conditions: [{ valueBinding: { source: 'agent-input', field: 'minimumAge' } }] });
+  });
+
+  it('rejects an empty conditions array, an unknown combine and an invalid condition', () => {
+    expect(() => filterNode.validateConfig({ conditions: [], combine: 'and' })).toThrowError(ConfigError);
+    expect(() => filterNode.validateConfig({ conditions: [{ column: 'age', op: 'eq' }], combine: 'xor' })).toThrowError(ConfigError);
+    expect(() => filterNode.validateConfig({ conditions: [{ op: 'eq' }] })).toThrowError(ConfigError);
+    expect(() => filterNode.validateConfig({ conditions: 'age' })).toThrowError(ConfigError);
+  });
+
+  it('keeps the Zod detail in the message for both shapes (no union collapse)', () => {
+    expect(() => filterNode.validateConfig({ column: 'age', op: 'between' })).toThrowError(/op: Invalid option/);
+    expect(() => filterNode.validateConfig({ conditions: [{ column: 'age', op: 'between' }] }))
+      .toThrowError(/conditions\.0\.op: Invalid option/);
   });
 });
 
@@ -97,6 +131,34 @@ describe('filter: inferSchema', () => {
   it('contains on string column (non-order op) -> confirmed', () => {
     const inf = filterNode.inferSchema([schema], { column: 'name', op: 'contains', value: 'li' });
     expect(inf.state).toBe('confirmed');
+  });
+
+  it('multi-condition: all valid -> confirmed, schema unchanged', () => {
+    const inf = filterNode.inferSchema([schema], {
+      conditions: [{ column: 'name', op: 'eq', value: 'Alice' }, { column: 'age', op: 'gte', value: 18 }],
+      combine: 'or',
+    });
+    expect(inf.state).toBe('confirmed');
+    expect(inf.schema).toEqual(schema);
+  });
+
+  it('multi-condition: collects one issue per bad condition', () => {
+    const inf = filterNode.inferSchema([schema], {
+      conditions: [{ column: 'nope', op: 'eq', value: 1 }, { column: 'name', op: 'gt', value: 'x' }, { column: 'age', op: 'gte', value: 1 }],
+      combine: 'and',
+    });
+    expect(inf.state).toBe('mismatch');
+    expect(inf.issues).toHaveLength(2);
+    expect(inf.issues[0]?.column).toBe('nope');
+    expect(inf.issues[1]?.message).toContain('number|date');
+  });
+
+  it('multi-condition without combine behaves like and', () => {
+    expect(filterNode.inferSchema([schema], { conditions: [{ column: 'age', op: 'gte', value: 1 }] }).state).toBe('confirmed');
+  });
+
+  it('missing input is treated as an empty schema', () => {
+    expect(filterNode.inferSchema([], { column: 'age', op: 'eq', value: 1 }).state).toBe('mismatch');
   });
 });
 
@@ -177,5 +239,46 @@ describe('filter: execute', () => {
     const snapshot = JSON.stringify(table.rows.map((r) => ({ ...r, joined: undefined })));
     filterNode.execute([table], { column: 'age', op: 'gte', value: 18 });
     expect(JSON.stringify(table.rows.map((r) => ({ ...r, joined: undefined })))).toBe(snapshot);
+  });
+
+  it('combine:or keeps rows matching any condition (Tokyo or Osaka)', () => {
+    const out = filterNode.execute([table], {
+      conditions: [{ column: 'name', op: 'eq', value: 'Alice' }, { column: 'name', op: 'eq', value: 'Bob' }],
+      combine: 'or',
+    });
+    expect(out.rows.map((r) => r.id)).toEqual([1, 2]);
+  });
+
+  it('combine:and requires every condition', () => {
+    const out = filterNode.execute([table], {
+      conditions: [{ column: 'age', op: 'gte', value: 18 }, { column: 'active', op: 'eq', value: true }],
+      combine: 'and',
+    });
+    expect(out.rows.map((r) => r.id)).toEqual([1, 3]);
+  });
+
+  it('conditions without combine default to and', () => {
+    const out = filterNode.execute([table], {
+      conditions: [{ column: 'age', op: 'gte', value: 18 }, { column: 'name', op: 'notNull' }],
+    });
+    expect(out.rows.map((r) => r.id)).toEqual([1]);
+  });
+
+  it('a single condition behaves exactly like the legacy flat config', () => {
+    const legacy = filterNode.execute([table], { column: 'age', op: 'gte', value: 18 });
+    const wrapped = filterNode.execute([table], { conditions: [{ column: 'age', op: 'gte', value: 18 }], combine: 'or' });
+    expect(wrapped.rows).toEqual(legacy.rows);
+  });
+
+  it('missing column in one condition simply matches nothing (null cell)', () => {
+    const out = filterNode.execute([table], {
+      conditions: [{ column: 'ghost', op: 'isNull' }, { column: 'age', op: 'gte', value: 40 }],
+      combine: 'and',
+    });
+    expect(out.rows.map((r) => r.id)).toEqual([3]);
+  });
+
+  it('missing input is treated as an empty table', () => {
+    expect(filterNode.execute([], { column: 'age', op: 'gte', value: 1 })).toEqual({ schema: { columns: [] }, rows: [] });
   });
 });
