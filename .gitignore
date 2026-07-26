@@ -28,6 +28,9 @@ Thumbs.db
 # Private brainstorming notes (not for publication)
 ideas/
 
+# Local concept / decision notes (not for publication)
+notes/
+
 # Local Zenn drafts (published separately from this repository)
 Zenn/
 
