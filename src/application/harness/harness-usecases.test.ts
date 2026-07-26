@@ -146,6 +146,24 @@ describe('CompileHarnessUseCase', () => {
       .toThrow('topology.managerSlotId');
   });
 
+  it('handoffは開始スロットから到達できないスロットを許容しない', () => {
+    expect(() => harnessOf('handoff', {
+      pattern: 'handoff', startSlotId: 'writer', autonomous: true,
+      transitions: [{ fromSlotId: 'writer', toSlotId: 'reviewer', condition: 'needs review' }],
+    })).toThrow('handoff slots unreachable from start: publisher');
+  });
+
+  it('handoffは遷移の連鎖で全スロットへ到達できれば有効で、各スロットから出力へ抜けられる', () => {
+    const executable = usecase.execute(harnessOf('handoff', {
+      pattern: 'handoff', startSlotId: 'writer', autonomous: true,
+      transitions: [
+        { fromSlotId: 'writer', toSlotId: 'reviewer', condition: 'needs review' },
+        { fromSlotId: 'reviewer', toSlotId: 'publisher', condition: 'approved' },
+      ],
+    }));
+    expect(executable.edges).toContainEqual({ from: 'slot:publisher', to: 'output' });
+  });
+
   it('magenticはmanagerと各参加者を往復し、managerから出力へ抜ける', () => {
     const executable = usecase.execute(harnessOf('magentic', {
       pattern: 'magentic', managerSlotId: 'writer', participantSlotIds: ['reviewer', 'publisher'],

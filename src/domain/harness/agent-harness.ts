@@ -119,6 +119,18 @@ function validateTopology(topology: HarnessTopology, slots: ReadonlyMap<string, 
         if (transition.fromSlotId === transition.toSlotId) throw new HarnessValidationError(`createAgentHarness: handoff transition ${index} cannot target itself`);
         text(transition.condition, `topology.transitions.${index}.condition`);
       }
+      // 到達不能スロットを許容しない: 全スロットは startSlotId から遷移表を辿って到達できること。
+      // 到達不能スロットは実行時に決して呼ばれない一方、compileでは output への辺が張られて
+      // 出力に関与するように見えるため、設定ミスとして作成時に拒否する。
+      const reachable = new Set<string>([topology.startSlotId]);
+      for (let grew = true; grew;) {
+        grew = false;
+        for (const transition of topology.transitions) {
+          if (reachable.has(transition.fromSlotId) && !reachable.has(transition.toSlotId)) { reachable.add(transition.toSlotId); grew = true; }
+        }
+      }
+      const unreachable = [...slots.keys()].filter((id) => !reachable.has(id));
+      if (unreachable.length > 0) throw new HarnessValidationError(`createAgentHarness: handoff slots unreachable from start: ${unreachable.join(', ')}`);
       return;
     }
     case 'group-chat':

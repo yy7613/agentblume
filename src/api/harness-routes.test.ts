@@ -120,7 +120,8 @@ describe('harness routes', () => {
     expect(model.requests[0]?.tools?.map((tool) => tool.name)).toContain('ask_reviewer');
   });
   it('Handoffは許可済みtransitionだけを辿って次の担当Agentへ引き継ぐ', async () => {
-    const harness = body({ internalId: 'handoff-review', pattern: 'handoff', topology: { pattern: 'handoff', startSlotId: 'writer', transitions: [{ fromSlotId: 'writer', toSlotId: 'reviewer', condition: 'review is required' }], autonomous: true } });
+    // 到達不能スロットは作成時に拒否されるため、遷移表に現れる2スロット構成にする。
+    const harness = body({ internalId: 'handoff-review', pattern: 'handoff', slots: ['writer', 'reviewer'].map((id) => ({ id, label: id, purpose: `${id} work`, assignment: { internalId: id, version: '1.0.0' } })), topology: { pattern: 'handoff', startSlotId: 'writer', transitions: [{ fromSlotId: 'writer', toSlotId: 'reviewer', condition: 'review is required' }], autonomous: true } });
     await server.inject({ method: 'POST', url: '/harnesses', payload: harness });
     model.enqueue(
       { message: { role: 'assistant', content: 'Draft is ready. [[handoff:reviewer]]' }, finishReason: 'stop' },
@@ -132,7 +133,7 @@ describe('harness routes', () => {
     expect(run.events).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'handoff_requested', message: 'writer -> reviewer' })]));
   });
   it('非自律Handoffはcheckpointへ会話を保存し、同じRunを次のユーザー入力で再開する', async () => {
-    const harness = body({ internalId: 'interactive-handoff', pattern: 'handoff', topology: { pattern: 'handoff', startSlotId: 'writer', transitions: [{ fromSlotId: 'writer', toSlotId: 'reviewer', condition: 'review is needed' }], autonomous: false } });
+    const harness = body({ internalId: 'interactive-handoff', pattern: 'handoff', slots: ['writer', 'reviewer'].map((id) => ({ id, label: id, purpose: `${id} work`, assignment: { internalId: id, version: '1.0.0' } })), topology: { pattern: 'handoff', startSlotId: 'writer', transitions: [{ fromSlotId: 'writer', toSlotId: 'reviewer', condition: 'review is needed' }], autonomous: false } });
     expect((await server.inject({ method: 'POST', url: '/harnesses', payload: harness })).statusCode).toBe(201);
     model.enqueue(
       { message: { role: 'assistant', content: 'Which launch audience should I address?' }, finishReason: 'stop' },
