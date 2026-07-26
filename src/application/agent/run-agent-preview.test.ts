@@ -14,6 +14,7 @@ import { EtlEngine } from '../etl/engine';
 import type { JsonObject, ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../model/model-provider';
 import { AgentRunError, RunFailedError, UnsafeToolError } from './errors';
 import { queryWorkspaceTable, RunAgentPreviewUseCase } from './run-agent-preview';
+import { toolToModelDefinition } from './tool-schema';
 import { FakeWikiRepository } from '../memory/memory-repositories.fixtures';
 import { createWikiSpace } from '../../domain/memory/wiki-space';
 import { createWikiPage } from '../../domain/memory/wiki-page';
@@ -199,6 +200,105 @@ describe('RunAgentPreviewUseCase', () => {
       { message: { role: 'assistant', content: null, toolCalls: [{ id: 'call', name: 'broken_binding', arguments: { minimumScore: 1 } }] }, finishReason: 'tool_calls' },
     ]);
     await expect(useCase(tool, model).execute({ ...input, toolId: 'broken-binding' })).rejects.toThrow(/filter node 'filter' references an unavailable Agent input/);
+  });
+
+  it('valueBindingのfieldが文字列でない壊れたconfigも実行を拒否する', async () => {
+    const minimumSchema: Schema = { columns: [{ name: 'minimumScore', type: 'number', nullable: false }] };
+    const tool = createTool({
+      metadata: { internalId: 'broken-field', workingName: 'broken-field', displayName: 'Broken field', publishName: 'broken_field', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: minimumSchema,
+      agentTool: { name: 'broken_field', description: 'Filter bound to a malformed field name.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ name: 'Alice', score: 42 }] } },
+        { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: 42 } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: minimumSchema, sample: { minimumScore: 0 } } },
+      ], edges: [{ from: 'data', to: 'filter' }] },
+    });
+    const model = new QueueModel([
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'call', name: 'broken_field', arguments: { minimumScore: 1 } }] }, finishReason: 'tool_calls' },
+    ]);
+    await expect(useCase(tool, model).execute({ ...input, toolId: 'broken-field' })).rejects.toThrow(/filter node 'filter' references an unavailable Agent input/);
+  });
+
+  describe('nullableなTool引数（省略でその条件をスキップする）', () => {
+    // region は nullable（省略可）、minimumScore は必須。region 条件は conditions 形式、
+    // month 条件は旧フラット形式の別ノードに置き、両形式のスキップを1本のグラフで確かめる。
+    const optionalSchema: Schema = { columns: [
+      { name: 'minimumScore', type: 'number', nullable: false },
+      { name: 'region', type: 'string', nullable: true },
+      { name: 'month', type: 'string', nullable: true },
+    ] };
+    const optionalTool = (): Tool => createTool({
+      metadata: { internalId: 'optional-search', workingName: 'optional-search', displayName: 'Optional search', publishName: 'optional_search', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: optionalSchema,
+      agentTool: { name: 'search_scores', description: 'Search scores; omit region or month to cover all of them.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [
+          { name: 'Alice', score: 42, region: 'Tokyo', month: '2026-05' },
+          { name: 'Bob', score: 7, region: 'Tokyo', month: '2026-06' },
+          { name: 'Carol', score: 90, region: 'Osaka', month: '2026-06' },
+        ] } },
+        { id: 'filter', type: 'filter', config: { conditions: [
+          { column: 'region', op: 'eq', value: 'Osaka', valueBinding: { source: 'agent-input', field: 'region' } },
+          { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: 'minimumScore' } },
+        ], combine: 'and' } },
+        { id: 'monthfilter', type: 'filter', config: { column: 'month', op: 'eq', value: '2026-05', valueBinding: { source: 'agent-input', field: 'month' } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: optionalSchema, sample: { minimumScore: 0 } } },
+      ], edges: [{ from: 'data', to: 'filter' }, { from: 'filter', to: 'monthfilter' }] },
+    });
+    const callWith = async (args: JsonObject): Promise<string> => {
+      const model = new QueueModel([
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_scores', arguments: args }] }, finishReason: 'tool_calls' },
+        { message: { role: 'assistant', content: 'done' }, finishReason: 'stop' },
+      ]);
+      await useCase(optionalTool(), model).execute({ ...input, toolId: 'optional-search' });
+      return String(model.requests[1]?.messages.at(-1)?.content);
+    };
+
+    it('nullable列はrequiredから外れ、function definitionでnullを許容する', () => {
+      const definition = toolToModelDefinition(optionalTool());
+      expect(definition.parameters.required).toEqual(['minimumScore']);
+      expect(definition.parameters.properties['region']).toEqual({ anyOf: [{ type: 'string' }, { type: 'null' }] });
+    });
+
+    it('省略された引数の条件はスキップされ、他の条件だけで絞り込む', async () => {
+      // region も month も省略 → 全リージョン・全月で 40点以上。
+      const result = await callWith({ minimumScore: 40 });
+      expect(result).toContain('Alice');
+      expect(result).toContain('Carol');
+      expect(result).not.toContain('Bob'); // 必須の minimumScore は従来どおり効く。
+    });
+
+    it('nullを明示的に渡した引数の条件もスキップする', async () => {
+      const result = await callWith({ minimumScore: 0, region: null, month: null });
+      expect(result).toContain('Alice');
+      expect(result).toContain('Bob');
+      expect(result).toContain('Carol');
+    });
+
+    it('値が渡された引数は従来どおりvalueへ差し替える（conditions形式・フラット形式とも）', async () => {
+      expect(await callWith({ minimumScore: 0, region: 'Tokyo' })).not.toContain('Carol');
+      const single = await callWith({ minimumScore: 0, month: '2026-06' });
+      expect(single).not.toContain('Alice');
+      expect(single).toContain('Bob');
+      expect(single).toContain('Carol');
+    });
+
+    it('唯一の条件がスキップされたfilterノードは全行を通す', async () => {
+      // monthfilter は条件1つだけなので、month 省略で条件ゼロ = パススルーになる。
+      const result = await callWith({ minimumScore: 0 });
+      expect(result).toContain('Alice');
+      expect(result).toContain('Bob');
+      expect(result).toContain('Carol');
+    });
+
+    it('nullableでない引数の省略は従来どおり拒否する', async () => {
+      const model = new QueueModel([
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_scores', arguments: { region: 'Tokyo' } }] }, finishReason: 'tool_calls' },
+      ]);
+      await expect(useCase(optionalTool(), model).execute({ ...input, toolId: 'optional-search' }))
+        .rejects.toThrow(/required argument missing: minimumScore/);
+    });
   });
 
   it('workspace-output stores an Artifact in the Run session and returns only its descriptor to the model', async () => {

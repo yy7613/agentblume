@@ -125,7 +125,7 @@ export class GenerateAgentAssetsUseCase {
         roleCallsUsed += 1;
         try {
           const proposal = await this.toolSmith.propose({ toolPlan, profile, ...(priorError === undefined ? {} : { priorError }) });
-          const graph = mergeAgentInputDeclarations(proposal.graph);
+          const graph = makeArgumentsOptional(mergeAgentInputDeclarations(proposal.graph));
           const resolvedGraph = await this.resolveDataSources.execute(input.scope, graph);
           const propagation = this.engine.propagateSchemas(resolvedGraph);
           if (propagation.hasErrors) throw new FactoryValidationError(describePropagationErrors(propagation));
@@ -261,6 +261,28 @@ const AGENT_ARGUMENT_TYPES: readonly string[] = ['string', 'number', 'boolean', 
  * サンプル値の型不一致は `EtlEngine.propagateSchemas`/`preview`（agent-input ノード自身の検証）が
  * 先に検出するため、ここでは存在確認だけを行う。
  */
+/**
+ * Factory生成Toolの全引数を省略可能(nullable)へ正規化する。ローカルモデルはnullable宣言の
+ * 指示に従わないことがあり（実測: 全引数をnullable: falseで宣言）、read-only検索Toolでは
+ * 「全引数optional・省略した条件は実行時にスキップされ全件が対象」が一貫した契約として
+ * 望ましいため、プロンプトに頼らず決定的に強制する。sampleは変更しない（プレビューの
+ * 決定性を保つ）。手作りToolビルダーの保存経路には影響しない（Factory生成/改訂のみ）。
+ */
+export function makeArgumentsOptional(graph: ToolGraph): ToolGraph {
+  let changed = false;
+  const nodes = graph.nodes.map((node) => {
+    if (node.type !== 'agent-input') return node;
+    const config = (node.config ?? {}) as { schema?: { columns?: unknown }; sample?: unknown };
+    const columns = config.schema?.columns;
+    if (!Array.isArray(columns) || columns.length === 0) return node;
+    const optionalColumns = columns.map((column) =>
+      column !== null && typeof column === 'object' ? { ...(column as Record<string, unknown>), nullable: true } : column);
+    changed = true;
+    return { ...node, config: { ...config, schema: { ...(config.schema ?? {}), columns: optionalColumns } } };
+  });
+  return changed ? { nodes, edges: graph.edges } : graph;
+}
+
 /**
  * 計画の `reuse.internalId` をカタログから寛容に解決する。モデルは internalId と publishName /
  * Tool契約名を混同しやすい（実測: `builtin-current-datetime` を `builtin-current_datetime` と書く）ため、

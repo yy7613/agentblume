@@ -37,9 +37,13 @@ export class GenerateAgentPromptUseCase {
     const skillGuide = resolved.skills.length === 0
       ? '# Skillガイド\n適用するSkillはありません。'
       : `# Skillガイド\n${resolved.skills.map((skill) => `- ${skill.metadata.publishName}@${skill.metadata.version.toString()}: ${skill.responsibility}\n  発火条件: ${skill.activationCondition}\n  instructions: ${skill.instructions}`).join('\n')}`;
+    // nullable な引数を持つToolがあるときだけ、省略可能引数の意味を1行で補足する。
+    const optionalArgumentNote = loaded.some((tool) => (tool.inputSchema?.columns ?? []).some((column) => column.nullable))
+      ? '\n- `?` 付きの引数は省略可能。省略するとその条件での絞り込みを行わない（全件が対象になる）。'
+      : '';
     const toolUsageGuide = loaded.length === 0
       ? '# Tool使用ガイド\n利用可能なToolはありません。'
-      : `# Tool使用ガイド\n${loaded.map(toolGuide).join('\n')}`;
+      : `# Tool使用ガイド\n${loaded.map(toolGuide).join('\n')}${optionalArgumentNote}`;
     const collaboratorGuide = resolved.subAgents.length === 0
       ? '# 協働者ガイド\n委譲できるサブエージェントはありません。'
       : `# 協働者ガイド\n委譲は ${resolved.subAgents.map((sub) => sub.toolName).join(' / ')} ツールで行う。\n${resolved.subAgents.map((sub) => `- ${sub.toolName}（${sub.agent.metadata.displayName}@${sub.agent.metadata.version.toString()}）: ${sub.ref.usage}`).join('\n')}`;
@@ -65,8 +69,17 @@ function schemaLabel(schema?: Schema): string {
   return schema.columns.map((column) => `${column.name}:${column.type}${column.nullable ? '?' : ''}`).join(', ');
 }
 
+/**
+ * Tool引数の表記。nullable な引数は「省略できる」ことが要点なので、値がnull許容であることを示す
+ * output 側の `name:type?` ではなく、TypeScript 風の `name?:type` で省略可能性を前に出す。
+ */
+function argumentLabel(schema?: Schema): string {
+  if (schema === undefined || schema.columns.length === 0) return 'なし';
+  return schema.columns.map((column) => `${column.name}${column.nullable ? '?' : ''}:${column.type}`).join(', ');
+}
+
 function toolGuide(tool: Tool): string {
   const name = tool.agentTool?.name ?? tool.metadata.publishName;
   const description = tool.agentTool?.description ?? tool.metadata.displayName;
-  return `- ${name}@${tool.metadata.version.toString()}（${description}）: input [${schemaLabel(tool.inputSchema)}] / output [${schemaLabel(tool.outputSchema)}] / side-effect ${tool.sideEffect}`;
+  return `- ${name}@${tool.metadata.version.toString()}（${description}）: input [${argumentLabel(tool.inputSchema)}] / output [${schemaLabel(tool.outputSchema)}] / side-effect ${tool.sideEffect}`;
 }

@@ -85,6 +85,14 @@ describe('filter: validateConfig', () => {
     expect(() => filterNode.validateConfig({ conditions: 'age' })).toThrowError(ConfigError);
   });
 
+  it('keeps the runtime skip marker for both shapes', () => {
+    expect(filterNode.validateConfig({ column: 'age', op: 'gte', value: 18, disabled: true }))
+      .toEqual({ column: 'age', op: 'gte', value: 18, disabled: true });
+    expect(filterNode.validateConfig({ conditions: [{ column: 'age', op: 'gte', value: 18, disabled: false }] }))
+      .toEqual({ conditions: [{ column: 'age', op: 'gte', value: 18, disabled: false }], combine: 'and' });
+    expect(() => filterNode.validateConfig({ column: 'age', op: 'gte', value: 18, disabled: 'yes' })).toThrowError(ConfigError);
+  });
+
   it('keeps the Zod detail in the message for both shapes (no union collapse)', () => {
     expect(() => filterNode.validateConfig({ column: 'age', op: 'between' })).toThrowError(/op: Invalid option/);
     expect(() => filterNode.validateConfig({ conditions: [{ column: 'age', op: 'between' }] }))
@@ -159,6 +167,28 @@ describe('filter: inferSchema', () => {
 
   it('missing input is treated as an empty schema', () => {
     expect(filterNode.inferSchema([], { column: 'age', op: 'eq', value: 1 }).state).toBe('mismatch');
+  });
+
+  it('disabled conditions are inspected as if they did not exist', () => {
+    // 単独（フラット）で disabled: 列が無くても mismatch にしない。
+    expect(filterNode.inferSchema([schema], { column: 'nope', op: 'eq', value: 1, disabled: true }))
+      .toEqual({ schema, state: 'confirmed', issues: [] });
+    // conditions 形式でも disabled の条件だけ検査対象から外れる。
+    const inf = filterNode.inferSchema([schema], {
+      conditions: [{ column: 'nope', op: 'eq', value: 1, disabled: true }, { column: 'age', op: 'gte', value: 18 }],
+      combine: 'and',
+    });
+    expect(inf.state).toBe('confirmed');
+    expect(inf.issues).toEqual([]);
+    // 全条件が disabled でもスキーマは不変のまま confirmed。
+    expect(filterNode.inferSchema([schema], {
+      conditions: [{ column: 'nope', op: 'gt', value: 1, disabled: true }],
+      combine: 'or',
+    })).toEqual({ schema, state: 'confirmed', issues: [] });
+  });
+
+  it('disabled: false is still inspected (backward compatible with an explicit marker)', () => {
+    expect(filterNode.inferSchema([schema], { column: 'nope', op: 'eq', value: 1, disabled: false }).state).toBe('mismatch');
   });
 });
 
@@ -280,5 +310,51 @@ describe('filter: execute', () => {
 
   it('missing input is treated as an empty table', () => {
     expect(filterNode.execute([], { column: 'age', op: 'gte', value: 1 })).toEqual({ schema: { columns: [] }, rows: [] });
+  });
+
+  it('a disabled flat condition passes every row through unchanged', () => {
+    const out = filterNode.execute([table], { column: 'age', op: 'gte', value: 40, disabled: true });
+    expect(out.rows.map((r) => r.id)).toEqual([1, 2, 3]);
+    expect(out.schema).toBe(table.schema);
+    expect(out.rows).not.toBe(table.rows);
+  });
+
+  it('combine:and evaluates only the conditions that are not disabled', () => {
+    const out = filterNode.execute([table], {
+      conditions: [
+        { column: 'name', op: 'eq', value: 'Alice', disabled: true },
+        { column: 'age', op: 'gte', value: 18 },
+      ],
+      combine: 'and',
+    });
+    expect(out.rows.map((r) => r.id)).toEqual([1, 3]);
+  });
+
+  it('combine:or evaluates only the conditions that are not disabled', () => {
+    const out = filterNode.execute([table], {
+      conditions: [
+        { column: 'name', op: 'eq', value: 'Alice' },
+        { column: 'name', op: 'eq', value: 'Bob', disabled: true },
+      ],
+      combine: 'or',
+    });
+    expect(out.rows.map((r) => r.id)).toEqual([1]);
+  });
+
+  it.each(['and', 'or'] as const)('all conditions disabled -> pass-through (%s)', (combine) => {
+    const out = filterNode.execute([table], {
+      conditions: [
+        { column: 'name', op: 'eq', value: 'Alice', disabled: true },
+        { column: 'age', op: 'gte', value: 40, disabled: true },
+      ],
+      combine,
+    });
+    expect(out.rows.map((r) => r.id)).toEqual([1, 2, 3]);
+    expect(out.schema).toBe(table.schema);
+  });
+
+  it('disabled: false keeps the condition active (backward compatible)', () => {
+    const out = filterNode.execute([table], { column: 'age', op: 'gte', value: 40, disabled: false });
+    expect(out.rows.map((r) => r.id)).toEqual([3]);
   });
 });

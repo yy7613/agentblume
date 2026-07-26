@@ -311,6 +311,17 @@ describe('NodeInspector: filter の複数条件', () => {
     expect(configOf('filter-1')).toEqual({ column: 'age', op: 'gte', value: 18 });
   });
 
+  it('エージェント入力を選んだときだけ、任意引数を省略すると条件がスキップされる旨を補足する', async () => {
+    withUpstreamColumns();
+    useToolBuilderStore.getState().addNode('agent-input');
+    useToolBuilderStore.getState().selectNode('filter-1');
+    render(<NodeInspector />);
+
+    expect(screen.queryByText(/leaving it out at run time skips this condition/)).toBeNull();
+    await userEvent.selectOptions(screen.getByLabelText('Condition value'), 'agent-input');
+    expect(screen.getByText('If the argument is optional (nullable), leaving it out at run time skips this condition.')).toBeTruthy();
+  });
+
   it('日本語UIでは条件見出しとAND/ORを日本語で出す', async () => {
     withUpstreamColumns();
     render(<I18nProvider initialLanguage="ja"><NodeInspector /></I18nProvider>);

@@ -16,8 +16,18 @@ const tool = createTool({
   inputSchema: { columns: [{ name: 'score', type: 'number', nullable: false }] },
   outputSchema: { columns: [{ name: 'passed', type: 'boolean', nullable: false }] },
 });
+/** nullable（省略可能）なTool引数を持つTool。 */
+const optionalArgumentTool = createTool({
+  metadata: { internalId: 'regions', workingName: 'regions', displayName: 'Region search', publishName: 'search_regions', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+  sideEffect: 'read-only', graph: { nodes: [], edges: [] },
+  inputSchema: { columns: [{ name: 'month', type: 'string', nullable: false }, { name: 'region', type: 'string', nullable: true }] },
+});
+const catalog: Readonly<Record<string, Tool>> = { scores: tool, regions: optionalArgumentTool };
 class FakeTools implements ToolRepository {
-  async findVersion(target: TenantScope, id: string, version: SemVer): Promise<Tool | null> { return target.tenantId === 'tenant' && id === 'scores' && version.toString() === '2.0.0' ? tool : null; }
+  async findVersion(target: TenantScope, id: string, version: SemVer): Promise<Tool | null> {
+    const found = catalog[id];
+    return target.tenantId === 'tenant' && found !== undefined && found.metadata.version.toString() === version.toString() ? found : null;
+  }
   async findLatest(): Promise<Tool | null> { return null; }
   async save(): Promise<void> {}
   async listVersions(): Promise<SemVer[]> { return []; }
@@ -34,6 +44,18 @@ describe('GenerateAgentPromptUseCase', () => {
     expect(result.systemPromptDraft).toContain('side-effect read-only');
     expect(result.systemPromptDraft).toContain('verdict:boolean');
     expect(result.sources).toEqual(['tool:filter_scores@2.0.0 の入出力・副作用']);
+  });
+
+  it('nullable引数は`?`付きで示し、省略時に絞り込みを行わないことを補足する', async () => {
+    const result = await new GenerateAgentPromptUseCase(new FakeTools()).execute({ scope, displayName: 'Searcher', kind: 'normal', tools: [{ internalId: 'regions', version: SemVer.of(1, 0, 0) }] });
+    expect(result.sections.toolUsageGuide).toContain('input [month:string, region?:string]');
+    expect(result.sections.toolUsageGuide).toContain('`?` 付きの引数は省略可能');
+    expect(result.sections.toolUsageGuide).toContain('絞り込みを行わない');
+  });
+
+  it('nullable引数を持つToolが無ければ省略可能引数の補足は出さない', async () => {
+    const result = await new GenerateAgentPromptUseCase(new FakeTools()).execute({ scope, displayName: 'Judge', kind: 'normal', tools: [{ internalId: 'scores', version: SemVer.of(2, 0, 0) }] });
+    expect(result.sections.toolUsageGuide).not.toContain('省略可能');
   });
 
   it('空displayNameと未存在Toolを拒否する', async () => {

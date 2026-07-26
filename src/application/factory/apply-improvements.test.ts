@@ -142,7 +142,8 @@ describe('ApplyImprovementsUseCase', () => {
     expect(result.rejected).toHaveLength(0);
     expect(result.applied).toHaveLength(1);
     const newTool = await toolRepo.findVersion(scope, toolId, SemVer.parse(result.applied[0]!.resultingVersion.version));
-    expect(newTool?.inputSchema).toEqual({ columns: [{ name: 'minimumAmount', type: 'number', nullable: false }] });
+    // Factory経路は全引数をoptionalへ正規化する（省略された条件は実行時にスキップ）。
+    expect(newTool?.inputSchema).toEqual({ columns: [{ name: 'minimumAmount', type: 'number', nullable: true }] });
   });
 
   it('tool-graph-revision: agent-input無しでbindingだけ残る改訂はrejectedになる(安全側)', async () => {

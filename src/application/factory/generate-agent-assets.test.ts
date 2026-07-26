@@ -16,7 +16,7 @@ import { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-sourc
 import { EtlEngine } from '../etl/engine';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
-import { agentToolArgumentsOf, GenerateAgentAssetsUseCase, mergeAgentInputDeclarations, resolveReuseTarget } from './generate-agent-assets';
+import { agentToolArgumentsOf, GenerateAgentAssetsUseCase, makeArgumentsOptional, mergeAgentInputDeclarations, resolveReuseTarget } from './generate-agent-assets';
 import { ProfileDataSourcesUseCase } from './profile-data-sources';
 import { buildExistingToolCatalog, type ExistingToolCatalogEntry } from './tool-catalog';
 import { AssemblerRole } from './roles/assembler-role';
@@ -228,11 +228,12 @@ describe('GenerateAgentAssetsUseCase', () => {
     const toolRef = result.toolRefs[0];
     if (toolRef === undefined) throw new Error('expected a tool ref');
     const tool = await toolRepo.findVersion(scope, toolRef.internalId, SemVer.parse(toolRef.version));
-    // agent-inputノードのschemaがそのままTool Calling契約（inputSchema）になる。
-    expect(tool?.inputSchema).toEqual({ columns: [{ name: 'minimumAmount', type: 'number', nullable: false }] });
-    // Tool使用ガイドは inputSchema から決定的に導出されるので引数が見える（従来は input [なし]）。
+    // agent-inputノードのschemaがTool Calling契約（inputSchema）になる。Factory経路は
+    // 全引数をoptionalへ正規化する（モデルがnullable指示に従わなくても省略可能な契約を保証）。
+    expect(tool?.inputSchema).toEqual({ columns: [{ name: 'minimumAmount', type: 'number', nullable: true }] });
+    // Tool使用ガイドは inputSchema から決定的に導出されるので引数が見える（optionalは`?`付き表記）。
     const agent = await agentRepo.findVersion(scope, result.agentRef.internalId, SemVer.parse(result.agentRef.version));
-    expect(agent?.systemPrompt).toContain('input [minimumAmount:number]');
+    expect(agent?.systemPrompt).toContain('input [minimumAmount?:number]');
   });
 
   it('引数を使わない提案は従来どおりinputSchema無しで保存する', async () => {
@@ -471,6 +472,32 @@ describe('resolveReuseTarget', () => {
     expect(resolveReuseTarget(catalog, '---')).toBeUndefined();
     const ambiguous = [...catalog, entry('current-datetime', 'current_datetime_v2')];
     expect(resolveReuseTarget(ambiguous, 'currentdatetime')).toBeUndefined();
+  });
+});
+
+describe('makeArgumentsOptional', () => {
+  it('agent-inputの全引数をnullable: trueへ正規化する(sampleは不変)', () => {
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+        { id: 'args', type: 'agent-input', config: { schema: { columns: [
+          { name: 'region', type: 'string', nullable: false },
+          { name: 'month', type: 'string', nullable: true },
+        ] }, sample: { region: 'East', month: '2026-05' } } },
+      ],
+      edges: [],
+    };
+    const normalized = makeArgumentsOptional(graph);
+    const config = normalized.nodes.find((node) => node.type === 'agent-input')?.config as { schema: { columns: { nullable: boolean }[] }; sample: unknown };
+    expect(config.schema.columns.every((column) => column.nullable)).toBe(true);
+    expect(config.sample).toEqual({ region: 'East', month: '2026-05' });
+  });
+
+  it('agent-inputが無い・列が空のグラフは変更しない', () => {
+    const plain: ToolGraph = { nodes: [{ id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } }], edges: [] };
+    expect(makeArgumentsOptional(plain)).toBe(plain);
+    const empty: ToolGraph = { nodes: [{ id: 'args', type: 'agent-input', config: { schema: { columns: [] }, sample: {} } }], edges: [] };
+    expect(makeArgumentsOptional(empty)).toBe(empty);
   });
 });
 

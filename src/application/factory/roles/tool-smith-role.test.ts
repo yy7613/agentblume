@@ -94,6 +94,23 @@ describe('ToolSmithRole', () => {
     expect(String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content)).toContain('minimum amount to search for');
   });
 
+  it('任意の絞り込み引数をnullableで宣言するルールをsystemプロンプトへ含める', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
+    const role = new ToolSmithRole(model);
+
+    await role.propose({ toolPlan, profile });
+
+    const system = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
+    expect(system).toMatch(/narrowing is OPTIONAL .* MUST be declared with "nullable": true/);
+    expect(system).toMatch(/the filter condition it feeds is then skipped and all rows pass that condition/);
+    expect(system).toMatch(/Never expect the agent to send a magic catch-all value such as "all" or "\*"/);
+    expect(system).toMatch(/agentTool\.description must say so explicitly/);
+    // 2引数の例は required 1つ + nullable 1つ（sample は required の分だけ）。
+    expect(system).toContain('{ "name": "region", "type": "string", "nullable": true }');
+    expect(system).toContain('"sample": { "month": "2026-05" }');
+  });
+
   it('agent-input付きの提案（引数宣言つきグラフ）をそのままパースする', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: argumentProposalJson() }, finishReason: 'stop' });

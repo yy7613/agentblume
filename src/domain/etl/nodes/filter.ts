@@ -11,7 +11,12 @@
  * - 新形式（複数条件）: `{ conditions: [{ column, op, value?, valueBinding? }], combine: 'and'|'or' }`。
  *   `combine` 省略時は 'and'。これで「東京 or 大阪」が1ノードで表せる。
  *
- * inferSchema / execute は両形式を条件配列へ正規化して処理する。
+ * 各条件は内部マーカー `disabled?: boolean` を持てる。`disabled: true` の条件は inferSchema /
+ * execute の両方で「存在しない条件」として扱う。設計時に人が書くものではなく、Agent Tool の
+ * nullable 引数が実行時に省略されたとき application層（`graphWithArguments`）が注入する。
+ * 残った条件が0件になった場合、filter は全行を通すパススルーになる（スキーマは不変）。
+ *
+ * inferSchema / execute は両形式を条件配列へ正規化して処理する（disabled は除外する）。
  * - inferSchema: 各条件の `column` 存在必須（欠損 → error/mismatch）。`gt|gte|lt|lte` は
  *   列型が number|date 必須（違反 → 型不一致 error + mismatch）。問題が無ければ入力
  *   スキーマそのまま state:'confirmed'。複数条件では全条件分の issue を集約する。
@@ -39,6 +44,11 @@ export interface FilterCondition {
   readonly value?: Cell;
   /** 実行時に Agent Tool の引数で value を上書きする参照。設計時は value をsampleに使う。 */
   readonly valueBinding?: { readonly source: 'agent-input'; readonly field: string };
+  /**
+   * 実行時スキップの内部マーカー。true の条件は無いものとして扱う。
+   * nullable な Agent Tool 引数が省略されたときに application層が注入する。
+   */
+  readonly disabled?: boolean;
 }
 
 /** 新形式（複数条件 + AND/OR）の設定。 */
@@ -67,6 +77,7 @@ const conditionSchema = z.object({
   op: z.enum(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull']),
   value: cellSchema.optional(),
   valueBinding: z.object({ source: z.literal('agent-input'), field: z.string().min(1) }).optional(),
+  disabled: z.boolean().optional(),
 });
 
 const conditionsSchema = z.object({
@@ -79,13 +90,22 @@ function hasConditions(config: unknown): boolean {
   return typeof config === 'object' && config !== null && Object.prototype.hasOwnProperty.call(config, 'conditions');
 }
 
-/** 設定を「条件配列 + 結合方法」へ正規化する（旧形式は1条件として扱う）。 */
+/** 実行時スキップされていない（有効な）条件か。 */
+function isActive(condition: FilterCondition): boolean {
+  return condition.disabled !== true;
+}
+
+/**
+ * 設定を「条件配列 + 結合方法」へ正規化する（旧形式は1条件として扱う）。
+ * `disabled: true` の条件はここで落とすので、以降は存在しない条件として扱われる。
+ */
 function normalize(config: FilterConfig): { readonly conditions: readonly FilterCondition[]; readonly combine: FilterCombine } {
   if (hasConditions(config)) {
     const conditions = config as FilterConditionsConfig;
-    return { conditions: conditions.conditions, combine: conditions.combine ?? 'and' };
+    return { conditions: conditions.conditions.filter(isActive), combine: conditions.combine ?? 'and' };
   }
-  return { conditions: [config as FilterCondition], combine: 'and' };
+  const flat = config as FilterCondition;
+  return { conditions: isActive(flat) ? [flat] : [], combine: 'and' };
 }
 
 /** Cell を順序比較用の数値に変換する（number はそのまま / Date は時刻値 / 他は NaN）。 */
@@ -192,9 +212,12 @@ class FilterNode implements EtlNode<FilterConfig> {
     const input = inputs[0] ?? { schema: { columns: [] }, rows: [] };
     const { conditions, combine } = normalize(config);
 
-    const rows: Row[] = input.rows.filter((row: Row) => combine === 'or'
-      ? conditions.some((condition) => matches(row, condition))
-      : conditions.every((condition) => matches(row, condition)));
+    // 有効な条件が残っていなければパススルー（OR の some が全行を落とすのを避ける）。
+    const rows: Row[] = conditions.length === 0
+      ? [...input.rows]
+      : input.rows.filter((row: Row) => combine === 'or'
+        ? conditions.some((condition) => matches(row, condition))
+        : conditions.every((condition) => matches(row, condition)));
 
     // スキーマ不変。行配列は filter が新規生成。
     return { schema: input.schema, rows };

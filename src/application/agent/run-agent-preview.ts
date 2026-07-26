@@ -197,29 +197,41 @@ function hasSessionStorageSink(tool: Tool): boolean {
 /**
  * filter の1条件について `valueBinding: { source:'agent-input', field }` を実引数へ解決する。
  * バインディングが無ければ同一参照をそのまま返す（差し替えの有無を呼び出し側が判定できる）。
+ *
+ * `optionalFields`（inputSchema で nullable な引数名）に含まれる引数が省略された／null のときは
+ * value を触らず `disabled: true` を注入し、その条件を実行時にスキップさせる（「全リージョン」の
+ * ように絞り込み自体が不要なケース）。nullable でない引数は従来どおり欠損をエラーにする。
  */
-function conditionWithArgument(nodeId: string, condition: unknown, row: Row): unknown {
+function conditionWithArgument(nodeId: string, condition: unknown, row: Row, optionalFields: ReadonlySet<string>): unknown {
   const binding = (condition as { valueBinding?: { source?: unknown; field?: unknown } } | null)?.valueBinding;
   if (binding?.source !== 'agent-input') return condition;
-  if (typeof binding.field !== 'string' || !Object.prototype.hasOwnProperty.call(row, binding.field)) {
+  const field = typeof binding.field === 'string' ? binding.field : '';
+  // 引数が渡されていれば Cell、宣言と噛み合っていなければ undefined。
+  const argument = Object.prototype.hasOwnProperty.call(row, field) ? row[field] ?? null : undefined;
+  if (optionalFields.has(field) && (argument === undefined || argument === null)) {
+    return { ...(condition as Record<string, unknown>), disabled: true };
+  }
+  if (argument === undefined) {
     throw new AgentRunError(`filter node '${nodeId}' references an unavailable Agent input`);
   }
-  return { ...(condition as Record<string, unknown>), value: row[binding.field] ?? null };
+  return { ...(condition as Record<string, unknown>), value: argument };
 }
 
 /**
  * filter config の agent-input バインディングを実行時引数で解決する。旧形式（フラットな1条件）と
  * 新形式（`{ conditions, combine }`）の両方を扱い、元の形式を保ったまま value だけを差し替える。
  */
-function filterConfigWithArguments(nodeId: string, config: unknown, row: Row): unknown {
+function filterConfigWithArguments(nodeId: string, config: unknown, row: Row, optionalFields: ReadonlySet<string>): unknown {
   const conditions = (config as { conditions?: unknown } | null)?.conditions;
-  if (!Array.isArray(conditions)) return conditionWithArgument(nodeId, config, row);
-  const bound = conditions.map((condition) => conditionWithArgument(nodeId, condition, row));
+  if (!Array.isArray(conditions)) return conditionWithArgument(nodeId, config, row, optionalFields);
+  const bound = conditions.map((condition) => conditionWithArgument(nodeId, condition, row, optionalFields));
   if (bound.every((condition, index) => condition === conditions[index])) return config;
   return { ...(config as Record<string, unknown>), conditions: bound };
 }
 
 function graphWithArguments(tool: Tool, row: Row): ToolGraph {
+  // nullable 宣言された引数だけが「省略 → 条件スキップ」の対象になる。
+  const optionalFields = new Set((tool.inputSchema?.columns ?? []).filter((column) => column.nullable).map((column) => column.name));
   let replaced = 0;
   const nodes = tool.graph.nodes.map((node) => {
     if (node.type === 'agent-input') {
@@ -231,7 +243,7 @@ function graphWithArguments(tool: Tool, row: Row): ToolGraph {
       return { ...node, config: { ...config, sample: row } };
     }
     if (node.type !== 'filter') return node;
-    const config = filterConfigWithArguments(node.id, node.config, row);
+    const config = filterConfigWithArguments(node.id, node.config, row, optionalFields);
     return config === node.config ? node : { ...node, config };
   });
   if ((tool.inputSchema?.columns.length ?? 0) > 0 && replaced === 0) {
