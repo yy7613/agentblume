@@ -28,6 +28,8 @@ import { InvalidFileContentError } from '../domain/data-source/errors';
 import { WebSearchValidationError } from '../application/search/web-search';
 import { HarnessNotFoundError, HarnessRunError, HarnessRunNotFoundError, HarnessValidationError, HarnessVersionConflictError } from '../domain/harness/errors';
 import { FactoryNotFoundError, FactoryValidationError } from '../domain/factory/errors';
+import { McpNotFoundError, McpValidationError } from '../domain/mcp/errors';
+import { McpClientError } from '../application/mcp/mcp-client';
 
 /** HTTP エラーレスポンス表現。 */
 export interface HttpError {
@@ -134,6 +136,13 @@ export function toHttpError(err: unknown): HttpError {
   // Agent Factory ドメイン（v33）: NotFoundは404、その他の不変条件違反は400。
   if (err instanceof FactoryNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof FactoryValidationError) return httpError(400, err.code, err.message);
+
+  // MCPクライアント: 設定の不変条件違反は400、未登録サーバーは404。
+  // 接続失敗（McpClientError）は外部依存の失敗なので ModelProviderError と同じ502。
+  // ただし接続テストは ok:false として200で返るため、502に至るのは実行経路のみ。
+  if (err instanceof McpNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof McpValidationError) return httpError(400, err.code, err.message);
+  if (err instanceof McpClientError) return httpError(502, err.code, err.message);
 
   if (err instanceof UnsafeToolError) return httpError(403, err.code, err.message);
   if (err instanceof ToolArgumentsError) return httpError(422, err.code, err.message);

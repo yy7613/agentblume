@@ -1,21 +1,24 @@
 import { randomUUID } from 'node:crypto';
-import type { Agent, AgentSubAgentRef } from '../../domain/agent/agent';
+import { DEFAULT_AGENT_RUNTIME_HARNESS, type Agent, type AgentRuntimeHarness, type AgentSubAgentRef } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import { AgentNotFoundError } from '../../domain/agent/errors';
 import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
 import type { Row, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
-import type { RunLatencyBreakdown, RunMode, RunModelSnapshot, RunPurpose, RunRecord, RunTraceEvent, RunUsage } from '../../domain/run/run';
-import { failRun, startRun, succeedRun } from '../../domain/run/run';
+import type { RunApprovalCheckpoint, RunCheckpointMessage, RunCheckpointToolCall, RunLatencyBreakdown, RunMode, RunModelSnapshot, RunPurpose, RunRecord, RunStatus, RunTraceEvent, RunUsage } from '../../domain/run/run';
+import { failRun, resumeRunRecord, startRun, succeedRun, waitRunForApproval } from '../../domain/run/run';
+import { RunNotFoundError } from '../../domain/run/errors';
 import type { RunRepository } from '../../domain/run/run-repository';
 import { ToolNotFoundError } from '../../domain/tool/errors';
 import type { TenantScope, ToolId } from '../../domain/tool/ids';
-import type { SemVer } from '../../domain/tool/semver';
+import type { SideEffect } from '../../domain/tool/metadata';
+import type { McpServerRepository } from '../../domain/mcp/mcp-server-repository';
+import { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
 import { EtlEngine } from '../etl/engine';
-import type { ModelCompletion, ModelContentPart, ModelMessage, ModelProviderPort, ModelRequestMessage, ModelToolCall, ModelToolDefinition, ModelUsage } from '../model/model-provider';
+import type { JsonObject, ModelCompletion, ModelContentPart, ModelMessage, ModelProviderPort, ModelRequestMessage, ModelToolCall, ModelToolDefinition, ModelUsage } from '../model/model-provider';
 import { AgentRunError, RunFailedError, UnsafeToolError } from './errors';
 import { failureFrom, sanitizeRunTrace } from './run-trace';
 import { assertOutputMatchesSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
@@ -33,6 +36,13 @@ import { AgentSessionClosedError, AgentSessionExpiredError, AgentSessionNotFound
 import type { AgentSessionRepository, SessionArtifactRepository } from '../../domain/session/session-repository';
 import { ToolOutputDispatcher } from '../tool/tool-output-dispatcher';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
+import type { WebSearchUseCase } from '../search/web-search';
+import {
+  agentMemoryWikiId, AgentRuntimeHarnessRuntime, compactModelMessages,
+  HARNESS_COMPACTION_BUDGET_CHARS, HARNESS_MAX_MODEL_ROUNDS, HARNESS_MAX_TOOL_CALLS,
+} from './runtime-harness';
+import type { McpClientPort } from '../mcp/mcp-client';
+import { isMcpToolName, McpToolset } from './mcp-tools';
 
 export type AgentRunMode = RunMode;
 
@@ -78,6 +88,20 @@ export interface RunSavedAgentPreviewInput {
   readonly memoryContext?: string;
   /** API互換の手動ページ指定。Wiki allowlist設定Agentではallowlist内だけ許可する。 */
   readonly memoryPageIds?: readonly string[];
+  /**
+   * 対話相手（人間）がいる実行かどうか。POST /runs だけが true を渡す。
+   * Harness・Factory・シナリオ検証などの自動実行は未指定（false）のままにして、
+   * 承認ゲートで停止してデッドロックすることを防ぐ。
+   */
+  readonly interactive?: boolean;
+}
+
+/** 単一エージェントRunの承認待ちを解決して再開する入力。 */
+export interface ResumeSavedRunInput {
+  readonly scope: TenantScope;
+  readonly runId: string;
+  readonly decision: 'approve' | 'reject';
+  readonly feedback?: string;
 }
 
 /** サブエージェント委譲のツリー共有バジェット。remaining系は実行中に減算される。 */
@@ -85,6 +109,15 @@ export interface RunBudget {
   maxDelegationDepth: number;   // 既定2・絶対上限 HARD_MAX_DEPTH(3)
   remainingModelRounds: number; // ツリー共有・既定12
   remainingToolCalls: number;   // ツリー共有・既定16
+}
+
+/** 承認待ちで停止したRunがUIへ返す最小の再開情報。 */
+export interface AgentRunApprovalPrompt {
+  readonly prompt: string;
+  readonly expiresAt: string;
+  /** 承認対象のツール名（モデルが呼んだ名前）。 */
+  readonly tool: string;
+  readonly sideEffect: string;
 }
 
 export interface AgentPreviewRun {
@@ -102,15 +135,35 @@ export interface AgentPreviewRun {
   readonly model?: RunModelSnapshot;
   readonly latency?: RunLatencyBreakdown;
   readonly estimatedCost?: RunRecord['estimatedCost'];
+  /**
+   * 承認待ちで停止したときだけ 'waiting-approval'。完走時は後方互換のため未指定。
+   * 呼び出し側は `status === 'waiting-approval'` だけを判定すればよい。
+   */
+  readonly status?: RunStatus;
+  /** status === 'waiting-approval' のときだけ設定される。 */
+  readonly checkpoint?: AgentRunApprovalPrompt;
 }
 
-type RunResult = Omit<AgentPreviewRun, 'runId' | 'mode' | 'trace'>;
+type RunResult = Omit<AgentPreviewRun, 'runId' | 'mode' | 'trace' | 'status' | 'checkpoint'>;
 
 export const MAX_TOOL_CALLS = 4;
 export const MAX_MODEL_ROUNDS = 5;
 export const DEFAULT_MAX_DELEGATION_DEPTH = 2;
 export const DEFAULT_MODEL_ROUNDS_BUDGET = 12;
 export const DEFAULT_TOOL_CALLS_BUDGET = 16;
+/** 承認待ちcheckpointの有効期限（domain/harness の INTERACTIVE_CHECKPOINT_TTL_MS と同値）。 */
+export const INTERACTIVE_CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * 内部の制御シグナル。承認待ちは「失敗」ではなく永続的な状態遷移なので、
+ * 実行ループから executeRun まで checkpoint を運ぶためだけに例外を使う（HarnessPause と同型）。
+ */
+class AgentRunPause extends Error {
+  constructor(readonly checkpoint: RunApprovalCheckpoint, readonly usage: RunUsage) {
+    super(`agent run waiting for tool approval: ${checkpoint.prompt}`);
+    this.name = 'AgentRunPause';
+  }
+}
 
 /** バジェットを既定値で補完し、上限超の値は既定（深さは HARD_MAX_DEPTH）へクランプする。 */
 function makeBudget(partial?: Partial<RunBudget>): RunBudget {
@@ -130,9 +183,51 @@ interface NodeContext {
   readonly depth: number;
   readonly subAgents: readonly ResolvedSubAgent[];
   readonly session?: AgentSession;
+  /** Agentが明示設定したランタイムハーネス。未設定（=従来動作）なら undefined。 */
+  readonly harness?: AgentRuntimeHarness;
+  /** Agentが参照するMCPサーバー名。Run開始時（再開時も）にツールを解決する。 */
+  readonly mcpServers?: readonly string[];
+  /** 対話相手がいる実行か。承認ゲートは interactive かつ depth === 0 のときだけ発火する。 */
+  readonly interactive?: boolean;
 }
 
 interface RunTiming { modelMs: number; toolMs: number }
+
+/** 1 Run のループで変化しない実行文脈。新規実行と再開で同じものを組み立てる。 */
+interface LoopContext {
+  readonly harness: AgentRuntimeHarness;
+  readonly maxModelRounds: number;
+  readonly maxToolCalls: number;
+  readonly runtime: AgentRuntimeHarnessRuntime;
+  /** このRunで解決済みのMCPツール（未使用Runでは空集合）。 */
+  readonly mcp: McpToolset;
+  readonly tools: readonly Tool[];
+  readonly toolDefinitions: readonly ModelToolDefinition[];
+  readonly definitions: readonly ModelToolDefinition[];
+  readonly output?: StructuredOutputDefinition;
+  readonly responseFormat?: ReturnType<typeof toModelResponseFormat>;
+  readonly agent?: RunRecord['agent'];
+  readonly ctx: NodeContext;
+  readonly trace: RunTraceEvent[];
+  readonly timing: RunTiming;
+  readonly signal?: AbortSignal;
+  /** true のとき、非read-onlyのETL Tool実行前に人間の承認を要求して停止する。 */
+  readonly approvalGate: boolean;
+}
+
+/** ループを跨いで進むミュータブルな状態。checkpoint から復元できる情報だけを持つ。 */
+interface LoopState {
+  messages: ModelRequestMessage[];
+  executed: NonNullable<RunRecord['tool']>[];
+  usage: RunUsage;
+  remainingHistory: number;
+  /** 次に実行するモデル往復番号。 */
+  startStep: number;
+  /** 再開時、startStep の往復で未実行のまま残っていたツール呼び出し。 */
+  pending?: readonly ModelToolCall[];
+  /** 承認済みとして1件だけ承認ゲートを素通しするツール呼び出しID。 */
+  approvedCallId?: string;
+}
 
 export interface RunObservabilityOptions {
   readonly telemetry?: TelemetryPort;
@@ -166,21 +261,63 @@ function withMemoryContext(systemPrompt: string, memoryContext?: string): string
   return `# Memory (retrieved knowledge; use if relevant)\n${summarize(trimmed, 1200)}\n\n${systemPrompt}`;
 }
 
-function mergeUsage(...completions: readonly ModelCompletion[]): ModelUsage {
-  const sum = (select: (usage: ModelUsage) => number | undefined): number | undefined => {
-    const values = completions.map((completion) => completion.usage)
-      .filter((usage): usage is ModelUsage => usage !== undefined)
-      .map(select).filter((value): value is number => value !== undefined);
-    return values.length === 0 ? undefined : values.reduce((total, value) => total + value, 0);
-  };
-  const promptTokens = sum((usage) => usage.promptTokens);
-  const completionTokens = sum((usage) => usage.completionTokens);
-  const totalTokens = sum((usage) => usage.totalTokens);
+/**
+ * usageを積み上げる（キーは、どこかの完了応答が持っていたときだけ結果に現れる）。
+ * 承認待ちを挟んでも通算を保てるよう、完了応答の配列ではなく累積値で持ち回る。
+ */
+function addUsage(total: RunUsage, next: ModelUsage | undefined): RunUsage {
+  if (next === undefined) return total;
+  const sum = (left: number | undefined, right: number | undefined): number | undefined =>
+    left === undefined && right === undefined ? undefined : (left ?? 0) + (right ?? 0);
+  const promptTokens = sum(total.promptTokens, next.promptTokens);
+  const completionTokens = sum(total.completionTokens, next.completionTokens);
+  const totalTokens = sum(total.totalTokens, next.totalTokens);
   return {
     ...(promptTokens !== undefined ? { promptTokens } : {}),
     ...(completionTokens !== undefined ? { completionTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// checkpoint（domain）↔ モデルメッセージ（application）の相互変換
+// domain層はModelRequestMessageを知らないため、境界はここだけに閉じる。
+// ---------------------------------------------------------------------------
+
+function toCheckpointContent(content: ModelRequestMessage['content']): RunCheckpointMessage['content'] {
+  if (content === null || typeof content === 'string') return content;
+  return content.map((part) => part.type === 'text' ? { type: 'text' as const, text: part.text } : { type: 'image' as const, imageUrl: part.imageUrl });
+}
+
+function fromCheckpointContent(content: RunCheckpointMessage['content']): ModelRequestMessage['content'] {
+  if (content === null || typeof content === 'string') return content;
+  return content.map((part): ModelContentPart => part.type === 'text' ? { type: 'text', text: part.text } : { type: 'image_url', imageUrl: part.imageUrl });
+}
+
+function toCheckpointMessages(messages: readonly ModelRequestMessage[]): readonly RunCheckpointMessage[] {
+  return messages.map((message) => ({
+    role: message.role,
+    content: toCheckpointContent(message.content),
+    ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls.map(toCheckpointToolCall) }),
+    ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
+  }));
+}
+
+function fromCheckpointMessages(messages: readonly RunCheckpointMessage[]): ModelRequestMessage[] {
+  return messages.map((message) => ({
+    role: message.role,
+    content: fromCheckpointContent(message.content),
+    ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls.map(fromCheckpointToolCall) }),
+    ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
+  }));
+}
+
+function toCheckpointToolCall(call: ModelToolCall): RunCheckpointToolCall {
+  return { id: call.id, name: call.name, arguments: { ...call.arguments } };
+}
+
+function fromCheckpointToolCall(call: RunCheckpointToolCall): ModelToolCall {
+  return { id: call.id, name: call.name, arguments: call.arguments as JsonObject };
 }
 
 /**
@@ -267,6 +404,10 @@ export class RunAgentPreviewUseCase {
     private readonly sessions?: AgentSessionRepository,
     private readonly artifacts?: SessionArtifactRepository,
     private readonly resolveDataSources?: ResolveDataSourceGraphUseCase,
+    private readonly webSearch?: WebSearchUseCase,
+    /** 保存済みMCPサーバー設定。mcpClient と両方揃ったときだけMCPツールを注入する。 */
+    private readonly mcpServers?: McpServerRepository,
+    private readonly mcpClient?: McpClientPort,
   ) { this.output = new ToolOutputDispatcher(artifacts, now); }
 
   private readonly output: ToolOutputDispatcher;
@@ -316,7 +457,7 @@ export class RunAgentPreviewUseCase {
           }
         }
         const resolved = await resolveAgentCapabilities(input.scope, agent.skills, agent.tools, this.repo, this.skills, [...agent.agents, ...additionalAgents], agentRepo);
-        const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget, depth: 0, subAgents: resolved.subAgents, ...(session === undefined ? {} : { session }) };
+        const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget, depth: 0, subAgents: resolved.subAgents, ...(session === undefined ? {} : { session }), ...(agent.harness === undefined ? {} : { harness: agent.harness }), ...(agent.mcpServers === undefined ? {} : { mcpServers: agent.mcpServers }), ...(input.interactive === true ? { interactive: true } : {}) };
         const wikiContext = await this.buildWikiContext(input.scope, agent, input.message, input.memoryPageIds);
         const memoryContext = [wikiContext, input.memoryContext].filter((value): value is string => value !== undefined && value.trim() !== '').join('\n\n') || undefined;
         const systemPrompt = withMemoryContext(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), memoryContext);
@@ -329,7 +470,7 @@ export class RunAgentPreviewUseCase {
   private async runChildAgent(scope: TenantScope, agent: Agent, message: string, mode: AgentRunMode, budget: RunBudget, depth: number, session: AgentSession | undefined, signal?: AbortSignal): Promise<AgentPreviewRun> {
     return this.executeRun(scope, mode, 'delegation', session?.id, { agent: this.agentRef(agent) }, async (trace, timing, runId) => {
       const resolved = await resolveAgentCapabilities(scope, agent.skills, agent.tools, this.repo, this.skills, agent.agents, this.agents);
-      const ctx: NodeContext = { runId, scope, mode, budget, depth, subAgents: resolved.subAgents, ...(session === undefined ? {} : { session }) };
+      const ctx: NodeContext = { runId, scope, mode, budget, depth, subAgents: resolved.subAgents, ...(session === undefined ? {} : { session }), ...(agent.harness === undefined ? {} : { harness: agent.harness }), ...(agent.mcpServers === undefined ? {} : { mcpServers: agent.mcpServers }) };
       const wikiContext = await this.buildWikiContext(scope, agent, message);
       return this.perform(withMemoryContext(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), wikiContext), message, resolved.tools, trace, timing, ctx, signal, this.agentRef(agent), agent.output);
     });
@@ -345,17 +486,33 @@ export class RunAgentPreviewUseCase {
   ): Promise<AgentPreviewRun> {
     const runId = this.makeRunId();
     const startedAt = this.now().toISOString();
-    const startedTick = this.monotonicNow();
     const model = this.observability?.model;
     const started = startRun({ runId, scope, mode, purpose, ...(sessionId === undefined ? {} : { sessionId }), ...refs, ...(model !== undefined ? { model } : {}), startedAt });
     await this.runRepo.save(started);
-    const trace: RunTraceEvent[] = [];
-    const timing: RunTiming = { modelMs: 0, toolMs: 0 };
+    return this.runWithRecord(started, [], { modelMs: 0, toolMs: 0 }, 0, work);
+  }
+
+  /**
+   * running状態のRunRecordに対して1区間の実行を回し、succeeded / failed / waiting-approval のいずれかへ確定する。
+   * 新規実行（executeRun）と承認後の再開（resumeSavedRun）で共有する。
+   */
+  private async runWithRecord(
+    started: RunRecord,
+    trace: RunTraceEvent[],
+    timing: RunTiming,
+    baseTotalMs: number,
+    work: (trace: RunTraceEvent[], timing: RunTiming, runId: string) => Promise<RunResult>,
+  ): Promise<AgentPreviewRun> {
+    const { runId, scope, mode } = started;
+    const purpose = started.purpose ?? 'interactive';
+    const sessionId = started.sessionId;
+    const model = started.model ?? this.observability?.model;
+    const startedTick = this.monotonicNow();
     const span = safeStartSpan(this.observability?.telemetry, 'agent.run', { 'run.id': runId, 'run.mode': mode, 'run.purpose': purpose, 'scope.tenant_id': scope.tenantId, 'scope.workspace_id': scope.workspaceId });
     try {
       const result = await work(trace, timing, runId);
       const completedAt = this.now().toISOString();
-      const latency = this.latency(startedTick, timing);
+      const latency = this.latency(startedTick, timing, baseTotalMs);
       const estimatedCost = await estimateRunCost(this.observability?.pricing, model, result.usage, completedAt);
       const completed = succeedRun(started, {
         ...(result.tool !== undefined ? { tool: result.tool } : {}),
@@ -374,9 +531,36 @@ export class RunAgentPreviewUseCase {
       span.setAttribute('run.status', 'succeeded'); span.setAttribute('run.latency_ms', latency.totalMs); span.end();
       return { runId, mode, purpose, ...(sessionId === undefined ? {} : { sessionId }), ...(model !== undefined ? { model } : {}), ...result, latency, ...(estimatedCost !== undefined ? { estimatedCost } : {}), trace };
     } catch (error) {
+      // 承認待ちは失敗ではない: RunRecordを waiting-approval + checkpoint で永続化して呼び出し元へ返す。
+      if (error instanceof AgentRunPause) {
+        const latency = this.latency(startedTick, timing, baseTotalMs);
+        const waiting = waitRunForApproval(started, error.checkpoint, { trace: sanitizeRunTrace(trace), usage: error.usage, latency, response: error.checkpoint.prompt });
+        await this.runRepo.save(waiting);
+        span.setAttribute('run.status', 'waiting-approval'); span.setAttribute('run.latency_ms', latency.totalMs); span.end();
+        const pending = error.checkpoint.pendingCalls[0];
+        const requested = [...trace].reverse().find((event) => event.kind === 'approval-requested');
+        return {
+          runId, mode, purpose,
+          ...(sessionId === undefined ? {} : { sessionId }),
+          ...(model !== undefined ? { model } : {}),
+          ...(started.agent !== undefined ? { agent: started.agent } : {}),
+          ...(started.tool !== undefined ? { tool: started.tool } : {}),
+          status: 'waiting-approval',
+          checkpoint: {
+            prompt: error.checkpoint.prompt,
+            expiresAt: error.checkpoint.expiresAt,
+            tool: pending?.name ?? '',
+            sideEffect: requested?.kind === 'approval-requested' ? requested.sideEffect : 'write',
+          },
+          response: error.checkpoint.prompt,
+          usage: error.usage,
+          latency,
+          trace,
+        };
+      }
       const failure = failureFrom(error);
       trace.push({ sequence: trace.length + 1, kind: 'error', code: failure.code, message: failure.message });
-      const latency = this.latency(startedTick, timing);
+      const latency = this.latency(startedTick, timing, baseTotalMs);
       const failed = failRun(started, { trace: sanitizeRunTrace(trace), failure, latency, completedAt: this.now().toISOString() });
       await this.runRepo.save(failed);
       await recordRunMetricSafely(this.observability?.operations, failed);
@@ -398,90 +582,357 @@ export class RunAgentPreviewUseCase {
     history?: readonly AgentHistoryMessage[],
     images?: readonly ImageAttachment[],
   ): Promise<RunResult> {
-    for (const tool of tools) {
-      if (tool.sideEffect !== 'read-only' && tool.sideEffect !== 'session-write') {
-        throw new UnsafeToolError(`Agent preview refuses ${tool.sideEffect} tool '${tool.metadata.internalId}'`);
-      }
-    }
-    const hasCallables = tools.length > 0 || ctx.subAgents.length > 0;
-    if (hasCallables && !this.model.capabilities().includes('tool-calling')) {
-      throw new AgentRunError('configured model provider does not support tool-calling');
-    }
-    if (output !== undefined && !this.model.capabilities().includes('structured-output')) {
-      throw new AgentRunError('configured model provider does not support structured output');
-    }
     if ((images?.length ?? 0) > 0 && !this.model.capabilities().includes('vision')) {
       throw new AgentRunError('configured model provider does not support image input');
     }
-
-    const toolDefinitions = tools.map(toolToModelDefinition);
-    const definitions = [...toolDefinitions, ...ctx.subAgents.map(subAgentToolDefinition), ...this.workspaceDefinitions(ctx, tools)];
+    const loop = await this.prepareLoop(tools, trace, timing, ctx, signal, agent, output);
     const messages: ModelRequestMessage[] = [
       { role: 'system', content: systemPrompt },
       // v16: 会話履歴（シナリオ検証の複数ターン）を system 直後へ注入する（後方互換: 省略時は従来どおり）。
       ...(history ?? []).map((entry): ModelMessage => ({ role: entry.role, content: entry.content })),
       { role: 'user', content: userContent(userMessage, images) },
     ];
-    const completions: ModelCompletion[] = [];
-    const executed: NonNullable<RunRecord['tool']>[] = [];
-    const responseFormat = output === undefined ? undefined : toModelResponseFormat(output);
+    return this.runLoop(loop, {
+      messages,
+      executed: [],
+      usage: {},
+      remainingHistory: history?.length ?? 0,
+      startStep: 1,
+    });
+  }
 
-    for (let step = 1; step <= MAX_MODEL_ROUNDS; step += 1) {
+  /**
+   * ループの不変部分（ガード・ランタイム・ツール定義）を1回だけ組み立てる。
+   * 新規実行と承認後の再開の両方が同じ文脈でループへ入れるように切り出してある。
+   */
+  private async prepareLoop(
+    tools: readonly Tool[],
+    trace: RunTraceEvent[],
+    timing: RunTiming,
+    ctx: NodeContext,
+    signal: AbortSignal | undefined,
+    agent: RunRecord['agent'] | undefined,
+    output: StructuredOutputDefinition | undefined,
+  ): Promise<LoopContext> {
+    for (const tool of tools) {
+      if (tool.sideEffect !== 'read-only' && tool.sideEffect !== 'session-write') {
+        throw new UnsafeToolError(`Agent preview refuses ${tool.sideEffect} tool '${tool.metadata.internalId}'`);
+      }
+    }
+    // ハーネス未設定Agent（および未保存プレビュー）は既定値＝従来動作。明示設定Agentだけ上限を広げる。
+    const harness = ctx.harness ?? DEFAULT_AGENT_RUNTIME_HARNESS;
+    const maxModelRounds = ctx.harness === undefined ? MAX_MODEL_ROUNDS : HARNESS_MAX_MODEL_ROUNDS;
+    const maxToolCalls = ctx.harness === undefined ? MAX_TOOL_CALLS : HARNESS_MAX_TOOL_CALLS;
+    const hasCallables = harness.functionInvocation && (tools.length > 0 || ctx.subAgents.length > 0);
+    if (hasCallables && !this.model.capabilities().includes('tool-calling')) {
+      throw new AgentRunError('configured model provider does not support tool-calling');
+    }
+    if (output !== undefined && !this.model.capabilities().includes('structured-output')) {
+      throw new AgentRunError('configured model provider does not support structured output');
+    }
+
+    const runtime = new AgentRuntimeHarnessRuntime({
+      harness, scope: ctx.scope, runId: ctx.runId,
+      ...(agent?.internalId === undefined ? {} : { agentId: agent.internalId }),
+      ...(ctx.session === undefined ? {} : { session: ctx.session }),
+      ...(this.artifacts === undefined ? {} : { artifacts: this.artifacts }),
+      ...(this.wiki === undefined ? {} : { wiki: this.wiki }),
+      ...(this.webSearch === undefined ? {} : { webSearch: this.webSearch }),
+      now: this.now,
+    });
+    await runtime.prepare();
+
+    const toolDefinitions = tools.map(toolToModelDefinition);
+    // functionInvocation:false はツール自動実行ループそのものを無効化する（モデルへ何も渡さない）。
+    const builtInDefinitions = harness.functionInvocation
+      ? [...toolDefinitions, ...ctx.subAgents.map(subAgentToolDefinition), ...this.workspaceDefinitions(ctx, tools), ...runtime.definitions()]
+      : [];
+    // MCPツールはRun開始時に一度だけ解決する（承認後の再開もこの経路を通るので同じ集合が再構築される）。
+    // 既存ツール名は予約語として渡し、マングル名がそれらと衝突しないようにする。
+    const mcp = harness.functionInvocation
+      ? await this.resolveMcpToolset(ctx, builtInDefinitions.map((definition) => definition.name), signal)
+      : McpToolset.empty();
+    const definitions = harness.functionInvocation ? [...builtInDefinitions, ...mcp.definitions()] : [];
+    /**
+     * 承認ゲートの発火条件。
+     * - Agentが harness.toolApproval を明示 opt-in している
+     * - 対話相手がいる実行（POST /runs）である。Harness/Factory/シナリオ検証の自動実行では停止するとデッドロックする
+     * - 委譲の子Run（depth > 0）ではない。承認は親の対話文脈でしか返せない
+     * ランタイムツール（todos_* / memory_* / web_search / workspace_*）とサブエージェント委譲（ask_*）は
+     * ETL Toolエンティティではなく副作用がWiki/Session Artifactに閉じているため、常に自動承認とする。
+     */
+    const approvalGate = harness.toolApproval && ctx.interactive === true && ctx.depth === 0 && agent?.version !== undefined;
+    return {
+      harness, maxModelRounds, maxToolCalls, runtime, mcp, tools, toolDefinitions, definitions,
+      ...(output === undefined ? {} : { output, responseFormat: toModelResponseFormat(output) }),
+      ...(agent === undefined ? {} : { agent }),
+      ctx, trace, timing, ...(signal === undefined ? {} : { signal }), approvalGate,
+    };
+  }
+
+  /**
+   * Agentが参照するMCPサーバーのツールを解決する。
+   * 両ポートが注入されていないRun（未保存プレビュー・テスト配線）は空集合で従来動作のまま。
+   */
+  private async resolveMcpToolset(ctx: NodeContext, reservedNames: readonly string[], signal?: AbortSignal): Promise<McpToolset> {
+    const serverNames = ctx.mcpServers ?? [];
+    const servers = this.mcpServers;
+    const client = this.mcpClient;
+    if (serverNames.length === 0 || servers === undefined || client === undefined) return McpToolset.empty();
+    return McpToolset.resolve({ scope: ctx.scope, serverNames, servers, client, reservedNames, ...(signal === undefined ? {} : { signal }) });
+  }
+
+  /**
+   * モデル往復とツール実行のループ本体。`state.startStep` / `state.pending` により、
+   * 承認待ちcheckpointからの再開でも同じコードパスを通る。
+   */
+  private async runLoop(loop: LoopContext, state: LoopState): Promise<RunResult> {
+    const { ctx, trace, timing } = loop;
+    for (let step = state.startStep; step <= loop.maxModelRounds; step += 1) {
+      // 再開時: この往復で未実行だったツール呼び出しを先に片づけ、次の往復から通常ループへ戻る。
+      const pending = state.pending;
+      if (pending !== undefined) {
+        state.pending = undefined;
+        await this.executeCalls(loop, state, pending, step);
+        continue;
+      }
+      if (loop.harness.compaction) {
+        const compaction = compactModelMessages(state.messages, { budgetChars: HARNESS_COMPACTION_BUDGET_CHARS, historyCount: state.remainingHistory });
+        state.remainingHistory = compaction.remainingHistoryCount;
+        if (compaction.compacted) {
+          state.messages.splice(0, state.messages.length, ...compaction.messages);
+          trace.push({ sequence: trace.length + 1, kind: 'compaction', beforeChars: compaction.beforeChars, afterChars: compaction.afterChars });
+        }
+      }
       // ツリー共有バジェット: model round 発行前に減算し、枯渇でこのノードのRunを失敗させる。
       if ((ctx.budget.remainingModelRounds -= 1) < 0) {
         throw new AgentRunError('run budget exhausted: model rounds');
       }
-      trace.push({ sequence: trace.length + 1, kind: 'model-request', step, toolNames: definitions.map((definition) => definition.name) });
+      trace.push({ sequence: trace.length + 1, kind: 'model-request', step, toolNames: loop.definitions.map((definition) => definition.name) });
       const completion = await this.completeModel({
-        messages,
-        ...(definitions.length > 0 ? { tools: definitions } : {}),
-        ...(responseFormat !== undefined ? { responseFormat } : {}),
-      }, timing, signal);
-      completions.push(completion);
+        messages: state.messages,
+        ...(loop.definitions.length > 0 ? { tools: loop.definitions } : {}),
+        ...(loop.responseFormat !== undefined ? { responseFormat: loop.responseFormat } : {}),
+      }, timing, loop.signal);
+      state.usage = addUsage(state.usage, completion.usage);
       const calls = completion.message.toolCalls ?? [];
       if (completion.finishReason === 'tool_calls' && calls.length === 0) {
         throw new AgentRunError('model reported tool_calls without a tool call');
       }
       if (calls.length === 0) {
         const content = completion.message.content ?? '';
-        const structuredResponse = output === undefined ? undefined : validateStructuredResponse(output, content);
+        const structuredResponse = loop.output === undefined ? undefined : validateStructuredResponse(loop.output, content);
         trace.push({ sequence: trace.length + 1, kind: 'model-response', content });
-        const last = executed.at(-1);
+        const last = state.executed.at(-1);
         return {
-          ...(agent !== undefined ? { agent } : {}),
-          ...(last !== undefined ? { tool: last, tools: executed } : {}),
+          ...(loop.agent !== undefined ? { agent: loop.agent } : {}),
+          ...(last !== undefined ? { tool: last, tools: state.executed } : {}),
           response: content,
           ...(structuredResponse !== undefined ? { structuredResponse } : {}),
-          usage: mergeUsage(...completions),
+          usage: state.usage,
         };
       }
-      if (executed.length + calls.length > MAX_TOOL_CALLS) {
-        throw new AgentRunError(`tool call limit exceeded: maximum ${MAX_TOOL_CALLS}`);
+      // functionInvocation:false ではツールを一切提示していないため、ツール呼び出しはfail closedで拒否する。
+      if (!loop.harness.functionInvocation) {
+        throw new AgentRunError('model requested a tool call but function invocation is disabled for this agent');
+      }
+      if (state.executed.length + calls.length > loop.maxToolCalls) {
+        throw new AgentRunError(`tool call limit exceeded: maximum ${loop.maxToolCalls}`);
       }
 
-      messages.push({ role: 'assistant', content: completion.message.content, toolCalls: calls });
-      for (const call of calls) {
-        // ツール呼び出し（委譲含む）発行前に共有バジェットを減算する。
-        if ((ctx.budget.remainingToolCalls -= 1) < 0) {
-          throw new AgentRunError('run budget exhausted: tool calls');
-        }
-        const sub = ctx.subAgents.find((candidate) => candidate.toolName === call.name);
-        if (sub !== undefined) {
-          messages.push(await this.delegateTimed(sub, call, trace, timing, ctx, signal));
-          continue;
-        }
-        if (this.isWorkspaceTool(call.name, ctx, tools)) {
-          messages.push(await this.executeWorkspaceTool(call, trace, ctx));
-          continue;
-        }
-        const selectedIndex = toolDefinitions.findIndex((definition) => definition.name === call.name);
-        const tool = selectedIndex < 0 ? undefined : tools[selectedIndex];
-        if (tool === undefined) throw new AgentRunError(`model requested unknown tool: ${call.name}`);
-        messages.push(await this.executeToolTimed(tool, call, trace, timing, ctx, agent));
-        executed.push(this.toolRef(tool));
-      }
+      state.messages.push({ role: 'assistant', content: completion.message.content, toolCalls: calls });
+      await this.executeCalls(loop, state, calls, step);
     }
-    throw new AgentRunError(`model round limit exceeded: maximum ${MAX_MODEL_ROUNDS}`);
+    throw new AgentRunError(`model round limit exceeded: maximum ${loop.maxModelRounds}`);
+  }
+
+  /** 1往復ぶんのツール呼び出しを順に実行する。承認が必要なETL Toolに当たったら AgentRunPause を投げる。 */
+  private async executeCalls(loop: LoopContext, state: LoopState, calls: readonly ModelToolCall[], step: number): Promise<void> {
+    const { ctx, trace, timing } = loop;
+    for (const [index, call] of calls.entries()) {
+      const sub = ctx.subAgents.find((candidate) => candidate.toolName === call.name);
+      const workspace = sub === undefined && this.isWorkspaceTool(call.name, ctx, loop.tools);
+      const harnessTool = sub === undefined && !workspace && loop.runtime.isHarnessTool(call.name);
+      const mcpTool = sub === undefined && !workspace && !harnessTool ? loop.mcp.find(call.name) : undefined;
+      let tool: Tool | undefined;
+      if (mcpTool !== undefined) {
+        /**
+         * MCPツールは外部プロセス／外部サービスで実行されるため、副作用がWiki/Session Artifactに
+         * 閉じている組み込みランタイムツール（todos_* / memory_* / web_search / workspace_*）とは扱いが違い、
+         * ETLの非read-onlyツールと同じく承認ゲートの対象にする。
+         */
+        if (loop.approvalGate && state.approvedCallId !== call.id) {
+          throw this.pauseForApproval(loop, state, calls.slice(index), step, call, {
+            sideEffect: 'external-action',
+            prompt: `Approval required: MCP tool '${mcpTool.server}/${mcpTool.originalToolName}' runs on an external MCP server. Arguments: ${summarize(JSON.stringify(call.arguments) ?? '{}', 400)}`,
+          });
+        }
+      } else if (sub === undefined && !workspace && !harnessTool) {
+        const selectedIndex = loop.toolDefinitions.findIndex((definition) => definition.name === call.name);
+        tool = selectedIndex < 0 ? undefined : loop.tools[selectedIndex];
+        if (tool === undefined) throw new AgentRunError(unknownToolMessage(call.name));
+        // バジェット減算より前に判定する: 停止した呼び出しはまだ1件も消費していない。
+        if (loop.approvalGate && tool.sideEffect !== 'read-only' && state.approvedCallId !== call.id) {
+          throw this.pauseForApproval(loop, state, calls.slice(index), step, call, {
+            sideEffect: tool.sideEffect,
+            prompt: `Approval required: '${call.name}' (${tool.metadata.displayName}) has side effect '${tool.sideEffect}'. Arguments: ${summarize(JSON.stringify(call.arguments) ?? '{}', 400)}`,
+          });
+        }
+      }
+      state.approvedCallId = undefined;
+      // ツール呼び出し（委譲含む）発行前に共有バジェットを減算する。
+      if ((ctx.budget.remainingToolCalls -= 1) < 0) {
+        throw new AgentRunError('run budget exhausted: tool calls');
+      }
+      if (sub !== undefined) {
+        state.messages.push(await this.delegateTimed(sub, call, trace, timing, ctx, loop.signal));
+        continue;
+      }
+      if (workspace) {
+        state.messages.push(await this.executeWorkspaceTool(call, trace, ctx));
+        continue;
+      }
+      if (harnessTool) {
+        state.messages.push(await this.executeHarnessToolTimed(loop.runtime, call, trace, timing));
+        continue;
+      }
+      if (mcpTool !== undefined) {
+        state.messages.push(await this.executeMcpToolTimed(loop, call, trace, timing));
+        continue;
+      }
+      const selected = tool as Tool;
+      state.messages.push(await this.executeToolTimed(selected, call, trace, timing, ctx, loop.agent));
+      state.executed.push(this.toolRef(selected));
+    }
+  }
+
+  /** 承認待ちcheckpointを組み立て、trace へ approval-requested を積んで制御シグナルを返す。 */
+  private pauseForApproval(
+    loop: LoopContext, state: LoopState, pending: readonly ModelToolCall[], step: number, call: ModelToolCall,
+    request: { readonly sideEffect: SideEffect; readonly prompt: string },
+  ): AgentRunPause {
+    const agent = loop.agent as NonNullable<RunRecord['agent']>;
+    const prompt = request.prompt;
+    loop.trace.push({ sequence: loop.trace.length + 1, kind: 'approval-requested', tool: call.name, sideEffect: request.sideEffect, prompt });
+    const checkpoint: RunApprovalCheckpoint = {
+      kind: 'tool-approval',
+      agentRef: { internalId: agent.internalId, version: agent.version as string },
+      messages: toCheckpointMessages(state.messages),
+      pendingCalls: pending.map(toCheckpointToolCall),
+      executedToolRefs: state.executed.map((ref) => ({ internalId: ref.internalId, version: ref.version as string, ...(ref.publishName === undefined ? {} : { publishName: ref.publishName }) })),
+      budget: { remainingModelRounds: loop.ctx.budget.remainingModelRounds, remainingToolCalls: loop.ctx.budget.remainingToolCalls },
+      step,
+      ...(loop.ctx.session === undefined ? {} : { sessionId: loop.ctx.session.id }),
+      expiresAt: new Date(this.now().getTime() + INTERACTIVE_CHECKPOINT_TTL_MS).toISOString(),
+      prompt,
+    };
+    return new AgentRunPause(checkpoint, state.usage);
+  }
+
+  /**
+   * 承認待ちRunを再開する。checkpointはJSON永続化済みなので、プロセスをまたいでも再開できる。
+   * approve は保留中の呼び出しを先頭（＝承認されたもの）から実行し、reject はモデルへ拒否結果を返して
+   * 代替案を作らせる。どちらも同じRunId・同じtraceの続きとして確定する。
+   */
+  async resumeSavedRun(input: ResumeSavedRunInput, signal?: AbortSignal): Promise<AgentPreviewRun> {
+    const agentRepo = this.agents;
+    if (agentRepo === undefined) throw new AgentRunError('saved Agent execution is not configured');
+    const stored = await this.runRepo.find(input.scope, input.runId);
+    if (stored === null) throw new RunNotFoundError(`run not found: ${input.runId}`);
+    const checkpoint = stored.checkpoint;
+    if (stored.status !== 'waiting-approval' || checkpoint === undefined) {
+      throw new AgentRunError(`run '${input.runId}' is not waiting for approval`);
+    }
+    if (Date.parse(checkpoint.expiresAt) <= this.now().getTime()) {
+      // 期限切れは再開不可能なので、Runを failed として確定させてから呼び出し元へ返す。
+      const expired = failRun(resumeRunRecord(stored), {
+        trace: stored.trace,
+        failure: { code: 'AGENT_RUN', message: `approval checkpoint expired at ${checkpoint.expiresAt}` },
+        completedAt: this.now().toISOString(),
+      });
+      await this.runRepo.save(expired);
+      throw new RunFailedError(input.runId, new AgentRunError(`run '${input.runId}' approval checkpoint expired at ${checkpoint.expiresAt}`));
+    }
+
+    const agent = await this.loadAgent(input.scope, checkpoint.agentRef.internalId, SemVer.parse(checkpoint.agentRef.version));
+    const session = await this.resolveSession(input.scope, { internalId: agent.metadata.internalId, version: agent.metadata.version.toString() }, checkpoint.sessionId);
+    const started = resumeRunRecord(stored);
+    await this.runRepo.save(started);
+    const trace: RunTraceEvent[] = [...stored.trace];
+    const timing: RunTiming = { modelMs: stored.latency?.modelMs ?? 0, toolMs: stored.latency?.toolMs ?? 0 };
+
+    return this.runWithRecord(started, trace, timing, stored.latency?.totalMs ?? 0, async (currentTrace, currentTiming, runId) => {
+      // 実効副作用は再開時も fail closed で再確認する（Agent定義が更新されている可能性がある）。
+      const effect = await resolveEffectiveSideEffect(input.scope, agent, { tools: this.repo, agents: agentRepo, skills: this.skills });
+      if (effect !== 'read-only' && effect !== 'session-write') {
+        throw new UnsafeToolError(`Agent preview refuses ${effect} effective side-effect for agent '${agent.metadata.internalId}'`);
+      }
+      const resolved = await resolveAgentCapabilities(input.scope, agent.skills, agent.tools, this.repo, this.skills, agent.agents, agentRepo);
+      const budget: RunBudget = {
+        maxDelegationDepth: DEFAULT_MAX_DELEGATION_DEPTH,
+        remainingModelRounds: checkpoint.budget.remainingModelRounds,
+        remainingToolCalls: checkpoint.budget.remainingToolCalls,
+      };
+      const ctx: NodeContext = {
+        runId, scope: input.scope, mode: stored.mode, budget, depth: 0, subAgents: resolved.subAgents,
+        ...(session === undefined ? {} : { session }),
+        ...(agent.harness === undefined ? {} : { harness: agent.harness }),
+        // 再開でも prepareLoop が同じ経路でMCPツール定義とマングル名マップを組み直す。
+        ...(agent.mcpServers === undefined ? {} : { mcpServers: agent.mcpServers }),
+        interactive: true,
+      };
+      const loop = await this.prepareLoop(resolved.tools, currentTrace, currentTiming, ctx, signal, this.agentRef(agent), agent.output);
+      const state: LoopState = {
+        messages: fromCheckpointMessages(checkpoint.messages),
+        executed: checkpoint.executedToolRefs.map((ref) => ({ internalId: ref.internalId, version: ref.version, ...(ref.publishName === undefined ? {} : { publishName: ref.publishName }) })),
+        usage: stored.usage ?? {},
+        remainingHistory: 0,
+        startStep: checkpoint.step,
+      };
+      currentTrace.push({ sequence: currentTrace.length + 1, kind: 'approval-resolved', decision: input.decision });
+      if (input.decision === 'approve') {
+        // 先頭の呼び出しだけが承認済み。2件目以降で再び承認対象が来たら再度停止する。
+        state.pending = checkpoint.pendingCalls.map(fromCheckpointToolCall);
+        state.approvedCallId = checkpoint.pendingCalls[0]?.id;
+      } else {
+        const reason = input.feedback?.trim() || 'rejected by user';
+        for (const call of checkpoint.pendingCalls) {
+          state.messages.push({ role: 'tool', content: JSON.stringify({ approved: false, reason }), toolCallId: call.id });
+        }
+        // 拒否した往復のモデル応答は既に消費済みなので、次の往復から続ける。
+        state.startStep = checkpoint.step + 1;
+      }
+      return this.runLoop(loop, state);
+    });
+  }
+
+  /** ランタイムハーネスの組み込みツール実行。workspace_* と同じく tool-call / tool-result をトレースへ残す。 */
+  private async executeHarnessToolTimed(runtime: AgentRuntimeHarnessRuntime, call: ModelToolCall, trace: RunTraceEvent[], timing: RunTiming): Promise<ModelMessage> {
+    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'tool.execute', { 'tool.name': call.name, 'tool.kind': 'runtime-harness' }); let failure: unknown;
+    try {
+      trace.push({ sequence: trace.length + 1, kind: 'tool-call', name: call.name, arguments: call.arguments });
+      const result = await runtime.execute(call);
+      trace.push({ sequence: trace.length + 1, kind: 'tool-result', name: call.name, terminalId: 'runtime-harness', nodes: [], outputPreview: result.preview });
+      return { role: 'tool', content: result.content, toolCallId: call.id };
+    }
+    catch (error) { failure = error; throw error; }
+    finally { timing.toolMs += Math.max(0, this.monotonicNow() - started); span.end(failure); }
+  }
+
+  /**
+   * MCPツール実行。tool-call / tool-result は他のランタイムツールと同じ形でトレースへ残す。
+   * サーバー側の実行エラー（isError:true）も接続失敗も、内容をツール結果としてモデルへ返しRunを続ける。
+   */
+  private async executeMcpToolTimed(loop: LoopContext, call: ModelToolCall, trace: RunTraceEvent[], timing: RunTiming): Promise<ModelMessage> {
+    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'tool.execute', { 'tool.name': call.name, 'tool.kind': 'mcp' }); let failure: unknown;
+    try {
+      trace.push({ sequence: trace.length + 1, kind: 'tool-call', name: call.name, arguments: call.arguments });
+      const result = await loop.mcp.execute(call, loop.signal);
+      trace.push({ sequence: trace.length + 1, kind: 'tool-result', name: call.name, terminalId: 'mcp', nodes: [], outputPreview: result.preview });
+      return { role: 'tool', content: result.content, toolCallId: call.id };
+    }
+    catch (error) { failure = error; throw error; }
+    finally { timing.toolMs += Math.max(0, this.monotonicNow() - started); span.end(failure); }
   }
 
   private async completeModel(request: Parameters<ModelProviderPort['complete']>[0], timing: RunTiming, signal?: AbortSignal): Promise<ModelCompletion> {
@@ -506,8 +957,9 @@ export class RunAgentPreviewUseCase {
   }
 
   private monotonicNow(): number { return this.observability?.monotonicNow?.() ?? performance.now(); }
-  private latency(started: number, timing: RunTiming): RunLatencyBreakdown {
-    return { totalMs: Math.max(0, this.monotonicNow() - started), modelMs: timing.modelMs, toolMs: timing.toolMs };
+  /** baseTotalMs は承認待ちを挟んだ再開で、停止前の経過時間を通算するために足す。 */
+  private latency(started: number, timing: RunTiming, baseTotalMs = 0): RunLatencyBreakdown {
+    return { totalMs: baseTotalMs + Math.max(0, this.monotonicNow() - started), modelMs: timing.modelMs, toolMs: timing.toolMs };
   }
 
   /** サブエージェント委譲。子Runを入れ子実行し、親トレースへ agent_call を記録してツール結果を返す。 */
@@ -654,6 +1106,8 @@ export class RunAgentPreviewUseCase {
     const wiki = this.wiki;
     if (wiki === undefined) return undefined;
     const allowed = new Set((agent.wikis ?? []).map((ref) => ref.wikiId));
+    // fileMemory 有効時は専用の記憶Wikiも自動想起の検索対象へ加える。
+    if (agent.harness?.fileMemory === true) allowed.add(agentMemoryWikiId(agent.metadata.internalId));
     const pages = new Map<string, WikiPage>();
 
     for (const wikiId of allowed) {
@@ -701,6 +1155,17 @@ export class RunAgentPreviewUseCase {
     if (agent === null) throw new AgentNotFoundError(`RunAgentPreview: agent not found: ${agentId}${version === undefined ? '' : `@${version.toString()}`}`);
     return agent;
   }
+}
+
+/**
+ * 提示していないツール名を呼ばれたときのメッセージ。
+ * 承認後の再開でMCPサーバーへ再接続できないと checkpoint に残った `mcp__*` 名は解決できないので、
+ * 「未知のツール」ではなく原因が分かる文言でRunを失敗させる。
+ */
+function unknownToolMessage(name: string): string {
+  return isMcpToolName(name)
+    ? `MCP tool '${name}' is unavailable: its MCP server could not be resolved for this run`
+    : `model requested unknown tool: ${name}`;
 }
 
 function userContent(message: string, images?: readonly ImageAttachment[]): string | readonly ModelContentPart[] {

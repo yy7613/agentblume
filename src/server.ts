@@ -32,6 +32,8 @@ async function shutdown(signal: string): Promise<void> {
   try {
     await server.close();
   } finally {
+    // MCPのstdio接続は子プロセスを抱えるため、process.exit で孤児にしないよう先に待って閉じる。
+    try { await app.mcpClient.close(); } catch (err) { server.log.warn({ err }, 'failed to close MCP connections'); }
     app.close();
   }
   process.exit(0);

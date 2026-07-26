@@ -143,6 +143,50 @@ describe('ChatPage', () => {
     expect(notice.closest('.cc-alert')?.className).toContain('notice');
   });
 
+  it('単一Agent実行の承認待ちで承認バナーを出し、ApproveでresumeRunを呼んで完走応答へ戻る', async () => {
+    const waiting = {
+      runId: 'run-approval', mode: 'preview', response: 'Approve write_rows before it runs?', usage: {},
+      trace: [{ sequence: 1, kind: 'approval-requested', tool: 'write_rows', sideEffect: 'write', prompt: 'Approve write_rows before it runs?' }],
+      status: 'waiting-approval',
+      checkpoint: { prompt: 'Approve write_rows before it runs?', expiresAt: '2026-07-27T00:00:00.000Z', tool: 'write_rows', sideEffect: 'write' },
+    };
+    const resumed = { runId: 'run-approval', mode: 'preview', response: 'wrote 3 rows', trace: [], usage: {} };
+    const resumeRun = vi.fn().mockResolvedValue(resumed);
+    const client = { listAgents: vi.fn().mockResolvedValue(oneAgent), runSavedAgent: vi.fn().mockResolvedValue(waiting), resumeRun } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage('write the rows');
+
+    const banner = await screen.findByRole('group', { name: 'Tool approval' });
+    expect(banner.textContent).toContain('Approve write_rows before it runs?');
+    // 承認対象のツールと副作用も添える。
+    expect(banner.textContent).toContain('write_rows');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith('run-approval', { tenantId: 'local', workspaceId: 'default' }, 'approve'));
+    expect(await screen.findByText('wrote 3 rows')).toBeTruthy();
+    // 完走したので承認バナーは消える。
+    expect(screen.queryByRole('group', { name: 'Tool approval' })).toBeNull();
+  });
+
+  it('Rejectはdecision=rejectでresumeRunを呼ぶ', async () => {
+    const waiting = {
+      runId: 'run-reject', mode: 'preview', response: 'Approve delete_rows?', usage: {}, trace: [],
+      status: 'waiting-approval',
+      checkpoint: { prompt: 'Approve delete_rows?', expiresAt: '2026-07-27T00:00:00.000Z', tool: 'delete_rows', sideEffect: 'write' },
+    };
+    const resumeRun = vi.fn().mockResolvedValue({ runId: 'run-reject', mode: 'preview', response: 'cancelled by user', trace: [], usage: {} });
+    const client = { listAgents: vi.fn().mockResolvedValue(oneAgent), runSavedAgent: vi.fn().mockResolvedValue(waiting), resumeRun } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage('delete them');
+    await screen.findByRole('group', { name: 'Tool approval' });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith('run-reject', { tenantId: 'local', workspaceId: 'default' }, 'reject'));
+    expect(await screen.findByText('cancelled by user')).toBeTruthy();
+  });
+
   it('busy中は経過秒数を1秒毎に更新して表示する', async () => {
     vi.useFakeTimers();
     try {

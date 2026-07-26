@@ -42,6 +42,8 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
       tools: body.tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer })),
       agents: body.agents.map((sub) => ({ internalId: sub.internalId, version: version(sub.version) as SemVer, usage: sub.usage })),
       wikis: body.wikis,
+      mcpServers: body.mcpServers,
+      ...(body.harness !== undefined ? { harness: body.harness } : {}),
     });
     return reply.status(201).send({ agent: serializeAgent(agent) });
   });

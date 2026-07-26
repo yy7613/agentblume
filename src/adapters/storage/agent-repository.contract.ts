@@ -28,6 +28,27 @@ export async function agentRepositoryContract(repo: AgentRepository): Promise<vo
   expect(summaries).toHaveLength(1);
   expect(summaries[0]?.latestVersion.toString()).toBe('1.10.0');
 
+  // ランタイムハーネス設定は保存往復で維持される（未設定Agentはundefinedのまま）。
+  const harness = { fileMemory: true, todoProvider: true, compaction: true, webSearch: false, toolApproval: true, functionInvocation: false };
+  await repo.save(createAgent({
+    metadata: { internalId: 'agent-harness', workingName: 'work', displayName: 'Harnessed', publishName: 'agent_harness', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+    kind: 'normal', systemPrompt: 'Prompt', tools: [], harness,
+  }));
+  expect((await repo.findLatest(scope, 'agent-harness'))?.harness).toEqual(harness);
+  expect((await repo.findVersion(scope, 'agent-harness', SemVer.of(1, 0, 0)))?.harness).toEqual(harness);
+  expect((await repo.findLatest(scope, 'agent-1'))?.harness).toBeUndefined();
+  await expect(repo.delete(scope, 'agent-harness')).resolves.toBe(true);
+
+  // MCPサーバー参照も保存往復で維持される（未設定Agentはundefinedのまま）。
+  await repo.save(createAgent({
+    metadata: { internalId: 'agent-mcp', workingName: 'work', displayName: 'Mcp', publishName: 'agent_mcp', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+    kind: 'normal', systemPrompt: 'Prompt', tools: [], mcpServers: ['files', 'github'],
+  }));
+  expect((await repo.findLatest(scope, 'agent-mcp'))?.mcpServers).toEqual(['files', 'github']);
+  expect((await repo.findVersion(scope, 'agent-mcp', SemVer.of(1, 0, 0)))?.mcpServers).toEqual(['files', 'github']);
+  expect((await repo.findLatest(scope, 'agent-1'))?.mcpServers).toBeUndefined();
+  await expect(repo.delete(scope, 'agent-mcp')).resolves.toBe(true);
+
   // delete（論理削除）: listから除外され、findLatestはnullになるが、findVersionは既存versionを返し続ける。
   await repo.save(createAgent({
     metadata: { internalId: 'agent-2', workingName: 'work', displayName: 'Other', publishName: 'agent-2', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },

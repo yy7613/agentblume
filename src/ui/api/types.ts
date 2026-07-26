@@ -100,6 +100,15 @@ export interface EvaluationResultDto { readonly scores: readonly EvaluationScore
 export interface AgentToolRefDto { readonly internalId: string; readonly version: string }
 export interface AgentSubAgentRefDto { readonly internalId: string; readonly version: string; readonly usage: string }
 export interface AgentWikiRefDto { readonly wikiId: string }
+/** 単一Agent実行のランタイムハーネス設定（Agent単位のopt-in）。 */
+export interface AgentRuntimeHarnessDto {
+  readonly fileMemory: boolean;
+  readonly todoProvider: boolean;
+  readonly compaction: boolean;
+  readonly webSearch: boolean;
+  readonly toolApproval: boolean;
+  readonly functionInvocation: boolean;
+}
 export interface SerializedAgentDto {
   readonly metadata: {
     readonly internalId: string;
@@ -117,6 +126,9 @@ export interface SerializedAgentDto {
   readonly tools: readonly AgentToolRefDto[];
   readonly agents: readonly AgentSubAgentRefDto[];
   readonly wikis?: readonly AgentWikiRefDto[];
+  /** ツールを注入するMCPサーバー名（保存済み設定の name）。未指定はMCPツールなし。 */
+  readonly mcpServers?: readonly string[];
+  readonly harness?: AgentRuntimeHarnessDto;
   readonly persona?: { readonly personaId: string; readonly version: string };
   readonly output?: StructuredOutputDto;
 }
@@ -133,6 +145,9 @@ export interface SaveAgentDto {
   readonly tools: readonly AgentToolRefDto[];
   readonly agents?: readonly AgentSubAgentRefDto[];
   readonly wikis?: readonly AgentWikiRefDto[];
+  /** ツールを注入するMCPサーバー名（最大8件・各64字以内）。 */
+  readonly mcpServers?: readonly string[];
+  readonly harness?: AgentRuntimeHarnessDto;
   readonly output?: StructuredOutputDto;
   readonly bump?: 'major' | 'minor' | 'patch';
 }
@@ -175,7 +190,19 @@ export type RunTraceEventDto =
   | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: string; readonly nodes: readonly { readonly nodeId: string; readonly rowCount: number; readonly truncated: boolean }[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[] }
   | { readonly sequence: number; readonly kind: 'model-response'; readonly content: string }
   | { readonly sequence: number; readonly kind: 'agent_call'; readonly toolName: string; readonly agentRef: { readonly internalId: string; readonly version: string }; readonly childRunId: string; readonly ok: boolean; readonly summary: string }
+  | { readonly sequence: number; readonly kind: 'compaction'; readonly beforeChars: number; readonly afterChars: number }
+  | { readonly sequence: number; readonly kind: 'approval-requested'; readonly tool: string; readonly sideEffect: SideEffectDto; readonly prompt: string }
+  | { readonly sequence: number; readonly kind: 'approval-resolved'; readonly decision: 'approve' | 'reject' }
   | { readonly sequence: number; readonly kind: 'error'; readonly code: string; readonly message: string };
+
+/** POST /runs / POST /runs/:runId/resume が waiting-approval で返す承認プロンプト。 */
+export interface AgentRunApprovalPromptDto {
+  readonly prompt: string;
+  readonly expiresAt: string;
+  /** 承認対象のツール名（モデルが呼んだ名前）。 */
+  readonly tool: string;
+  readonly sideEffect: string;
+}
 
 export interface AgentPreviewRunDto {
   readonly runId: string;
@@ -192,6 +219,10 @@ export interface AgentPreviewRunDto {
   readonly model?: RunModelSnapshotDto;
   readonly latency?: RunLatencyDto;
   readonly estimatedCost?: RunEstimatedCostDto;
+  /** 承認待ちで停止したときだけ 'waiting-approval'。完走時は未指定（後方互換）。 */
+  readonly status?: RunStatusDto;
+  /** status === 'waiting-approval' のときだけ設定される。 */
+  readonly checkpoint?: AgentRunApprovalPromptDto;
 }
 
 export type HarnessPatternDto = 'agent-as-tools' | 'sequential' | 'concurrent' | 'handoff' | 'group-chat' | 'magentic';
@@ -279,6 +310,7 @@ export interface WebSearchFetchDto {
   readonly expiresAt: string;
 }
 
+export type RunStatusDto = 'running' | 'succeeded' | 'failed' | 'waiting-approval';
 export type RunPurposeDto = 'interactive' | 'scenario' | 'evaluation' | 'delegation';
 export interface RunModelSnapshotDto { readonly provider: string; readonly model: string; readonly modelConfigHash: string }
 export interface RunLatencyDto { readonly totalMs: number; readonly modelMs: number; readonly toolMs: number }
@@ -318,6 +350,14 @@ export interface RunSavedAgentDto {
   readonly images?: readonly RunImageAttachmentDto[];
 }
 
+/** POST /runs/:runId/resume の body。 */
+export interface ResumeRunDto {
+  readonly scope: TenantScopeDto;
+  readonly decision: 'approve' | 'reject';
+  /** reject のとき、モデルへ渡す理由（省略時は 'rejected by user'）。 */
+  readonly feedback?: string;
+}
+
 export interface AgentSessionDto {
   readonly id: string;
   readonly scope: TenantScopeDto;
@@ -346,10 +386,18 @@ export interface SessionArtifactDto {
   readonly preview?: unknown;
 }
 
+/** GET /runs / GET /runs/:runId/trace が返す、承認判断に必要なcheckpointの公開部分。 */
+export interface RunCheckpointSummaryDto {
+  readonly kind: 'tool-approval';
+  readonly prompt: string;
+  readonly expiresAt: string;
+  readonly pendingCalls: readonly { readonly id: string; readonly name: string }[];
+}
+
 export interface RunSummaryDto {
   readonly runId: string;
   readonly sessionId?: string;
-  readonly status: 'running' | 'succeeded' | 'failed';
+  readonly status: RunStatusDto;
   readonly mode: 'preview' | 'test';
   readonly purpose?: RunPurposeDto;
   readonly model?: RunModelSnapshotDto;
@@ -364,6 +412,8 @@ export interface RunSummaryDto {
   readonly usage?: AgentPreviewRunDto['usage'];
   readonly latency?: RunLatencyDto;
   readonly estimatedCost?: RunEstimatedCostDto;
+  /** status === 'waiting-approval' のときだけ設定される。 */
+  readonly checkpoint?: RunCheckpointSummaryDto;
   readonly traceEventCount: number;
 }
 
@@ -770,4 +820,35 @@ export interface CreateFactoryRunDto {
 export interface ResolveFactoryRunDto {
   readonly scope: TenantScopeDto;
   readonly response: { readonly kind: 'plan-approval'; readonly decision: 'approve' | 'revise' | 'reject'; readonly feedback?: string };
+}
+
+/**
+ * MCPクライアント: 外部MCPサーバー接続設定。
+ * transport は kind による判別union（stdio = 子プロセス / http = streamable-http）。
+ */
+export type McpTransportDto =
+  | { readonly kind: 'stdio'; readonly command: string; readonly args: readonly string[]; readonly env: Readonly<Record<string, string>>; readonly cwd?: string }
+  | { readonly kind: 'http'; readonly url: string; readonly headers: Readonly<Record<string, string>> };
+export interface McpServerDto {
+  readonly scope: TenantScopeDto;
+  readonly name: string;
+  readonly transport: McpTransportDto;
+  readonly disabled: boolean;
+  readonly updatedAt: string;
+}
+/** POST /mcp-servers の body。 */
+export interface SaveMcpServerDto {
+  readonly scope: TenantScopeDto;
+  readonly server: { readonly name: string; readonly transport: McpTransportDto; readonly disabled?: boolean };
+}
+/** PUT /mcp-servers の body。標準 `mcpServers` JSON の mcpServers 部をそのまま送る。 */
+export interface ReplaceMcpServersDto {
+  readonly scope: TenantScopeDto;
+  readonly mcpServers: Readonly<Record<string, unknown>>;
+}
+/** POST /mcp-servers/:name/test の結果。接続失敗も ok:false として200で返る。 */
+export interface McpServerTestResultDto {
+  readonly ok: boolean;
+  readonly tools?: readonly { readonly name: string; readonly description?: string }[];
+  readonly error?: string;
 }

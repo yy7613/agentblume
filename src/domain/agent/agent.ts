@@ -42,6 +42,84 @@ export interface AgentPersonaRef {
 
 export interface AgentWikiRef { readonly wikiId: string }
 
+/**
+ * 単一Agent実行のランタイムハーネス設定（Agent単位のopt-in）。
+ *
+ * マルチエージェント機能（domain/harness）の `Harness*` 型とは別物で、こちらは
+ * 1エージェント実行のループそのものへ組み込む機能スイッチ。
+ */
+export interface AgentRuntimeHarness {
+  /** Wikiベースの永続メモツール（memory_list / memory_read / memory_write）を注入する。 */
+  readonly fileMemory: boolean;
+  /** todos_add / todos_complete ツールを注入する。 */
+  readonly todoProvider: boolean;
+  /** 予算超過時に文脈を自動圧縮する。 */
+  readonly compaction: boolean;
+  /** web_search ツールを注入する。 */
+  readonly webSearch: boolean;
+  /** 書き込み系ツールの実行前承認（実行系は後続Wave。現状は設定の保存のみ）。 */
+  readonly toolApproval: boolean;
+  /** ツール自動実行ループ。false ならモデルへツールを一切渡さない。 */
+  readonly functionInvocation: boolean;
+}
+
+/** harness 未指定Agentと同じ挙動を表す既定値（functionInvocation だけが有効）。 */
+export const DEFAULT_AGENT_RUNTIME_HARNESS: AgentRuntimeHarness = {
+  fileMemory: false,
+  todoProvider: false,
+  compaction: false,
+  webSearch: false,
+  toolApproval: false,
+  functionInvocation: true,
+};
+
+const AGENT_RUNTIME_HARNESS_FIELDS = ['fileMemory', 'todoProvider', 'compaction', 'webSearch', 'toolApproval', 'functionInvocation'] as const;
+
+function normalizeHarness(harness: AgentRuntimeHarness): AgentRuntimeHarness {
+  if (harness === null || typeof harness !== 'object') {
+    throw new AgentValidationError('createAgent: harness must be an object');
+  }
+  for (const field of AGENT_RUNTIME_HARNESS_FIELDS) {
+    if (typeof harness[field] !== 'boolean') {
+      throw new AgentValidationError(`createAgent: harness.${field} must be a boolean`);
+    }
+  }
+  return {
+    fileMemory: harness.fileMemory,
+    todoProvider: harness.todoProvider,
+    compaction: harness.compaction,
+    webSearch: harness.webSearch,
+    toolApproval: harness.toolApproval,
+    functionInvocation: harness.functionInvocation,
+  };
+}
+
+/** 1Agentが参照できるMCPサーバー数の上限（Run開始時のツール一覧取得を有界にする）。 */
+export const AGENT_MAX_MCP_SERVERS = 8;
+/** MCPサーバー名の最大長（domain/mcp の MCP_SERVER_NAME_MAX_LENGTH と同値）。 */
+export const AGENT_MCP_SERVER_NAME_MAX_LENGTH = 64;
+
+/**
+ * MCPサーバー名の参照リストを検証しつつ複製する。
+ * 実在チェックはここでは行わない（設定は別集約であり、実行時に解決してスキップできる）。
+ */
+function normalizeMcpServers(value: readonly string[]): readonly string[] {
+  if (!Array.isArray(value)) throw new AgentValidationError('createAgent: mcpServers must be an array');
+  if (value.length > AGENT_MAX_MCP_SERVERS) {
+    throw new AgentValidationError(`createAgent: mcpServers must have at most ${AGENT_MAX_MCP_SERVERS} entries`);
+  }
+  const seen = new Set<string>();
+  return value.map((name, index) => {
+    const trimmed = typeof name === 'string' ? name.trim() : '';
+    if (trimmed === '' || trimmed.length > AGENT_MCP_SERVER_NAME_MAX_LENGTH) {
+      throw new AgentValidationError(`createAgent: mcpServers.${index} must be a non-empty string of at most ${AGENT_MCP_SERVER_NAME_MAX_LENGTH} characters`);
+    }
+    if (seen.has(trimmed)) throw new AgentValidationError(`createAgent: duplicate MCP server reference: ${trimmed}`);
+    seen.add(trimmed);
+    return trimmed;
+  });
+}
+
 export interface Agent {
   readonly metadata: AgentMetadata;
   readonly kind: AgentKind;
@@ -51,6 +129,10 @@ export interface Agent {
   readonly agents: readonly AgentSubAgentRef[];
   /** 利用可能な名前付きWikiのallowlist。旧Agentでは未指定。 */
   readonly wikis?: readonly AgentWikiRef[];
+  /** ツールを注入する保存済みMCPサーバー名（同一スコープ）。旧Agentでは未指定。 */
+  readonly mcpServers?: readonly string[];
+  /** ランタイムハーネス設定。未指定は従来動作（DEFAULT_AGENT_RUNTIME_HARNESS 相当）。 */
+  readonly harness?: AgentRuntimeHarness;
   /** kind==='pseudo-user' のときのみ許可。由来Personaを指す（v18）。 */
   readonly persona?: AgentPersonaRef;
   readonly output?: StructuredOutputDefinition;
@@ -64,6 +146,8 @@ export interface CreateAgentProps {
   readonly tools: readonly AgentToolRef[];
   readonly agents?: readonly AgentSubAgentRef[];
   readonly wikis?: readonly AgentWikiRef[];
+  readonly mcpServers?: readonly string[];
+  readonly harness?: AgentRuntimeHarness;
   readonly persona?: AgentPersonaRef;
   readonly output?: StructuredOutputDefinition;
 }
@@ -152,6 +236,8 @@ export function createAgent(props: CreateAgentProps): Agent {
     return { wikiId: wiki.wikiId };
   });
 
+  const mcpServers = normalizeMcpServers(props.mcpServers ?? []);
+
   // v18: Persona由来の疑似ユーザーAgentは persona 参照を持ち、能力（tools/skills/agents）を持たない。
   if (props.persona !== undefined) {
     nonEmpty(props.persona.personaId, 'persona.personaId');
@@ -183,6 +269,8 @@ export function createAgent(props: CreateAgentProps): Agent {
     tools,
     agents,
     ...(wikis.length > 0 ? { wikis } : {}),
+    ...(mcpServers.length > 0 ? { mcpServers } : {}),
+    ...(props.harness !== undefined ? { harness: normalizeHarness(props.harness) } : {}),
     ...(props.persona !== undefined ? { persona: { personaId: props.persona.personaId, version: props.persona.version } } : {}),
     ...(props.output !== undefined ? { output: createStructuredOutput(props.output) } : {}),
   };

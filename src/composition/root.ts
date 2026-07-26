@@ -160,6 +160,13 @@ import { ResumeFactoryRunUseCase } from '../application/factory/resume-factory-r
 import { RetryFactoryRunUseCase } from '../application/factory/retry-factory-run';
 import { CancelFactoryRunUseCase } from '../application/factory/cancel-factory-run';
 import { QueryFactoryRunsUseCase } from '../application/factory/query-factory-runs';
+import { InMemoryMcpServerRepository } from '../adapters/storage/in-memory-mcp-server-repository';
+import { SqliteMcpServerRepository } from '../adapters/storage/sqlite-mcp-server-repository';
+import { SdkMcpClient } from '../adapters/mcp/sdk-mcp-client';
+import type { McpServerRepository } from '../domain/mcp/mcp-server-repository';
+import type { McpClientPort } from '../application/mcp/mcp-client';
+import { DeleteMcpServerUseCase, ListMcpServersUseCase, ReplaceMcpServersUseCase, SaveMcpServerUseCase } from '../application/mcp/manage-mcp-servers';
+import { TestMcpServerUseCase } from '../application/mcp/test-mcp-server';
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
@@ -189,6 +196,9 @@ export interface AppOptions {
   readonly pricing?: PricingPort;
   /** 検索adapterの契約テスト・埋め込み用差し替え。省略時は環境変数でproviderを検出する。 */
   readonly searchProviderCatalog?: SearchProviderCatalog;
+  readonly mcpServerRepository?: McpServerRepository;
+  /** テスト・埋め込み用の明示MCPクライアント。省略時は SDK 実装（実接続）。 */
+  readonly mcpClient?: McpClientPort;
 }
 
 /** 配線済みアプリケーション。 */
@@ -219,6 +229,9 @@ export interface App {
   readonly sessionRepo: AgentSessionRepository;
   readonly sessionArtifactRepo: SessionArtifactRepository;
   readonly dataSourceRepo: DataSourceRepository;
+  readonly mcpServerRepo: McpServerRepository;
+  /** 外部MCPサーバーへの接続。shutdown時に close() を呼び、プール済み接続（子プロセス）を解放する。 */
+  readonly mcpClient: McpClientPort;
   readonly telemetry: TelemetryPort;
   readonly pricing: PricingPort;
   readonly runAgentPreview: RunAgentPreviewUseCase;
@@ -251,6 +264,11 @@ export interface App {
   readonly retryFactoryRun: RetryFactoryRunUseCase;
   readonly cancelFactoryRun: CancelFactoryRunUseCase;
   readonly queryFactoryRuns: QueryFactoryRunsUseCase;
+  readonly saveMcpServer: SaveMcpServerUseCase;
+  readonly listMcpServers: ListMcpServersUseCase;
+  readonly deleteMcpServer: DeleteMcpServerUseCase;
+  readonly replaceMcpServers: ReplaceMcpServersUseCase;
+  readonly testMcpServer: TestMcpServerUseCase;
   readonly saveSkill: SaveSkillUseCase;
   readonly querySkills: QuerySkillsUseCase;
   readonly deleteSkill: DeleteSkillUseCase;
@@ -424,6 +442,11 @@ export function createApp(options?: AppOptions): App {
   const dataSourceAdapter = profile === 'local'
     ? (() => { const sqlite = new SqliteDataSourceRepository(path ?? ':memory:'); return { repo: sqlite as DataSourceRepository, close: () => sqlite.close() }; })()
     : { repo: new InMemoryDataSourceRepository() as DataSourceRepository, close: () => {} };
+  const mcpServerAdapter = options?.mcpServerRepository !== undefined
+    ? { repo: options.mcpServerRepository, close: () => {} }
+    : profile === 'local'
+      ? (() => { const sqlite = new SqliteMcpServerRepository(path ?? ':memory:'); return { repo: sqlite as McpServerRepository, close: () => sqlite.close() }; })()
+      : { repo: new InMemoryMcpServerRepository() as McpServerRepository, close: () => {} };
   const skillAdapter = options?.skillRepository !== undefined
     ? { repo: options.skillRepository, close: () => {} }
     : profile === 'local'
@@ -498,10 +521,13 @@ export function createApp(options?: AppOptions): App {
   const telemetry = options?.telemetry ?? (process.env['AGENTCONTEXT_OTEL_ENABLED'] === 'true' ? new OpenTelemetryAdapter() : new NoopTelemetryAdapter());
   const pricing = options?.pricing ?? new StaticPricingAdapter(resolvePricingCatalog(profile));
   const databaseConnections = new EnvironmentPostgresConnectionCatalog();
+  // 接続は初回利用まで張られず、スイープタイマーも接続後にしか起動しないため、
+  // testプロファイルでも実装をそのまま使える（外部プロセスは設定が保存されない限り生まれない）。
+  const mcpClient = options?.mcpClient ?? new SdkMcpClient();
   const webSearch = new WebSearchUseCase(options?.searchProviderCatalog ?? new EnvironmentSearchProviderCatalog());
   const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections, webSearch);
 
-  const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources);
+  const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient);
   const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);
   const saveWikiPage = new SaveWikiPageUseCase(wikiAdapter.repo);
   const runScenario = new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo);
@@ -565,6 +591,8 @@ export function createApp(options?: AppOptions): App {
     sessionRepo: sessionAdapter.repo,
     sessionArtifactRepo: sessionArtifactAdapter.repo,
     dataSourceRepo: dataSourceAdapter.repo,
+    mcpServerRepo: mcpServerAdapter.repo,
+    mcpClient,
     telemetry,
     pricing,
     runAgentPreview,
@@ -597,6 +625,11 @@ export function createApp(options?: AppOptions): App {
     retryFactoryRun,
     cancelFactoryRun,
     queryFactoryRuns,
+    saveMcpServer: new SaveMcpServerUseCase(mcpServerAdapter.repo),
+    listMcpServers: new ListMcpServersUseCase(mcpServerAdapter.repo),
+    deleteMcpServer: new DeleteMcpServerUseCase(mcpServerAdapter.repo),
+    replaceMcpServers: new ReplaceMcpServersUseCase(mcpServerAdapter.repo),
+    testMcpServer: new TestMcpServerUseCase(mcpServerAdapter.repo, mcpClient),
     saveSkill,
     querySkills: new QuerySkillsUseCase(skillAdapter.repo),
     deleteSkill: new DeleteSkillUseCase(skillAdapter.repo),
@@ -661,6 +694,11 @@ export function createApp(options?: AppOptions): App {
     close: () => {
       experimentWorker.shutdown();
       factoryWorker.shutdown();
+      // App.close は同期契約のため待てない。確実に待ちたいエントリポイントは
+      // app.close() の前に await app.mcpClient.close() を呼ぶ（src/server.ts のshutdown参照）。
+      void mcpClient.close();
+      try { mcpServerAdapter.close(); }
+      finally {
       try { factoryRunAdapter.close(); }
       finally {
       try { harnessRunAdapter.close(); }
@@ -718,6 +756,7 @@ export function createApp(options?: AppOptions): App {
             }
           }
         }
+      }
       }
       }
     },

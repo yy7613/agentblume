@@ -27,10 +27,11 @@ import { registerDataSourceRoutes, type DataSourceRouteDeps } from './data-sourc
 import { registerHarnessRoutes, type HarnessRouteDeps } from './harness-routes';
 import { registerHarnessRunRoutes, type HarnessRunRouteDeps } from './harness-run-routes';
 import { registerFactoryRoutes, type FactoryRouteDeps } from './factory-routes';
+import { registerMcpRoutes, type McpRouteDeps } from './mcp-routes';
 
 /** ルート・エラーハンドラ設定済みの Fastify インスタンスを組み立てる（listen しない）。 */
 export function buildServer(
-  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & HarnessRouteDeps & HarnessRunRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps & FactoryRouteDeps,
+  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & HarnessRouteDeps & HarnessRunRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps & FactoryRouteDeps & McpRouteDeps,
   options?: { logger?: boolean },
 ): FastifyInstance {
   // チャットの画像（最大2枚・各3 MiB）はBase64化で合計約8 MiBになる。
@@ -60,6 +61,7 @@ export function buildServer(
   registerSessionRoutes(app, deps);
   registerDataSourceRoutes(app, deps);
   registerFactoryRoutes(app, deps);
+  registerMcpRoutes(app, deps);
 
   // ヘルスチェック。
   app.get('/health', async () => ({ status: 'ok' }));

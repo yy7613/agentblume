@@ -32,7 +32,7 @@ const run: AgentPreviewRunDto = {
   ],
 };
 
-function makeClient(overrides: Partial<Record<'runSavedAgent' | 'getAgent' | 'listAgents' | 'evaluate' | 'reflectRun' | 'listWiki', unknown>> = {}) {
+function makeClient(overrides: Partial<Record<'runSavedAgent' | 'getAgent' | 'listAgents' | 'evaluate' | 'reflectRun' | 'listWiki' | 'resumeRun', unknown>> = {}) {
   return {
     listAgents: vi.fn().mockResolvedValue([{ internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '1.2.0', kind: 'normal', state: 'draft' }]),
     getAgent: vi.fn().mockResolvedValue(definition),
@@ -235,6 +235,53 @@ describe('AgentInspectorPage', () => {
     const distillError = await screen.findByText('Distillation failed.');
     expect(distillError.className).toContain('field-error');
     expect(distillError.className).not.toContain('ins-none');
+  });
+
+  it('承認待ちのRunで承認バナーを出し、Approveのたびにresume結果を積んで完走で消す', async () => {
+    const waiting = (runId: string, tool: string): AgentPreviewRunDto => ({
+      runId, mode: 'preview', response: `Approve ${tool}?`, usage: {},
+      trace: [{ sequence: 1, kind: 'approval-requested', tool, sideEffect: 'write', prompt: `Approve ${tool}?` }],
+      status: 'waiting-approval',
+      checkpoint: { prompt: `Approve ${tool}?`, expiresAt: '2026-07-27T00:00:00.000Z', tool, sideEffect: 'write' },
+    });
+    const done: AgentPreviewRunDto = { runId: 'run-w2', mode: 'preview', response: 'all writes applied', usage: {}, trace: [] };
+    const resumeRun = vi.fn().mockResolvedValueOnce(waiting('run-w2', 'delete_rows')).mockResolvedValueOnce(done);
+    const client = makeClient({ runSavedAgent: vi.fn().mockResolvedValue(waiting('run-w1', 'write_rows')), resumeRun });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage('write and delete');
+
+    const banner = await screen.findByRole('group', { name: 'Tool approval' });
+    expect(banner.textContent).toContain('Approve write_rows?');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(resumeRun).toHaveBeenNthCalledWith(1, 'run-w1', { tenantId: 'local', workspaceId: 'default' }, 'approve'));
+    // 再びwaiting-approvalなら次のツールの承認バナーを出し直す（前のバナーは残さない）。
+    const next = await screen.findByRole('group', { name: 'Tool approval' });
+    expect(next.textContent).toContain('Approve delete_rows?');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(resumeRun).toHaveBeenNthCalledWith(2, 'run-w2', { tenantId: 'local', workspaceId: 'default' }, 'approve'));
+    expect(await screen.findByText('all writes applied')).toBeTruthy();
+    expect(screen.queryByRole('group', { name: 'Tool approval' })).toBeNull();
+  });
+
+  it('Rejectはdecision=rejectでresumeRunを呼ぶ', async () => {
+    const waiting: AgentPreviewRunDto = {
+      runId: 'run-r1', mode: 'preview', response: 'Approve write_rows?', usage: {}, trace: [],
+      status: 'waiting-approval',
+      checkpoint: { prompt: 'Approve write_rows?', expiresAt: '2026-07-27T00:00:00.000Z', tool: 'write_rows', sideEffect: 'write' },
+    };
+    const resumeRun = vi.fn().mockResolvedValue({ runId: 'run-r1', mode: 'preview', response: 'skipped the write', usage: {}, trace: [] });
+    const client = makeClient({ runSavedAgent: vi.fn().mockResolvedValue(waiting), resumeRun });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage('write it');
+    await screen.findByRole('group', { name: 'Tool approval' });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith('run-r1', { tenantId: 'local', workspaceId: 'default' }, 'reject'));
+    expect(await screen.findByText('skipped the write')).toBeTruthy();
   });
 
   it('busy中は経過秒数を1秒毎に更新して表示する', async () => {

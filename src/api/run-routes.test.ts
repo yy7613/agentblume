@@ -282,6 +282,76 @@ describe('POST /runs', () => {
     expect(model.requests[1]?.messages[0]?.content ?? '').not.toContain('# Memory');
   });
 
+  it('toolApproval Agentは承認待ちで停止し、POST /runs/:runId/resume で承認/拒否して再開できる', async () => {
+    await app.saveTool.execute({
+      scope, internalId: 'store-tool', workingName: 'store', displayName: 'Store', publishName: 'store_score', owner: 'owner', sideEffect: 'session-write',
+      graph: { nodes: [{ id: 'input', type: 'agent-input', config: { schema, sample: { name: 'sample', score: 0 } } }], edges: [] },
+      inputSchema: schema, outputSchema: schema,
+    });
+    await app.saveAgent.execute({
+      scope, internalId: 'approver', workingName: 'approver', displayName: 'Approver', publishName: 'approver_agent', owner: 'owner', kind: 'normal', systemPrompt: 'Store scores.',
+      tools: [{ internalId: 'store-tool', version: SemVer.parse('1.0.0') }],
+      harness: { fileMemory: false, todoProvider: false, compaction: false, webSearch: false, toolApproval: true, functionInvocation: true },
+    });
+
+    model.enqueue({ message: { role: 'assistant', content: null, toolCalls: [{ id: 'call-1', name: 'store_score', arguments: { name: 'Alice', score: 42 } }] }, finishReason: 'tool_calls' });
+    const paused = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, agent: { internalId: 'approver', version: '1.0.0' }, message: 'Store Alice 42', mode: 'preview',
+    } });
+    expect(paused.statusCode).toBe(200);
+    const pausedRun = paused.json().run;
+    expect(pausedRun).toMatchObject({ status: 'waiting-approval', checkpoint: { tool: 'store_score', sideEffect: 'session-write' } });
+    expect(pausedRun.checkpoint.expiresAt).toEqual(expect.any(String));
+    expect(pausedRun.trace.map((event: { kind: string }) => event.kind)).toEqual(['model-request', 'approval-requested']);
+
+    // 参照系APIはcheckpointの公開部分だけを返す（会話履歴は出さない）。
+    const listed = await server.inject({ method: 'GET', url: '/runs?tenantId=tenant&workspaceId=workspace&status=waiting-approval' });
+    expect(listed.json().runs[0]).toMatchObject({ runId: pausedRun.runId, status: 'waiting-approval', checkpoint: { kind: 'tool-approval', pendingCalls: [{ name: 'store_score' }] } });
+    const traced = await server.inject({ method: 'GET', url: `/runs/${pausedRun.runId}/trace?tenantId=tenant&workspaceId=workspace` });
+    expect(traced.json().run.checkpoint.messages).toBeUndefined();
+
+    model.enqueue({ message: { role: 'assistant', content: 'Stored Alice: 42' }, finishReason: 'stop' });
+    const resumed = await server.inject({ method: 'POST', url: `/runs/${pausedRun.runId}/resume`, payload: { scope, decision: 'approve' } });
+    expect(resumed.statusCode).toBe(200);
+    expect(resumed.json().run).toMatchObject({ runId: pausedRun.runId, response: 'Stored Alice: 42' });
+    expect(resumed.json().run.status).toBeUndefined();
+    expect(resumed.json().run.trace.map((event: { kind: string }) => event.kind)).toEqual([
+      'model-request', 'approval-requested', 'approval-resolved', 'tool-call', 'tool-result', 'model-request', 'model-response',
+    ]);
+
+    // 完了済みRunの再開は422、不正bodyは400。
+    const again = await server.inject({ method: 'POST', url: `/runs/${pausedRun.runId}/resume`, payload: { scope, decision: 'approve' } });
+    expect(again.statusCode).toBe(422);
+    expect(again.json().error.code).toBe('AGENT_RUN');
+    const invalid = await server.inject({ method: 'POST', url: `/runs/${pausedRun.runId}/resume`, payload: { scope, decision: 'maybe' } });
+    expect(invalid.statusCode).toBe(400);
+    const missing = await server.inject({ method: 'POST', url: '/runs/ghost/resume', payload: { scope, decision: 'approve' } });
+    expect(missing.statusCode).toBe(404);
+  });
+
+  it('rejectで再開すると拒否結果がモデルへ渡り代替応答で完走する', async () => {
+    await app.saveTool.execute({
+      scope, internalId: 'store-tool', workingName: 'store', displayName: 'Store', publishName: 'store_score', owner: 'owner', sideEffect: 'session-write',
+      graph: { nodes: [{ id: 'input', type: 'agent-input', config: { schema, sample: { name: 'sample', score: 0 } } }], edges: [] },
+      inputSchema: schema, outputSchema: schema,
+    });
+    await app.saveAgent.execute({
+      scope, internalId: 'approver', workingName: 'approver', displayName: 'Approver', publishName: 'approver_agent', owner: 'owner', kind: 'normal', systemPrompt: 'Store scores.',
+      tools: [{ internalId: 'store-tool', version: SemVer.parse('1.0.0') }],
+      harness: { fileMemory: false, todoProvider: false, compaction: false, webSearch: false, toolApproval: true, functionInvocation: true },
+    });
+    model.enqueue({ message: { role: 'assistant', content: null, toolCalls: [{ id: 'call-1', name: 'store_score', arguments: { name: 'Alice', score: 42 } }] }, finishReason: 'tool_calls' });
+    const paused = await server.inject({ method: 'POST', url: '/runs', payload: { scope, agent: { internalId: 'approver' }, message: 'Store Alice 42', mode: 'preview' } });
+    const runId = paused.json().run.runId;
+
+    model.enqueue({ message: { role: 'assistant', content: 'Understood, nothing was stored.' }, finishReason: 'stop' });
+    const rejected = await server.inject({ method: 'POST', url: `/runs/${runId}/resume`, payload: { scope, decision: 'reject', feedback: 'not allowed' } });
+    expect(rejected.statusCode).toBe(200);
+    expect(rejected.json().run.response).toBe('Understood, nothing was stored.');
+    const toolMessages = (model.requests[1]?.messages ?? []).filter((message) => message.role === 'tool');
+    expect(JSON.parse(String(toolMessages[0]?.content))).toEqual({ approved: false, reason: 'not allowed' });
+  });
+
   it('write Toolを403で拒否する', async () => {
     await app.saveTool.execute({
       scope, internalId: 'write-tool', workingName: 'draft', displayName: 'Write', publishName: 'write_tool', owner: 'owner', sideEffect: 'write',

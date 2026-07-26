@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AgentKindDto, AgentPreviewRunDto, AgentSummaryDto, RunTraceEventDto, SerializedAgentDto, SideEffectDto, SkillSummaryDto, StructuredOutputFieldDto, StructuredOutputTypeDto, ToolSummaryDto, WikiSpaceSummaryDto } from '../api/types';
+import type { AgentKindDto, AgentPreviewRunDto, AgentSummaryDto, McpServerDto, RunTraceEventDto, SerializedAgentDto, SideEffectDto, SkillSummaryDto, StructuredOutputFieldDto, StructuredOutputTypeDto, ToolSummaryDto, WikiSpaceSummaryDto } from '../api/types';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { InlineFeedback } from '../components/InlineFeedback';
 import { useI18n } from '../i18n';
+import { DEFAULT_HARNESS, HarnessSettingsDialog, countEnabledHarness, type AgentHarnessValue } from './HarnessSettingsDialog';
 
 type Translate = (english: string, japanese: string) => string;
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
+/** サーバー側 createAgent と同じ上限（超えると保存が400になるためUIで止める）。 */
+const MAX_MCP_SERVERS = 8;
 
 export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   // Layer 1: 保存済みAgent一覧。'list'が既定viewで、new/openでLayer 2（editor）へ遷移する。
@@ -19,6 +22,9 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   const [agents, setAgents] = useState<readonly AgentSummaryDto[]>([]);
   const [wikis, setWikis] = useState<readonly WikiSpaceSummaryDto[]>([]);
   const [selectedWikis, setSelectedWikis] = useState<ReadonlySet<string>>(new Set());
+  // MCPサーバーはname（保存済み設定のキー）で選択する。versionを持たないためSetで十分。
+  const [mcpServers, setMcpServers] = useState<readonly McpServerDto[]>([]);
+  const [selectedMcpServers, setSelectedMcpServers] = useState<ReadonlySet<string>>(new Set());
   const [selectedTools, setSelectedTools] = useState<ReadonlySet<string>>(new Set());
   const [selectedSkills, setSelectedSkills] = useState<ReadonlySet<string>>(new Set());
   const [subAgents, setSubAgents] = useState<ReadonlyMap<string, string>>(new Map());
@@ -32,6 +38,9 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   const [systemPrompt, setSystemPrompt] = useState('');
   const [structuredOutput, setStructuredOutput] = useState(false);
   const [outputFields, setOutputFields] = useState<StructuredOutputFieldDto[]>([{ name: '', type: 'string', required: true }]);
+  // ランタイムハーネス設定。undefined は未設定＝保存ペイロードへ harness キーを載せない（従来動作）。
+  const [harness, setHarness] = useState<AgentHarnessValue>();
+  const [harnessOpen, setHarnessOpen] = useState(false);
   const [savedVersion, setSavedVersion] = useState<string>();
   const [chatMessage, setChatMessage] = useState('');
   const [run, setRun] = useState<AgentPreviewRunDto>();
@@ -48,7 +57,8 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
     let active = true;
     setBusy('load');
     const wikiItems = typeof client.listWikis === 'function' ? client.listWikis(scope) : Promise.resolve([]);
-    void Promise.all([client.listTools(scope), client.listSkills(scope), wikiItems]).then(([toolItems, skillItems, wikiSpaces]) => { if (active) { setTools(toolItems); setSkills(skillItems); setWikis(wikiSpaces); } })
+    const mcpRequest = typeof client.listMcpServers === 'function' ? client.listMcpServers(scope) : Promise.resolve([]);
+    void Promise.all([client.listTools(scope), client.listSkills(scope), wikiItems, mcpRequest]).then(([toolItems, skillItems, wikiSpaces, mcpItems]) => { if (active) { setTools(toolItems); setSkills(skillItems); setWikis(wikiSpaces); setMcpServers(mcpItems); } })
       .catch((cause: unknown) => { if (active) setError(message(cause, text)); })
       .finally(() => { if (active) setBusy(undefined); });
     return () => { active = false; };
@@ -156,6 +166,16 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
     setSelectedWikis((current) => { const next = new Set(current); if (next.has(wikiId)) next.delete(wikiId); else next.add(wikiId); return next; });
   }
 
+  // 上限に達したら未選択行のチェックだけを止める（選択済みの解除は常に可能）。
+  function toggleMcpServer(name: string): void {
+    setSelectedMcpServers((current) => {
+      const next = new Set(current);
+      if (next.has(name)) next.delete(name);
+      else if (next.size < MAX_MCP_SERVERS) next.add(name);
+      return next;
+    });
+  }
+
   function toggleSubAgent(agent: AgentSummaryDto): void {
     setSubAgents((current) => {
       const next = new Map(current);
@@ -180,7 +200,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   async function save(): Promise<void> {
     setBusy('save'); setError(undefined); setSaveNotice(undefined);
     try {
-      const agent = await client.saveAgent({ scope, internalId, workingName, displayName, publishName, owner, kind, systemPrompt, skills: skillRefs, tools: refs, agents: subAgentRefs, wikis: kind === 'pseudo-user' ? [] : [...selectedWikis].map((wikiId) => ({ wikiId })), ...(output !== undefined ? { output } : {}) });
+      const agent = await client.saveAgent({ scope, internalId, workingName, displayName, publishName, owner, kind, systemPrompt, skills: skillRefs, tools: refs, agents: subAgentRefs, wikis: kind === 'pseudo-user' ? [] : [...selectedWikis].map((wikiId) => ({ wikiId })), ...(selectedMcpServers.size > 0 ? { mcpServers: [...selectedMcpServers] } : {}), ...(harness !== undefined ? { harness } : {}), ...(output !== undefined ? { output } : {}) });
       setSavedVersion(agent.metadata.version);
       setSaveNotice(text(`Saved · version ${agent.metadata.version}`, `保存しました バージョン ${agent.metadata.version}`));
     } catch (cause) { setError(message(cause, text)); }
@@ -208,8 +228,9 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   function resetEditorState(): void {
     setInternalId(''); setWorkingName(''); setDisplayName(''); setPublishName(''); setOwner('');
     setKind('normal'); setSystemPrompt('');
-    setSelectedTools(new Set()); setSelectedSkills(new Set()); setSelectedWikis(new Set()); setSubAgents(new Map());
+    setSelectedTools(new Set()); setSelectedSkills(new Set()); setSelectedWikis(new Set()); setSelectedMcpServers(new Set()); setSubAgents(new Map());
     setStructuredOutput(false); setOutputFields([{ name: '', type: 'string', required: true }]);
+    setHarness(undefined); setHarnessOpen(false);
     setSavedVersion(undefined); setChatMessage(''); setRun(undefined); setSaveNotice(undefined);
     setEditing(false);
   }
@@ -244,7 +265,10 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
     setSelectedTools(new Set(agent.tools.map((ref) => ref.internalId)));
     setSelectedSkills(new Set(agent.skills.map((ref) => ref.internalId)));
     setSelectedWikis(new Set((agent.wikis ?? []).map((ref) => ref.wikiId)));
+    setSelectedMcpServers(new Set(agent.mcpServers ?? []));
     setSubAgents(new Map(agent.agents.map((ref) => [ref.internalId, ref.usage])));
+    setHarness(agent.harness === undefined ? undefined : { ...agent.harness });
+    setHarnessOpen(false);
     if (agent.output !== undefined) { setStructuredOutput(true); setOutputFields([...agent.output.fields]); }
     else { setStructuredOutput(false); setOutputFields([{ name: '', type: 'string', required: true }]); }
     setSavedVersion(agent.metadata.version);
@@ -279,6 +303,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
       <div><button type="button" className="secondary agent-back-button" onClick={() => void backToList()}>{text('Back to list', '一覧へ戻る')}</button><span className="eyebrow">{text('Agent Builder', 'エージェントビルダー')}</span><h1>{displayName || text('New Agent', '新しいエージェント')}</h1><p>{text('Generate a system prompt from Skill and Tool metadata, then save the reviewed definition as a new version.', 'スキルとツールのメタデータからシステムプロンプトを生成し、レビュー後の定義を新しいバージョンとして保存します。')}</p></div>
       <div className="save-actions">
         {savedVersion !== undefined && <span className="version-chip">{text('saved', '保存済み')} {savedVersion}</span>}
+        <button type="button" className="secondary" onClick={() => setHarnessOpen(true)}>{text('Harness', 'ハーネス')}{harness === undefined ? '' : ` (${countEnabledHarness(harness)})`}</button>
         <button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void generate()}>{busy === 'generate' ? text('Generating…', '生成中…') : text('Generate draft', '草案を生成')}</button>
         <button type="button" className="primary" disabled={busy !== undefined || saveBlocked} title={missingRequired.length > 0 ? text(`Required fields are empty: ${missingRequiredLabel}.`, `${missingRequiredLabel}が未入力です。`) : undefined} onClick={() => void save()}>{busy === 'save' ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
       </div>
@@ -333,6 +358,21 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
           {wikis.length === 0 && <p className="empty-state">{text('Create Wikis in Memory first.', '先に記憶画面でWikiを作成してください。')}</p>}
           {wikis.map((wiki) => <label key={wiki.id} className="agent-tool-option"><input aria-label={`${text('Use wiki', 'Wikiを使用')} ${wiki.name}`} type="checkbox" disabled={kind === 'pseudo-user'} checked={selectedWikis.has(wiki.id)} onChange={() => toggleWiki(wiki.id)} /><span><strong>{wiki.name}</strong><code>{wiki.id}</code></span><small className="validation-status">Wiki</small><small>{wiki.description}</small></label>)}
         </div>
+        <h2>{text('MCP servers', 'MCPサーバー')} <small>{selectedMcpServers.size} {text('selected', '件選択')}</small></h2>
+        <p className="agent-subagent-hint">{text('Tools from the selected servers are injected as mcp__<server>__<tool>.', '選択したサーバーのツールが mcp__<サーバー名>__<ツール名> として注入されます。')}</p>
+        <div className="agent-tool-list">
+          {mcpServers.length === 0 && <p className="empty-state">{text('No MCP servers configured. Add them on the MCP page.', 'MCPサーバーが未設定です。MCP画面で追加してください。')}</p>}
+          {mcpServers.map((server) => {
+            const selected = selectedMcpServers.has(server.name);
+            return <label key={server.name} className="agent-tool-option">
+              <input aria-label={`${text('Use MCP server', 'MCPサーバーを使用')} ${server.name}`} type="checkbox" checked={selected} disabled={!selected && selectedMcpServers.size >= MAX_MCP_SERVERS} onChange={() => toggleMcpServer(server.name)} />
+              <span><strong>{server.name}</strong><code>{server.transport.kind}</code></span>
+              <small className="validation-status">MCP</small>
+              {server.disabled && <small>{text('skipped at run time', '実行時はスキップ')}</small>}
+            </label>;
+          })}
+          {selectedMcpServers.size >= MAX_MCP_SERVERS && <p className="field-error">{text(`At most ${MAX_MCP_SERVERS} MCP servers can be selected.`, `MCPサーバーは最大${MAX_MCP_SERVERS}件まで選択できます。`)}</p>}
+        </div>
         <h2>{text('Structured output', '構造化出力')}</h2>
         <label className="structured-output-toggle"><input aria-label={text('Enable structured output', '構造化出力を有効化')} type="checkbox" checked={structuredOutput} onChange={(event) => setStructuredOutput(event.target.checked)} /> {text('Require a validated JSON response', '検証済みJSON応答を必須にする')}</label>
         {structuredOutput && <div className="structured-output-fields">
@@ -361,6 +401,10 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
         </div>
       </section>
     </div>
+    {harnessOpen && <HarnessSettingsDialog initial={harness ?? DEFAULT_HARNESS}
+      onCancel={() => setHarnessOpen(false)}
+      onClear={() => { setHarness(undefined); setHarnessOpen(false); }}
+      onApply={(next) => { setHarness(next); setHarnessOpen(false); }} />}
   </main>;
 }
 

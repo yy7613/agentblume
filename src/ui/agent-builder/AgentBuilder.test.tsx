@@ -26,6 +26,7 @@ function stubClient(): ToolApiClient {
     listSkills: vi.fn().mockResolvedValue([]),
     listAgents: vi.fn().mockResolvedValue([]),
     listWikis: vi.fn().mockResolvedValue([]),
+    listMcpServers: vi.fn().mockResolvedValue([]),
     getAgent: vi.fn(),
     deleteAgent: vi.fn().mockResolvedValue(undefined),
     generateAgentPrompt: vi.fn(),
@@ -133,6 +134,7 @@ describe('AgentBuilder', () => {
       listSkills: vi.fn().mockResolvedValue([{ internalId: 'analysis', displayName: 'Analysis skill', publishName: 'analysis', latestVersion: '1.1.0', state: 'draft' }]),
       listAgents: vi.fn().mockResolvedValue([{ internalId: 'scorer-agent', displayName: 'Scorer Agent', publishName: 'scorer_agent', latestVersion: '1.0.0', kind: 'normal', state: 'draft' }]),
       listWikis: vi.fn().mockResolvedValue([{ id: 'customer-a', name: 'Customer A', description: 'A knowledge', updatedAt: 'now' }]),
+      listMcpServers: vi.fn().mockResolvedValue([]),
       getAgent: vi.fn().mockResolvedValue({ metadata: { internalId: 'scorer-agent', version: '1.0.0' }, kind: 'normal', systemPrompt: 'x', skills: [], tools: [{ internalId: 'scores', version: '2.0.0' }], agents: [] }),
       generateAgentPrompt: vi.fn().mockResolvedValue({ systemPromptDraft: '# Generated', sections: {}, editable: true, sources: [] }),
       saveAgent: vi.fn().mockResolvedValue({ metadata: { version: '1.0.0' } }),
@@ -165,6 +167,196 @@ describe('AgentBuilder', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Run saved agent' }));
     await waitFor(() => expect(client.runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ agent: { internalId: 'assistant-agent', version: '1.0.0' } })));
     expect(await screen.findByText(/done/)).toBeTruthy();
+  });
+
+  describe('MCPサーバー選択', () => {
+    const mcpServers = [
+      { scope: { tenantId: 'local', workspaceId: 'default' }, name: 'filesystem', transport: { kind: 'stdio', command: 'npx', args: [], env: {} }, disabled: false, updatedAt: 'now' },
+      { scope: { tenantId: 'local', workspaceId: 'default' }, name: 'remote', transport: { kind: 'http', url: 'https://example.com/mcp', headers: {} }, disabled: true, updatedAt: 'now' },
+    ];
+
+    async function fillRequired(): Promise<void> {
+      await userEvent.type(screen.getByLabelText('Agent internal ID'), 'support-agent');
+      await userEvent.type(screen.getByLabelText('Working name'), 'Support draft');
+      await userEvent.type(screen.getByLabelText('Agent display name'), 'Support Agent');
+      await userEvent.type(screen.getByLabelText('Publish name'), 'support_agent');
+      await userEvent.type(screen.getByLabelText('Owner'), 'local-user');
+      await userEvent.type(screen.getByRole('textbox', { name: 'System prompt' }), 'You are helpful.');
+    }
+
+    it('保存済みMCPサーバーをtransport種別つきで一覧し、disabledは実行時スキップと注記する', async () => {
+      const client = stubClient();
+      (client.listMcpServers as ReturnType<typeof vi.fn>).mockResolvedValue(mcpServers);
+      await openNewAgentEditor(client);
+
+      const row = (await screen.findByRole('checkbox', { name: 'Use MCP server filesystem' })).closest('label');
+      expect(row?.textContent).toContain('stdio');
+      expect(row?.querySelector('.validation-status')?.textContent).toBe('MCP');
+      expect(screen.getByRole('checkbox', { name: 'Use MCP server remote' }).closest('label')?.textContent).toContain('skipped at run time');
+    });
+
+    it('MCPサーバーが1件も無ければMCP画面へ誘導するempty stateを出す', async () => {
+      const client = stubClient();
+      await openNewAgentEditor(client);
+      expect(await screen.findByText('No MCP servers configured. Add them on the MCP page.')).toBeTruthy();
+    });
+
+    it('選択したサーバー名をsaveAgentペイロードへ載せ、未選択ならキーごと省略する', async () => {
+      const client = stubClient();
+      (client.listMcpServers as ReturnType<typeof vi.fn>).mockResolvedValue(mcpServers);
+      (client.saveAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.0.0' } });
+      await openNewAgentEditor(client);
+      await fillRequired();
+
+      // 未選択のまま保存すると mcpServers キーは出ない（従来動作）。
+      await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+      await waitFor(() => expect(client.saveAgent).toHaveBeenCalled());
+      expect(client.saveAgent).toHaveBeenCalledWith(expect.not.objectContaining({ mcpServers: expect.anything() }));
+
+      await userEvent.click(await screen.findByRole('checkbox', { name: 'Use MCP server filesystem' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+      await waitFor(() => expect(client.saveAgent).toHaveBeenCalledWith(expect.objectContaining({ mcpServers: ['filesystem'] })));
+    });
+
+    it('保存済みAgentを開くとmcpServersの選択を復元し、再保存でも落とさない', async () => {
+      const client = stubClient();
+      (client.listMcpServers as ReturnType<typeof vi.fn>).mockResolvedValue(mcpServers);
+      (client.listAgents as ReturnType<typeof vi.fn>).mockResolvedValue([existingAgentSummary]);
+      (client.getAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ ...existingAgentDto, mcpServers: ['remote'] });
+      (client.saveAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '2.1.0' } });
+      render(<AgentBuilder client={client} />);
+      await userEvent.click(await screen.findByRole('button', { name: 'Open' }));
+
+      expect((await screen.findByRole('checkbox', { name: 'Use MCP server remote' }) as HTMLInputElement).checked).toBe(true);
+      expect((screen.getByRole('checkbox', { name: 'Use MCP server filesystem' }) as HTMLInputElement).checked).toBe(false);
+
+      await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+      await waitFor(() => expect(client.saveAgent).toHaveBeenCalledWith(expect.objectContaining({ mcpServers: ['remote'] })));
+    });
+
+    it('8件を超える選択はチェックできず上限を表示する', async () => {
+      const client = stubClient();
+      const many = Array.from({ length: 9 }, (_, index) => ({ ...mcpServers[0], name: `server-${index}`, disabled: false }));
+      (client.listMcpServers as ReturnType<typeof vi.fn>).mockResolvedValue(many);
+      await openNewAgentEditor(client);
+
+      await screen.findByRole('checkbox', { name: 'Use MCP server server-0' });
+      for (let index = 0; index < 8; index += 1) await userEvent.click(screen.getByRole('checkbox', { name: `Use MCP server server-${index}` }));
+
+      expect(screen.getByText('At most 8 MCP servers can be selected.')).toBeTruthy();
+      expect((screen.getByRole('checkbox', { name: 'Use MCP server server-8' }) as HTMLInputElement).disabled).toBe(true);
+      // 選択済みは解除できる（上限に達しても操作不能にはしない）。
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Use MCP server server-0' }));
+      expect((screen.getByRole('checkbox', { name: 'Use MCP server server-8' }) as HTMLInputElement).disabled).toBe(false);
+    });
+  });
+
+  describe('ハーネス設定', () => {
+    // saveAgentの必須項目を埋めて保存ボタンを押せる状態にする。
+    async function fillRequired(): Promise<void> {
+      await userEvent.type(screen.getByLabelText('Agent internal ID'), 'support-agent');
+      await userEvent.type(screen.getByLabelText('Working name'), 'Support draft');
+      await userEvent.type(screen.getByLabelText('Agent display name'), 'Support Agent');
+      await userEvent.type(screen.getByLabelText('Publish name'), 'support_agent');
+      await userEvent.type(screen.getByLabelText('Owner'), 'local-user');
+      await userEvent.type(screen.getByRole('textbox', { name: 'System prompt' }), 'You are helpful.');
+    }
+
+    it('ハーネスボタンでダイアログを開き、6つの機能トグルを表示する', async () => {
+      const client = stubClient();
+      await openNewAgentEditor(client);
+      await userEvent.click(screen.getByRole('button', { name: /^Harness/ }));
+
+      const dialog = screen.getByRole('dialog', { name: 'Runtime harness' });
+      expect(within(dialog).getAllByRole('checkbox')).toHaveLength(6);
+      for (const name of ['File memory', 'Todo provider', 'Compaction', 'Web search', 'Tool approval', 'Function invocation']) {
+        expect(within(dialog).getByRole('checkbox', { name })).toBeTruthy();
+      }
+      // 既定値: ツール自動実行だけ有効。
+      expect((within(dialog).getByRole('checkbox', { name: 'Function invocation' }) as HTMLInputElement).checked).toBe(true);
+      expect((within(dialog).getByRole('checkbox', { name: 'Tool approval' }) as HTMLInputElement).checked).toBe(false);
+    });
+
+    it('2つ有効にしてApplyすると6キーすべてを含むharnessを保存ペイロードへ載せる', async () => {
+      const client = stubClient();
+      (client.saveAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.0.0' } });
+      await openNewAgentEditor(client);
+      await userEvent.click(screen.getByRole('button', { name: /^Harness/ }));
+      const dialog = screen.getByRole('dialog', { name: 'Runtime harness' });
+      await userEvent.click(within(dialog).getByRole('checkbox', { name: 'File memory' }));
+      await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Todo provider' }));
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
+
+      // Applyでダイアログは閉じ、ボタンには有効な機能数が出る（fileMemory + todoProvider + functionInvocation）。
+      expect(screen.queryByRole('dialog', { name: 'Runtime harness' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Harness (3)' })).toBeTruthy();
+
+      await fillRequired();
+      await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+      await waitFor(() => expect(client.saveAgent).toHaveBeenCalledWith(expect.objectContaining({
+        harness: { fileMemory: true, todoProvider: true, compaction: false, webSearch: false, toolApproval: false, functionInvocation: true },
+      })));
+    });
+
+    it('Cancelでは編集を破棄し、未設定のままなら保存ペイロードにharnessキーを含めない', async () => {
+      const client = stubClient();
+      (client.saveAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.0.0' } });
+      await openNewAgentEditor(client);
+      await userEvent.click(screen.getByRole('button', { name: /^Harness/ }));
+      const dialog = screen.getByRole('dialog', { name: 'Runtime harness' });
+      await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Compaction' }));
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      expect(screen.getByRole('button', { name: 'Harness' })).toBeTruthy();
+
+      await fillRequired();
+      await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+      await waitFor(() => expect(client.saveAgent).toHaveBeenCalled());
+      expect(client.saveAgent).toHaveBeenCalledWith(expect.not.objectContaining({ harness: expect.anything() }));
+    });
+
+    it('harness付きの保存済みAgentを開くとダイアログへ復元する', async () => {
+      const client = stubClient();
+      (client.listAgents as ReturnType<typeof vi.fn>).mockResolvedValue([existingAgentSummary]);
+      (client.getAgent as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ...existingAgentDto,
+        harness: { fileMemory: true, todoProvider: false, compaction: true, webSearch: false, toolApproval: true, functionInvocation: false },
+      });
+      render(<AgentBuilder client={client} />);
+      await userEvent.click(await screen.findByRole('button', { name: 'Open' }));
+
+      // ボタンには有効な3機能が出る。
+      expect(await screen.findByRole('button', { name: 'Harness (3)' })).toBeTruthy();
+      await userEvent.click(screen.getByRole('button', { name: 'Harness (3)' }));
+      const dialog = screen.getByRole('dialog', { name: 'Runtime harness' });
+      const checked = (name: string) => (within(dialog).getByRole('checkbox', { name }) as HTMLInputElement).checked;
+      expect(checked('File memory')).toBe(true);
+      expect(checked('Compaction')).toBe(true);
+      expect(checked('Tool approval')).toBe(true);
+      expect(checked('Todo provider')).toBe(false);
+      expect(checked('Web search')).toBe(false);
+      expect(checked('Function invocation')).toBe(false);
+    });
+
+    it('Clearで未設定へ戻すと保存ペイロードからharnessが消える', async () => {
+      const client = stubClient();
+      (client.listAgents as ReturnType<typeof vi.fn>).mockResolvedValue([existingAgentSummary]);
+      (client.getAgent as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ...existingAgentDto,
+        harness: { fileMemory: true, todoProvider: false, compaction: false, webSearch: false, toolApproval: false, functionInvocation: true },
+      });
+      (client.saveAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '2.1.0' } });
+      render(<AgentBuilder client={client} />);
+      await userEvent.click(await screen.findByRole('button', { name: 'Open' }));
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Harness (2)' }));
+      await userEvent.click(within(screen.getByRole('dialog', { name: 'Runtime harness' })).getByRole('button', { name: 'Clear' }));
+      expect(screen.queryByRole('dialog', { name: 'Runtime harness' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Harness' })).toBeTruthy();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+      await waitFor(() => expect(client.saveAgent).toHaveBeenCalled());
+      expect(client.saveAgent).toHaveBeenCalledWith(expect.not.objectContaining({ harness: expect.anything() }));
+    });
   });
 
   describe('一覧（Layer 1）', () => {

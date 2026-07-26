@@ -43,6 +43,8 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   const [wikiPages, setWikiPages] = useState<readonly WikiPageSummaryDto[]>([]);
   const [attached, setAttached] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  // ツール承認待ちで止まったRun。承認/拒否ボタンを出す対象を最新の1件に絞る。
+  const [approvalRunId, setApprovalRunId] = useState<string>();
   const [loadError, setLoadError] = useState<string>();
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -93,8 +95,25 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
       const history = buildHistory(turns, content);
       const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview', ...(history.length > 0 ? { history } : {}), ...(memoryPageIds.length > 0 ? { memoryPageIds } : {}) });
       setTurns((prev) => [...prev, { role: 'assistant', run, elapsedMs: performance.now() - startedAt }]);
+      setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
     } catch (cause) {
       setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt, onRetry: () => void send({ content }) }]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ツール承認の応答。resumeRunの結果は通常のrun応答と同じturnとして積む（再びwaiting-approvalなら再表示）。
+  async function resolveToolApproval(runId: string, decision: 'approve' | 'reject'): Promise<void> {
+    if (busy || typeof (client as Partial<ToolApiClient>).resumeRun !== 'function') return;
+    setBusy(true); setLoadError(undefined);
+    const startedAt = performance.now();
+    try {
+      const run = await client.resumeRun(runId, scope, decision);
+      setTurns((prev) => [...prev, { role: 'assistant', run, elapsedMs: performance.now() - startedAt }]);
+      setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
+    } catch (cause) {
+      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt, onRetry: () => void resolveToolApproval(runId, decision) }]);
     } finally {
       setBusy(false);
     }
@@ -142,7 +161,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
             <p>{text('Run an agent and watch tools, tokens, and timing.', 'エージェントを実行し、ツール・トークン・所要時間を観測します。')}</p>
           </div>
         </div>
-        <button type="button" className="cc-new" onClick={() => { setTurns([]); setEvaluations(new Map()); setDistillations(new Map()); }} disabled={turns.length === 0}>
+        <button type="button" className="cc-new" onClick={() => { setTurns([]); setEvaluations(new Map()); setDistillations(new Map()); setApprovalRunId(undefined); }} disabled={turns.length === 0}>
           {text('New chat', '新しいチャット')}
         </button>
       </header>
@@ -177,6 +196,8 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
               const inputText = turn.role === 'assistant' ? lastUserBefore(turns, index) : '';
               return <TurnView key={index} turn={turn} agentName={agentName} text={text} busy={busy}
                 inputText={inputText}
+                approvalRunId={approvalRunId}
+                onResolveApproval={(runId, decision) => void resolveToolApproval(runId, decision)}
                 evaluation={evaluations.get(index)}
                 onEvaluate={() => { if (turn.role === 'assistant') void evaluate(index, inputText, turn.run.response); }}
                 distillation={distillations.get(index)}
@@ -265,9 +286,11 @@ function lastUserBefore(turns: readonly Turn[], index: number): string {
   return '';
 }
 
-function TurnView({ turn, agentName, text, busy, inputText, evaluation, onEvaluate, distillation, onDistill }: {
+function TurnView({ turn, agentName, text, busy, inputText, approvalRunId, onResolveApproval, evaluation, onEvaluate, distillation, onDistill }: {
   readonly turn: Turn; readonly agentName: string; readonly text: Translate; readonly busy: boolean;
   readonly inputText: string;
+  readonly approvalRunId: string | undefined;
+  readonly onResolveApproval: (runId: string, decision: 'approve' | 'reject') => void;
   readonly evaluation: EvaluationResultDto | 'loading' | 'error' | undefined;
   readonly onEvaluate: () => void;
   readonly distillation: DistillState | undefined;
@@ -296,12 +319,25 @@ function TurnView({ turn, agentName, text, busy, inputText, evaluation, onEvalua
   }
   const { run, elapsedMs } = turn;
   const tools = calledTools(run.trace);
+  // 承認待ちのRunは応答本文がプロンプトと同文で返るため、同じ文字列はバナー側だけに出す。
+  const approvalPrompt = run.status === 'waiting-approval' ? (run.checkpoint?.prompt ?? run.response) : undefined;
+  const pendingApproval = approvalPrompt !== undefined && run.runId === approvalRunId;
   return (
     <div className="cc-msg assistant">
       <span className="cc-avatar assistant" aria-hidden="true">{sparkIcon}</span>
       <div className="cc-bubble">
         <span className="cc-name">{agentName}</span>
-        {run.structuredResponse === undefined ? <p>{run.response}</p> : <pre>{JSON.stringify(run.structuredResponse, null, 2)}</pre>}
+        {run.structuredResponse !== undefined
+          ? <pre>{JSON.stringify(run.structuredResponse, null, 2)}</pre>
+          : approvalPrompt === run.response ? null : <p>{run.response}</p>}
+
+        {pendingApproval && <div className="run-approval" role="group" aria-label={text('Tool approval', 'ツール承認')}>
+          <p>{approvalPrompt}{run.checkpoint !== undefined && <small>{run.checkpoint.tool} · {run.checkpoint.sideEffect}</small>}</p>
+          <div className="run-approval-actions">
+            <button type="button" className="primary" disabled={busy} onClick={() => onResolveApproval(run.runId, 'approve')}>{text('Approve', '承認')}</button>
+            <button type="button" className="secondary danger" disabled={busy} onClick={() => onResolveApproval(run.runId, 'reject')}>{text('Reject', '拒否')}</button>
+          </div>
+        </div>}
 
         <div className="ins-metrics" aria-label={text('Run metrics', '実行メトリクス')}>
           <div className="ins-metric"><b>{formatSeconds(elapsedMs)}s</b><span>{text('Elapsed', '所要時間')}</span></div>
@@ -435,6 +471,12 @@ function traceDetail(event: RunTraceEventDto, text: Translate): string {
       return event.content === '' ? text('(empty)', '（空）') : event.content;
     case 'agent_call':
       return `${event.toolName} → ${event.agentRef.internalId}@${event.agentRef.version}${event.ok ? '' : ` (${text('failed', '失敗')})`} · ${event.summary}`;
+    case 'compaction':
+      return `${text('compacted context', '文脈を圧縮')}: ${event.beforeChars} → ${event.afterChars} ${text('chars', '文字')}`;
+    case 'approval-requested':
+      return `${event.tool} (${event.sideEffect}) · ${event.prompt}`;
+    case 'approval-resolved':
+      return event.decision;
     case 'error':
       return `${event.code}: ${event.message}`;
   }

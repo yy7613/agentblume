@@ -70,6 +70,42 @@ describe('agent routes', () => {
     expect(prompt.json().draft.systemPromptDraft).toContain('filter_scores@1.0.0');
   });
 
+  it('ランタイムハーネス設定をHTTP DTOで保存・取得でき、不完全な設定は400にする', async () => {
+    const harness = { fileMemory: true, todoProvider: true, compaction: true, webSearch: false, toolApproval: false, functionInvocation: true };
+    const saved = await server.inject({ method: 'POST', url: '/agents', payload: body({ harness }) });
+    expect(saved.statusCode).toBe(201);
+    expect(saved.json().agent.harness).toEqual(harness);
+    const fetched = await server.inject({ method: 'GET', url: '/agents/assistant', query: scope });
+    expect(fetched.json().agent.harness).toEqual(harness);
+
+    // harness未指定は従来どおりフィールドを持たない。
+    const plain = await server.inject({ method: 'POST', url: '/agents', payload: body() });
+    expect(plain.json().agent.harness).toBeUndefined();
+
+    const partial = await server.inject({ method: 'POST', url: '/agents', payload: body({ harness: { fileMemory: true } }) });
+    expect(partial.statusCode).toBe(400);
+    expect(partial.json().error.code).toBe('BAD_REQUEST');
+  });
+
+  it('MCPサーバー参照をHTTP DTOで保存・取得でき、件数超過は400にする', async () => {
+    const saved = await server.inject({ method: 'POST', url: '/agents', payload: body({ mcpServers: ['files', 'github'] }) });
+    expect(saved.statusCode).toBe(201);
+    expect(saved.json().agent.mcpServers).toEqual(['files', 'github']);
+    const fetched = await server.inject({ method: 'GET', url: '/agents/assistant', query: scope });
+    expect(fetched.json().agent.mcpServers).toEqual(['files', 'github']);
+
+    // 未指定は従来どおりフィールドを持たない（MCPツールなし）。
+    const plain = await server.inject({ method: 'POST', url: '/agents', payload: body() });
+    expect(plain.json().agent.mcpServers).toBeUndefined();
+
+    const tooMany = await server.inject({ method: 'POST', url: '/agents', payload: body({ mcpServers: Array.from({ length: 9 }, (_, index) => `s${index}`) }) });
+    expect(tooMany.statusCode).toBe(400);
+    expect(tooMany.json().error.code).toBe('BAD_REQUEST');
+    const duplicated = await server.inject({ method: 'POST', url: '/agents', payload: body({ mcpServers: ['files', 'files'] }) });
+    expect(duplicated.statusCode).toBe(400);
+    expect(duplicated.json().error.code).toBe('AGENT_VALIDATION');
+  });
+
   it('不正version・未存在Tool・別scopeを境界エラーへ変換する', async () => {
     const badVersion = await server.inject({ method: 'POST', url: '/agents', payload: body({ tools: [{ internalId: 'scores', version: 'bad' }] }) });
     expect(badVersion.statusCode).toBe(400);

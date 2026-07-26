@@ -49,6 +49,8 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const [loadError, setLoadError] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
   const [activeHarnessRun, setActiveHarnessRun] = useState<HarnessRunDto>();
+  // 単一Agent実行がツール承認待ちで止まったRun。承認/拒否ボタンを出す対象を1件に絞る。
+  const [approvalRunId, setApprovalRunId] = useState<string>();
   const [artifacts, setArtifacts] = useState<readonly SessionArtifactDto[]>([]);
   const [chart, setChart] = useState<{ readonly artifact: SessionArtifactDto; readonly payload: ChartPayload }>();
   const threadRef = useRef<HTMLDivElement>(null);
@@ -112,6 +114,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
             : await client.runHarness({ scope, harness: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview' });
       setTurns((prev) => [...prev, { role: 'assistant', run }]);
       if (isHarnessRun(run)) setActiveHarnessRun(run.status === 'waiting-input' || run.status === 'waiting-approval' ? run : undefined);
+      else setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
       if (activeSessionId !== undefined && typeof sessions.listSessionArtifacts === 'function') void sessions.listSessionArtifacts(activeSessionId, scope).then(setArtifacts).catch(() => {});
     } catch (cause) {
       setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), onRetry: () => void send({ content, images: attachedImages }) }]);
@@ -122,13 +125,13 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
 
   function newChat(): void {
     const closing = sessionId;
-    setTurns([]); setSessionId(undefined); setArtifacts([]); setImages([]); setActiveHarnessRun(undefined);
+    setTurns([]); setSessionId(undefined); setArtifacts([]); setImages([]); setActiveHarnessRun(undefined); setApprovalRunId(undefined);
     if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
   }
 
   function selectAgent(next: string): void {
     const closing = sessionId;
-    setSelectedId(next); setSessionId(undefined); setArtifacts([]); setTurns([]); setImages([]); setActiveHarnessRun(undefined);
+    setSelectedId(next); setSessionId(undefined); setArtifacts([]); setTurns([]); setImages([]); setActiveHarnessRun(undefined); setApprovalRunId(undefined);
     if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
   }
 
@@ -158,6 +161,21 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       setLoadError(undefined);
     } catch {
       setLoadError(text('The image could not be read.', '画像を読み込めませんでした。'));
+    }
+  }
+
+  // 単一Agent実行のツール承認。応答は通常のrun応答と同じ経路で積み、再びwaiting-approvalなら承認UIを出し直す。
+  async function resolveToolApproval(runId: string, decision: 'approve' | 'reject'): Promise<void> {
+    if (busy || typeof (client as Partial<ToolApiClient>).resumeRun !== 'function') return;
+    setBusy(true);
+    try {
+      const run = await client.resumeRun(runId, scope, decision);
+      setTurns((prev) => [...prev, { role: 'assistant', run }]);
+      setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
+    } catch (cause) {
+      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), onRetry: () => void resolveToolApproval(runId, decision) }]);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -228,7 +246,9 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
               )}
             </div>
           ) : (
-            turns.map((turn, index) => <Turn key={index} turn={turn} agentName={agentName} text={text} busy={busy} />)
+            turns.map((turn, index) => <Turn key={index} turn={turn} agentName={agentName} text={text} busy={busy}
+              approvalRunId={approvalRunId}
+              onResolveApproval={(runId, decision) => void resolveToolApproval(runId, decision)} />)
           )}
           {busy && turns.length > 0 && (
             <div className="cc-msg assistant">
@@ -305,7 +325,11 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   );
 }
 
-function Turn({ turn, agentName, text, busy }: { readonly turn: ChatTurn; readonly agentName: string; readonly text: Translate; readonly busy: boolean }) {
+function Turn({ turn, agentName, text, busy, approvalRunId, onResolveApproval }: {
+  readonly turn: ChatTurn; readonly agentName: string; readonly text: Translate; readonly busy: boolean;
+  readonly approvalRunId?: string;
+  readonly onResolveApproval: (runId: string, decision: 'approve' | 'reject') => void;
+}) {
   if (turn.role === 'user') {
     return (
       <div className="cc-msg user">
@@ -335,12 +359,24 @@ function Turn({ turn, agentName, text, busy }: { readonly turn: ChatTurn; readon
         : undefined;
     return <div className="cc-msg assistant"><span className="cc-avatar assistant" aria-hidden="true">{sparkIcon}</span><div className="cc-bubble"><span className="cc-name">{agentName}</span><p>{run.response ?? run.failure?.message ?? waiting ?? ''}</p>{waiting !== undefined && run.response !== undefined && <p>{waiting}</p>}<div className="cc-steps">{run.events.filter((event) => event.kind !== 'harness_started' && event.kind !== 'harness_completed').map((event) => <span className="cc-step" key={event.sequence}><i className="cc-step-dot" />{event.kind}{event.slotId === undefined ? '' : ` · ${event.slotId}`}</span>)}</div><span className="cc-meta">multi-agent run {run.runId}</span></div></div>;
   }
+  // 承認待ちで止まったRunは、応答本文がプロンプトと同文なのでバナー側だけに出す（二重表示を避ける）。
+  const approvalPrompt = run.status === 'waiting-approval' ? (run.checkpoint?.prompt ?? run.response) : undefined;
+  const pendingApproval = approvalPrompt !== undefined && run.runId === approvalRunId;
   return (
     <div className="cc-msg assistant">
       <span className="cc-avatar assistant" aria-hidden="true">{sparkIcon}</span>
       <div className="cc-bubble">
         <span className="cc-name">{agentName}</span>
-        {run.structuredResponse === undefined ? <p>{run.response}</p> : <pre>{JSON.stringify(run.structuredResponse, null, 2)}</pre>}
+        {run.structuredResponse !== undefined
+          ? <pre>{JSON.stringify(run.structuredResponse, null, 2)}</pre>
+          : approvalPrompt === run.response ? null : <p>{run.response}</p>}
+        {pendingApproval && <div className="run-approval" role="group" aria-label={text('Tool approval', 'ツール承認')}>
+          <p>{approvalPrompt}{run.checkpoint !== undefined && <small>{run.checkpoint.tool} · {run.checkpoint.sideEffect}</small>}</p>
+          <div className="run-approval-actions">
+            <button type="button" className="primary" disabled={busy} onClick={() => onResolveApproval(run.runId, 'approve')}>{text('Approve', '承認')}</button>
+            <button type="button" className="secondary danger" disabled={busy} onClick={() => onResolveApproval(run.runId, 'reject')}>{text('Reject', '拒否')}</button>
+          </div>
+        </div>}
         {run.trace.length > 0 && (
           <div className="cc-steps">
             {run.trace.map((event) => (
@@ -380,6 +416,12 @@ function traceLabel(event: RunTraceEventDto, text: Translate): string {
       return text('Model response', 'モデル応答');
     case 'agent_call':
       return `${text('Delegated', '委譲')} ${event.toolName} → ${event.agentRef.internalId}@${event.agentRef.version}${event.ok ? '' : ` · ${text('failed', '失敗')}`}`;
+    case 'compaction':
+      return `${text('Compacted context', '文脈を圧縮')} · ${event.beforeChars} → ${event.afterChars}`;
+    case 'approval-requested':
+      return `${text('Approval requested', '承認待ち')} · ${event.tool} (${event.sideEffect})`;
+    case 'approval-resolved':
+      return `${text('Approval', '承認')} · ${event.decision}`;
     case 'error':
       return `${event.code}: ${event.message}`;
   }

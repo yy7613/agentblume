@@ -83,6 +83,11 @@ import type {
   FactoryRunDto,
   FactoryEventDto,
   ResolveFactoryRunDto,
+  ResumeRunDto,
+  McpServerDto,
+  SaveMcpServerDto,
+  ReplaceMcpServersDto,
+  McpServerTestResultDto,
 } from './types';
 import { localizeApiErrorMessage } from './error-messages';
 
@@ -234,6 +239,17 @@ export class ToolApiClient {
   async runSavedAgent(input: RunSavedAgentDto, signal?: AbortSignal): Promise<AgentPreviewRunDto> {
     return (await this.request<{ run: AgentPreviewRunDto }>('/runs', {
       method: 'POST', body: JSON.stringify(input), signal,
+    })).run;
+  }
+
+  /**
+   * ツール承認待ち（status==='waiting-approval'）で停止したRunを再開する。
+   * 応答は POST /runs と同形で、承認後にさらに別のツールで止まれば再び waiting-approval が返る。
+   */
+  async resumeRun(runId: string, scope: TenantScopeDto, decision: 'approve' | 'reject', feedback?: string, signal?: AbortSignal): Promise<AgentPreviewRunDto> {
+    const body: ResumeRunDto = { scope, decision, ...(feedback !== undefined ? { feedback } : {}) };
+    return (await this.request<{ run: AgentPreviewRunDto }>(`/runs/${encodeURIComponent(runId)}/resume`, {
+      method: 'POST', body: JSON.stringify(body), signal,
     })).run;
   }
 
@@ -706,6 +722,31 @@ export class ToolApiClient {
 
   async rejectProposal(id: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<MemoryProposalDto> {
     return (await this.request<{ proposal: MemoryProposalDto }>(`/memory/proposals/${encodeURIComponent(id)}/reject`, { method: 'POST', body: JSON.stringify({ scope }), signal })).proposal;
+  }
+
+  // MCPクライアント（外部MCPサーバー接続設定）。設定は版を持たないため POST は upsert、PUT は一括置換。
+  async listMcpServers(scope: TenantScopeDto, signal?: AbortSignal): Promise<readonly McpServerDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ servers: McpServerDto[] }>(`/mcp-servers?${query}`, { signal })).servers;
+  }
+
+  async saveMcpServer(input: SaveMcpServerDto): Promise<McpServerDto> {
+    return (await this.request<{ server: McpServerDto }>('/mcp-servers', { method: 'POST', body: JSON.stringify(input) })).server;
+  }
+
+  /** 標準 mcpServers ドキュメントでスコープ内の設定を全置換する（JSONタブのApply）。 */
+  async replaceMcpServers(input: ReplaceMcpServersDto): Promise<readonly McpServerDto[]> {
+    return (await this.request<{ servers: McpServerDto[] }>('/mcp-servers', { method: 'PUT', body: JSON.stringify(input) })).servers;
+  }
+
+  async deleteMcpServer(name: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request(`/mcp-servers/${encodeURIComponent(name)}?${query}`, { method: 'DELETE' });
+  }
+
+  /** 接続テスト。設定ミスと通信障害を区別するため、接続失敗も200 + ok:false で返る。 */
+  async testMcpServer(name: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<McpServerTestResultDto> {
+    return this.request<McpServerTestResultDto>(`/mcp-servers/${encodeURIComponent(name)}/test`, { method: 'POST', body: JSON.stringify({ scope }), signal });
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

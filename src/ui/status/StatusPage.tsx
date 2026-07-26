@@ -93,5 +93,8 @@ function StatusTraceEvent({ event, onOpenChild }: { readonly event: RunTraceEven
   if (event.kind === 'tool-result') return <div className="trace-event tool"><span>{event.sequence}</span><div><strong>{event.name}</strong>{event.nodes.map((node) => <code key={node.nodeId}>{node.nodeId}: {node.rowCount} row(s){node.truncated ? ' · truncated' : ''}</code>)}</div></div>;
   if (event.kind === 'agent_call') return <div className={`trace-event agent ${event.ok ? '' : 'error'}`}><span>{event.sequence}</span><div><strong>{event.toolName}</strong> → {event.agentRef.internalId}@{event.agentRef.version} {event.ok ? '✓' : '✗'}<small>{event.summary}</small>{event.childRunId !== '' && <button type="button" className="run-link secondary" onClick={() => onOpenChild(event.childRunId)}>child run</button>}</div></div>;
   if (event.kind === 'error') return <div className="trace-event error"><span>{event.sequence}</span><p><strong>{event.code}</strong> {event.message}</p></div>;
+  if (event.kind === 'compaction') return <div className="trace-event"><span>{event.sequence}</span><p>Compaction · {event.beforeChars} → {event.afterChars} chars</p></div>;
+  if (event.kind === 'approval-requested') return <div className="trace-event tool"><span>{event.sequence}</span><p><strong>Approval requested</strong> {event.tool} ({event.sideEffect})</p></div>;
+  if (event.kind === 'approval-resolved') return <div className="trace-event tool"><span>{event.sequence}</span><p><strong>Approval</strong> {event.decision}</p></div>;
   return <div className="trace-event"><span>{event.sequence}</span><p>{event.content}</p></div>;
 }

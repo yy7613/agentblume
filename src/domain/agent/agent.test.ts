@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SemVer } from '../tool/semver';
-import { createAgent, subAgentToolName } from './agent';
+import { createAgent, subAgentToolName, DEFAULT_AGENT_RUNTIME_HARNESS, type AgentRuntimeHarness } from './agent';
 import { AgentValidationError } from './errors';
 import { deserializeAgent, serializeAgent } from './serialization';
 
@@ -64,6 +64,50 @@ describe('Agent aggregate', () => {
     expect(() => createAgent({ ...valid(), wikis: [{ wikiId: 'customer-a' }, { wikiId: 'customer-a' }] })).toThrow(/duplicate wiki/);
     const legacy = serializeAgent(createAgent(valid())) as unknown as Record<string, unknown>; delete legacy['wikis'];
     expect(deserializeAgent(legacy).wikis).toBeUndefined();
+  });
+
+  it('MCPサーバー参照を直列化往復で維持し、旧dataは未設定として読む（後方互換）', () => {
+    const agent = createAgent({ ...valid(), mcpServers: ['files', 'github'] });
+    expect(agent.mcpServers).toEqual(['files', 'github']);
+    expect(deserializeAgent(serializeAgent(agent)).mcpServers).toEqual(['files', 'github']);
+    expect(serializeAgent(deserializeAgent(serializeAgent(agent)))).toEqual(serializeAgent(agent));
+    // 未指定・空配列は「MCPツールなし」＝フィールド自体を持たない。
+    expect(createAgent(valid()).mcpServers).toBeUndefined();
+    expect(createAgent({ ...valid(), mcpServers: [] }).mcpServers).toBeUndefined();
+    const legacy = serializeAgent(agent) as unknown as Record<string, unknown>;
+    delete legacy['mcpServers'];
+    expect(deserializeAgent(legacy).mcpServers).toBeUndefined();
+  });
+
+  it('MCPサーバー参照の件数・空文字・長さ・重複を拒否する', () => {
+    expect(() => createAgent({ ...valid(), mcpServers: Array.from({ length: 9 }, (_, index) => `s${index}`) })).toThrow(/at most 8 entries/);
+    expect(() => createAgent({ ...valid(), mcpServers: [' '] })).toThrow(/mcpServers\.0 must be a non-empty string/);
+    expect(() => createAgent({ ...valid(), mcpServers: ['x'.repeat(65)] })).toThrow(/at most 64 characters/);
+    expect(() => createAgent({ ...valid(), mcpServers: ['files', 'files'] })).toThrow(/duplicate MCP server reference: files/);
+    expect(() => createAgent({ ...valid(), mcpServers: [1 as unknown as string] })).toThrow(AgentValidationError);
+    // 前後の空白は取り除いて保存する。
+    expect(createAgent({ ...valid(), mcpServers: [' files '] }).mcpServers).toEqual(['files']);
+  });
+
+  it('ランタイムハーネス設定を直列化往復で維持し、旧dataは未設定として読む（後方互換）', () => {
+    const harness: AgentRuntimeHarness = { ...DEFAULT_AGENT_RUNTIME_HARNESS, fileMemory: true, todoProvider: true, compaction: true, webSearch: true };
+    const agent = createAgent({ ...valid(), harness });
+    expect(agent.harness).toEqual(harness);
+    expect(deserializeAgent(serializeAgent(agent)).harness).toEqual(harness);
+    expect(serializeAgent(deserializeAgent(serializeAgent(agent)))).toEqual(serializeAgent(agent));
+    // 未指定 = 従来動作（フィールド自体を持たない）。
+    expect(createAgent(valid()).harness).toBeUndefined();
+    const legacy = serializeAgent(agent) as unknown as Record<string, unknown>;
+    delete legacy['harness'];
+    expect(deserializeAgent(legacy).harness).toBeUndefined();
+    // 既定値は「functionInvocationのみ有効」＝従来動作と等価。
+    expect(DEFAULT_AGENT_RUNTIME_HARNESS).toEqual({ fileMemory: false, todoProvider: false, compaction: false, webSearch: false, toolApproval: false, functionInvocation: true });
+  });
+
+  it('ランタイムハーネスのboolean以外のフィールドを拒否する', () => {
+    const broken = { ...DEFAULT_AGENT_RUNTIME_HARNESS, compaction: 'yes' } as unknown as AgentRuntimeHarness;
+    expect(() => createAgent({ ...valid(), harness: broken })).toThrow(/harness\.compaction must be a boolean/);
+    expect(() => deserializeAgent({ ...serializeAgent(createAgent(valid())), harness: { fileMemory: true } })).toThrow(AgentValidationError);
   });
 
   it('subAgentToolNameはask_接頭辞のツール名を返す', () => {

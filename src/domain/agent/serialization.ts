@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { PUBLISH_STATES, type PublishState } from '../tool/metadata';
 import { SemVer } from '../tool/semver';
-import { AGENT_KINDS, createAgent, type Agent, type AgentKind } from './agent';
+import { AGENT_KINDS, createAgent, type Agent, type AgentKind, type AgentRuntimeHarness } from './agent';
 import { AgentValidationError } from './errors';
 import { STRUCTURED_OUTPUT_TYPES, type StructuredOutputDefinition } from './structured-output';
 
@@ -22,6 +22,8 @@ export interface SerializedAgent {
   readonly tools: readonly { readonly internalId: string; readonly version: string }[];
   readonly agents: readonly { readonly internalId: string; readonly version: string; readonly usage: string }[];
   readonly wikis?: readonly { readonly wikiId: string }[];
+  readonly mcpServers?: readonly string[];
+  readonly harness?: AgentRuntimeHarness;
   readonly persona?: { readonly personaId: string; readonly version: string };
   readonly output?: StructuredOutputDefinition;
 }
@@ -39,6 +41,15 @@ const schema = z.object({
   tools: z.array(z.object({ internalId: z.string(), version: z.string() })),
   agents: z.array(z.object({ internalId: z.string(), version: z.string(), usage: z.string() })).default([]),
   wikis: z.array(z.object({ wikiId: z.string() })).default([]),
+  mcpServers: z.array(z.string()).default([]),
+  harness: z.object({
+    fileMemory: z.boolean(),
+    todoProvider: z.boolean(),
+    compaction: z.boolean(),
+    webSearch: z.boolean(),
+    toolApproval: z.boolean(),
+    functionInvocation: z.boolean(),
+  }).optional(),
   persona: z.object({ personaId: z.string(), version: z.string() }).optional(),
   output: z.object({
     name: z.string(),
@@ -64,6 +75,8 @@ export function serializeAgent(agent: Agent): SerializedAgent {
     tools: agent.tools.map((tool) => ({ internalId: tool.internalId, version: tool.version.toString() })),
     agents: agent.agents.map((sub) => ({ internalId: sub.internalId, version: sub.version.toString(), usage: sub.usage })),
     ...(agent.wikis !== undefined ? { wikis: agent.wikis.map((wiki) => ({ ...wiki })) } : {}),
+    ...(agent.mcpServers !== undefined ? { mcpServers: [...agent.mcpServers] } : {}),
+    ...(agent.harness !== undefined ? { harness: { ...agent.harness } } : {}),
     ...(agent.persona !== undefined ? { persona: { personaId: agent.persona.personaId, version: agent.persona.version.toString() } } : {}),
     ...(agent.output !== undefined ? { output: structuredClone(agent.output) } : {}),
   };
@@ -88,6 +101,8 @@ export function deserializeAgent(value: unknown): Agent {
     tools: agent.tools.map((tool) => ({ internalId: tool.internalId, version: SemVer.parse(tool.version) })),
     agents: agent.agents.map((sub) => ({ internalId: sub.internalId, version: SemVer.parse(sub.version), usage: sub.usage })),
     ...(agent.wikis.length > 0 ? { wikis: agent.wikis.map((wiki) => ({ ...wiki })) } : {}),
+    ...(agent.mcpServers.length > 0 ? { mcpServers: [...agent.mcpServers] } : {}),
+    ...(agent.harness !== undefined ? { harness: { ...agent.harness } } : {}),
     ...(agent.persona !== undefined ? { persona: { personaId: agent.persona.personaId, version: SemVer.parse(agent.persona.version) } } : {}),
     ...(agent.output !== undefined ? { output: agent.output } : {}),
   });

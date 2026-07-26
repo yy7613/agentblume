@@ -42,6 +42,7 @@ export default defineConfig({
       '/data-sources': apiTarget,
       '/search-providers': apiTarget,
       '/web-searches': apiTarget,
+      '/mcp-servers': apiTarget,
     },
   },
   build: { outDir: 'dist/ui', emptyOutDir: true },

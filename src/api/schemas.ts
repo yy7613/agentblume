@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import { PUBLISH_STATES, SIDE_EFFECTS } from '../domain/tool/metadata';
 import type { PublishState, SideEffect } from '../domain/tool/metadata';
-import { AGENT_KINDS } from '../domain/agent/agent';
+import { AGENT_KINDS, AGENT_MAX_MCP_SERVERS, AGENT_MCP_SERVER_NAME_MAX_LENGTH } from '../domain/agent/agent';
 import { STRUCTURED_OUTPUT_TYPES } from '../domain/agent/structured-output';
 import { HARNESS_PATTERNS } from '../domain/harness/agent-harness';
 import { PERSONA_ARCHETYPES, PERSONA_LANGUAGES, PERSONA_LEVELS, PERSONA_VERBOSITIES } from '../domain/validation/persona';
@@ -96,6 +96,16 @@ const structuredOutputSchema = z.object({
   })).min(1),
 });
 
+/** 単一Agent実行のランタイムハーネス設定（Agent単位のopt-in）。 */
+const agentRuntimeHarnessSchema = z.object({
+  fileMemory: z.boolean(),
+  todoProvider: z.boolean(),
+  compaction: z.boolean(),
+  webSearch: z.boolean(),
+  toolApproval: z.boolean(),
+  functionInvocation: z.boolean(),
+});
+
 /** POST /agents の body。Tool参照は保存済みversionへ固定する。 */
 export const saveAgentBodySchema = z.object({
   scope: tenantScopeSchema,
@@ -110,6 +120,9 @@ export const saveAgentBodySchema = z.object({
   tools: z.array(agentToolRefSchema),
   agents: z.array(agentSubAgentRefSchema).default([]),
   wikis: z.array(z.object({ wikiId: z.string().min(1) })).default([]),
+  // MCPサーバー名の参照（実在検証は実行時。保存時は形と件数だけを縛る）。
+  mcpServers: z.array(z.string().min(1).max(AGENT_MCP_SERVER_NAME_MAX_LENGTH)).max(AGENT_MAX_MCP_SERVERS).default([]),
+  harness: agentRuntimeHarnessSchema.optional(),
   output: structuredOutputSchema.optional(),
   bump: z.enum(['major', 'minor', 'patch']).optional(),
   state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
@@ -279,7 +292,14 @@ export const runListQuerySchema = z.object({
   tenantId: z.string().min(1),
   workspaceId: z.string().min(1),
   limit: z.coerce.number().int().min(1).max(100).optional(),
-  status: z.enum(['running', 'succeeded', 'failed']).optional(),
+  status: z.enum(['running', 'succeeded', 'failed', 'waiting-approval']).optional(),
+});
+
+/** POST /runs/:runId/resume: toolApproval で停止した単一エージェントRunの承認結果。 */
+export const resumeRunBodySchema = z.object({
+  scope: tenantScopeSchema,
+  decision: z.enum(['approve', 'reject']),
+  feedback: z.string().max(2_000).optional(),
 });
 
 export const runTraceQuerySchema = z.object({
@@ -559,3 +579,44 @@ export const resumeFactoryRunBodySchema = z.object({
 export const cancelFactoryRunBodySchema = z.object({ scope: tenantScopeSchema });
 /** POST /factory-runs/:runId/retry の body。失敗Runを同じ入力で再実行するだけなので scope のみ受け取る。 */
 export const retryFactoryRunBodySchema = z.object({ scope: tenantScopeSchema });
+
+/**
+ * MCPクライアント: 外部MCPサーバー接続設定。
+ *
+ * transport は kind による判別union。`args` / `env` / `headers` は省略時に既定値へ落とし、
+ * 標準 `mcpServers` JSON の「書かなければ空」という意味論に合わせる。
+ */
+const mcpStringRecordSchema = z.record(z.string(), z.string());
+export const mcpTransportSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('stdio'),
+    command: z.string().min(1),
+    args: z.array(z.string()).default([]),
+    env: mcpStringRecordSchema.default({}),
+    cwd: z.string().min(1).optional(),
+  }),
+  z.object({
+    kind: z.literal('http'),
+    url: z.string().min(1),
+    headers: mcpStringRecordSchema.default({}),
+  }),
+]);
+export const mcpServerListQuerySchema = scopeQuerySchema;
+export const saveMcpServerBodySchema = z.object({
+  scope: tenantScopeSchema,
+  server: z.object({
+    name: z.string().min(1).max(64),
+    transport: mcpTransportSchema,
+    disabled: z.boolean().optional(),
+  }),
+});
+/**
+ * PUT /mcp-servers の body。`mcpServers` は標準ドキュメントの mcpServers 部をそのまま受ける。
+ * 個々のエントリ構造の検証はドメイン（parseMcpServersDocument）が一手に担うため、
+ * ここでは「オブジェクトであること」だけを見る（検証規則を二重管理しない）。
+ */
+export const replaceMcpServersBodySchema = z.object({
+  scope: tenantScopeSchema,
+  mcpServers: z.record(z.string(), z.unknown()),
+});
+export const testMcpServerBodySchema = z.object({ scope: tenantScopeSchema });

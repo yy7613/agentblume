@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createAgent, type Agent } from '../../domain/agent/agent';
+import { createAgent, DEFAULT_AGENT_RUNTIME_HARNESS, type Agent, type AgentRuntimeHarness } from '../../domain/agent/agent';
 import type { AgentRepository, AgentSummary } from '../../domain/agent/agent-repository';
 import type { Schema } from '../../domain/data/types';
 import { createDefaultRegistry } from '../../domain/etl/nodes/index';
@@ -20,6 +20,15 @@ import { createWikiSpace } from '../../domain/memory/wiki-space';
 import { createWikiPage } from '../../domain/memory/wiki-page';
 import { InMemoryAgentSessionRepository } from '../../adapters/storage/in-memory-agent-session-repository';
 import { InMemorySessionArtifactRepository } from '../../adapters/storage/in-memory-session-artifact-repository';
+import type { WikiRepository } from '../../domain/memory/wiki-repository';
+import type { AgentSessionRepository, SessionArtifactRepository } from '../../domain/session/session-repository';
+import { WebSearchUseCase } from '../search/web-search';
+import type { NormalizedSearchRow, SearchProviderCatalog, SearchProviderSummary, SearchRequest } from '../search/search-provider';
+import { InMemoryMcpServerRepository } from '../../adapters/storage/in-memory-mcp-server-repository';
+import { createMcpServerConfig } from '../../domain/mcp/mcp-server';
+import type { McpServerRepository } from '../../domain/mcp/mcp-server-repository';
+import { McpClientError, type McpClientPort } from '../mcp/mcp-client';
+import { FakeMcpClient } from '../mcp/mcp-client.fixtures';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
 const inputSchema: Schema = { columns: [
@@ -27,7 +36,7 @@ const inputSchema: Schema = { columns: [
   { name: 'score', type: 'number', nullable: false },
 ] };
 
-function makeTool(sideEffect: 'read-only' | 'write' = 'read-only', withInputNode = true): Tool {
+function makeTool(sideEffect: 'read-only' | 'session-write' | 'write' = 'read-only', withInputNode = true): Tool {
   return createTool({
     metadata: { internalId: 'score-tool', workingName: 'score-draft', displayName: 'Score lookup', publishName: 'score_lookup', version: SemVer.parse('1.2.0'), owner: 'owner', state: 'draft', tenant: scope },
     sideEffect,
@@ -689,5 +698,661 @@ describe('RunAgentPreviewUseCase sub-agent delegation', () => {
     await expect(multiUseCase(makeTool('write'), model, new MapAgents(new Map([['sub', sub], ['root', root]])), runs).executeSaved({ scope, agentId: 'root', message: 'go', mode: 'preview' }))
       .rejects.toMatchObject({ cause: expect.any(UnsafeToolError) });
     expect(model.requests).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ランタイムハーネス（Agent単位のopt-in）
+// ---------------------------------------------------------------------------
+
+class StaticSearchCatalog implements SearchProviderCatalog {
+  constructor(private readonly providers: readonly SearchProviderSummary[], private readonly rows: readonly NormalizedSearchRow[] = []) {}
+  list(): readonly SearchProviderSummary[] { return this.providers; }
+  async search(_request: SearchRequest): Promise<readonly NormalizedSearchRow[]> { return this.rows; }
+}
+
+function harnessOf(overrides: Partial<AgentRuntimeHarness>): AgentRuntimeHarness {
+  return { ...DEFAULT_AGENT_RUNTIME_HARNESS, ...overrides };
+}
+
+function harnessUseCase(options: {
+  readonly agent: Agent;
+  readonly model: ModelProviderPort;
+  readonly tool?: Tool | null;
+  readonly runs?: RunRepository;
+  readonly wiki?: WikiRepository;
+  readonly sessions?: AgentSessionRepository;
+  readonly artifacts?: SessionArtifactRepository;
+  readonly webSearch?: WebSearchUseCase;
+  readonly mcpServers?: McpServerRepository;
+  readonly mcpClient?: McpClientPort;
+  readonly now?: () => Date;
+}): RunAgentPreviewUseCase {
+  let sequence = 0;
+  return new RunAgentPreviewUseCase(
+    new StaticRepository(options.tool ?? null), new EtlEngine(createDefaultRegistry()), options.model,
+    options.runs ?? new MemoryRuns(), () => `run-${(sequence += 1)}`, options.now ?? (() => new Date('2026-07-11T00:00:00.000Z')),
+    new StaticAgents(options.agent), undefined, undefined,
+    options.wiki, options.sessions, options.artifacts, undefined, options.webSearch,
+    options.mcpServers, options.mcpClient,
+  );
+}
+
+function toolContents(request: ModelCompletionRequest | undefined): readonly string[] {
+  return (request?.messages ?? []).filter((message) => message.role === 'tool').map((message) => String(message.content));
+}
+
+describe('RunAgentPreviewUseCase runtime harness', () => {
+  it('harness未設定Agentは従来どおりでハーネスツールを一切注入しない', async () => {
+    const agent = createAgent({ metadata: agentMeta('plain'), kind: 'normal', systemPrompt: 'Answer.', tools: [] });
+    const model = new QueueModel([stop('ok')]);
+    const search = new WebSearchUseCase(new StaticSearchCatalog([{ id: 'tavily', label: 'Tavily', supportsDomainFilter: true }]));
+    const run = await harnessUseCase({ agent, model, wiki: new FakeWikiRepository(), webSearch: search })
+      .executeSaved({ scope, agentId: 'plain', message: 'go', mode: 'preview' });
+
+    expect(run.response).toBe('ok');
+    expect(model.requests[0]?.tools).toBeUndefined();
+    expect(run.trace.find((event) => event.kind === 'model-request')).toMatchObject({ toolNames: [] });
+  });
+
+  it('functionInvocation:falseはツールを渡さず1往復で終える', async () => {
+    const agent = createAgent({
+      metadata: agentMeta('no-loop'), kind: 'normal', systemPrompt: 'Answer directly.',
+      tools: [{ internalId: 'score-tool', version: SemVer.parse('1.2.0') }],
+      harness: harnessOf({ functionInvocation: false, todoProvider: true }),
+    });
+    const model = new QueueModel([stop('answered without tools')]);
+    const run = await harnessUseCase({ agent, model, tool: makeTool() })
+      .executeSaved({ scope, agentId: 'no-loop', message: 'go', mode: 'preview' });
+
+    expect(run.response).toBe('answered without tools');
+    expect(model.requests).toHaveLength(1);
+    expect(model.requests[0]?.tools).toBeUndefined();
+  });
+
+  it('todos_add→todos_completeで状態遷移し、セッションArtifactへ新revisionで保存・次Runで復元する', async () => {
+    const agent = createAgent({
+      metadata: agentMeta('todo-agent'), kind: 'normal', systemPrompt: 'Track the work.',
+      tools: [], harness: harnessOf({ todoProvider: true }),
+    });
+    const sessions = new InMemoryAgentSessionRepository();
+    const artifacts = new InMemorySessionArtifactRepository();
+    const model = new QueueModel([
+      toolCall('t1', 'todos_add', { items: ['collect data', 'summarize'] }),
+      toolCall('t2', 'todos_complete', { indexes: [1, 9] }),
+      stop('tracked'),
+    ]);
+    const run = await harnessUseCase({ agent, model, sessions, artifacts })
+      .executeSaved({ scope, agentId: 'todo-agent', message: 'go', mode: 'preview' });
+
+    expect(model.requests[0]?.tools?.map((definition) => definition.name)).toEqual(['todos_add', 'todos_complete']);
+    const results = toolContents(model.requests[2]);
+    expect(JSON.parse(results[0] as string)).toEqual({ todos: [
+      { index: 1, content: 'collect data', status: 'pending' },
+      { index: 2, content: 'summarize', status: 'pending' },
+    ] });
+    // 未知indexは無視して報告し、既知indexだけを完了にする。
+    expect(JSON.parse(results[1] as string)).toEqual({ todos: [
+      { index: 1, content: 'collect data', status: 'completed' },
+      { index: 2, content: 'summarize', status: 'pending' },
+    ], ignored: [9] });
+    expect(run.trace.filter((event) => event.kind === 'tool-result').map((event) => event.name)).toEqual(['todos_add', 'todos_complete']);
+
+    const sessionId = run.sessionId as string;
+    const stored = (await artifacts.list(scope, sessionId)).filter((artifact) => artifact.name === 'harness-todos');
+    expect(stored.map((artifact) => artifact.revision).sort()).toEqual([1, 2]);
+    expect(stored[0]?.origin).toMatchObject({ toolId: 'builtin-harness-todos', toolVersion: '1.0.0', sinkNodeId: 'harness-todos', agentId: 'todo-agent' });
+
+    // 同じセッションの次Runでは最新revisionから復元される。
+    const resume = new QueueModel([toolCall('t3', 'todos_complete', { indexes: [2] }), stop('finished')]);
+    await harnessUseCase({ agent, model: resume, sessions, artifacts })
+      .executeSaved({ scope, agentId: 'todo-agent', message: 'continue', mode: 'preview', sessionId });
+    expect(JSON.parse(toolContents(resume.requests[1])[0] as string)).toEqual({ todos: [
+      { index: 1, content: 'collect data', status: 'completed' },
+      { index: 2, content: 'summarize', status: 'completed' },
+    ] });
+  });
+
+  it('todoProviderはセッションが無くてもRun内メモリだけで動作する', async () => {
+    const agent = createAgent({ metadata: agentMeta('todo-nosession'), kind: 'normal', systemPrompt: 'Track.', tools: [], harness: harnessOf({ todoProvider: true }) });
+    const model = new QueueModel([toolCall('t1', 'todos_add', { items: ['only in memory'] }), stop('ok')]);
+    const run = await harnessUseCase({ agent, model }).executeSaved({ scope, agentId: 'todo-nosession', message: 'go', mode: 'preview' });
+
+    expect(run.sessionId).toBeUndefined();
+    expect(JSON.parse(toolContents(model.requests[1])[0] as string)).toEqual({ todos: [{ index: 1, content: 'only in memory', status: 'pending' }] });
+  });
+
+  it('memory_write→memory_read→memory_listが専用Wikiを自動作成し改訂する', async () => {
+    const wiki = new FakeWikiRepository();
+    const agent = createAgent({ metadata: agentMeta('memo'), kind: 'normal', systemPrompt: 'Remember facts.', tools: [], harness: harnessOf({ fileMemory: true }) });
+    const model = new QueueModel([
+      toolCall('m1', 'memory_write', { title: 'Refund policy', body: 'Refunds require a receipt.' }),
+      toolCall('m2', 'memory_write', { title: 'Refund policy', body: 'Refunds require a receipt and an order id.' }),
+      toolCall('m3', 'memory_read', { title: 'Refund policy' }),
+      toolCall('m4', 'memory_list', {}),
+      stop('remembered'),
+    ]);
+    const run = await harnessUseCase({ agent, model, wiki }).executeSaved({ scope, agentId: 'memo', message: 'note the refund policy', mode: 'preview' });
+
+    expect(model.requests[0]?.tools?.map((definition) => definition.name)).toEqual(['memory_list', 'memory_read', 'memory_write']);
+    const contents = toolContents(model.requests[4]);
+    expect(JSON.parse(contents[0] as string)).toEqual({ wikiId: 'agent-memory--memo', title: 'Refund policy', version: 1, created: true });
+    expect(JSON.parse(contents[1] as string)).toEqual({ wikiId: 'agent-memory--memo', title: 'Refund policy', version: 2, created: false });
+    expect(JSON.parse(contents[2] as string)).toMatchObject({ found: true, version: 2, truncated: false, body: 'Refunds require a receipt and an order id.' });
+    expect(JSON.parse(contents[3] as string)).toMatchObject({ wikiId: 'agent-memory--memo', pages: [{ title: 'Refund policy', updatedAt: '2026-07-11T00:00:00.000Z' }] });
+
+    // 専用Wiki空間は初回書き込みで冪等に自動作成され、ページは1件（改訂）だけ。
+    expect(await wiki.findSpace(scope, 'agent-memory--memo')).toMatchObject({ id: 'agent-memory--memo' });
+    const pages = await wiki.list(scope, 'agent-memory--memo');
+    expect(pages).toHaveLength(1);
+    const page = await wiki.find(scope, pages[0]?.id as string);
+    expect(page).toMatchObject({ version: 2, sourceRuns: [run.runId] });
+  });
+
+  it('未知タイトルのmemory_readはfound:falseを返す', async () => {
+    const agent = createAgent({ metadata: agentMeta('memo2'), kind: 'normal', systemPrompt: 'Remember.', tools: [], harness: harnessOf({ fileMemory: true }) });
+    const model = new QueueModel([toolCall('m1', 'memory_read', { title: 'Nothing here' }), stop('none')]);
+    await harnessUseCase({ agent, model, wiki: new FakeWikiRepository() }).executeSaved({ scope, agentId: 'memo2', message: 'go', mode: 'preview' });
+    expect(JSON.parse(toolContents(model.requests[1])[0] as string)).toEqual({ found: false, title: 'Nothing here' });
+  });
+
+  it('fileMemory有効時は専用Wikiを自動想起の検索対象へ加える', async () => {
+    const wiki = new FakeWikiRepository();
+    await wiki.saveSpace(createWikiSpace({ id: 'agent-memory--recall', tenant: scope, name: 'Agent memory', createdAt: '2026-07-11T00:00:00.000Z' }));
+    await wiki.save(createWikiPage({ id: 'memory-1', wikiId: 'agent-memory--recall', tenant: scope, title: 'Escalation', body: 'Escalate refunds above 500 USD.', updatedAt: '2026-07-11T00:00:00.000Z' }));
+    const agent = createAgent({ metadata: agentMeta('recall'), kind: 'normal', systemPrompt: 'Answer.', tools: [], harness: harnessOf({ fileMemory: true }) });
+    const model = new QueueModel([stop('ok')]);
+    await harnessUseCase({ agent, model, wiki }).executeSaved({ scope, agentId: 'recall', message: 'What is the escalation rule?', mode: 'preview' });
+    expect(String(model.requests[0]?.messages[0]?.content)).toContain('Escalate refunds above 500 USD.');
+  });
+
+  it('web_searchは先頭プロバイダで検索し上位5件へ切り詰める', async () => {
+    const rows: NormalizedSearchRow[] = Array.from({ length: 8 }, (_, index) => ({
+      title: `Result ${index}`, url: `https://example.com/${index}`, snippet: 'z'.repeat(400),
+      score: null, provider: 'tavily', retrievedAt: '2026-07-11T00:00:00.000Z',
+    }));
+    const search = new WebSearchUseCase(
+      new StaticSearchCatalog([{ id: 'tavily', label: 'Tavily', supportsDomainFilter: true }], rows),
+      () => 'cache-1', () => new Date('2026-07-11T00:00:00.000Z'),
+    );
+    const agent = createAgent({ metadata: agentMeta('searcher'), kind: 'normal', systemPrompt: 'Search.', tools: [], harness: harnessOf({ webSearch: true }) });
+    const model = new QueueModel([toolCall('w1', 'web_search', { query: '  agentblume  ', maxResults: 9 }), stop('searched')]);
+    await harnessUseCase({ agent, model, webSearch: search }).executeSaved({ scope, agentId: 'searcher', message: 'go', mode: 'preview' });
+
+    expect(model.requests[0]?.tools?.map((definition) => definition.name)).toEqual(['web_search']);
+    const payload = JSON.parse(toolContents(model.requests[1])[0] as string) as { provider: string; query: string; results: readonly { title: string; snippet: string }[] };
+    expect(payload.provider).toBe('tavily');
+    expect(payload.query).toBe('agentblume');
+    expect(payload.results).toHaveLength(5);
+    expect(payload.results[0]?.title).toBe('Result 0');
+    // snippetは300字クリップ（+省略記号）。
+    expect(payload.results[0]?.snippet).toHaveLength(301);
+  });
+
+  it('検索プロバイダが未設定ならweb_searchツール自体を注入しない', async () => {
+    const search = new WebSearchUseCase(new StaticSearchCatalog([]));
+    const agent = createAgent({ metadata: agentMeta('searcher2'), kind: 'normal', systemPrompt: 'Search.', tools: [], harness: harnessOf({ webSearch: true }) });
+    const model = new QueueModel([stop('no provider')]);
+    const run = await harnessUseCase({ agent, model, webSearch: search }).executeSaved({ scope, agentId: 'searcher2', message: 'go', mode: 'preview' });
+    expect(run.response).toBe('no provider');
+    expect(model.requests[0]?.tools).toBeUndefined();
+  });
+
+  it('compaction有効時は予算超過の往復で履歴を圧縮しtraceへcompactionを積む', async () => {
+    const agent = createAgent({ metadata: agentMeta('compactor'), kind: 'normal', systemPrompt: 'Answer.', tools: [], harness: harnessOf({ compaction: true }) });
+    const history = Array.from({ length: 4 }, (_, index) => ({ role: (index % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant', content: 'h'.repeat(7_000) }));
+    const model = new QueueModel([stop('compacted answer')]);
+    const run = await harnessUseCase({ agent, model }).executeSaved({ scope, agentId: 'compactor', message: 'go', mode: 'preview', history });
+
+    // system(7) + 履歴28000 + user(2) = 28009 → 古い2件を落として 14009。
+    expect(run.trace.find((event) => event.kind === 'compaction')).toMatchObject({ kind: 'compaction', beforeChars: 28_009, afterChars: 14_009 });
+    expect(model.requests[0]?.messages).toHaveLength(4);
+  });
+
+  it('compaction有効でも予算内ならメッセージもtraceも変えない（境界）', async () => {
+    const agent = createAgent({ metadata: agentMeta('compactor2'), kind: 'normal', systemPrompt: 'Answer.', tools: [], harness: harnessOf({ compaction: true }) });
+    const history = Array.from({ length: 2 }, () => ({ role: 'user' as const, content: 'h'.repeat(1_000) }));
+    const model = new QueueModel([stop('short answer')]);
+    const run = await harnessUseCase({ agent, model }).executeSaved({ scope, agentId: 'compactor2', message: 'go', mode: 'preview', history });
+
+    expect(run.trace.some((event) => event.kind === 'compaction')).toBe(false);
+    expect(model.requests[0]?.messages).toHaveLength(4);
+  });
+
+  it('ハーネス明示設定Agentはノード内のモデル往復上限を8へ拡張する', async () => {
+    const agent = createAgent({
+      metadata: agentMeta('looper'), kind: 'normal', systemPrompt: 'Loop.', tools: [],
+      harness: harnessOf({ todoProvider: true }),
+    });
+    // 既定(5)なら6往復目で失敗するが、ハーネス設定Agentは8往復まで許される。
+    const model = new QueueModel([
+      ...Array.from({ length: 6 }, (_, index) => toolCall(`t${index}`, 'todos_add', { items: [`step ${index}`] })),
+      stop('finished after seven rounds'),
+    ]);
+    const run = await harnessUseCase({ agent, model }).executeSaved({ scope, agentId: 'looper', message: 'go', mode: 'preview' });
+    expect(run.response).toBe('finished after seven rounds');
+    expect(model.requests).toHaveLength(7);
+  });
+
+  it('ハーネス明示設定Agentはノード内のツール呼び出し上限を12へ拡張する', async () => {
+    const agent = createAgent({
+      metadata: agentMeta('many-calls'), kind: 'normal', systemPrompt: 'Look up scores.',
+      tools: [{ internalId: 'score-tool', version: SemVer.parse('1.2.0') }], harness: harnessOf({}),
+    });
+    // 1往復で5件（既定の MAX_TOOL_CALLS=4 超）。ハーネス設定Agentなら通る。
+    const calls = Array.from({ length: 5 }, (_, index) => ({ id: `c${index}`, name: 'score_lookup', arguments: { name: `N${index}`, score: index } }));
+    const model = new QueueModel([
+      { message: { role: 'assistant', content: null, toolCalls: calls }, finishReason: 'tool_calls' },
+      stop('looked up five'),
+    ]);
+    const run = await harnessUseCase({ agent, model, tool: makeTool() }).executeSaved({ scope, agentId: 'many-calls', message: 'go', mode: 'preview' });
+    expect(run.response).toBe('looked up five');
+    expect(run.tools).toHaveLength(5);
+  });
+
+  it('functionInvocation:falseでモデルがツールを呼んだらfail closedで拒否する', async () => {
+    const agent = createAgent({
+      metadata: agentMeta('closed'), kind: 'normal', systemPrompt: 'Answer.',
+      tools: [{ internalId: 'score-tool', version: SemVer.parse('1.2.0') }],
+      harness: harnessOf({ functionInvocation: false }),
+    });
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'A', score: 1 })]);
+    await expect(harnessUseCase({ agent, model, tool: makeTool() }).executeSaved({ scope, agentId: 'closed', message: 'go', mode: 'preview' }))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/function invocation is disabled/) }) });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toolApproval（承認待ち → 再開）
+// ---------------------------------------------------------------------------
+
+function approvalAgent(id = 'approver'): Agent {
+  return createAgent({
+    metadata: agentMeta(id), kind: 'normal', systemPrompt: 'Use the tool.',
+    tools: [{ internalId: 'score-tool', version: SemVer.parse('1.2.0') }],
+    harness: harnessOf({ toolApproval: true }),
+  });
+}
+const kinds = (run: { readonly trace: readonly { readonly kind: string }[] }): readonly string[] => run.trace.map((event) => event.kind);
+
+describe('RunAgentPreviewUseCase tool approval', () => {
+  it('toolApproval:on + session-writeツール + interactive なら、実行前に waiting-approval で停止する', async () => {
+    const runs = new MemoryRuns();
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 })]);
+    const run = await harnessUseCase({ agent: approvalAgent(), model, tool: makeTool('session-write'), runs })
+      .executeSaved({ scope, agentId: 'approver', message: 'go', mode: 'preview', interactive: true });
+
+    expect(run.status).toBe('waiting-approval');
+    expect(run.checkpoint).toMatchObject({ tool: 'score_lookup', sideEffect: 'session-write', expiresAt: '2026-07-12T00:00:00.000Z' });
+    expect(run.checkpoint?.prompt).toContain('Approval required');
+    // ツールは実行されていない（tool-call / tool-result が無い）。
+    expect(kinds(run)).toEqual(['model-request', 'approval-requested']);
+
+    const stored = runs.records.get(run.runId);
+    expect(stored?.status).toBe('waiting-approval');
+    expect(stored?.checkpoint).toMatchObject({
+      kind: 'tool-approval', step: 1,
+      agentRef: { internalId: 'approver', version: '1.0.0' },
+      pendingCalls: [{ id: 'c1', name: 'score_lookup', arguments: { name: 'Alice', score: 42 } }],
+      executedToolRefs: [],
+      budget: { remainingModelRounds: 11, remainingToolCalls: 16 },
+    });
+    // 再開に必要な全メッセージ（assistantのtoolCalls含む）が保存されている。
+    expect(stored?.checkpoint?.messages.map((message) => message.role)).toEqual(['system', 'user', 'assistant']);
+    expect(stored?.checkpoint?.messages.at(-1)?.toolCalls).toMatchObject([{ id: 'c1', name: 'score_lookup' }]);
+  });
+
+  it('approve再開でツールを実行して完走し、traceに approval-requested → approval-resolved が正順で並ぶ', async () => {
+    const runs = new MemoryRuns();
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('Alice: 42')]);
+    const usecase = harnessUseCase({ agent: approvalAgent(), model, tool: makeTool('session-write'), runs });
+    const paused = await usecase.executeSaved({ scope, agentId: 'approver', message: 'go', mode: 'preview', interactive: true });
+    const resumed = await usecase.resumeSavedRun({ scope, runId: paused.runId, decision: 'approve' });
+
+    expect(resumed.runId).toBe(paused.runId);
+    expect(resumed.status).toBeUndefined();
+    expect(resumed.response).toBe('Alice: 42');
+    expect(kinds(resumed)).toEqual(['model-request', 'approval-requested', 'approval-resolved', 'tool-call', 'tool-result', 'model-request', 'model-response']);
+    expect(resumed.trace.find((event) => event.kind === 'approval-resolved')).toMatchObject({ decision: 'approve' });
+    expect(resumed.tools).toMatchObject([{ internalId: 'score-tool', version: '1.2.0' }]);
+    // usage は停止前の往復ぶんも通算される。
+    expect(resumed.usage.totalTokens).toBe(2);
+    // 承認したツールの結果がモデルへ渡る。
+    expect(toolContents(model.requests[1])[0]).toContain('"name":"Alice"');
+
+    const stored = runs.records.get(paused.runId);
+    expect(stored?.status).toBe('succeeded');
+    expect(stored?.checkpoint).toBeUndefined();
+  });
+
+  it('reject再開は拒否結果をモデルへ渡し、代替案で完走できる', async () => {
+    const runs = new MemoryRuns();
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('I will not run that tool.')]);
+    const usecase = harnessUseCase({ agent: approvalAgent(), model, tool: makeTool('session-write'), runs });
+    const paused = await usecase.executeSaved({ scope, agentId: 'approver', message: 'go', mode: 'preview', interactive: true });
+    const resumed = await usecase.resumeSavedRun({ scope, runId: paused.runId, decision: 'reject', feedback: 'too risky' });
+
+    expect(resumed.response).toBe('I will not run that tool.');
+    expect(kinds(resumed)).toEqual(['model-request', 'approval-requested', 'approval-resolved', 'model-request', 'model-response']);
+    expect(resumed.trace.find((event) => event.kind === 'approval-resolved')).toMatchObject({ decision: 'reject' });
+    expect(JSON.parse(toolContents(model.requests[1])[0] as string)).toEqual({ approved: false, reason: 'too risky' });
+    // ツールは実行されていない。
+    expect(resumed.tools).toBeUndefined();
+    expect(runs.records.get(paused.runId)?.status).toBe('succeeded');
+  });
+
+  it('feedback省略のrejectは既定理由をモデルへ渡す', async () => {
+    const runs = new MemoryRuns();
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('understood')]);
+    const usecase = harnessUseCase({ agent: approvalAgent(), model, tool: makeTool('session-write'), runs });
+    const paused = await usecase.executeSaved({ scope, agentId: 'approver', message: 'go', mode: 'preview', interactive: true });
+    await usecase.resumeSavedRun({ scope, runId: paused.runId, decision: 'reject' });
+    expect(JSON.parse(toolContents(model.requests[1])[0] as string)).toEqual({ approved: false, reason: 'rejected by user' });
+  });
+
+  it('同一往復の2件目が承認対象なら、1件目を実行してから再び承認待ちになる', async () => {
+    const runs = new MemoryRuns();
+    const model = new QueueModel([
+      { message: { role: 'assistant', content: null, toolCalls: [
+        { id: 'c1', name: 'score_lookup', arguments: { name: 'A', score: 1 } },
+        { id: 'c2', name: 'score_lookup', arguments: { name: 'B', score: 2 } },
+      ] }, finishReason: 'tool_calls', usage: { totalTokens: 1 } },
+      stop('both applied'),
+    ]);
+    const usecase = harnessUseCase({ agent: approvalAgent(), model, tool: makeTool('session-write'), runs });
+    const first = await usecase.executeSaved({ scope, agentId: 'approver', message: 'go', mode: 'preview', interactive: true });
+    expect(runs.records.get(first.runId)?.checkpoint?.pendingCalls).toMatchObject([{ id: 'c1' }, { id: 'c2' }]);
+
+    const second = await usecase.resumeSavedRun({ scope, runId: first.runId, decision: 'approve' });
+    expect(second.status).toBe('waiting-approval');
+    // 1件目だけ実行され、2件目が新しい承認対象として残る。
+    expect(runs.records.get(first.runId)?.checkpoint).toMatchObject({ step: 1, pendingCalls: [{ id: 'c2' }], executedToolRefs: [{ internalId: 'score-tool' }] });
+    expect(kinds(second)).toEqual(['model-request', 'approval-requested', 'approval-resolved', 'tool-call', 'tool-result', 'approval-requested']);
+
+    const third = await usecase.resumeSavedRun({ scope, runId: first.runId, decision: 'approve' });
+    expect(third.response).toBe('both applied');
+    expect(third.tools).toHaveLength(2);
+  });
+
+  it('interactive未指定（Harness/Factory/シナリオ検証など）は承認ゲートを通さず従来どおり実行する', async () => {
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('done')]);
+    const run = await harnessUseCase({ agent: approvalAgent(), model, tool: makeTool('session-write') })
+      .executeSaved({ scope, agentId: 'approver', message: 'go', mode: 'preview' });
+
+    expect(run.status).toBeUndefined();
+    expect(run.response).toBe('done');
+    expect(kinds(run)).toEqual(['model-request', 'tool-call', 'tool-result', 'model-request', 'model-response']);
+  });
+
+  it('toolApproval:off なら interactive でも従来どおり実行する', async () => {
+    const agent = createAgent({
+      metadata: agentMeta('no-approval'), kind: 'normal', systemPrompt: 'Use the tool.',
+      tools: [{ internalId: 'score-tool', version: SemVer.parse('1.2.0') }], harness: harnessOf({}),
+    });
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('done')]);
+    const run = await harnessUseCase({ agent, model, tool: makeTool('session-write') })
+      .executeSaved({ scope, agentId: 'no-approval', message: 'go', mode: 'preview', interactive: true });
+
+    expect(run.response).toBe('done');
+    expect(run.trace.some((event) => event.kind === 'approval-requested')).toBe(false);
+  });
+
+  it('read-onlyツールは toolApproval:on + interactive でも承認を要求しない', async () => {
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('done')]);
+    const run = await harnessUseCase({ agent: approvalAgent(), model, tool: makeTool() })
+      .executeSaved({ scope, agentId: 'approver', message: 'go', mode: 'preview', interactive: true });
+
+    expect(run.response).toBe('done');
+    expect(run.trace.some((event) => event.kind === 'approval-requested')).toBe(false);
+  });
+
+  it('ランタイムツール（todos_*）は toolApproval:on でも自動承認で実行する', async () => {
+    const agent = createAgent({
+      metadata: agentMeta('todo-approver'), kind: 'normal', systemPrompt: 'Track.', tools: [],
+      harness: harnessOf({ toolApproval: true, todoProvider: true }),
+    });
+    const model = new QueueModel([toolCall('t1', 'todos_add', { items: ['step 1'] }), stop('tracked')]);
+    const run = await harnessUseCase({ agent, model }).executeSaved({ scope, agentId: 'todo-approver', message: 'go', mode: 'preview', interactive: true });
+
+    expect(run.response).toBe('tracked');
+    expect(run.trace.some((event) => event.kind === 'approval-requested')).toBe(false);
+  });
+
+  it('委譲の子Run（depth>0）は toolApproval でも停止せず自動承認で実行する', async () => {
+    const sub = createAgent({
+      metadata: agentMeta('sub'), kind: 'normal', systemPrompt: 'Score.',
+      tools: [{ internalId: 'score-tool', version: SemVer.parse('1.2.0') }], harness: harnessOf({ toolApproval: true }),
+    });
+    const root = createAgent({ metadata: agentMeta('root'), kind: 'normal', systemPrompt: 'Delegate.', tools: [], agents: [subRef('sub')] });
+    const runs = new MemoryRuns();
+    const model = new QueueModel([
+      toolCall('c1', 'ask_sub', { message: 'score Alice' }),
+      toolCall('c2', 'score_lookup', { name: 'Alice', score: 42 }),
+      stop('sub done'),
+      stop('root done'),
+    ]);
+    const run = await multiUseCase(makeTool('session-write'), model, new MapAgents(new Map([['sub', sub], ['root', root]])), runs)
+      .executeSaved({ scope, agentId: 'root', message: 'go', mode: 'preview', interactive: true });
+
+    expect(run.response).toBe('root done');
+    expect(runs.records.get('run-2')?.status).toBe('succeeded');
+    expect(runs.records.get('run-2')?.trace.some((event) => event.kind === 'approval-requested')).toBe(false);
+  });
+
+  it('期限切れcheckpointの再開はRunをfailedへ確定してエラーにする', async () => {
+    const runs = new MemoryRuns();
+    let clock = new Date('2026-07-11T00:00:00.000Z');
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('never reached')]);
+    const usecase = harnessUseCase({ agent: approvalAgent(), model, tool: makeTool('session-write'), runs, now: () => clock });
+    const paused = await usecase.executeSaved({ scope, agentId: 'approver', message: 'go', mode: 'preview', interactive: true });
+    clock = new Date('2026-07-13T00:00:00.000Z');
+
+    await expect(usecase.resumeSavedRun({ scope, runId: paused.runId, decision: 'approve' }))
+      .rejects.toMatchObject({ runId: paused.runId, cause: expect.objectContaining({ message: expect.stringMatching(/checkpoint expired/) }) });
+    const stored = runs.records.get(paused.runId);
+    expect(stored?.status).toBe('failed');
+    expect(stored?.checkpoint).toBeUndefined();
+    expect(stored?.failure).toMatchObject({ code: 'AGENT_RUN' });
+    // モデルは再開で呼ばれない。
+    expect(model.requests).toHaveLength(1);
+  });
+
+  it('承認待ちでないRun・未知のRunの再開を拒否する', async () => {
+    const runs = new MemoryRuns();
+    const model = new QueueModel([stop('done')]);
+    const usecase = harnessUseCase({ agent: approvalAgent(), model, tool: makeTool(), runs });
+    const done = await usecase.executeSaved({ scope, agentId: 'approver', message: 'go', mode: 'preview', interactive: true });
+
+    await expect(usecase.resumeSavedRun({ scope, runId: done.runId, decision: 'approve' })).rejects.toThrow(/not waiting for approval/);
+    await expect(usecase.resumeSavedRun({ scope, runId: 'ghost', decision: 'approve' })).rejects.toThrow(/run not found/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MCPサーバーのツール（Agent.mcpServers）
+// ---------------------------------------------------------------------------
+
+const mcpObjectSchema = { type: 'object' as const, properties: { path: { type: 'string' } }, required: ['path'] };
+
+async function mcpServerRepo(...names: readonly (string | { readonly name: string; readonly disabled: boolean })[]): Promise<McpServerRepository> {
+  const repo = new InMemoryMcpServerRepository();
+  for (const entry of names) {
+    const { name, disabled } = typeof entry === 'string' ? { name: entry, disabled: false } : entry;
+    await repo.save(createMcpServerConfig({
+      scope, name, disabled,
+      transport: { kind: 'stdio', command: 'node', args: ['server.js'], env: {} },
+      updatedAt: '2026-07-11T00:00:00.000Z',
+    }));
+  }
+  return repo;
+}
+
+function mcpAgent(id: string, mcpServers: readonly string[], harness?: AgentRuntimeHarness): Agent {
+  return createAgent({
+    metadata: agentMeta(id), kind: 'normal', systemPrompt: 'Use MCP tools.', tools: [], mcpServers,
+    ...(harness === undefined ? {} : { harness }),
+  });
+}
+
+describe('RunAgentPreviewUseCase MCP tools', () => {
+  it('mcpServers指定Agentはマングル名でツールを提示し、呼び出しをサーバーへルーティングして完走する', async () => {
+    const agent = mcpAgent('mcp-user', ['files']);
+    const model = new QueueModel([toolCall('c1', 'mcp__files__read_file', { path: 'a.txt' }), stop('read it')]);
+    const mcpClient = new FakeMcpClient(
+      { files: [{ name: 'read_file', description: 'Read a file.', inputSchema: mcpObjectSchema }] },
+      { 'files/read_file': { content: 'hello world', isError: false } },
+    );
+    const run = await harnessUseCase({ agent, model, mcpServers: await mcpServerRepo('files'), mcpClient })
+      .executeSaved({ scope, agentId: 'mcp-user', message: 'go', mode: 'preview' });
+
+    expect(model.requests[0]?.tools).toMatchObject([{ name: 'mcp__files__read_file', description: 'Read a file.', parameters: { type: 'object', required: ['path'] } }]);
+    expect(mcpClient.calls).toEqual([{ server: 'files', tool: 'read_file', args: { path: 'a.txt' } }]);
+    // 結果はそのままモデルへ渡る。
+    expect(toolContents(model.requests[1])[0]).toBe('hello world');
+    expect(run.response).toBe('read it');
+    expect(kinds(run)).toEqual(['model-request', 'tool-call', 'tool-result', 'model-request', 'model-response']);
+    expect(run.trace.find((event) => event.kind === 'tool-result')).toMatchObject({ terminalId: 'mcp', outputPreview: [{ server: 'files', tool: 'read_file', isError: false }] });
+    // MCPツールはETL Toolではないので tools（実行済みTool参照）へは載らない。
+    expect(run.tools).toBeUndefined();
+  });
+
+  it('isError:true の結果も例外にせずtool結果としてモデルへ渡す', async () => {
+    const agent = mcpAgent('mcp-error', ['files']);
+    const model = new QueueModel([toolCall('c1', 'mcp__files__read_file', { path: 'missing.txt' }), stop('handled the error')]);
+    const mcpClient = new FakeMcpClient(
+      { files: [{ name: 'read_file', inputSchema: mcpObjectSchema }] },
+      { 'files/read_file': { content: 'ENOENT: no such file', isError: true } },
+    );
+    const run = await harnessUseCase({ agent, model, mcpServers: await mcpServerRepo('files'), mcpClient })
+      .executeSaved({ scope, agentId: 'mcp-error', message: 'go', mode: 'preview' });
+
+    expect(run.response).toBe('handled the error');
+    expect(toolContents(model.requests[1])[0]).toBe('ENOENT: no such file');
+    expect(run.trace.find((event) => event.kind === 'tool-result')).toMatchObject({ outputPreview: [{ isError: true }] });
+  });
+
+  it('実行時の接続失敗はRunを落とさず「利用不可」をtool結果として返す', async () => {
+    const agent = mcpAgent('mcp-flaky', ['files']);
+    const model = new QueueModel([toolCall('c1', 'mcp__files__read_file', { path: 'a.txt' }), stop('will try later')]);
+    const mcpClient = new FakeMcpClient(
+      { files: [{ name: 'read_file', inputSchema: mcpObjectSchema }] },
+      { 'files/read_file': new McpClientError('connection closed') },
+    );
+    const run = await harnessUseCase({ agent, model, mcpServers: await mcpServerRepo('files'), mcpClient })
+      .executeSaved({ scope, agentId: 'mcp-flaky', message: 'go', mode: 'preview' });
+
+    expect(run.response).toBe('will try later');
+    expect(toolContents(model.requests[1])[0]).toBe("MCP server 'files' unavailable: connection closed");
+  });
+
+  it('listTools失敗・disabled・未登録のサーバーはスキップし、残りのサーバーで実行を続ける', async () => {
+    const agent = mcpAgent('mcp-partial', ['files', 'broken', 'off', 'ghost']);
+    const model = new QueueModel([toolCall('c1', 'mcp__files__read_file', { path: 'a.txt' }), stop('done')]);
+    const mcpClient = new FakeMcpClient({
+      files: [{ name: 'read_file', inputSchema: mcpObjectSchema }],
+      broken: new McpClientError('failed to start'),
+      off: [{ name: 'never', inputSchema: mcpObjectSchema }],
+    });
+    const run = await harnessUseCase({ agent, model, mcpServers: await mcpServerRepo('files', 'broken', { name: 'off', disabled: true }), mcpClient })
+      .executeSaved({ scope, agentId: 'mcp-partial', message: 'go', mode: 'preview' });
+
+    expect(model.requests[0]?.tools?.map((definition) => definition.name)).toEqual(['mcp__files__read_file']);
+    expect(mcpClient.listed).toEqual(['files', 'broken']);
+    expect(run.response).toBe('done');
+  });
+
+  it('mcpServers未指定Agentとポート未注入の実行は従来どおりMCPツールを提示しない', async () => {
+    const plain = createAgent({ metadata: agentMeta('no-mcp'), kind: 'normal', systemPrompt: 'Answer.', tools: [] });
+    const first = new QueueModel([stop('ok')]);
+    const mcpClient = new FakeMcpClient({ files: [{ name: 'read_file', inputSchema: mcpObjectSchema }] });
+    await harnessUseCase({ agent: plain, model: first, mcpServers: await mcpServerRepo('files'), mcpClient })
+      .executeSaved({ scope, agentId: 'no-mcp', message: 'go', mode: 'preview' });
+    expect(first.requests[0]?.tools).toBeUndefined();
+    expect(mcpClient.listed).toEqual([]);
+
+    // mcpServers を持っていても、ポートが配線されていなければ従来動作のまま。
+    const second = new QueueModel([stop('ok')]);
+    await harnessUseCase({ agent: mcpAgent('mcp-unwired', ['files']), model: second })
+      .executeSaved({ scope, agentId: 'mcp-unwired', message: 'go', mode: 'preview' });
+    expect(second.requests[0]?.tools).toBeUndefined();
+  });
+
+  it('functionInvocation:false ではMCPツールも提示せず、サーバーへ接続もしない', async () => {
+    const agent = mcpAgent('mcp-closed', ['files'], harnessOf({ functionInvocation: false }));
+    const model = new QueueModel([stop('answered without tools')]);
+    const mcpClient = new FakeMcpClient({ files: [{ name: 'read_file', inputSchema: mcpObjectSchema }] });
+    const run = await harnessUseCase({ agent, model, mcpServers: await mcpServerRepo('files'), mcpClient })
+      .executeSaved({ scope, agentId: 'mcp-closed', message: 'go', mode: 'preview' });
+
+    expect(run.response).toBe('answered without tools');
+    expect(model.requests[0]?.tools).toBeUndefined();
+    expect(mcpClient.listed).toEqual([]);
+  });
+
+  it('toolApproval:on + interactive はMCPツールで停止し、approve再開で（定義を再構築して）実行する', async () => {
+    const agent = mcpAgent('mcp-approver', ['files'], harnessOf({ toolApproval: true }));
+    const runs = new MemoryRuns();
+    const model = new QueueModel([toolCall('c1', 'mcp__files__read_file', { path: 'a.txt' }), stop('read it')]);
+    const mcpClient = new FakeMcpClient(
+      { files: [{ name: 'read_file', inputSchema: mcpObjectSchema }] },
+      { 'files/read_file': { content: 'hello world', isError: false } },
+    );
+    const usecase = harnessUseCase({ agent, model, runs, mcpServers: await mcpServerRepo('files'), mcpClient });
+    const paused = await usecase.executeSaved({ scope, agentId: 'mcp-approver', message: 'go', mode: 'preview', interactive: true });
+
+    expect(paused.status).toBe('waiting-approval');
+    expect(paused.checkpoint).toMatchObject({ tool: 'mcp__files__read_file', sideEffect: 'external-action' });
+    expect(paused.checkpoint?.prompt).toContain("Approval required: MCP tool 'files/read_file'");
+    expect(paused.checkpoint?.prompt).toContain('"path":"a.txt"');
+    expect(mcpClient.calls).toEqual([]);
+
+    const resumed = await usecase.resumeSavedRun({ scope, runId: paused.runId, decision: 'approve' });
+    expect(resumed.response).toBe('read it');
+    // 再開経路でも listTools が走り、マングル名 → サーバー/ツールの対応が組み直されている。
+    expect(mcpClient.listed).toEqual(['files', 'files']);
+    expect(mcpClient.calls).toEqual([{ server: 'files', tool: 'read_file', args: { path: 'a.txt' } }]);
+    expect(kinds(resumed)).toEqual(['model-request', 'approval-requested', 'approval-resolved', 'tool-call', 'tool-result', 'model-request', 'model-response']);
+    expect(runs.records.get(paused.runId)?.status).toBe('succeeded');
+  });
+
+  it('MCPツールのrejectは拒否結果をモデルへ渡して継続する', async () => {
+    const agent = mcpAgent('mcp-rejecter', ['files'], harnessOf({ toolApproval: true }));
+    const model = new QueueModel([toolCall('c1', 'mcp__files__read_file', { path: 'a.txt' }), stop('I will not read that.')]);
+    const mcpClient = new FakeMcpClient({ files: [{ name: 'read_file', inputSchema: mcpObjectSchema }] });
+    const usecase = harnessUseCase({ agent, model, mcpServers: await mcpServerRepo('files'), mcpClient });
+    const paused = await usecase.executeSaved({ scope, agentId: 'mcp-rejecter', message: 'go', mode: 'preview', interactive: true });
+    const resumed = await usecase.resumeSavedRun({ scope, runId: paused.runId, decision: 'reject', feedback: 'not allowed' });
+
+    expect(resumed.response).toBe('I will not read that.');
+    expect(JSON.parse(toolContents(model.requests[1])[0] as string)).toEqual({ approved: false, reason: 'not allowed' });
+    expect(mcpClient.calls).toEqual([]);
+  });
+
+  it('再開時にサーバーへ再接続できないと、原因の分かるエラーでRunを失敗させる', async () => {
+    const agent = mcpAgent('mcp-lost', ['files'], harnessOf({ toolApproval: true }));
+    const runs = new MemoryRuns();
+    const model = new QueueModel([toolCall('c1', 'mcp__files__read_file', { path: 'a.txt' }), stop('never reached')]);
+    const mcpClient = new FakeMcpClient({ files: [{ name: 'read_file', inputSchema: mcpObjectSchema }] });
+    const usecase = harnessUseCase({ agent, model, runs, mcpServers: await mcpServerRepo('files'), mcpClient });
+    const paused = await usecase.executeSaved({ scope, agentId: 'mcp-lost', message: 'go', mode: 'preview', interactive: true });
+
+    mcpClient.tools.set('files', new McpClientError('server is gone'));
+    await expect(usecase.resumeSavedRun({ scope, runId: paused.runId, decision: 'approve' }))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/MCP tool 'mcp__files__read_file' is unavailable/) }) });
+    expect(runs.records.get(paused.runId)?.status).toBe('failed');
+  });
+
+  it('MCPツールもツール呼び出しバジェットを消費する', async () => {
+    const agent = mcpAgent('mcp-budget', ['files']);
+    const model = new QueueModel([
+      { message: { role: 'assistant', content: null, toolCalls: Array.from({ length: 3 }, (_, index) => ({ id: `c${index}`, name: 'mcp__files__read_file', arguments: { path: `${index}.txt` } })) }, finishReason: 'tool_calls' },
+      stop('done'),
+    ]);
+    const mcpClient = new FakeMcpClient({ files: [{ name: 'read_file', inputSchema: mcpObjectSchema }] });
+    // 既存ツールと同じく1件ごとにツリー共有バジェットを減算するので、3件目で枯渇して失敗する。
+    await expect(harnessUseCase({ agent, model, mcpServers: await mcpServerRepo('files'), mcpClient })
+      .executeSaved({ scope, agentId: 'mcp-budget', message: 'go', mode: 'preview', budget: { remainingToolCalls: 2 } }))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/budget exhausted: tool calls/) }) });
+    expect(mcpClient.calls).toHaveLength(2);
   });
 });

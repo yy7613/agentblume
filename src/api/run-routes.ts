@@ -4,7 +4,26 @@ import type { RunAgentPreviewUseCase } from '../application/agent/run-agent-prev
 import type { QueryRunsUseCase } from '../application/agent/query-runs';
 import { SemVer } from '../domain/tool/semver';
 import { BadRequestError } from './error-mapping';
-import { runAgentBodySchema, runListQuerySchema, runTraceQuerySchema } from './schemas';
+import { resumeRunBodySchema, runAgentBodySchema, runListQuerySchema, runTraceQuerySchema } from './schemas';
+import type { RunApprovalCheckpoint, RunRecord } from '../domain/run/run';
+
+/**
+ * 保存されたcheckpointのうち、UIが承認判断に必要な部分だけを返す。
+ * 会話履歴（messages）はモデルへ渡す再開用データなので、参照系APIでは公開しない。
+ */
+function checkpointSummary(checkpoint: RunApprovalCheckpoint | undefined) {
+  if (checkpoint === undefined) return undefined;
+  return {
+    kind: checkpoint.kind,
+    prompt: checkpoint.prompt,
+    expiresAt: checkpoint.expiresAt,
+    pendingCalls: checkpoint.pendingCalls.map((call) => ({ id: call.id, name: call.name })),
+  };
+}
+
+function runView(record: RunRecord) {
+  return { ...record, checkpoint: checkpointSummary(record.checkpoint) };
+}
 
 export interface RunRouteDeps {
   readonly runAgentPreview: RunAgentPreviewUseCase;
@@ -42,6 +61,8 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
         ...(body.memoryPageIds !== undefined ? { memoryPageIds: body.memoryPageIds } : {}),
         ...(body.sessionId !== undefined ? { sessionId: body.sessionId } : {}),
         ...(body.history !== undefined ? { history: body.history } : {}),
+        // 対話相手（人間）がいる唯一の入口。toolApproval の承認ゲートはここからの実行だけで発火する。
+        interactive: true,
       }, request.raw.signal);
     } else {
       const version = parseVersion(body.tool.version);
@@ -59,6 +80,21 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
     return { run };
   });
 
+  /**
+   * 承認待ちで停止したRunを、人間の承認結果とともに同じrunIdで再開する。
+   * 応答は POST /runs と同じ形（再開後に別のツールで再び waiting-approval になることもある）。
+   */
+  app.post<{ Params: { runId: string } }>('/runs/:runId/resume', async (request) => {
+    const body = parseWith(resumeRunBodySchema, request.body);
+    const run = await deps.runAgentPreview.resumeSavedRun({
+      scope: body.scope,
+      runId: request.params.runId,
+      decision: body.decision,
+      ...(body.feedback !== undefined ? { feedback: body.feedback } : {}),
+    }, request.raw.signal);
+    return { run };
+  });
+
   app.get('/runs', async (request) => {
     const query = parseWith(runListQuerySchema, request.query);
     const scope = { tenantId: query.tenantId, workspaceId: query.workspaceId };
@@ -70,6 +106,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
       runId: record.runId, sessionId: record.sessionId, status: record.status, mode: record.mode, purpose: record.purpose, model: record.model, tool: record.tool, tools: record.tools, agent: record.agent,
       startedAt: record.startedAt, completedAt: record.completedAt,
       response: record.response, failure: record.failure, usage: record.usage, latency: record.latency, estimatedCost: record.estimatedCost,
+      checkpoint: checkpointSummary(record.checkpoint),
       traceEventCount: record.trace.length,
     })) };
   });
@@ -77,6 +114,6 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
   app.get<{ Params: { runId: string } }>('/runs/:runId/trace', async (request) => {
     const query = parseWith(runTraceQuerySchema, request.query);
     const run = await deps.queryRuns.get({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.runId);
-    return { run };
+    return { run: runView(run) };
   });
 }

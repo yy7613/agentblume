@@ -1,4 +1,4 @@
-import { createAgent, type Agent, type AgentKind, type AgentPersonaRef, type AgentSubAgentRef } from '../../domain/agent/agent';
+import { createAgent, type Agent, type AgentKind, type AgentPersonaRef, type AgentRuntimeHarness, type AgentSubAgentRef } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
 import { AgentValidationError } from '../../domain/agent/errors';
@@ -23,6 +23,10 @@ export interface SaveAgentInput {
   readonly tools: readonly { readonly internalId: string; readonly version: SemVer }[];
   readonly agents?: readonly AgentSubAgentRef[];
   readonly wikis?: readonly { readonly wikiId: string }[];
+  /** ツールを注入する保存済みMCPサーバー名。未指定・空は従来動作（MCPツールなし）。 */
+  readonly mcpServers?: readonly string[];
+  /** ランタイムハーネス設定（Agent単位のopt-in）。未指定は従来動作。 */
+  readonly harness?: AgentRuntimeHarness;
   readonly persona?: AgentPersonaRef;
   readonly bump?: 'major' | 'minor' | 'patch';
   readonly state?: PublishState;
@@ -54,6 +58,8 @@ export class SaveAgentUseCase {
       tools: input.tools,
       agents: subAgents,
       wikis: input.wikis ?? [],
+      mcpServers: input.mcpServers ?? [],
+      ...(input.harness !== undefined ? { harness: input.harness } : {}),
       ...(input.persona !== undefined ? { persona: input.persona } : {}),
       ...(input.output !== undefined ? { output: input.output } : {}),
     });
