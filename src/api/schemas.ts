@@ -557,3 +557,5 @@ export const resumeFactoryRunBodySchema = z.object({
   }),
 });
 export const cancelFactoryRunBodySchema = z.object({ scope: tenantScopeSchema });
+/** POST /factory-runs/:runId/retry の body。失敗Runを同じ入力で再実行するだけなので scope のみ受け取る。 */
+export const retryFactoryRunBodySchema = z.object({ scope: tenantScopeSchema });

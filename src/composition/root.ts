@@ -157,6 +157,7 @@ import { ToolSmithRole } from '../application/factory/roles/tool-smith-role';
 import { RunFactoryUseCase } from '../application/factory/run-factory';
 import { CreateFactoryRunUseCase } from '../application/factory/create-factory-run';
 import { ResumeFactoryRunUseCase } from '../application/factory/resume-factory-run';
+import { RetryFactoryRunUseCase } from '../application/factory/retry-factory-run';
 import { CancelFactoryRunUseCase } from '../application/factory/cancel-factory-run';
 import { QueryFactoryRunsUseCase } from '../application/factory/query-factory-runs';
 
@@ -247,6 +248,7 @@ export interface App {
   readonly runFactory: RunFactoryUseCase;
   readonly createFactoryRun: CreateFactoryRunUseCase;
   readonly resumeFactoryRun: ResumeFactoryRunUseCase;
+  readonly retryFactoryRun: RetryFactoryRunUseCase;
   readonly cancelFactoryRun: CancelFactoryRunUseCase;
   readonly queryFactoryRuns: QueryFactoryRunsUseCase;
   readonly saveSkill: SaveSkillUseCase;
@@ -529,7 +531,10 @@ export function createApp(options?: AppOptions): App {
   const applyImprovements = new ApplyImprovementsUseCase(agentAdapter.repo, skillAdapter.repo, repo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine);
   const runFactory = new RunFactoryUseCase(factoryRunAdapter.repo, profileDataSources, plannerRole, generateAgentAssets, runScenario, savePersona, registerPseudoUserAgent, saveScenario, analystRole, applyImprovements, agentAdapter.repo, skillAdapter.repo, repo);
   const factoryWorker = new InProcessFactoryWorker(runFactory);
+  const createFactoryRun = new CreateFactoryRunUseCase(factoryRunAdapter.repo, factoryWorker);
   const resumeFactoryRun = new ResumeFactoryRunUseCase(factoryRunAdapter.repo, runFactory, factoryWorker);
+  // 失敗Runの再実行は「同じ入力で新しいRunを起票する」ため CreateFactoryRunUseCase へ委譲する。
+  const retryFactoryRun = new RetryFactoryRunUseCase(factoryRunAdapter.repo, createFactoryRun);
   const cancelFactoryRun = new CancelFactoryRunUseCase(factoryRunAdapter.repo, factoryWorker);
   const queryFactoryRuns = new QueryFactoryRunsUseCase(factoryRunAdapter.repo);
 
@@ -587,8 +592,9 @@ export function createApp(options?: AppOptions): App {
     profileDataSources,
     plannerRole,
     runFactory,
-    createFactoryRun: new CreateFactoryRunUseCase(factoryRunAdapter.repo, factoryWorker),
+    createFactoryRun,
     resumeFactoryRun,
+    retryFactoryRun,
     cancelFactoryRun,
     queryFactoryRuns,
     saveSkill,

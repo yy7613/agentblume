@@ -134,6 +134,50 @@ describe('factory routes', () => {
     expect(after.json().run.status).toBe('cancelled');
   });
 
+  it('POST /factory-runs/:id/retryはfailed Runを同じ入力の新しいRunとして202で起票し、元Runはfailedのまま残る', async () => {
+    const sourceId = await seedDataSource();
+    // 台本を積まないためStage 1（Planner）でModelProviderErrorとなり、workerがfailedで確定させる。
+    const created = await server.inject({ method: 'POST', url: '/factory-runs', payload: { scope, goal: { goal: 'Answer sales questions', targetUsers: 'Accounting staff', language: 'ja' }, dataSourceIds: [sourceId], options: { maxIterations: 1 } } });
+    const runId = created.json().run.id as string;
+    await waitFor(server, runId, ['failed']);
+
+    const retried = await server.inject({ method: 'POST', url: `/factory-runs/${runId}/retry`, payload: { scope } });
+    expect(retried.statusCode).toBe(202);
+    const retriedRun = retried.json().run as Record<string, unknown>;
+    expect(retriedRun['id']).not.toBe(runId);
+    expect(retriedRun['status']).toBe('queued');
+    expect(retriedRun['failure']).toBeUndefined();
+    expect(retriedRun['input']).toMatchObject({
+      goal: { goal: 'Answer sales questions', targetUsers: 'Accounting staff', language: 'ja' },
+      dataSourceIds: [sourceId],
+      options: { maxIterations: 1 },
+    });
+
+    const original = await server.inject({ method: 'GET', url: `/factory-runs/${runId}`, query: scope });
+    expect(original.json().run.status).toBe('failed');
+  });
+
+  it('failed以外のRunのretryは400、未存在Runのretryは404', async () => {
+    const sourceId = await seedDataSource();
+    model.enqueue({ message: { role: 'assistant', content: planJson(sourceId) }, finishReason: 'stop' });
+    // waiting-approval で停止させ、terminalでない（=failedでない）Runに対するretryを決定的に検証する。
+    const created = await server.inject({ method: 'POST', url: '/factory-runs', payload: { scope, goal: { goal: 'Answer sales questions', language: 'ja' }, dataSourceIds: [sourceId], options: { requirePlanApproval: true } } });
+    const runId = created.json().run.id as string;
+    await waitFor(server, runId, ['waiting-approval']);
+
+    const invalid = await server.inject({ method: 'POST', url: `/factory-runs/${runId}/retry`, payload: { scope } });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().error.code).toBe('FACTORY_VALIDATION');
+
+    const missing = await server.inject({ method: 'POST', url: '/factory-runs/missing/retry', payload: { scope } });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json().error.code).toBe('FACTORY_NOT_FOUND');
+
+    const invalidBody = await server.inject({ method: 'POST', url: `/factory-runs/${runId}/retry`, payload: {} });
+    expect(invalidBody.statusCode).toBe(400);
+    expect(invalidBody.json().error.code).toBe('BAD_REQUEST');
+  });
+
   it('未存在Runは404、不正bodyは400', async () => {
     const missing = await server.inject({ method: 'GET', url: '/factory-runs/missing', query: scope });
     expect(missing.statusCode).toBe(404);

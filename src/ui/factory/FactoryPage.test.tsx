@@ -298,4 +298,37 @@ describe('FactoryPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Cancel run' }));
     await waitFor(() => expect(cancelFactoryRun).toHaveBeenCalledWith('run-1', scope));
   });
+
+  it('failedのrunでは再実行ボタンを表示し、クリックすると新しいrunへ切り替えて一覧を再読込する', async () => {
+    const failed = baseRun({ status: 'failed', stage: 'generating-tools', failure: { stage: 'generating-tools', reason: 'model provider error' } });
+    const retried = baseRun({ id: 'run-2', status: 'queued' });
+    const retryFactoryRun = vi.fn().mockResolvedValue(retried);
+    const listFactoryRuns = vi.fn().mockResolvedValueOnce([failed]).mockResolvedValue([retried, failed]);
+    const client = stubClient({
+      listFactoryRuns,
+      getFactoryRun: vi.fn().mockResolvedValue(retried),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+      retryFactoryRun,
+    });
+    render(<FactoryPage client={client} />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    expect(screen.getByText(/model provider error/)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry run' }));
+    await waitFor(() => expect(retryFactoryRun).toHaveBeenCalledWith('run-1', scope));
+    // 新しいrunが選択され、一覧も再読込される。
+    expect(await screen.findByText('run-2')).toBeTruthy();
+    await waitFor(() => expect(listFactoryRuns).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('button', { name: 'Retry run' })).toBeNull();
+  });
+
+  it('failed以外のrunでは再実行ボタンを表示しない', async () => {
+    const succeeded = baseRun({ status: 'succeeded' });
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([succeeded]) });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText(/Stage:/);
+    expect(screen.queryByRole('button', { name: 'Retry run' })).toBeNull();
+  });
 });

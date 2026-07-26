@@ -172,7 +172,7 @@ function Escape-SingleQuoted {
 $resolvedBaseUrl = Normalize-BaseUrl -Value (Resolve-Setting -Name 'LM_STUDIO_BASE_URL' -ParameterValue $BaseUrl -ParameterProvided $PSBoundParameters.ContainsKey('BaseUrl') -DefaultValue 'http://127.0.0.1:1234/v1')
 $resolvedModel = (Resolve-Setting -Name 'LM_STUDIO_MODEL' -ParameterValue $Model -ParameterProvided $PSBoundParameters.ContainsKey('Model')).Trim()
 $resolvedApiKey = Resolve-Setting -Name 'LM_STUDIO_API_KEY' -ParameterValue $ApiKey -ParameterProvided $PSBoundParameters.ContainsKey('ApiKey')
-$timeoutRaw = Resolve-Setting -Name 'LM_STUDIO_TIMEOUT_MS' -ParameterValue ([string]$TimeoutMs) -ParameterProvided $PSBoundParameters.ContainsKey('TimeoutMs') -DefaultValue '120000'
+$timeoutRaw = Resolve-Setting -Name 'LM_STUDIO_TIMEOUT_MS' -ParameterValue ([string]$TimeoutMs) -ParameterProvided $PSBoundParameters.ContainsKey('TimeoutMs') -DefaultValue '600000'
 
 $resolvedTimeoutMs = 0
 if (-not [int]::TryParse($timeoutRaw, [ref]$resolvedTimeoutMs) -or $resolvedTimeoutMs -le 0) {

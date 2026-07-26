@@ -8,13 +8,15 @@ import type { CancelFactoryRunUseCase } from '../application/factory/cancel-fact
 import type { CreateFactoryRunUseCase } from '../application/factory/create-factory-run';
 import type { QueryFactoryRunsUseCase } from '../application/factory/query-factory-runs';
 import type { ResumeFactoryRunUseCase } from '../application/factory/resume-factory-run';
+import type { RetryFactoryRunUseCase } from '../application/factory/retry-factory-run';
 import { BadRequestError } from './error-mapping';
-import { cancelFactoryRunBodySchema, factoryRunBodySchema, factoryRunListQuerySchema, factoryRunQuerySchema, resumeFactoryRunBodySchema } from './schemas';
+import { cancelFactoryRunBodySchema, factoryRunBodySchema, factoryRunListQuerySchema, factoryRunQuerySchema, resumeFactoryRunBodySchema, retryFactoryRunBodySchema } from './schemas';
 
 export interface FactoryRouteDeps {
   readonly createFactoryRun: CreateFactoryRunUseCase;
   readonly queryFactoryRuns: QueryFactoryRunsUseCase;
   readonly resumeFactoryRun: ResumeFactoryRunUseCase;
+  readonly retryFactoryRun: RetryFactoryRunUseCase;
   readonly cancelFactoryRun: CancelFactoryRunUseCase;
 }
 
@@ -52,6 +54,13 @@ export function registerFactoryRoutes(app: FastifyInstance, deps: FactoryRouteDe
     const body = parseWith(resumeFactoryRunBodySchema, request.body, 'invalid body');
     const run = await deps.resumeFactoryRun.execute({ scope: body.scope, runId: request.params.runId, decision: body.response.decision, ...(body.response.feedback === undefined ? {} : { feedback: body.response.feedback }) }, request.raw.signal);
     return { run };
+  });
+
+  // 失敗Runの再実行: 元Runは書き換えず、同じ入力の新しいRunを起票するため POST /factory-runs と同じ202を返す。
+  app.post<{ Params: { runId: string } }>('/factory-runs/:runId/retry', async (request, reply) => {
+    const body = parseWith(retryFactoryRunBodySchema, request.body, 'invalid body');
+    const run = await deps.retryFactoryRun.execute({ scope: body.scope, runId: request.params.runId });
+    return reply.status(202).send({ run });
   });
 
   app.post<{ Params: { runId: string } }>('/factory-runs/:runId/cancel', async (request) => {

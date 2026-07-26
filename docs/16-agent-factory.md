@@ -276,6 +276,7 @@ GET    /factory-runs
 GET    /factory-runs/:runId
 GET    /factory-runs/:runId/events
 POST   /factory-runs/:runId/responses    # 計画承認: { kind: 'plan-approval', decision, feedback? }
+POST   /factory-runs/:runId/retry        # 202 失敗Run（failed）を同じ入力の新しいRunとして起票する
 POST   /factory-runs/:runId/cancel
 ```
 

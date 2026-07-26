@@ -191,6 +191,18 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
     finally { setBusy(false); }
   }
 
+  /** 失敗Runを同じ入力で再実行する。返るのは新しいRunなので、選択を切り替えたうえで一覧を再読込する。 */
+  async function retryRun(): Promise<void> {
+    if (selectedRun === undefined || busy) return;
+    setBusy(true); setActionError(undefined);
+    try {
+      const run = await client.retryFactoryRun(selectedRun.id, scope);
+      selectRun(run);
+      setRuns(await client.listFactoryRuns(scope));
+    } catch (cause) { setActionError(message(cause)); }
+    finally { setBusy(false); }
+  }
+
   async function cancelRun(): Promise<void> {
     if (selectedRun === undefined || busy) return;
     setBusy(true); setActionError(undefined);
@@ -258,6 +270,7 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
               <span className="run-meta">{text('Stage', 'ステージ')}: {stageLabel(selectedRun.stage, text)}</span>
               {!isTerminal(selectedRun.status) && <span className="run-meta">{text('Elapsed', '経過')}: {formatElapsed(nowMs - new Date(selectedRun.startedAt).getTime(), text)}</span>}
               {!isTerminal(selectedRun.status) && <button type="button" className="secondary danger" disabled={busy} onClick={() => setConfirmCancel(true)}>{text('Cancel', '取消')}</button>}
+              {selectedRun.status === 'failed' && <button type="button" className="secondary" disabled={busy} onClick={() => void retryRun()}>{text('Retry run', '再実行')}</button>}
             </div>
           </div>
 

@@ -130,7 +130,7 @@ flowchart LR
 | `LM_STUDIO_BASE_URL` | `http://127.0.0.1:1234/v1` | OpenAI互換APIのbase URL |
 | `LM_STUDIO_MODEL` | 必須（Agent実行時） | ロード済みモデル識別子。未設定時は暗黙選択せず実行を拒否 |
 | `LM_STUDIO_API_KEY` | 未設定 | Bearer tokenが必要な場合のみ設定 |
-| `LM_STUDIO_TIMEOUT_MS` | `120000` | local推論のtimeout（正のミリ秒） |
+| `LM_STUDIO_TIMEOUT_MS` | `600000` | local推論の総時間timeout（正のミリ秒）。ハング検知は `LM_STUDIO_IDLE_TIMEOUT_MS`（既定60000）が担うため長めに取る |
 
 > プレビュー・テスト・本番実行を明確に表示し、使用データと権限を分離する（`ideas-v2.md §8`）。
 >

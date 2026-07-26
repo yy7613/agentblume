@@ -303,6 +303,11 @@ export class ToolApiClient {
     return (await this.request<{ run: FactoryRunDto }>(`/factory-runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', body: JSON.stringify({ scope }), signal })).run;
   }
 
+  /** 失敗Runを同じ入力で再実行する。返るのは元Runではなく新しく起票されたRun。 */
+  async retryFactoryRun(runId: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<FactoryRunDto> {
+    return (await this.request<{ run: FactoryRunDto }>(`/factory-runs/${encodeURIComponent(runId)}/retry`, { method: 'POST', body: JSON.stringify({ scope }), signal })).run;
+  }
+
   async listDataSources(scope: TenantScopeDto): Promise<readonly DataSourceDto[]> {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     return (await this.request<{ sources: DataSourceDto[] }>(`/data-sources?${query}`)).sources;
