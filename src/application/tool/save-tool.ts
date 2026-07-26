@@ -117,11 +117,23 @@ function hasSessionStorageSink(graph: ToolGraph): boolean {
     || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference'));
 }
 
+/**
+ * filter config（旧形式のフラットな1条件 / 新形式の `{ conditions, combine }`）から
+ * `valueBinding: { source:'agent-input', field }` を集める。実行時（`graphWithArguments`）が
+ * 差し替える対象と同じ集合を返す。
+ */
+function agentInputBindingsOf(config: unknown): { readonly source: 'agent-input'; readonly field: string }[] {
+  const conditions = (config as { conditions?: unknown } | null)?.conditions;
+  const sources = Array.isArray(conditions) ? conditions : [config];
+  return sources
+    .map((condition) => (condition as { valueBinding?: { source?: unknown; field?: unknown } } | null)?.valueBinding)
+    .filter((binding): binding is { source: 'agent-input'; field: string } => binding?.source === 'agent-input' && typeof binding.field === 'string');
+}
+
 function validateAgentInputBindings(graph: ToolGraph, inputSchema: Schema | undefined): void {
   const bindings = graph.nodes
     .filter((node) => node.type === 'filter')
-    .map((node) => (node.config as { valueBinding?: { source?: unknown; field?: unknown } }).valueBinding)
-    .filter((binding): binding is { source: 'agent-input'; field: string } => binding?.source === 'agent-input' && typeof binding.field === 'string');
+    .flatMap((node) => agentInputBindingsOf(node.config));
   if (bindings.length === 0) return;
   if (inputSchema === undefined) throw new ToolValidationError('SaveTool: Agent input bindings require an inputSchema');
   for (const binding of bindings) {

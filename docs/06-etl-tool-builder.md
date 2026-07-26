@@ -63,6 +63,7 @@ flowchart LR
 |---|---|---|:---:|
 | ファイル | CSV / JSON、固定サンプル参照 | 推論 | ✅ |
 | エージェント引数 | 画面で定義した引数 = 入力源 | 引数スキーマから確定 | ✅ |
+| 現在日時（`current-datetime`） | timezone（IANA、省略時はサーバーローカル） | 固定1行（`now` / `date` / `yearMonth` / `time` / `weekday`） | ✅ |
 | DB | 接続（SecretReference）、クエリ | 推論 / 明示 | Phase2 |
 | API | エンドポイント、保存済みレスポンス切替 | 明示（推論不可） | Phase2 |
 | Web検索 | 有効化済みprovider、検索語、取得件数 | 正規化済み検索結果 | ✅ 初期実装 |

@@ -194,6 +194,31 @@ function hasSessionStorageSink(tool: Tool): boolean {
     || (node.type === 'agent-output' && (node.config as { overflow?: unknown }).overflow === 'store-and-reference'));
 }
 
+/**
+ * filter の1条件について `valueBinding: { source:'agent-input', field }` を実引数へ解決する。
+ * バインディングが無ければ同一参照をそのまま返す（差し替えの有無を呼び出し側が判定できる）。
+ */
+function conditionWithArgument(nodeId: string, condition: unknown, row: Row): unknown {
+  const binding = (condition as { valueBinding?: { source?: unknown; field?: unknown } } | null)?.valueBinding;
+  if (binding?.source !== 'agent-input') return condition;
+  if (typeof binding.field !== 'string' || !Object.prototype.hasOwnProperty.call(row, binding.field)) {
+    throw new AgentRunError(`filter node '${nodeId}' references an unavailable Agent input`);
+  }
+  return { ...(condition as Record<string, unknown>), value: row[binding.field] ?? null };
+}
+
+/**
+ * filter config の agent-input バインディングを実行時引数で解決する。旧形式（フラットな1条件）と
+ * 新形式（`{ conditions, combine }`）の両方を扱い、元の形式を保ったまま value だけを差し替える。
+ */
+function filterConfigWithArguments(nodeId: string, config: unknown, row: Row): unknown {
+  const conditions = (config as { conditions?: unknown } | null)?.conditions;
+  if (!Array.isArray(conditions)) return conditionWithArgument(nodeId, config, row);
+  const bound = conditions.map((condition) => conditionWithArgument(nodeId, condition, row));
+  if (bound.every((condition, index) => condition === conditions[index])) return config;
+  return { ...(config as Record<string, unknown>), conditions: bound };
+}
+
 function graphWithArguments(tool: Tool, row: Row): ToolGraph {
   let replaced = 0;
   const nodes = tool.graph.nodes.map((node) => {
@@ -206,13 +231,8 @@ function graphWithArguments(tool: Tool, row: Row): ToolGraph {
       return { ...node, config: { ...config, sample: row } };
     }
     if (node.type !== 'filter') return node;
-    const config = node.config as { valueBinding?: { source?: unknown; field?: unknown } };
-    const binding = config.valueBinding;
-    if (binding?.source !== 'agent-input') return node;
-    if (typeof binding.field !== 'string' || !Object.prototype.hasOwnProperty.call(row, binding.field)) {
-      throw new AgentRunError(`filter node '${node.id}' references an unavailable Agent input`);
-    }
-    return { ...node, config: { ...config, value: row[binding.field] } };
+    const config = filterConfigWithArguments(node.id, node.config, row);
+    return config === node.config ? node : { ...node, config };
   });
   if ((tool.inputSchema?.columns.length ?? 0) > 0 && replaced === 0) {
     throw new AgentRunError('tool declares inputSchema but has no agent-input node');

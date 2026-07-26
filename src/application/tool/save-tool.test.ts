@@ -133,6 +133,31 @@ describe('SaveToolUseCase', () => {
     await expect(usecase.execute(makeInput({ internalId: 'invalid-binding', graph, inputSchema: { columns: [{ name: 'other', type: 'number', nullable: false }] } }))).rejects.toThrow(/unknown field 'minimumScore'/);
   });
 
+  it('複数条件filterのconditions内Agent input bindingも同じ規則で検証する', async () => {
+    const { usecase } = makeSut();
+    const argumentSchema = { columns: [
+      { name: 'minimumScore', type: 'number' as const, nullable: false },
+      { name: 'region', type: 'string' as const, nullable: false },
+    ] };
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42, region: 'Tokyo' }] } },
+        { id: 'filter', type: 'filter', config: { conditions: [
+          { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: 'minimumScore' } },
+          { column: 'region', op: 'eq', value: 'Tokyo', valueBinding: { source: 'agent-input', field: 'region' } },
+        ], combine: 'and' } },
+        { id: 'arguments', type: 'agent-input', config: { schema: argumentSchema, sample: { minimumScore: 0, region: 'Tokyo' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph, inputSchema: argumentSchema })))
+      .resolves.toMatchObject({ inputSchema: { columns: [{ name: 'minimumScore' }, { name: 'region' }] } });
+    await expect(usecase.execute(makeInput({ internalId: 'partial-schema', graph, inputSchema: { columns: [argumentSchema.columns[0]!] } })))
+      .rejects.toThrow(/unknown field 'region'/);
+    await expect(usecase.execute(makeInput({ internalId: 'no-schema', graph })))
+      .rejects.toThrow(/Agent input bindings require an inputSchema/);
+  });
+
   it('2回目の保存は既定 patch で 1.0.1', async () => {
     const { usecase } = makeSut();
 

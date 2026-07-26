@@ -336,12 +336,34 @@ function createRepository(
   return { repo: new InMemoryToolRepository(), close: () => {} };
 }
 
-function resolveModelTimeoutMs(): number {
-  const raw = process.env['LM_STUDIO_TIMEOUT_MS'];
-  if (raw === undefined) return 120_000;
+/** 正のミリ秒 env を読む。未設定は既定値、不正値は ToolValidationError。 */
+function resolvePositiveEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
-    throw new ToolValidationError(`createApp: invalid LM_STUDIO_TIMEOUT_MS: "${raw}"`);
+    throw new ToolValidationError(`createApp: invalid ${name}: "${raw}"`);
+  }
+  return value;
+}
+
+/** 総時間の上限。ハング検知は idle timeout が担うため長めに取る。 */
+function resolveModelTimeoutMs(): number {
+  return resolvePositiveEnv('LM_STUDIO_TIMEOUT_MS', 600_000);
+}
+
+/** 出力が1バイトも来ない状態の上限。推論モデルの長考中は出力継続で更新される。 */
+function resolveModelIdleTimeoutMs(): number {
+  return resolvePositiveEnv('LM_STUDIO_IDLE_TIMEOUT_MS', 60_000);
+}
+
+/** 未設定なら max_tokens を送らない（モデル既定に委ねる）。 */
+function resolveModelMaxTokens(): number | undefined {
+  const raw = process.env['LM_STUDIO_MAX_TOKENS'];
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new ToolValidationError(`createApp: invalid LM_STUDIO_MAX_TOKENS: "${raw}"`);
   }
   return value;
 }
@@ -450,17 +472,20 @@ export function createApp(options?: AppOptions): App {
   experimentAdapter.repo.interruptRunning(new Date().toISOString());
 
   const engine = new EtlEngine(createDefaultRegistry());
+  const modelMaxTokens = resolveModelMaxTokens();
   const modelProvider = options?.modelProvider ?? (profile === 'test'
     ? new ScriptedModelProvider()
     : new LmStudioModelProvider({
         baseUrl: process.env['LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1',
         model: process.env['LM_STUDIO_MODEL'] ?? '',
         timeoutMs: resolveModelTimeoutMs(),
+        idleTimeoutMs: resolveModelIdleTimeoutMs(),
+        ...(modelMaxTokens !== undefined ? { maxTokens: modelMaxTokens } : {}),
         ...(process.env['LM_STUDIO_API_KEY'] !== undefined ? { apiKey: process.env['LM_STUDIO_API_KEY'] } : {}),
       }));
   const judgeModelProvider = options?.judgeModelProvider ?? (profile === 'test'
     ? new ScriptedModelProvider()
-    : new LmStudioModelProvider({ baseUrl: process.env['JUDGE_LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['JUDGE_LM_STUDIO_MODEL'] ?? '', timeoutMs: resolveModelTimeoutMs(), ...(process.env['JUDGE_LM_STUDIO_API_KEY'] !== undefined ? { apiKey: process.env['JUDGE_LM_STUDIO_API_KEY'] } : {}) }));
+    : new LmStudioModelProvider({ baseUrl: process.env['JUDGE_LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['JUDGE_LM_STUDIO_MODEL'] ?? '', timeoutMs: resolveModelTimeoutMs(), idleTimeoutMs: resolveModelIdleTimeoutMs(), ...(modelMaxTokens !== undefined ? { maxTokens: modelMaxTokens } : {}), ...(process.env['JUDGE_LM_STUDIO_API_KEY'] !== undefined ? { apiKey: process.env['JUDGE_LM_STUDIO_API_KEY'] } : {}) }));
   const judgeSnapshot = options?.judgeModelSnapshot ?? (profile === 'test'
     ? { provider: 'scripted-judge', model: 'scripted-judge', modelConfigHash: hashConfig({ profile: 'test', purpose: 'judge' }) }
     : { provider: 'lm-studio-judge', model: process.env['JUDGE_LM_STUDIO_MODEL'] ?? '', modelConfigHash: hashConfig({ baseUrl: process.env['JUDGE_LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['JUDGE_LM_STUDIO_MODEL'] ?? '' }) });

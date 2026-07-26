@@ -107,6 +107,100 @@ describe('RunAgentPreviewUseCase', () => {
     expect(run.response).toBe('done');
   });
 
+  it('複数条件filterのconditions内valueBindingも実引数へ差し替える（AND）', async () => {
+    const searchSchema: Schema = { columns: [
+      { name: 'region', type: 'string', nullable: false },
+      { name: 'minimumScore', type: 'number', nullable: false },
+    ] };
+    const tool = createTool({
+      metadata: { internalId: 'score-search', workingName: 'score-search', displayName: 'Score search', publishName: 'score_search', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: searchSchema, outputSchema: inputSchema,
+      agentTool: { name: 'search_scores', description: 'Search scores by region and minimum score.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [
+          { name: 'Alice', score: 42, region: 'Tokyo' },
+          { name: 'Bob', score: 7, region: 'Tokyo' },
+          { name: 'Carol', score: 90, region: 'Osaka' },
+        ] } },
+        // バインディングを持たない filter（旧形式 / conditions形式）は実行時もそのまま使われる。
+        { id: 'prefilter', type: 'filter', config: { column: 'score', op: 'gte', value: 0 } },
+        { id: 'filter', type: 'filter', config: { conditions: [
+          { column: 'region', op: 'eq', value: 'Osaka', valueBinding: { source: 'agent-input', field: 'region' } },
+          { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: 'minimumScore' } },
+        ], combine: 'and' } },
+        { id: 'postfilter', type: 'filter', config: { conditions: [{ column: 'name', op: 'notNull' }], combine: 'and' } },
+        { id: 'projection', type: 'select', config: { columns: ['name', 'score'] } },
+        { id: 'arguments', type: 'agent-input', config: { schema: searchSchema, sample: { region: 'Osaka', minimumScore: 0 } } },
+      ], edges: [{ from: 'data', to: 'prefilter' }, { from: 'prefilter', to: 'filter' }, { from: 'filter', to: 'postfilter' }, { from: 'postfilter', to: 'projection' }] },
+    });
+    const model = new QueueModel([
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_scores', arguments: { region: 'Tokyo', minimumScore: 40 } }] }, finishReason: 'tool_calls' },
+      { message: { role: 'assistant', content: 'done' }, finishReason: 'stop' },
+    ]);
+    await useCase(tool, model).execute({ ...input, toolId: 'score-search' });
+    const result = String(model.requests[1]?.messages.at(-1)?.content);
+    expect(result).toContain('"name":"Alice"'); // Tokyo かつ 40点以上。
+    expect(result).not.toContain('"name":"Bob"'); // Tokyo だが 40点未満。
+    expect(result).not.toContain('"name":"Carol"'); // 40点以上だが Osaka。
+    // 設計時サンプル（value）は保存済みグラフ側に残り、実行時だけ差し替わる。
+    const savedFilter = tool.graph.nodes.find((node) => node.id === 'filter')?.config as { conditions: { value: unknown }[] };
+    expect(savedFilter.conditions.map((condition) => condition.value)).toEqual(['Osaka', 0]);
+  });
+
+  it('複数条件filterのORでも各条件のvalueBindingを解決する', async () => {
+    const regionSchema: Schema = { columns: [
+      { name: 'first', type: 'string', nullable: false },
+      { name: 'second', type: 'string', nullable: false },
+    ] };
+    const tool = createTool({
+      metadata: { internalId: 'region-search', workingName: 'region-search', displayName: 'Region search', publishName: 'region_search', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: regionSchema,
+      agentTool: { name: 'search_regions', description: 'Search rows in either region.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [
+          { name: 'Alice', region: 'Tokyo' },
+          { name: 'Bob', region: 'Osaka' },
+          { name: 'Carol', region: 'Nagoya' },
+        ] } },
+        { id: 'filter', type: 'filter', config: { conditions: [
+          { column: 'region', op: 'eq', value: 'Tokyo', valueBinding: { source: 'agent-input', field: 'first' } },
+          { column: 'region', op: 'eq', value: 'Osaka', valueBinding: { source: 'agent-input', field: 'second' } },
+        ], combine: 'or' } },
+        { id: 'arguments', type: 'agent-input', config: { schema: regionSchema, sample: { first: 'Tokyo', second: 'Osaka' } } },
+      ], edges: [{ from: 'data', to: 'filter' }] },
+    });
+    const model = new QueueModel([
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_regions', arguments: { first: 'Osaka', second: 'Nagoya' } }] }, finishReason: 'tool_calls' },
+      { message: { role: 'assistant', content: 'done' }, finishReason: 'stop' },
+    ]);
+    await useCase(tool, model).execute({ ...input, toolId: 'region-search' });
+    const result = String(model.requests[1]?.messages.at(-1)?.content);
+    expect(result).not.toContain('Alice');
+    expect(result).toContain('Bob');
+    expect(result).toContain('Carol');
+  });
+
+  it('conditions内のvalueBindingが未宣言のfieldを指す場合は実行を拒否する', async () => {
+    const minimumSchema: Schema = { columns: [{ name: 'minimumScore', type: 'number', nullable: false }] };
+    const tool = createTool({
+      metadata: { internalId: 'broken-binding', workingName: 'broken-binding', displayName: 'Broken binding', publishName: 'broken_binding', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: minimumSchema,
+      agentTool: { name: 'broken_binding', description: 'Filter bound to an undeclared argument.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ name: 'Alice', score: 42 }] } },
+        { id: 'filter', type: 'filter', config: { conditions: [
+          { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: 'minimumScore' } },
+          { column: 'name', op: 'eq', value: 'Alice', valueBinding: { source: 'agent-input', field: 'who' } },
+        ], combine: 'and' } },
+        { id: 'arguments', type: 'agent-input', config: { schema: minimumSchema, sample: { minimumScore: 0 } } },
+      ], edges: [{ from: 'data', to: 'filter' }] },
+    });
+    const model = new QueueModel([
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'call', name: 'broken_binding', arguments: { minimumScore: 1 } }] }, finishReason: 'tool_calls' },
+    ]);
+    await expect(useCase(tool, model).execute({ ...input, toolId: 'broken-binding' })).rejects.toThrow(/filter node 'filter' references an unavailable Agent input/);
+  });
+
   it('workspace-output stores an Artifact in the Run session and returns only its descriptor to the model', async () => {
     const workspaceTool = createTool({
       metadata: { internalId: 'workspace-tool', workingName: 'workspace-tool', displayName: 'Workspace tool', publishName: 'workspace_tool', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },

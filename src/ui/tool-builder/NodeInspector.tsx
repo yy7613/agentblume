@@ -91,6 +91,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
         }} />{jsonError !== undefined && <small className="field-error">{jsonError}</small>}</label>
       </details>}
       {type === 'csv-source' && <details><summary>{text('Advanced CSV editor', '詳細CSV編集')}</summary><CsvFields config={config} setConfig={setConfig} /></details>}
+      {type === 'current-datetime' && <CurrentDatetimeFields config={config} setConfig={setConfig} />}
       {type === 'select' && <ColumnMultiSelect label={text('Choose columns', '列を選択')} columns={columns} value={(config['columns'] as string[] | undefined) ?? []} onChange={(next) => setConfig({ columns: next })} />}
       {type === 'select' && <details><summary>{text('Advanced text input', '詳細テキスト入力')}</summary><label>{text('Columns', '列')}<input value={(config['columns'] as string[] | undefined)?.join(', ') ?? ''} onChange={(event) => setConfig({ columns: splitList(event.target.value) })} placeholder="id, name" /></label></details>}
       {type === 'filter' && <FilterFields config={config} replaceConfig={replaceConfig} columns={columns} agentInputColumns={agentInputColumns} />}
@@ -377,9 +378,21 @@ function CsvFields({ config, setConfig }: { config: Readonly<Record<string, unkn
   </>;
 }
 
+function CurrentDatetimeFields({ config, setConfig }: { config: Readonly<Record<string, unknown>>; setConfig(patch: Record<string, unknown>): void }) {
+  const { text } = useI18n();
+  const label = text('Timezone (optional)', 'タイムゾーン（任意）');
+  return <>
+    <label>{label}<input aria-label={label} placeholder="Asia/Tokyo" value={String(config['timezone'] ?? '')} onChange={(event) => setConfig({ timezone: event.target.value.trim() === '' ? undefined : event.target.value.trim() })} /></label>
+    <small>{text('Leave it empty to use the server timezone. Enter an IANA name such as Asia/Tokyo or UTC.', '空欄ならサーバーのタイムゾーンを使います。Asia/Tokyo や UTC などのIANA名を入力します。')}</small>
+    <p>{text('Returns one row: now, date, yearMonth, time, weekday.', 'now・date・yearMonth・time・weekday を持つ1行を返します。')}</p>
+  </>;
+}
+
 const FILTER_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull'] as const;
 /** 値を要さない演算子。 */
 const FILTER_VALUELESS_OPS: readonly string[] = ['isNull', 'notNull'];
+/** 記号で表せる演算子の表示ラベル（option の value = op コードは変えない）。 */
+const FILTER_OP_SYMBOLS: Readonly<Record<string, string>> = { eq: '=', neq: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤' };
 
 /** 条件1行。旧形式（単一条件のフラットconfig）も同じ形へ正規化して扱う。 */
 interface FilterConditionDraft {
@@ -421,6 +434,11 @@ function filterConditionDrafts(config: Readonly<Record<string, unknown>>): Filte
  */
 function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { config: Readonly<Record<string, unknown>>; replaceConfig(next: Record<string, unknown>): void; columns: readonly ColumnDto[]; agentInputColumns: readonly ColumnDto[] }) {
   const { text } = useI18n();
+  /** 記号があるものは記号、無いものは両言語テキストで表示する。 */
+  const opLabel = (op: string): string => FILTER_OP_SYMBOLS[op]
+    ?? (op === 'contains' ? text('contains', '含む')
+      : op === 'isNull' ? text('is empty', 'が空')
+        : op === 'notNull' ? text('is not empty', 'が空でない') : op);
   const conditions = filterConditionDrafts(config);
   const combine = config['combine'] === 'or' ? 'or' : 'and';
   const multiple = conditions.length > 1;
@@ -443,20 +461,17 @@ function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { c
       return <Fragment key={index}>
         {multiple && <strong className="rule-title">{text(`Condition ${index + 1}`, `条件${index + 1}`)}</strong>}
         <label>{text('Column', '列')}<input list="upstream-columns" value={condition.column} onChange={(event) => patch(index, { column: event.target.value })} /></label>
-        <label>{text('Operator', '演算子')}<select aria-label={text('Operator', '演算子')} value={condition.op} onChange={(event) => patch(index, { op: event.target.value })}>{FILTER_OPS.map((value) => <option key={value}>{value}</option>)}</select></label>
-        {!FILTER_VALUELESS_OPS.includes(condition.op) && (multiple
-          ? valueField
-          : <>
-              <label>{text('Condition value', '条件値の取得元')}<select value={valueSource} onChange={(event) => patch(index, event.target.value === 'agent-input' ? { valueBinding: { source: 'agent-input', field: agentInputColumns[0]?.name ?? '' } } : { valueBinding: undefined })}><option value="constant">{text('Fixed value', '固定値')}</option><option value="agent-input">{text('Agent input', 'エージェント入力')}</option></select></label>
-              {valueSource === 'agent-input'
-                ? <label>{text('Agent input field', 'エージェント入力フィールド')}<select aria-label={text('Agent input field', 'エージェント入力フィールド')} value={binding?.field ?? ''} onChange={(event) => patch(index, { valueBinding: { source: 'agent-input', field: event.target.value } })}><option value="">{text('Select an input field', '入力フィールドを選択')}</option>{agentInputColumns.map((input) => <option key={input.name} value={input.name}>{input.name} · {input.type}</option>)}</select>{agentInputColumns.length === 0 && <small className="field-error">{text('Add an Agent Input node and define its schema first.', '先にAgent Inputノードを追加し、スキーマを定義してください。')}</small>}<small>{text('The fixed value remains the design-time preview sample.', '固定値は設計時プレビューのサンプルとして残ります。')}</small></label>
-                : valueField}
-            </>)}
+        <label>{text('Operator', '演算子')}<select aria-label={text('Operator', '演算子')} value={condition.op} onChange={(event) => patch(index, { op: event.target.value })}>{FILTER_OPS.map((value) => <option key={value} value={value}>{opLabel(value)}</option>)}</select></label>
+        {!FILTER_VALUELESS_OPS.includes(condition.op) && <>
+          <label>{text('Condition value', '条件値の取得元')}<select value={valueSource} onChange={(event) => patch(index, event.target.value === 'agent-input' ? { valueBinding: { source: 'agent-input', field: agentInputColumns[0]?.name ?? '' } } : { valueBinding: undefined })}><option value="constant">{text('Fixed value', '固定値')}</option><option value="agent-input">{text('Agent input', 'エージェント入力')}</option></select></label>
+          {valueSource === 'agent-input'
+            ? <label>{text('Agent input field', 'エージェント入力フィールド')}<select aria-label={text('Agent input field', 'エージェント入力フィールド')} value={binding?.field ?? ''} onChange={(event) => patch(index, { valueBinding: { source: 'agent-input', field: event.target.value } })}><option value="">{text('Select an input field', '入力フィールドを選択')}</option>{agentInputColumns.map((input) => <option key={input.name} value={input.name}>{input.name} · {input.type}</option>)}</select>{agentInputColumns.length === 0 && <small className="field-error">{text('Add an Agent Input node and define its schema first.', '先にAgent Inputノードを追加し、スキーマを定義してください。')}</small>}<small>{text('The fixed value remains the design-time preview sample.', '固定値は設計時プレビューのサンプルとして残ります。')}</small></label>
+            : valueField}
+        </>}
         {multiple && <div className="rule-row"><button type="button" aria-label={text('Remove condition', '条件を削除')} onClick={() => write(conditions.filter((_, position) => position !== index))}>×</button></div>}
       </Fragment>;
     })}
     <button type="button" onClick={() => write([...conditions, { column: '', op: 'eq', value: '' }])}>{text('Add condition', '条件を追加')}</button>
-    {multiple && <small>{text('An Agent input binding needs a single condition; multi-condition filters use fixed values.', 'エージェント入力の参照は1条件のときだけ使えます。複数条件では固定値になります。')}</small>}
   </>;
 }
 

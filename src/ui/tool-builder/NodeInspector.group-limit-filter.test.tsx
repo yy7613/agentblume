@@ -143,6 +143,42 @@ describe('NodeInspector: limit', () => {
   });
 });
 
+describe('NodeInspector: filter の演算子ラベル', () => {
+  /** option の value(opコード) と表示ラベルの組。 */
+  function operatorOptions(index = 0, label = 'Operator'): [string, string][] {
+    const select = screen.getAllByLabelText(label)[index] as HTMLSelectElement;
+    return Array.from(select.querySelectorAll('option')).map((option) => [option.value, option.textContent ?? '']);
+  }
+
+  it('比較演算子は記号、その他は英語テキストで表示し、valueはopコードのまま', () => {
+    withUpstreamColumns();
+    render(<NodeInspector />);
+    expect(operatorOptions()).toEqual([
+      ['eq', '='], ['neq', '≠'], ['gt', '>'], ['gte', '≥'], ['lt', '<'], ['lte', '≤'],
+      ['contains', 'contains'], ['isNull', 'is empty'], ['notNull', 'is not empty'],
+    ]);
+  });
+
+  it('日本語表示では記号以外を日本語にする', () => {
+    withUpstreamColumns();
+    render(<I18nProvider initialLanguage="ja"><NodeInspector /></I18nProvider>);
+    expect(operatorOptions(0, '演算子')).toEqual([
+      ['eq', '='], ['neq', '≠'], ['gt', '>'], ['gte', '≥'], ['lt', '<'], ['lte', '≤'],
+      ['contains', '含む'], ['isNull', 'が空'], ['notNull', 'が空でない'],
+    ]);
+  });
+
+  it('複数条件の2つ目のselectも同じラベルを使い、opコードで選択できる', async () => {
+    withUpstreamColumns();
+    render(<NodeInspector />);
+    await userEvent.click(screen.getByRole('button', { name: 'Add condition' }));
+    expect(operatorOptions(1)).toEqual(operatorOptions(0));
+
+    await userEvent.selectOptions(screen.getAllByLabelText('Operator')[1]!, 'contains');
+    expect((configOf('filter-1')['conditions'] as { op: string }[])[1]?.op).toBe('contains');
+  });
+});
+
 describe('NodeInspector: filter の複数条件', () => {
   it('1条件のときはAND/OR選択も条件削除も出さない（従来と同じ見た目）', () => {
     withUpstreamColumns();
@@ -248,7 +284,7 @@ describe('NodeInspector: filter の複数条件', () => {
     expect(configOf('filter-1')).toEqual({ column: 'region', op: 'eq' });
   });
 
-  it('エージェント入力参照は1条件のときだけ選べ、複数条件では注意書きを出す', async () => {
+  it('エージェント入力参照は複数条件でも各条件で選べる', async () => {
     withUpstreamColumns();
     useToolBuilderStore.getState().addNode('agent-input');
     useToolBuilderStore.getState().selectNode('filter-1');
@@ -259,13 +295,17 @@ describe('NodeInspector: filter の複数条件', () => {
     await userEvent.selectOptions(screen.getByLabelText('Agent input field'), 'query');
     expect(configOf('filter-1')).toEqual({ column: 'age', op: 'gte', value: 18, valueBinding: { source: 'agent-input', field: 'query' } });
 
+    // conditions形式でも1条件目のバインディングを保ち、2条件目も同じUIで束縛できる
+    // （実行時は conditions[].valueBinding が実引数へ差し替わる）。
     await userEvent.click(screen.getByRole('button', { name: 'Add condition' }));
-    expect(screen.queryByLabelText('Condition value')).toBeNull();
-    expect(screen.getByText('An Agent input binding needs a single condition; multi-condition filters use fixed values.')).toBeTruthy();
-    // 1条件目のバインディングはconditions形式でも保持する（設計時サンプル値も残る）。
-    expect((configOf('filter-1')['conditions'] as { valueBinding?: unknown }[])[0]?.valueBinding).toEqual({ source: 'agent-input', field: 'query' });
+    expect(screen.getAllByLabelText('Condition value')).toHaveLength(2);
+    await userEvent.selectOptions(screen.getAllByLabelText('Condition value')[1]!, 'agent-input');
+    expect(configOf('filter-1')['conditions']).toEqual([
+      { column: 'age', op: 'gte', value: 18, valueBinding: { source: 'agent-input', field: 'query' } },
+      { column: '', op: 'eq', value: '', valueBinding: { source: 'agent-input', field: 'query' } },
+    ]);
 
-    // 1条件へ戻すと再び取得元を選べ、固定値へ戻すとバインディングが外れる。
+    // 1条件へ戻しても取得元を選べ、固定値へ戻すとバインディングが外れる。
     await userEvent.click(screen.getAllByRole('button', { name: 'Remove condition' })[1]!);
     await userEvent.selectOptions(screen.getByLabelText('Condition value'), 'constant');
     expect(configOf('filter-1')).toEqual({ column: 'age', op: 'gte', value: 18 });

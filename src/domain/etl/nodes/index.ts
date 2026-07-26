@@ -9,6 +9,7 @@
  */
 import { NodeRegistry } from '../registry';
 import { agentInputNode } from './agent-input';
+import { currentDatetimeNode } from './current-datetime';
 import { jsonSourceNode } from './json-source';
 import { csvSourceNode } from './csv-source';
 import { selectNode } from './select';
@@ -46,6 +47,8 @@ export { castNode } from './cast';
 export type { CastConfig } from './cast';
 export { agentInputNode } from './agent-input';
 export type { AgentInputConfig } from './agent-input';
+export { currentDatetimeNode } from './current-datetime';
+export type { CurrentDatetimeConfig } from './current-datetime';
 export { joinNode } from './join';
 export type { JoinConfig, JoinKey, JoinMode } from './join';
 export { unionNode } from './union';
@@ -84,6 +87,7 @@ export type { ChartOutputConfig, ChartType } from './chart-output';
 export function createDefaultRegistry(): NodeRegistry {
   const registry = new NodeRegistry();
   registry.register(agentInputNode);
+  registry.register(currentDatetimeNode);
   registry.register(jsonSourceNode);
   registry.register(csvSourceNode);
   registry.register(selectNode);

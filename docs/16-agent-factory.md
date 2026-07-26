@@ -101,6 +101,15 @@ Tool計画ごとに:
 
 修復上限まで失敗したToolは欠落として記録し、計画から除外して続行する（依存するSkill計画も縮退）。全Toolが欠落した場合はRunを失敗させる。
 
+#### Tool引数（エージェントが渡す検索条件）
+
+計画の `purpose` / `argumentSummary` が絞り込みを示す場合、ToolSmithは**未接続の `agent-input` ノードを1つだけ**置いてTool引数を宣言できる（`EtlEngine` は未接続の `agent-input` を終端候補から外すため、データ経路は source → … → `agent-output` の単一チェーンのまま）。
+
+- 宣言: `{ "schema": { "columns": [{ "name", "type": "string"|"number"|"boolean", "nullable": false }] }, "sample": { <各列の代表値> } }`。
+- 消費: filter条件に `"valueBinding": { "source": "agent-input", "field": "<引数名>" }` を付け、`value` には設計時サンプルとなる代表値を残す。1条件のフラットconfigでも `{ conditions, combine }` の各条件でも使える。
+- 保存: `GenerateAgentAssetsUseCase` が `agent-input` の `config.schema` をそのまま `SaveToolDto.inputSchema` にする。これによりTool Calling契約（`toolToModelDefinition` がinputSchemaから導出するJSON Schema）とTool使用ガイドの `input [...]` 表記が引数付きになる。引数を宣言しないToolは従来どおり `inputSchema` 無しで保存する。
+- 検証: agent-inputが2つ以上/引数宣言が壊れている/宣言したのに filter から参照されない引数がある場合は修復ループへ回す。バインド先が `inputSchema` に無い場合は `SaveToolUseCase` が拒否する。実行時は `RunAgentPreviewUseCase` がツール呼び出しの実引数で `valueBinding` の `value` を差し替える。
+
 ### Stage 3: Skill生成（SkillWriter）
 
 Skill計画ごとにinstructions等を起草し、依存Toolを**生成済み版のSemVerで固定**して `SaveSkillUseCase` でdraft保存する。

@@ -22,6 +22,11 @@ import type { App } from './root';
 
 const scope: TenantScope = { tenantId: 'tenant-a', workspaceId: 'ws-1' };
 
+/** 配線結果の確認のため LmStudioModelProvider の内部設定を読む（composition の責務検証に閉じる）。 */
+function modelConfig(provider: unknown): { timeoutMs: number; idleTimeoutMs: number; options: { maxTokens?: number } } {
+  return provider as { timeoutMs: number; idleTimeoutMs: number; options: { maxTokens?: number } };
+}
+
 const graph: ToolGraph = {
   nodes: [
     { id: 'src', type: 'json-source', config: { rows: [{ a: 1 }, { a: 2 }, { a: 3 }] } },
@@ -148,9 +153,44 @@ describe('createApp', () => {
       expect(() => createApp()).toThrow(/staging/);
     });
 
-    it('不正な LM_STUDIO_TIMEOUT_MS を拒否する', () => {
-      vi.stubEnv('LM_STUDIO_TIMEOUT_MS', 'not-a-number');
-      expect(() => createApp({ profile: 'local', dbPath: ':memory:' })).toThrow(/LM_STUDIO_TIMEOUT_MS/);
+    it.each([
+      ['LM_STUDIO_TIMEOUT_MS', 'not-a-number'],
+      ['LM_STUDIO_TIMEOUT_MS', '0'],
+      ['LM_STUDIO_IDLE_TIMEOUT_MS', 'soon'],
+      ['LM_STUDIO_IDLE_TIMEOUT_MS', '-1'],
+      ['LM_STUDIO_MAX_TOKENS', '1.5'],
+      ['LM_STUDIO_MAX_TOKENS', '0'],
+    ])('不正な %s（"%s"）を拒否する', (name, value) => {
+      vi.stubEnv(name, value);
+      expect(() => createApp({ profile: 'local', dbPath: ':memory:' })).toThrow(ToolValidationError);
+      expect(() => createApp({ profile: 'local', dbPath: ':memory:' })).toThrow(new RegExp(name));
+    });
+
+    it('LM Studio の timeout / idle timeout / max tokens を両providerへ配線する', () => {
+      vi.stubEnv('LM_STUDIO_TIMEOUT_MS', '300000');
+      vi.stubEnv('LM_STUDIO_IDLE_TIMEOUT_MS', '15000');
+      vi.stubEnv('LM_STUDIO_MAX_TOKENS', '4096');
+
+      const app = createApp({ profile: 'local', dbPath: ':memory:' });
+
+      for (const provider of [app.modelProvider, app.judgeModelProvider]) {
+        expect(modelConfig(provider)).toMatchObject({ timeoutMs: 300_000, idleTimeoutMs: 15_000 });
+        expect(modelConfig(provider).options.maxTokens).toBe(4096);
+      }
+      app.close();
+    });
+
+    it('timeout 既定は600秒 / idle 既定は60秒、max tokens 未設定なら送らない', () => {
+      vi.stubEnv('LM_STUDIO_TIMEOUT_MS', undefined);
+      vi.stubEnv('LM_STUDIO_IDLE_TIMEOUT_MS', undefined);
+      vi.stubEnv('LM_STUDIO_MAX_TOKENS', undefined);
+
+      const app = createApp({ profile: 'local', dbPath: ':memory:' });
+
+      expect(modelConfig(app.modelProvider)).toMatchObject({ timeoutMs: 600_000, idleTimeoutMs: 60_000 });
+      expect(modelConfig(app.modelProvider).options.maxTokens).toBeUndefined();
+      expect(modelConfig(app.judgeModelProvider).options.maxTokens).toBeUndefined();
+      app.close();
     });
 
     it('env AGENTCONTEXT_DB_PATH が dbPath 既定として使われる（ファイルへ永続化される）', async () => {

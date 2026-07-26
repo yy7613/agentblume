@@ -1,4 +1,4 @@
-export const NODE_TYPES = ['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'select', 'filter', 'rename', 'cast', 'join', 'union', 'sort', 'limit', 'distinct', 'fill-null', 'replace', 'group-by', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output'] as const;
+export const NODE_TYPES = ['agent-input', 'current-datetime', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'select', 'filter', 'rename', 'cast', 'join', 'union', 'sort', 'limit', 'distinct', 'fill-null', 'replace', 'group-by', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output'] as const;
 export type ToolNodeType = (typeof NODE_TYPES)[number];
 
 export interface NodeCatalogItem {
@@ -21,6 +21,10 @@ export const NODE_CATALOG: readonly NodeCatalogItem[] = [
       schema: { columns: [{ name: 'query', type: 'string', nullable: false }] },
       sample: { query: 'sample' },
     },
+  },
+  {
+    type: 'current-datetime', label: 'Current datetime', labelJa: '現在日時', kind: 'source', inputArity: 0,
+    description: 'Return the date and time at run time as a single row.', descriptionJa: '実行時点の日時を1行で返します。', defaultConfig: {},
   },
   {
     type: 'json-source', label: 'JSON source', labelJa: 'JSON入力', kind: 'source', inputArity: 0,

@@ -4,6 +4,7 @@ import { InMemoryAgentRepository } from '../../adapters/storage/in-memory-agent-
 import { InMemoryDataSourceRepository } from '../../adapters/storage/in-memory-data-source-repository';
 import { InMemorySkillRepository } from '../../adapters/storage/in-memory-skill-repository';
 import { InMemoryToolRepository } from '../../adapters/storage/in-memory-tool-repository';
+import type { ToolGraph } from '../../domain/etl/graph';
 import { createDefaultRegistry } from '../../domain/etl/nodes';
 import type { FactoryPlan } from '../../domain/factory/factory-plan';
 import type { FactoryGoalInput } from '../../domain/factory/factory-run';
@@ -14,7 +15,7 @@ import { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-sourc
 import { EtlEngine } from '../etl/engine';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
-import { GenerateAgentAssetsUseCase } from './generate-agent-assets';
+import { agentToolArgumentsOf, GenerateAgentAssetsUseCase, mergeAgentInputDeclarations } from './generate-agent-assets';
 import { ProfileDataSourcesUseCase } from './profile-data-sources';
 import { AssemblerRole } from './roles/assembler-role';
 import { SkillWriterRole } from './roles/skill-writer-role';
@@ -52,6 +53,35 @@ function validToolProposalJson(): string {
       edges: [{ from: 'src', to: 'out' }],
     },
     agentTool: { name: 'lookup_sales', description: 'Look up sales rows.' },
+  });
+}
+
+/**
+ * 検索条件をエージェント引数として宣言する提案。未接続の agent-input が引数を宣言し、
+ * filter の各条件が `valueBinding` でそれを消費する。
+ */
+function argumentToolProposalJson(overrides?: { readonly undeclaredBinding?: string; readonly unusedArgument?: boolean }): string {
+  const columns = [{ name: 'minimumAmount', type: 'number', nullable: false }];
+  const sample: Record<string, unknown> = { minimumAmount: 100 };
+  if (overrides?.unusedArgument === true) {
+    columns.push({ name: 'unusedFlag', type: 'boolean', nullable: false });
+    sample['unusedFlag'] = true;
+  }
+  const conditions: unknown[] = [{ column: 'amount', op: 'gte', value: 100, valueBinding: { source: 'agent-input', field: 'minimumAmount' } }];
+  if (overrides?.undeclaredBinding !== undefined) {
+    conditions.push({ column: 'id', op: 'gte', value: 1, valueBinding: { source: 'agent-input', field: overrides.undeclaredBinding } });
+  }
+  return JSON.stringify({
+    graph: {
+      nodes: [
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+        { id: 'filter', type: 'filter', config: { conditions, combine: 'and' } },
+        { id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
+        { id: 'args', type: 'agent-input', config: { schema: { columns }, sample } },
+      ],
+      edges: [{ from: 'src', to: 'filter' }, { from: 'filter', to: 'out' }],
+    },
+    agentTool: { name: 'lookup_sales', description: 'Look up sales rows at or above minimumAmount.' },
   });
 }
 
@@ -150,6 +180,63 @@ describe('GenerateAgentAssetsUseCase', () => {
     expect(agent?.systemPrompt).toContain('Always cite the rows');
   });
 
+  it('agent-inputで引数を宣言した提案はinputSchema付きで保存し、Tool使用ガイドへ引数を出す', async () => {
+    const { model, toolRepo, agentRepo, profiles, useCase } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: argumentToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2 });
+
+    const toolRef = result.toolRefs[0];
+    if (toolRef === undefined) throw new Error('expected a tool ref');
+    const tool = await toolRepo.findVersion(scope, toolRef.internalId, SemVer.parse(toolRef.version));
+    // agent-inputノードのschemaがそのままTool Calling契約（inputSchema）になる。
+    expect(tool?.inputSchema).toEqual({ columns: [{ name: 'minimumAmount', type: 'number', nullable: false }] });
+    // Tool使用ガイドは inputSchema から決定的に導出されるので引数が見える（従来は input [なし]）。
+    const agent = await agentRepo.findVersion(scope, result.agentRef.internalId, SemVer.parse(result.agentRef.version));
+    expect(agent?.systemPrompt).toContain('input [minimumAmount:number]');
+  });
+
+  it('引数を使わない提案は従来どおりinputSchema無しで保存する', async () => {
+    const { model, toolRepo, agentRepo, profiles, useCase } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2 });
+
+    const toolRef = result.toolRefs[0];
+    if (toolRef === undefined) throw new Error('expected a tool ref');
+    const tool = await toolRepo.findVersion(scope, toolRef.internalId, SemVer.parse(toolRef.version));
+    expect(tool?.inputSchema).toBeUndefined();
+    const agent = await agentRepo.findVersion(scope, result.agentRef.internalId, SemVer.parse(result.agentRef.version));
+    expect(agent?.systemPrompt).toContain('input [なし]');
+  });
+
+  it('未宣言fieldへのbindingや未使用の引数宣言は修復ループへ回す', async () => {
+    const { model, toolRepo, profiles, useCase } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: argumentToolProposalJson({ undeclaredBinding: 'notDeclared' }) }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: argumentToolProposalJson({ unusedArgument: true }) }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: argumentToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const messages: string[] = [];
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, onEvent: (event) => { if (event.kind === 'tool_repair_attempted') messages.push(event.message ?? ''); } });
+
+    expect(messages[0]).toMatch(/unknown field 'notDeclared'/);
+    expect(messages[1]).toMatch(/never used by a filter: unusedFlag/);
+    expect(result.toolRefs).toHaveLength(1);
+    expect((await toolRepo.list(scope))).toHaveLength(1);
+  });
+
   it('無効なグラフは修復ループで再提案させ、修正後に保存する', async () => {
     const { model, toolRepo, profiles, useCase } = await setup();
     model.enqueue(
@@ -208,5 +295,90 @@ describe('GenerateAgentAssetsUseCase', () => {
     );
 
     await expect(useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 1 })).rejects.toThrow(/no tools could be generated/);
+  });
+});
+
+describe('agentToolArgumentsOf', () => {
+  /** agent-input（引数宣言）+ それを消費する filter を持つ最小グラフ。 */
+  function graphWith(argumentsConfig: unknown, filterConfig: unknown = { column: 'amount', op: 'gte', value: 100, valueBinding: { source: 'agent-input', field: 'minimumAmount' } }): ToolGraph {
+    return {
+      nodes: [
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+        { id: 'filter', type: 'filter', config: filterConfig },
+        { id: 'args', type: 'agent-input', config: argumentsConfig },
+      ],
+      edges: [{ from: 'src', to: 'filter' }],
+    };
+  }
+
+  const validArguments = { schema: { columns: [{ name: 'minimumAmount', type: 'number', nullable: false }] }, sample: { minimumAmount: 100 } };
+
+  it('agent-inputが無ければundefined（引数無しToolは従来どおり）', () => {
+    expect(agentToolArgumentsOf({ nodes: [{ id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } }], edges: [] })).toBeUndefined();
+  });
+
+  it('宣言をそのままTool引数スキーマへ写す（nullable引数はサンプル値を省ける）', () => {
+    expect(agentToolArgumentsOf(graphWith(validArguments))).toEqual({ columns: [{ name: 'minimumAmount', type: 'number', nullable: false }] });
+    const optional = {
+      schema: { columns: [{ name: 'minimumAmount', type: 'number', nullable: false }, { name: 'region', type: 'string', nullable: true }] },
+      sample: { minimumAmount: 100 },
+    };
+    const filterConfig = { conditions: [
+      { column: 'amount', op: 'gte', value: 100, valueBinding: { source: 'agent-input', field: 'minimumAmount' } },
+      { column: 'id', op: 'gte', value: 1, valueBinding: { source: 'agent-input', field: 'region' } },
+    ], combine: 'and' };
+    expect(agentToolArgumentsOf(graphWith(optional, filterConfig))?.columns).toHaveLength(2);
+  });
+
+  it('壊れた宣言・未使用の引数は修復ループ用のFactoryValidationErrorになる', () => {
+    const twice: ToolGraph = { nodes: [...graphWith(validArguments).nodes, { id: 'args2', type: 'agent-input', config: validArguments }], edges: [] };
+    expect(() => agentToolArgumentsOf(twice)).toThrow(/keep exactly one agent-input node/);
+    expect(() => agentToolArgumentsOf(graphWith({ schema: { columns: [] }, sample: {} }))).toThrow(/config\.schema\.columns/);
+    expect(() => agentToolArgumentsOf(graphWith({ schema: { columns: [{ name: 'minimumAmount', type: 'number', nullable: false }] } }))).toThrow(/config\.sample/);
+    expect(() => agentToolArgumentsOf(graphWith({ ...validArguments, schema: { columns: [{ name: '  ', type: 'number', nullable: false }] } }))).toThrow(/non-empty name/);
+    expect(() => agentToolArgumentsOf(graphWith({ ...validArguments, schema: { columns: [{ name: 'minimumAmount', type: 'object', nullable: false }] } }))).toThrow(/must use type string\|number\|boolean\|date/);
+    expect(() => agentToolArgumentsOf(graphWith({ schema: validArguments.schema, sample: {} }))).toThrow(/missing a representative value for 'minimumAmount'/);
+    expect(() => agentToolArgumentsOf(graphWith(validArguments, { column: 'amount', op: 'gte', value: 100 }))).toThrow(/never used by a filter: minimumAmount/);
+  });
+});
+
+describe('mergeAgentInputDeclarations', () => {
+  const base: ToolGraph = {
+    nodes: [
+      { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+      { id: 'filter', type: 'filter', config: { conditions: [
+        { column: 'region', op: 'eq', value: 'East', valueBinding: { source: 'agent-input', field: 'region' } },
+        { column: 'month', op: 'eq', value: '2026-05', valueBinding: { source: 'agent-input', field: 'month' } },
+      ], combine: 'and' } },
+      { id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
+    ],
+    edges: [{ from: 'src', to: 'filter' }, { from: 'filter', to: 'out' }],
+  };
+
+  it('未接続agent-inputが複数あれば1ノードへ先勝ちマージする(モデルの典型的誤生成の正規化)', () => {
+    const graph: ToolGraph = { nodes: [...base.nodes,
+      { id: 'args1', type: 'agent-input', config: { schema: { columns: [{ name: 'region', type: 'string', nullable: false }] }, sample: { region: 'East' } } },
+      { id: 'args2', type: 'agent-input', config: { schema: { columns: [{ name: 'month', type: 'string', nullable: false }, { name: 'region', type: 'number', nullable: false }] }, sample: { month: '2026-05' } } },
+    ], edges: base.edges };
+    const merged = mergeAgentInputDeclarations(graph);
+    const declarations = merged.nodes.filter((node) => node.type === 'agent-input');
+    expect(declarations).toHaveLength(1);
+    expect(declarations[0]?.config).toEqual({
+      schema: { columns: [
+        { name: 'region', type: 'string', nullable: false },
+        { name: 'month', type: 'string', nullable: false },
+      ] },
+      sample: { region: 'East', month: '2026-05' },
+    });
+    expect(agentToolArgumentsOf(merged)?.columns.map((column) => column.name)).toEqual(['region', 'month']);
+  });
+
+  it('agent-inputが1つ以下、またはエッジ接続されたagent-inputが混在する場合は変更しない', () => {
+    expect(mergeAgentInputDeclarations(base)).toBe(base);
+    const connected: ToolGraph = { nodes: [...base.nodes,
+      { id: 'args1', type: 'agent-input', config: { schema: { columns: [{ name: 'region', type: 'string', nullable: false }] }, sample: { region: 'East' } } },
+      { id: 'args2', type: 'agent-input', config: { schema: { columns: [{ name: 'month', type: 'string', nullable: false }] }, sample: { month: '2026-05' } } },
+    ], edges: [...base.edges, { from: 'args1', to: 'filter' }] };
+    expect(mergeAgentInputDeclarations(connected)).toBe(connected);
   });
 });

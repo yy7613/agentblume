@@ -28,6 +28,7 @@ import { GenerateAgentPromptUseCase } from '../agent/generate-agent-prompt';
 import { SaveAgentUseCase } from '../agent/save-agent';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
+import { agentToolArgumentsOf } from './generate-agent-assets';
 
 export interface ApplyImprovementsInput {
   readonly scope: TenantScope;
@@ -251,6 +252,9 @@ export class ApplyImprovementsUseCase {
       if (currentTool === null) throw new FactoryValidationError(`tool version not found: ${proposal.toolId}@${currentVersion.toString()}`);
       // SaveToolUseCase が engine.propagateSchemas/preview + read-only/session-write 制約を検証する
       // （不正なグラフは ToolValidationError を投げる → catch して rejected へ落とす）。
+      // inputSchema は改訂後グラフの agent-input から再導出する（引数付きToolの改訂で
+      // 実行時の schemasEqual 検査と binding 検証が一致し続けるように）。
+      const revisedArguments = agentToolArgumentsOf(proposal.graph);
       const saved = await this.saveTool.execute({
         scope,
         internalId: currentTool.metadata.internalId,
@@ -260,6 +264,7 @@ export class ApplyImprovementsUseCase {
         owner: currentTool.metadata.owner,
         sideEffect: currentTool.sideEffect,
         graph: proposal.graph,
+        ...(revisedArguments !== undefined ? { inputSchema: revisedArguments } : {}),
         ...(currentTool.agentTool !== undefined ? { agentTool: currentTool.agentTool } : {}),
       });
       newToolVersions.set(proposal.toolId, saved.metadata.version);

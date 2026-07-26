@@ -6,6 +6,7 @@
  * SIGINT / SIGTERM で server.close() + app.close() のグレースフルシャットダウン。
  */
 import { buildServer } from './api/server';
+import { seedBuiltinTools } from './builtin-tools';
 import { createApp } from './composition/root';
 import { seedSampleData } from './sample-data';
 
@@ -15,6 +16,10 @@ process.env['MASTRA_TELEMETRY_DISABLED'] ??= 'true';
 const app = createApp();
 const server = buildServer(app, { logger: true });
 const port = Number(process.env['AGENTCONTEXT_PORT'] ?? 3030);
+
+// 組み込みツールは環境変数に関係なく常に用意する（冪等）。
+const builtin = await seedBuiltinTools(app);
+server.log.info({ builtin }, 'builtin tools are ready');
 
 if (process.env['AGENTCONTEXT_SAMPLE_DATA'] === 'true') {
   const sample = await seedSampleData(app);

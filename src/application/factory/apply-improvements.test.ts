@@ -124,6 +124,46 @@ describe('ApplyImprovementsUseCase', () => {
     expect(newTool?.graph.nodes).toHaveLength(3);
   });
 
+  it('tool-graph-revision: agent-input付き改訂グラフはinputSchemaを再導出して保存する', async () => {
+    const { toolRepo, useCase, agentRef, toolId } = await setup();
+    const revisedGraph: ToolGraph = {
+      nodes: [
+        { id: 'args', type: 'agent-input', config: { schema: { columns: [{ name: 'minimumAmount', type: 'number', nullable: false }] }, sample: { minimumAmount: 100 } } },
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+        { id: 'flt', type: 'filter', config: { column: 'amount', op: 'gte', value: 100, valueBinding: { source: 'agent-input', field: 'minimumAmount' } } },
+        { id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
+      ],
+      edges: [{ from: 'src', to: 'flt' }, { from: 'flt', to: 'out' }],
+    };
+    const proposal: ImprovementProposal = { kind: 'tool-graph-revision', toolId, graph: revisedGraph, rationale: 'parameterize amount' };
+
+    const result = await useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4 });
+
+    expect(result.rejected).toHaveLength(0);
+    expect(result.applied).toHaveLength(1);
+    const newTool = await toolRepo.findVersion(scope, toolId, SemVer.parse(result.applied[0]!.resultingVersion.version));
+    expect(newTool?.inputSchema).toEqual({ columns: [{ name: 'minimumAmount', type: 'number', nullable: false }] });
+  });
+
+  it('tool-graph-revision: agent-input無しでbindingだけ残る改訂はrejectedになる(安全側)', async () => {
+    const { useCase, agentRef, toolId } = await setup();
+    const revisedGraph: ToolGraph = {
+      nodes: [
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+        { id: 'flt', type: 'filter', config: { column: 'amount', op: 'gte', value: 100, valueBinding: { source: 'agent-input', field: 'minimumAmount' } } },
+        { id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
+      ],
+      edges: [{ from: 'src', to: 'flt' }, { from: 'flt', to: 'out' }],
+    };
+    const proposal: ImprovementProposal = { kind: 'tool-graph-revision', toolId, graph: revisedGraph, rationale: 'orphan binding' };
+
+    const result = await useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4 });
+
+    expect(result.applied).toHaveLength(0);
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0]?.reason).toContain('inputSchema');
+  });
+
   it('tool-graph-revision: 無効なグラフはクラッシュせずrejectedになり、Agent新版も作らない', async () => {
     const { useCase, agentRef, toolId } = await setup();
     const proposal: ImprovementProposal = { kind: 'tool-graph-revision', toolId, graph: invalidGraph, rationale: 'broken' };

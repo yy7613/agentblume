@@ -12,6 +12,8 @@
  * 縮退する。依存Toolを全て失ったSkillはドロップする）。全Toolが欠落した場合はRunを失敗させる。
  */
 import { randomUUID } from 'node:crypto';
+import type { Column, Schema } from '../../domain/data/types';
+import type { ToolGraph } from '../../domain/etl/graph';
 import type { FactoryPlan } from '../../domain/factory/factory-plan';
 import type { FactoryEvent, FactoryGoalInput } from '../../domain/factory/factory-run';
 import { FactoryValidationError } from '../../domain/factory/errors';
@@ -95,11 +97,13 @@ export class GenerateAgentAssetsUseCase {
         roleCallsUsed += 1;
         try {
           const proposal = await this.toolSmith.propose({ toolPlan, profile, ...(priorError === undefined ? {} : { priorError }) });
-          const resolvedGraph = await this.resolveDataSources.execute(input.scope, proposal.graph);
+          const graph = mergeAgentInputDeclarations(proposal.graph);
+          const resolvedGraph = await this.resolveDataSources.execute(input.scope, graph);
           const propagation = this.engine.propagateSchemas(resolvedGraph);
           if (propagation.hasErrors) throw new FactoryValidationError(describePropagationErrors(propagation));
           this.engine.preview(resolvedGraph);
 
+          const inputSchema = agentToolArgumentsOf(graph);
           const internalId = this.makeId();
           saved = await this.saveTool.execute({
             scope: input.scope,
@@ -109,7 +113,8 @@ export class GenerateAgentAssetsUseCase {
             publishName: makePublishName('tool', toolPlan.displayName, input.runId, toolPlan.key),
             owner: FACTORY_OWNER,
             sideEffect,
-            graph: proposal.graph,
+            graph,
+            ...(inputSchema === undefined ? {} : { inputSchema }),
             agentTool: proposal.agentTool,
           });
           break;
@@ -208,6 +213,116 @@ export class GenerateAgentAssetsUseCase {
 
     return { toolRefs, skillRefs, agentRef, toolKeyToRef, toolKeyToPublishName, roleCallsUsed };
   }
+}
+
+/** Tool引数として宣言できる列型（Tool Callingの引数へそのまま写せるものだけ）。 */
+const AGENT_ARGUMENT_TYPES: readonly string[] = ['string', 'number', 'boolean', 'date'];
+
+/**
+ * 未接続の `agent-input` ノードが宣言する Tool引数スキーマを取り出す（宣言が無ければ `undefined`）。
+ *
+ * これを `SaveToolUseCase.inputSchema` に渡すことで Tool Calling契約（`toolToModelDefinition` が
+ * inputSchema から導出するJSON Schema）と Tool使用ガイドの `input [...]` 表記が引数付きになり、
+ * 実行時は `RunAgentPreviewUseCase` が filter条件の `valueBinding` を実引数へ差し替える。
+ *
+ * 宣言が壊れている場合は `FactoryValidationError` を投げ、呼び出し側の修復ループへ回す:
+ * - agent-input が2つ以上（実行時に inputSchema と一致検査するノードは1つに限る）
+ * - schema.columns / sample が無い、引数型が扱えない、非nullable引数のサンプル値が無い
+ * - 宣言したのに filter から参照されない引数がある（エージェントに無意味な引数を要求しない）
+ *
+ * サンプル値の型不一致は `EtlEngine.propagateSchemas`/`preview`（agent-input ノード自身の検証）が
+ * 先に検出するため、ここでは存在確認だけを行う。
+ */
+/**
+ * モデルが「引数1つにつき agent-input ノード1つ」と誤解して複数ノードを生成するケースを
+ * 決定的に正規化する: **未接続の** agent-input が2つ以上あれば、schema.columns と sample を
+ * 先勝ちマージして1ノードへ統合する（同名列は先の宣言を採用）。エッジで接続された agent-input が
+ * 混ざっている場合はデータ経路を変えないよう正規化を行わず、そのまま検証エラーに委ねる。
+ */
+export function mergeAgentInputDeclarations(graph: ToolGraph): ToolGraph {
+  const declarations = graph.nodes.filter((node) => node.type === 'agent-input');
+  if (declarations.length <= 1) return graph;
+  const connected = new Set(graph.edges.flatMap((edge) => [edge.from, edge.to]));
+  if (declarations.some((node) => connected.has(node.id))) return graph;
+
+  const mergedColumns: unknown[] = [];
+  const seenNames = new Set<string>();
+  const mergedSample: Record<string, unknown> = {};
+  for (const node of declarations) {
+    const config = (node.config ?? {}) as { schema?: { columns?: unknown }; sample?: unknown };
+    const columns = Array.isArray(config.schema?.columns) ? config.schema.columns : [];
+    for (const column of columns) {
+      const name = (column as { name?: unknown } | null)?.name;
+      if (typeof name !== 'string' || seenNames.has(name)) continue;
+      seenNames.add(name);
+      mergedColumns.push(column);
+    }
+    const sample = config.sample;
+    if (sample !== null && typeof sample === 'object' && !Array.isArray(sample)) {
+      for (const [key, value] of Object.entries(sample as Record<string, unknown>)) {
+        if (!Object.prototype.hasOwnProperty.call(mergedSample, key)) mergedSample[key] = value;
+      }
+    }
+  }
+
+  const first = declarations[0]!;
+  const rest = new Set(declarations.slice(1).map((node) => node.id));
+  return {
+    nodes: graph.nodes
+      .filter((node) => !rest.has(node.id))
+      .map((node) => node.id === first.id ? { ...node, config: { schema: { columns: mergedColumns }, sample: mergedSample } } : node),
+    edges: graph.edges,
+  };
+}
+
+export function agentToolArgumentsOf(graph: ToolGraph): Schema | undefined {
+  const declarations = graph.nodes.filter((node) => node.type === 'agent-input');
+  if (declarations.length === 0) return undefined;
+  if (declarations.length > 1) {
+    throw new FactoryValidationError('tool graph declares Tool arguments more than once: keep exactly one agent-input node');
+  }
+  const config = (declarations[0]?.config ?? {}) as { schema?: { columns?: unknown }; sample?: unknown };
+  const columns = config.schema?.columns;
+  const sample = config.sample;
+  if (!Array.isArray(columns) || columns.length === 0) {
+    throw new FactoryValidationError('agent-input node must declare config.schema.columns with at least one argument');
+  }
+  if (sample === null || typeof sample !== 'object' || Array.isArray(sample)) {
+    throw new FactoryValidationError('agent-input node must declare a config.sample object with one representative value per argument');
+  }
+  const schema: Schema = { columns: columns.map((column) => toArgumentColumn(column, sample as Record<string, unknown>)) };
+  const bound = new Set(graph.nodes.filter((node) => node.type === 'filter').flatMap((node) => agentInputBindingFields(node.config)));
+  const unused = schema.columns.filter((column) => !bound.has(column.name)).map((column) => column.name);
+  if (unused.length > 0) {
+    throw new FactoryValidationError(`agent-input argument(s) never used by a filter: ${unused.join(', ')}. Bind each argument with valueBinding { "source": "agent-input", "field": "<argument name>" }`);
+  }
+  return schema;
+}
+
+/** agent-input の宣言列1つを Tool引数の列へ写す（型・サンプル値の存在を検査する）。 */
+function toArgumentColumn(raw: unknown, sample: Record<string, unknown>): Column {
+  const column = (raw ?? {}) as { name?: unknown; type?: unknown; nullable?: unknown };
+  if (typeof column.name !== 'string' || column.name.trim() === '') {
+    throw new FactoryValidationError('agent-input argument requires a non-empty name');
+  }
+  if (typeof column.type !== 'string' || !AGENT_ARGUMENT_TYPES.includes(column.type)) {
+    throw new FactoryValidationError(`agent-input argument '${column.name}' must use type ${AGENT_ARGUMENT_TYPES.join('|')}`);
+  }
+  const nullable = column.nullable === true;
+  if (!nullable && !Object.prototype.hasOwnProperty.call(sample, column.name)) {
+    throw new FactoryValidationError(`agent-input sample is missing a representative value for '${column.name}'`);
+  }
+  return { name: column.name, type: column.type as Column['type'], nullable };
+}
+
+/** filter config（旧形式のフラット1条件 / 新形式の conditions）が参照する agent-input のfield名。 */
+function agentInputBindingFields(config: unknown): string[] {
+  const conditions = (config as { conditions?: unknown } | null)?.conditions;
+  const sources = Array.isArray(conditions) ? conditions : [config];
+  return sources
+    .map((condition) => (condition as { valueBinding?: { source?: unknown; field?: unknown } } | null)?.valueBinding)
+    .filter((binding): binding is { source: 'agent-input'; field: string } => binding?.source === 'agent-input' && typeof binding.field === 'string')
+    .map((binding) => binding.field);
 }
 
 function describePropagationErrors(propagation: PropagationResult): string {

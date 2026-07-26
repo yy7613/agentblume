@@ -38,6 +38,15 @@ describe('node catalog', () => {
     expect(catalogItem('limit').inputArity).toBe(1);
   });
 
+  it('current-datetimeは入力カテゴリの0入力ノードで、既定configは空（ローカルtimezone）', () => {
+    const item = catalogItem('current-datetime');
+    expect(item.kind).toBe('source');
+    expect(item.inputArity).toBe(0);
+    expect(item.defaultConfig).toEqual({});
+    expect(item.label).toBe('Current datetime');
+    expect(item.labelJa).toBe('現在日時');
+  });
+
   it('filterの既定configは旧形式（単一条件フラット）のままで後方互換を保つ', () => {
     expect(catalogItem('filter').defaultConfig).toEqual({ column: '', op: 'eq', value: '' });
   });
