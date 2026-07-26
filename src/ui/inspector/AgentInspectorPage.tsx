@@ -3,6 +3,7 @@ import type { ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, EvaluationResultDto, RunTraceEventDto, SerializedAgentDto, WikiPageSummaryDto } from '../api/types';
 import { useI18n } from '../i18n';
 import { useElapsedSeconds } from '../chat/useElapsedSeconds';
+import { buildHistory } from '../chat/agent-history';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
@@ -89,7 +90,8 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
     const startedAt = performance.now();
     try {
       const memoryPageIds = [...attached];
-      const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview', ...(memoryPageIds.length > 0 ? { memoryPageIds } : {}) });
+      const history = buildHistory(turns, content);
+      const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview', ...(history.length > 0 ? { history } : {}), ...(memoryPageIds.length > 0 ? { memoryPageIds } : {}) });
       setTurns((prev) => [...prev, { role: 'assistant', run, elapsedMs: performance.now() - startedAt }]);
     } catch (cause) {
       setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt, onRetry: () => void send({ content }) }]);

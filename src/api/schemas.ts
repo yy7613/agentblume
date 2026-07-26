@@ -254,6 +254,11 @@ export const runAgentBodySchema = z.union([z.object({
   /** 手動アタッチする Wiki ページ id（指定時のみ最小注入する・v21 M1）。 */
   memoryPageIds: z.array(z.string().min(1)).optional(),
   sessionId: z.string().min(1).optional(),
+  /** 直前までの会話履歴（Chatのマルチターン用）。system直後へ注入される。 */
+  history: z.array(z.object({
+    role: z.enum(['user', 'assistant']),
+    content: z.string().min(1).max(8000),
+  })).max(40).optional(),
   images: z.array(imageAttachmentSchema).max(2).optional(),
 })]);
 

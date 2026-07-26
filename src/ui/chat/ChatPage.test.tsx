@@ -38,6 +38,31 @@ describe('ChatPage', () => {
     expect(screen.queryByText('hello there')).toBeNull();
   });
 
+  it('2ターン目以降は直前までの会話をhistoryとして送る（マルチターン会話）', async () => {
+    const client = {
+      listAgents: vi.fn().mockResolvedValue([{ internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '2.0.0', kind: 'normal', state: 'draft' }]),
+      runSavedAgent: vi.fn()
+        .mockResolvedValueOnce({ runId: 'run-1', response: 'first answer', trace: [], usage: {}, mode: 'preview' })
+        .mockResolvedValueOnce({ runId: 'run-2', response: 'second answer', trace: [], usage: {}, mode: 'preview' }),
+    } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+
+    await sendMessage('first question');
+    expect(await screen.findByText('first answer')).toBeTruthy();
+    expect(client.runSavedAgent).toHaveBeenNthCalledWith(1, expect.not.objectContaining({ history: expect.anything() }));
+
+    await sendMessage('second question');
+    expect(await screen.findByText('second answer')).toBeTruthy();
+    expect(client.runSavedAgent).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      message: 'second question',
+      history: [
+        { role: 'user', content: 'first question' },
+        { role: 'assistant', content: 'first answer' },
+      ],
+    }));
+  });
+
   it('初期のウェルカム候補をクリックするとコンポーザーへ差し込む', async () => {
     const client = {
       listAgents: vi.fn().mockResolvedValue([{ internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '2.0.0', kind: 'normal', state: 'draft' }]),

@@ -299,6 +299,12 @@ export interface RunImageAttachmentDto {
   readonly dataUrl: string;
 }
 
+/** 直前までの会話履歴の1件（マルチターン会話用）。 */
+export interface AgentHistoryMessageDto {
+  readonly role: 'user' | 'assistant';
+  readonly content: string;
+}
+
 export interface RunSavedAgentDto {
   readonly scope: TenantScopeDto;
   readonly agent: { readonly internalId: string; readonly version?: string };
@@ -307,6 +313,8 @@ export interface RunSavedAgentDto {
   /** 手動アタッチする Wiki ページ id（v21 M1）。 */
   readonly memoryPageIds?: readonly string[];
   readonly sessionId?: string;
+  /** 直前までの会話履歴。system直後へ注入され、文脈参照(「さっきの件」等)を可能にする。 */
+  readonly history?: readonly AgentHistoryMessageDto[];
   readonly images?: readonly RunImageAttachmentDto[];
 }
 

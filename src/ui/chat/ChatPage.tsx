@@ -3,6 +3,7 @@ import type { ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, AgentSummaryDto, HarnessRunDto, HarnessSummaryDto, RunImageAttachmentDto, RunTraceEventDto, SessionArtifactDto } from '../api/types';
 import { useI18n } from '../i18n';
 import { useElapsedSeconds } from './useElapsedSeconds';
+import { buildHistory } from './agent-history';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
@@ -101,8 +102,9 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
         setSessionId(activeSessionId);
       }
       if (target.kind === 'harness' && attachedImages.length > 0) throw new Error(text('Image input is not available for Harness preview yet.', 'Harness previewではまだ画像入力を利用できません。'));
+      const history = target.kind === 'agent' ? buildHistory(turns, content) : [];
       const run = target.kind === 'agent'
-        ? await client.runSavedAgent({ scope, agent: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview', sessionId: activeSessionId, ...(attachedImages.length > 0 ? { images: attachedImages } : {}) })
+        ? await client.runSavedAgent({ scope, agent: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview', sessionId: activeSessionId, ...(history.length > 0 ? { history } : {}), ...(attachedImages.length > 0 ? { images: attachedImages } : {}) })
         : activeHarnessRun?.status === 'waiting-input'
           ? await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'input', message: content } })
           : activeHarnessRun?.status === 'waiting-approval'

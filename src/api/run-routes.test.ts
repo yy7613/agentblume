@@ -146,6 +146,44 @@ describe('POST /runs', () => {
     expect(model.requests[0]?.tools).toBeUndefined();
   });
 
+  it('historyをsystem直後の会話履歴としてモデルへ渡す（マルチターン会話）', async () => {
+    await app.saveAgent.execute({
+      scope, internalId: 'chat-agent', workingName: 'chat', displayName: 'Chat Agent', publishName: 'chat_agent', owner: 'owner', kind: 'normal', systemPrompt: 'Answer directly.', tools: [],
+    });
+    model.enqueue({ message: { role: 'assistant', content: 'Your first question was about stock.' }, finishReason: 'stop' });
+    const response = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, agent: { internalId: 'chat-agent' }, message: 'What was my first question?', mode: 'preview',
+      history: [
+        { role: 'user', content: 'Which items are in stock?' },
+        { role: 'assistant', content: 'Headphones and keyboard.' },
+      ],
+    } });
+    expect(response.statusCode).toBe(200);
+    expect(model.requests[0]?.messages.map((entry) => entry.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(model.requests[0]?.messages[1]).toMatchObject({ role: 'user', content: 'Which items are in stock?' });
+    expect(model.requests[0]?.messages[2]).toMatchObject({ role: 'assistant', content: 'Headphones and keyboard.' });
+    expect(model.requests[0]?.messages.at(-1)).toMatchObject({ role: 'user', content: 'What was my first question?' });
+  });
+
+  it('不正なhistory(空content・未知role・41件超)を400へ変換する', async () => {
+    await app.saveAgent.execute({
+      scope, internalId: 'chat-agent', workingName: 'chat', displayName: 'Chat Agent', publishName: 'chat_agent', owner: 'owner', kind: 'normal', systemPrompt: 'Answer directly.', tools: [],
+    });
+    const emptyContent = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, agent: { internalId: 'chat-agent' }, message: 'Hi', mode: 'preview', history: [{ role: 'user', content: '' }],
+    } });
+    expect(emptyContent.statusCode).toBe(400);
+    const badRole = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, agent: { internalId: 'chat-agent' }, message: 'Hi', mode: 'preview', history: [{ role: 'system', content: 'x' }],
+    } });
+    expect(badRole.statusCode).toBe(400);
+    const tooMany = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, agent: { internalId: 'chat-agent' }, message: 'Hi', mode: 'preview',
+      history: Array.from({ length: 41 }, (_, index) => ({ role: 'user', content: `m${index}` })),
+    } });
+    expect(tooMany.statusCode).toBe(400);
+  });
+
   it('保存済みAgentのstructured outputをProviderへ渡して再検証・永続化する', async () => {
     await app.saveAgent.execute({
       scope, internalId: 'structured-agent', workingName: 'structured', displayName: 'Structured Agent', publishName: 'structured_agent', owner: 'owner', kind: 'normal', systemPrompt: 'Return JSON.', tools: [],

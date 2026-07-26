@@ -41,6 +41,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
         ...(body.images !== undefined ? { images: body.images } : {}),
         ...(body.memoryPageIds !== undefined ? { memoryPageIds: body.memoryPageIds } : {}),
         ...(body.sessionId !== undefined ? { sessionId: body.sessionId } : {}),
+        ...(body.history !== undefined ? { history: body.history } : {}),
       }, request.raw.signal);
     } else {
       const version = parseVersion(body.tool.version);
