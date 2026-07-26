@@ -14,6 +14,10 @@
  */
 import { createApp } from './composition/root';
 import type { App } from './composition/root';
+
+// Mastra(@mastra/core)の外部テレメトリと登録簿の動的取得を無効化する（オフラインファースト。src/server.ts と同じ流儀）。
+process.env['MASTRA_TELEMETRY_DISABLED'] ??= 'true';
+process.env['MASTRA_OFFLINE'] ??= '1';
 import type { Cell, Row, Schema, Table } from './domain/data/types';
 import type { GraphNode, ToolGraph } from './domain/etl/graph';
 import type { TenantScope } from './domain/tool/ids';

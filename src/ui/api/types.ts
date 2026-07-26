@@ -852,3 +852,61 @@ export interface McpServerTestResultDto {
   readonly tools?: readonly { readonly name: string; readonly description?: string }[];
   readonly error?: string;
 }
+
+/**
+ * モデル設定（main / judge の切替）。
+ *
+ * **APIキーは応答に決して含まれない**。設定済みかどうか（configured）と、
+ * 末尾4文字（hint）だけがマスク表示のために返る。保存時は平文を書き込み専用で送る:
+ *   文字列 → 保存 / 省略 → 既存維持 / 空文字・null → クリア。
+ * スロット（main / judge）が未設定なら、サーバーは環境変数の既定モデルを使う。
+ */
+export type ModelSettingsSourceDto = 'registry' | 'openai-compatible';
+export type ModelSlotNameDto = 'main' | 'judge';
+export interface MaskedApiKeyDto {
+  readonly configured: boolean;
+  readonly hint?: string;
+}
+export type ModelSlotSettingsDto =
+  | { readonly source: 'registry'; readonly model: string; readonly apiKey: MaskedApiKeyDto }
+  | { readonly source: 'openai-compatible'; readonly baseUrl: string; readonly model: string; readonly apiKey: MaskedApiKeyDto };
+/** GET/PUT /model-settings の `settings`。スロット省略 = env 既定を使用中。 */
+export interface ModelSettingsDto {
+  readonly scope: TenantScopeDto;
+  readonly main?: ModelSlotSettingsDto;
+  readonly judge?: ModelSlotSettingsDto;
+  readonly updatedAt?: string;
+}
+/** PUT /model-settings の body のスロット部（apiKey は write-only）。 */
+export interface ModelSlotSettingsInputDto {
+  readonly source: ModelSettingsSourceDto;
+  readonly baseUrl?: string;
+  readonly model: string;
+  readonly apiKey?: string | null;
+}
+/** PUT /model-settings の body。null を渡したスロットは設定を消して env 既定へ戻す。 */
+export interface SaveModelSettingsDto {
+  readonly scope: TenantScopeDto;
+  readonly main?: ModelSlotSettingsInputDto | null;
+  readonly judge?: ModelSlotSettingsInputDto | null;
+}
+/** POST /model-settings/test の body。candidate 省略で保存済み（無ければenv既定）設定を試す。 */
+export interface TestModelSettingsDto {
+  readonly scope: TenantScopeDto;
+  readonly slot: ModelSlotNameDto;
+  readonly candidate?: ModelSlotSettingsInputDto;
+}
+/** 疎通テストの結果。接続失敗も ok:false として200で返る。 */
+export type ModelSettingsTestResultDto =
+  | { readonly ok: true; readonly latencyMs: number; readonly reply: string }
+  | { readonly ok: false; readonly error: string };
+/** GET /model-catalog。models は provider を除いたモデルID（設定値は `${id}/${model}`）。 */
+export interface ModelCatalogProviderDto {
+  readonly id: string;
+  readonly name: string;
+  readonly envVar?: string;
+  readonly models: readonly string[];
+}
+export interface ModelCatalogDto {
+  readonly providers: readonly ModelCatalogProviderDto[];
+}

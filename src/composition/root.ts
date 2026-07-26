@@ -13,7 +13,6 @@ import { InMemoryToolRepository } from '../adapters/storage/in-memory-tool-repos
 import { SqliteToolRepository } from '../adapters/storage/sqlite-tool-repository';
 import { InMemoryRunRepository } from '../adapters/storage/in-memory-run-repository';
 import { SqliteRunRepository } from '../adapters/storage/sqlite-run-repository';
-import { LmStudioModelProvider } from '../adapters/model/lm-studio-model-provider';
 import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider';
 import { RunAgentPreviewUseCase } from '../application/agent/run-agent-preview';
 import { QueryRunsUseCase } from '../application/agent/query-runs';
@@ -167,6 +166,21 @@ import type { McpServerRepository } from '../domain/mcp/mcp-server-repository';
 import type { McpClientPort } from '../application/mcp/mcp-client';
 import { DeleteMcpServerUseCase, ListMcpServersUseCase, ReplaceMcpServersUseCase, SaveMcpServerUseCase } from '../application/mcp/manage-mcp-servers';
 import { TestMcpServerUseCase } from '../application/mcp/test-mcp-server';
+import { InMemoryModelSettingsRepository } from '../adapters/storage/in-memory-model-settings-repository';
+import { SqliteModelSettingsRepository } from '../adapters/storage/sqlite-model-settings-repository';
+import { AesGcmSecretCipher } from '../adapters/security/aes-gcm-secret-cipher';
+import { MastraModelProviderFactory } from '../adapters/model/mastra-model-provider-factory';
+import { RegistryModelCatalog } from '../adapters/model/registry-model-catalog';
+import type { ModelSettingsRepository } from '../domain/model-settings/model-settings-repository';
+import type { SecretCipherPort } from '../application/model-settings/secret-cipher';
+import type { ModelCatalogPort } from '../application/model-settings/model-catalog';
+import type { ModelProviderFactoryPort, ResolvedSlotOptions } from '../application/model-settings/model-provider-factory';
+import { SwitchableModelProvider } from '../application/model-settings/switchable-model-provider';
+import { GetModelSettingsUseCase, SaveModelSettingsUseCase } from '../application/model-settings/manage-model-settings';
+import { TestModelSettingsUseCase } from '../application/model-settings/test-model-settings';
+import { QueryModelCatalogUseCase } from '../application/model-settings/query-model-catalog';
+import type { ModelSlotName } from '../domain/model-settings/model-settings';
+import type { TenantScope } from '../domain/tool/ids';
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
@@ -199,6 +213,13 @@ export interface AppOptions {
   readonly mcpServerRepository?: McpServerRepository;
   /** テスト・埋め込み用の明示MCPクライアント。省略時は SDK 実装（実接続）。 */
   readonly mcpClient?: McpClientPort;
+  /** モデル設定（v34）のfake注入口。省略時は profile に従う。 */
+  readonly modelSettingsRepository?: ModelSettingsRepository;
+  readonly secretCipher?: SecretCipherPort;
+  readonly modelProviderFactory?: ModelProviderFactoryPort;
+  readonly modelCatalog?: ModelCatalogPort;
+  /** モデル設定を読むスコープ。既定は env AGENTCONTEXT_TENANT_ID / _WORKSPACE_ID。 */
+  readonly modelSettingsScope?: TenantScope;
 }
 
 /** 配線済みアプリケーション。 */
@@ -230,6 +251,7 @@ export interface App {
   readonly sessionArtifactRepo: SessionArtifactRepository;
   readonly dataSourceRepo: DataSourceRepository;
   readonly mcpServerRepo: McpServerRepository;
+  readonly modelSettingsRepo: ModelSettingsRepository;
   /** 外部MCPサーバーへの接続。shutdown時に close() を呼び、プール済み接続（子プロセス）を解放する。 */
   readonly mcpClient: McpClientPort;
   readonly telemetry: TelemetryPort;
@@ -269,6 +291,10 @@ export interface App {
   readonly deleteMcpServer: DeleteMcpServerUseCase;
   readonly replaceMcpServers: ReplaceMcpServersUseCase;
   readonly testMcpServer: TestMcpServerUseCase;
+  readonly getModelSettings: GetModelSettingsUseCase;
+  readonly saveModelSettings: SaveModelSettingsUseCase;
+  readonly testModelSettings: TestModelSettingsUseCase;
+  readonly queryModelCatalog: QueryModelCatalogUseCase;
   readonly saveSkill: SaveSkillUseCase;
   readonly querySkills: QuerySkillsUseCase;
   readonly deleteSkill: DeleteSkillUseCase;
@@ -498,26 +524,64 @@ export function createApp(options?: AppOptions): App {
 
   const engine = new EtlEngine(createDefaultRegistry());
   const modelMaxTokens = resolveModelMaxTokens();
-  const modelProvider = options?.modelProvider ?? (profile === 'test'
-    ? new ScriptedModelProvider()
-    : new LmStudioModelProvider({
-        baseUrl: process.env['LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1',
-        model: process.env['LM_STUDIO_MODEL'] ?? '',
-        timeoutMs: resolveModelTimeoutMs(),
-        idleTimeoutMs: resolveModelIdleTimeoutMs(),
-        ...(modelMaxTokens !== undefined ? { maxTokens: modelMaxTokens } : {}),
-        ...(process.env['LM_STUDIO_API_KEY'] !== undefined ? { apiKey: process.env['LM_STUDIO_API_KEY'] } : {}),
-      }));
-  const judgeModelProvider = options?.judgeModelProvider ?? (profile === 'test'
-    ? new ScriptedModelProvider()
-    : new LmStudioModelProvider({ baseUrl: process.env['JUDGE_LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['JUDGE_LM_STUDIO_MODEL'] ?? '', timeoutMs: resolveModelTimeoutMs(), idleTimeoutMs: resolveModelIdleTimeoutMs(), ...(modelMaxTokens !== undefined ? { maxTokens: modelMaxTokens } : {}), ...(process.env['JUDGE_LM_STUDIO_API_KEY'] !== undefined ? { apiKey: process.env['JUDGE_LM_STUDIO_API_KEY'] } : {}) }));
-  const judgeSnapshot = options?.judgeModelSnapshot ?? (profile === 'test'
+
+  // モデル設定（v34）: 設定は暗号化してDBへ、鍵はDBの外（鍵ファイル）へ置く。
+  // testプロファイルは揮発鍵（ファイルを作らない）にして、テスト実行が利用者のホームを汚さないようにする。
+  const modelSettingsAdapter = options?.modelSettingsRepository !== undefined
+    ? { repo: options.modelSettingsRepository, close: () => {} }
+    : profile === 'local'
+      ? (() => { const sqlite = new SqliteModelSettingsRepository(path ?? ':memory:'); return { repo: sqlite as ModelSettingsRepository, close: () => sqlite.close() }; })()
+      : { repo: new InMemoryModelSettingsRepository() as ModelSettingsRepository, close: () => {} };
+  const secretCipher = options?.secretCipher ?? (profile === 'local' ? new AesGcmSecretCipher() : AesGcmSecretCipher.ephemeral());
+  const modelProviderFactory = options?.modelProviderFactory ?? new MastraModelProviderFactory({
+    timeoutMs: resolveModelTimeoutMs(),
+    idleTimeoutMs: resolveModelIdleTimeoutMs(),
+    ...(modelMaxTokens !== undefined ? { maxTokens: modelMaxTokens } : {}),
+  });
+  const modelCatalog = options?.modelCatalog ?? new RegistryModelCatalog();
+  const modelSettingsScope = options?.modelSettingsScope ?? { tenantId: process.env['AGENTCONTEXT_TENANT_ID'] ?? 'local', workspaceId: process.env['AGENTCONTEXT_WORKSPACE_ID'] ?? 'default' };
+  /** env 既定（設定を保存していないスロットで使う）。従来の LM_STUDIO_* 配線と等価。 */
+  const envSlotDefault = (slot: ModelSlotName): ResolvedSlotOptions => {
+    const prefix = slot === 'judge' ? 'JUDGE_' : '';
+    const apiKey = process.env[`${prefix}LM_STUDIO_API_KEY`];
+    return {
+      model: {
+        id: process.env[`${prefix}LM_STUDIO_MODEL`] ?? '',
+        url: process.env[`${prefix}LM_STUDIO_BASE_URL`] ?? 'http://127.0.0.1:1234/v1',
+        ...(apiKey === undefined ? {} : { apiKey }),
+      },
+    };
+  };
+  const sourceRevision = process.env['AGENTCONTEXT_SOURCE_REVISION'];
+  const makeSwitchable = (slot: ModelSlotName): SwitchableModelProvider => new SwitchableModelProvider(
+    modelSettingsAdapter.repo, secretCipher, modelProviderFactory, slot, envSlotDefault(slot), modelSettingsScope,
+    slot === 'main' && sourceRevision !== undefined ? { sourceRevision } : {},
+  );
+  // testプロファイルは決定的な ScriptedModelProvider を直接使い、設定切替の対象外にする。
+  const mainSwitchable = profile === 'test' || options?.modelProvider !== undefined ? undefined : makeSwitchable('main');
+  const judgeSwitchable = profile === 'test' || options?.judgeModelProvider !== undefined ? undefined : makeSwitchable('judge');
+  const modelProvider = options?.modelProvider ?? mainSwitchable ?? new ScriptedModelProvider();
+  const judgeModelProvider = options?.judgeModelProvider ?? judgeSwitchable ?? new ScriptedModelProvider();
+
+  // 切替可能な配線では指紋も実行時点で解決する。static は「明示provider注入」「testプロファイル」用の退避。
+  const staticJudgeSnapshot: ExperimentModelSnapshot = profile === 'test'
     ? { provider: 'scripted-judge', model: 'scripted-judge', modelConfigHash: hashConfig({ profile: 'test', purpose: 'judge' }) }
-    : { provider: 'lm-studio-judge', model: process.env['JUDGE_LM_STUDIO_MODEL'] ?? '', modelConfigHash: hashConfig({ baseUrl: process.env['JUDGE_LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['JUDGE_LM_STUDIO_MODEL'] ?? '' }) });
-  const judgeEvaluator = new StructuredJudgeEvaluator(judgeModelProvider, judgeSnapshot);
-  const snapshot = options?.modelSnapshot ?? (profile === 'test'
+    : { provider: 'lm-studio-judge', model: process.env['JUDGE_LM_STUDIO_MODEL'] ?? '', modelConfigHash: hashConfig({ baseUrl: process.env['JUDGE_LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['JUDGE_LM_STUDIO_MODEL'] ?? '' }) };
+  const judgeSnapshot = options?.judgeModelSnapshot ?? judgeSwitchable?.lastSnapshot() ?? staticJudgeSnapshot;
+  // StructuredJudgeEvaluator は complete() 直後に snapshot() を読むため、
+  // lastSnapshot()（同期・直近解決値）で「実際に使った設定」が記録される。
+  const judgeEvaluator = new StructuredJudgeEvaluator(
+    judgeModelProvider,
+    options?.judgeModelSnapshot ?? (judgeSwitchable === undefined ? staticJudgeSnapshot : () => judgeSwitchable.lastSnapshot()),
+  );
+  const staticSnapshot: ExperimentModelSnapshot = profile === 'test'
     ? { provider: 'scripted', model: 'scripted', modelConfigHash: hashConfig({ profile: 'test' }) }
-    : { provider: 'lm-studio', model: process.env['LM_STUDIO_MODEL'] ?? '', modelConfigHash: hashConfig({ baseUrl: process.env['LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['LM_STUDIO_MODEL'] ?? '' }), ...(process.env['AGENTCONTEXT_SOURCE_REVISION'] !== undefined ? { sourceRevision: process.env['AGENTCONTEXT_SOURCE_REVISION'] } : {}) });
+    : { provider: 'lm-studio', model: process.env['LM_STUDIO_MODEL'] ?? '', modelConfigHash: hashConfig({ baseUrl: process.env['LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['LM_STUDIO_MODEL'] ?? '' }), ...(sourceRevision !== undefined ? { sourceRevision } : {}) };
+  const snapshot = options?.modelSnapshot ?? mainSwitchable?.lastSnapshot() ?? staticSnapshot;
+  /** Run開始・実験起票の時点で設定を解決する（未設定なら env 既定の指紋）。 */
+  const resolveModelSnapshot = options?.modelSnapshot === undefined && mainSwitchable !== undefined
+    ? (): Promise<ExperimentModelSnapshot> => mainSwitchable.currentSnapshot()
+    : undefined;
   const telemetry = options?.telemetry ?? (process.env['AGENTCONTEXT_OTEL_ENABLED'] === 'true' ? new OpenTelemetryAdapter() : new NoopTelemetryAdapter());
   const pricing = options?.pricing ?? new StaticPricingAdapter(resolvePricingCatalog(profile));
   const databaseConnections = new EnvironmentPostgresConnectionCatalog();
@@ -527,7 +591,7 @@ export function createApp(options?: AppOptions): App {
   const webSearch = new WebSearchUseCase(options?.searchProviderCatalog ?? new EnvironmentSearchProviderCatalog());
   const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections, webSearch);
 
-  const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient);
+  const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot, ...(resolveModelSnapshot === undefined ? {} : { resolveModel: resolveModelSnapshot }) }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient);
   const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);
   const saveWikiPage = new SaveWikiPageUseCase(wikiAdapter.repo);
   const runScenario = new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo);
@@ -592,6 +656,7 @@ export function createApp(options?: AppOptions): App {
     sessionArtifactRepo: sessionArtifactAdapter.repo,
     dataSourceRepo: dataSourceAdapter.repo,
     mcpServerRepo: mcpServerAdapter.repo,
+    modelSettingsRepo: modelSettingsAdapter.repo,
     mcpClient,
     telemetry,
     pricing,
@@ -630,6 +695,10 @@ export function createApp(options?: AppOptions): App {
     deleteMcpServer: new DeleteMcpServerUseCase(mcpServerAdapter.repo),
     replaceMcpServers: new ReplaceMcpServersUseCase(mcpServerAdapter.repo),
     testMcpServer: new TestMcpServerUseCase(mcpServerAdapter.repo, mcpClient),
+    getModelSettings: new GetModelSettingsUseCase(modelSettingsAdapter.repo),
+    saveModelSettings: new SaveModelSettingsUseCase(modelSettingsAdapter.repo, secretCipher),
+    testModelSettings: new TestModelSettingsUseCase(modelSettingsAdapter.repo, secretCipher, modelProviderFactory, envSlotDefault),
+    queryModelCatalog: new QueryModelCatalogUseCase(modelCatalog, modelSettingsAdapter.repo, secretCipher),
     saveSkill,
     querySkills: new QuerySkillsUseCase(skillAdapter.repo),
     deleteSkill: new DeleteSkillUseCase(skillAdapter.repo),
@@ -657,7 +726,7 @@ export function createApp(options?: AppOptions): App {
     queryJudgeRubrics: new QueryJudgeRubricsUseCase(judgeRubricAdapter.repo),
     deleteJudgeRubric: new DeleteJudgeRubricUseCase(judgeRubricAdapter.repo),
     runExperiment,
-    createExperiment: new CreateExperimentUseCase(experimentAdapter.repo, evaluationDatasetAdapter.repo, evaluatorProfileAdapter.repo, agentAdapter.repo, experimentWorker, () => snapshot),
+    createExperiment: new CreateExperimentUseCase(experimentAdapter.repo, evaluationDatasetAdapter.repo, evaluatorProfileAdapter.repo, agentAdapter.repo, experimentWorker, () => resolveModelSnapshot?.() ?? snapshot),
     queryExperiments: new QueryExperimentsUseCase(experimentAdapter.repo),
     cancelExperiment: new CancelExperimentUseCase(experimentAdapter.repo, experimentWorker),
     resumeExperiment: new ResumeExperimentUseCase(experimentAdapter.repo, experimentWorker),
@@ -697,6 +766,8 @@ export function createApp(options?: AppOptions): App {
       // App.close は同期契約のため待てない。確実に待ちたいエントリポイントは
       // app.close() の前に await app.mcpClient.close() を呼ぶ（src/server.ts のshutdown参照）。
       void mcpClient.close();
+      try { modelSettingsAdapter.close(); }
+      finally {
       try { mcpServerAdapter.close(); }
       finally {
       try { factoryRunAdapter.close(); }
@@ -756,6 +827,7 @@ export function createApp(options?: AppOptions): App {
             }
           }
         }
+      }
       }
       }
       }

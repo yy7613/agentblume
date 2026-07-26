@@ -23,7 +23,8 @@ export class CreateExperimentUseCase {
     private readonly profiles: EvaluatorProfileRepository,
     private readonly agents: AgentRepository,
     private readonly worker: ExperimentWorkerPort,
-    private readonly snapshot: () => ExperimentModelSnapshot,
+    /** 実行時点のモデル設定を返す（UIからの切替に追随できるよう Promise も許す）。 */
+    private readonly snapshot: () => ExperimentModelSnapshot | Promise<ExperimentModelSnapshot>,
     private readonly makeId: () => string = randomUUID,
     private readonly now: () => Date = () => new Date(),
   ) {}
@@ -38,7 +39,7 @@ export class CreateExperimentUseCase {
     const repetitions = input.repetitions ?? 1;
     const experiment = createExperiment({
       id: this.makeId(), scope: input.scope, target: input.target, dataset: input.dataset, evaluatorProfile: input.evaluatorProfile,
-      repetitions, status: 'queued', snapshot: this.snapshot(), progress: { completed: 0, total: dataset.cases.length * repetitions }, createdAt: this.now().toISOString(),
+      repetitions, status: 'queued', snapshot: await this.snapshot(), progress: { completed: 0, total: dataset.cases.length * repetitions }, createdAt: this.now().toISOString(),
     });
     await this.experiments.create(experiment);
     this.worker.enqueue(input.scope, experiment.id);

@@ -10,8 +10,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryToolRepository } from '../adapters/storage/in-memory-tool-repository';
 import { SqliteToolRepository } from '../adapters/storage/sqlite-tool-repository';
-import { LmStudioModelProvider } from '../adapters/model/lm-studio-model-provider';
+import { MastraModelProvider } from '../adapters/model/mastra-model-provider';
 import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider';
+import { SwitchableModelProvider } from '../application/model-settings/switchable-model-provider';
+import { AesGcmSecretCipher } from '../adapters/security/aes-gcm-secret-cipher';
+import type { ModelProviderFactoryPort, ResolvedSlotOptions } from '../application/model-settings/model-provider-factory';
+import type { ModelCompletion, ModelProviderPort } from '../application/model/model-provider';
 import { InMemoryRunRepository } from '../adapters/storage/in-memory-run-repository';
 import { SqliteRunRepository } from '../adapters/storage/sqlite-run-repository';
 import type { ToolGraph } from '../domain/etl/graph';
@@ -22,9 +26,14 @@ import type { App } from './root';
 
 const scope: TenantScope = { tenantId: 'tenant-a', workspaceId: 'ws-1' };
 
-/** 配線結果の確認のため LmStudioModelProvider の内部設定を読む（composition の責務検証に閉じる）。 */
+/**
+ * 配線結果の確認のため、SwitchableModelProvider が現在保持しているアダプタ
+ * （env既定から作った MastraModelProvider）の内部設定を読む（composition の責務検証に閉じる）。
+ */
 function modelConfig(provider: unknown): { timeoutMs: number; idleTimeoutMs: number; options: { maxTokens?: number } } {
-  return provider as { timeoutMs: number; idleTimeoutMs: number; options: { maxTokens?: number } };
+  const current = (provider as { current: { provider: unknown } }).current.provider;
+  expect(current).toBeInstanceOf(MastraModelProvider);
+  return current as { timeoutMs: number; idleTimeoutMs: number; options: { maxTokens?: number } };
 }
 
 const graph: ToolGraph = {
@@ -81,7 +90,7 @@ describe('createApp', () => {
 
     expect(app.profile).toBe('local');
     expect(app.repo).toBeInstanceOf(SqliteToolRepository);
-    expect(app.modelProvider).toBeInstanceOf(LmStudioModelProvider);
+    expect(app.modelProvider).toBeInstanceOf(SwitchableModelProvider);
     expect(app.runRepo).toBeInstanceOf(SqliteRunRepository);
     await roundTrip(app);
     app.close();
@@ -103,6 +112,70 @@ describe('createApp', () => {
     const test = createApp({ profile: 'test' });
     await roundTrip(test);
     expect(() => test.close()).not.toThrow();
+  });
+
+  describe('モデル設定の切替（v34）', () => {
+    /** 生成されたアダプタの設定を記録するだけの工場。 */
+    class RecordingFactory implements ModelProviderFactoryPort {
+      readonly created: ResolvedSlotOptions[] = [];
+      create(options: ResolvedSlotOptions): ModelProviderPort {
+        this.created.push(options);
+        return {
+          async complete(): Promise<ModelCompletion> { return { message: { role: 'assistant', content: 'ok' }, finishReason: 'stop' }; },
+          capabilities: () => ['chat', 'tool-calling', 'structured-output', 'vision'],
+        };
+      }
+    }
+
+    function switchableApp(factory: ModelProviderFactoryPort): App {
+      return createApp({ profile: 'local', dbPath: ':memory:', modelProviderFactory: factory, secretCipher: AesGcmSecretCipher.ephemeral(), modelSettingsScope: scope });
+    }
+
+    it('設定未保存なら env 既定（LM_STUDIO_*）で解決する', async () => {
+      vi.stubEnv('LM_STUDIO_BASE_URL', 'http://127.0.0.1:4321/v1');
+      vi.stubEnv('LM_STUDIO_MODEL', 'env-model');
+      vi.stubEnv('JUDGE_LM_STUDIO_MODEL', 'env-judge-model');
+      const factory = new RecordingFactory();
+      const app = switchableApp(factory);
+
+      try {
+        expect(app.modelProvider).toBeInstanceOf(SwitchableModelProvider);
+        expect(app.judgeModelProvider).toBeInstanceOf(SwitchableModelProvider);
+        expect(await (app.modelProvider as SwitchableModelProvider).currentSnapshot()).toMatchObject({ provider: 'openai-compatible', model: 'env-model' });
+        expect(await (app.judgeModelProvider as SwitchableModelProvider).currentSnapshot()).toMatchObject({ provider: 'openai-compatible', model: 'env-judge-model' });
+        expect(factory.created[0]?.model).toMatchObject({ id: 'env-model', url: 'http://127.0.0.1:4321/v1' });
+      } finally { app.close(); }
+    });
+
+    it('保存した設定が次のリクエストから反映され、Run記録の指紋も実行時点の設定になる', async () => {
+      const factory = new RecordingFactory();
+      const app = switchableApp(factory);
+
+      try {
+        await roundTrip(app);
+        await app.saveModelSettings.execute({ scope, main: { source: 'registry', model: 'openai/gpt-4o', apiKey: 'sk-root-test-1234' } });
+
+        const run = await app.runAgentPreview.execute({ scope, toolId: 'tool-1', systemPrompt: 'system', message: 'hello', mode: 'preview' });
+
+        expect(run.model).toMatchObject({ provider: 'openai', model: 'gpt-4o' });
+        expect(factory.created.at(-1)?.model).toEqual({ id: 'openai/gpt-4o', apiKey: 'sk-root-test-1234' });
+
+        // 保存済みRunにも同じ指紋が残る（観測・再現性の記録）。
+        const stored = await app.queryRuns.get(scope, run.runId);
+        expect(stored.model).toMatchObject({ provider: 'openai', model: 'gpt-4o' });
+
+        // マスク済みDTOには平文キーが出ない。
+        expect(JSON.stringify(await app.getModelSettings.execute(scope))).not.toContain('sk-root-test-1234');
+      } finally { app.close(); }
+    });
+
+    it('明示 modelProvider 注入時は従来どおり固定配線（切替対象外）', () => {
+      const app = createApp({ profile: 'local', dbPath: ':memory:', modelProvider: new ScriptedModelProvider(), judgeModelProvider: new ScriptedModelProvider() });
+      try {
+        expect(app.modelProvider).toBeInstanceOf(ScriptedModelProvider);
+        expect(app.judgeEvaluator.snapshot()).toMatchObject({ provider: 'lm-studio-judge' });
+      } finally { app.close(); }
+    });
   });
 
   describe('env との優先順位', () => {

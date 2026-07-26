@@ -30,6 +30,9 @@ import { HarnessNotFoundError, HarnessRunError, HarnessRunNotFoundError, Harness
 import { FactoryNotFoundError, FactoryValidationError } from '../domain/factory/errors';
 import { McpNotFoundError, McpValidationError } from '../domain/mcp/errors';
 import { McpClientError } from '../application/mcp/mcp-client';
+import { ModelSettingsValidationError } from '../domain/model-settings/errors';
+import { SecretCipherError } from '../application/model-settings/secret-cipher';
+import { ModelCatalogError } from '../application/model-settings/model-catalog';
 
 /** HTTP エラーレスポンス表現。 */
 export interface HttpError {
@@ -143,6 +146,12 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof McpNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof McpValidationError) return httpError(400, err.code, err.message);
   if (err instanceof McpClientError) return httpError(502, err.code, err.message);
+
+  // モデル設定（v34）: 入力不正は400。復号失敗は「保存し直しが必要」な状態なので409
+  // （メッセージに秘密値は含まれない）。モデル一覧の取得失敗は外部依存の失敗なので502。
+  if (err instanceof ModelSettingsValidationError) return httpError(400, err.code, err.message);
+  if (err instanceof SecretCipherError) return httpError(409, err.code, err.message);
+  if (err instanceof ModelCatalogError) return httpError(502, err.code, err.message);
 
   if (err instanceof UnsafeToolError) return httpError(403, err.code, err.message);
   if (err instanceof ToolArgumentsError) return httpError(422, err.code, err.message);

@@ -233,7 +233,13 @@ export interface RunObservabilityOptions {
   readonly telemetry?: TelemetryPort;
   readonly pricing?: PricingPort;
   readonly operations?: OperationsRepository;
+  /** 静的なモデル指紋。resolveModel が無い（または失敗した）ときに使う。 */
   readonly model?: RunModelSnapshot;
+  /**
+   * 実行開始時点のモデル設定を解決する（UIからのモデル切替をRun記録へ反映するため）。
+   * 失敗しても実行は止めない（記録は model へフォールバックする）。
+   */
+  readonly resolveModel?: () => Promise<RunModelSnapshot>;
   readonly monotonicNow?: () => number;
 }
 
@@ -486,10 +492,21 @@ export class RunAgentPreviewUseCase {
   ): Promise<AgentPreviewRun> {
     const runId = this.makeRunId();
     const startedAt = this.now().toISOString();
-    const model = this.observability?.model;
+    const model = await this.currentModelSnapshot();
     const started = startRun({ runId, scope, mode, purpose, ...(sessionId === undefined ? {} : { sessionId }), ...refs, ...(model !== undefined ? { model } : {}), startedAt });
     await this.runRepo.save(started);
     return this.runWithRecord(started, [], { modelMs: 0, toolMs: 0 }, 0, work);
+  }
+
+  /**
+   * Run開始時点のモデル指紋。切替可能な配線では実行のたびに解決し直す。
+   * 解決に失敗しても実行自体は続ける（観測のための情報であり、実行の前提条件ではない）。
+   */
+  private async currentModelSnapshot(): Promise<RunModelSnapshot | undefined> {
+    const resolve = this.observability?.resolveModel;
+    if (resolve === undefined) return this.observability?.model;
+    try { return await resolve(); }
+    catch { return this.observability?.model; }
   }
 
   /**

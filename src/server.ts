@@ -12,6 +12,8 @@ import { seedSampleData } from './sample-data';
 
 // Mastra Evals(@mastra/core)同梱の外部テレメトリを無効化する（オフラインファースト）。
 process.env['MASTRA_TELEMETRY_DISABLED'] ??= 'true';
+// モデル登録簿の動的取得（ネットワーク）も止める。プロセス起動時のenvで効かせるのが確実。
+process.env['MASTRA_OFFLINE'] ??= '1';
 
 const app = createApp();
 const server = buildServer(app, { logger: true });

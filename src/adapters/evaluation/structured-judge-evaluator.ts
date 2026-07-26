@@ -28,8 +28,13 @@ function systemMessage(rubric: JudgeRubric, mode: 'pointwise' | 'pairwise'): str
 }
 
 export class StructuredJudgeEvaluator implements JudgeEvaluatorPort {
-  constructor(private readonly provider: ModelProviderPort, private readonly model: ExperimentModelSnapshot) {}
-  snapshot(): ExperimentModelSnapshot { return { ...this.model }; }
+  /**
+   * model は固定値でも「実行時点の設定を返す関数」でもよい。
+   * 関数形はUIからのモデル切替（SwitchableModelProvider）に対応するためのもので、
+   * evaluate / compare は complete() の直後に snapshot() を読むため、実際に使った設定が記録される。
+   */
+  constructor(private readonly provider: ModelProviderPort, private readonly model: ExperimentModelSnapshot | (() => ExperimentModelSnapshot)) {}
+  snapshot(): ExperimentModelSnapshot { return { ...(typeof this.model === 'function' ? this.model() : this.model) }; }
   async evaluate(input: JudgeEvaluationInput, signal?: AbortSignal): Promise<JudgeEvaluationResult> {
     if (!this.provider.capabilities().includes('structured-output')) throw new JudgeEvaluationError('JUDGE_PROVIDER', 'Judge provider must support structured output');
     const data = { ...checkedData(input), output: input.output };

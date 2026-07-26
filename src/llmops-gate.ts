@@ -1,5 +1,9 @@
 import { createApp } from './composition/root';
 
+// Mastra(@mastra/core)の外部テレメトリと登録簿の動的取得を無効化する（オフラインファースト。src/server.ts と同じ流儀）。
+process.env['MASTRA_TELEMETRY_DISABLED'] ??= 'true';
+process.env['MASTRA_OFFLINE'] ??= '1';
+
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1];
 }
