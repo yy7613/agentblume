@@ -120,11 +120,10 @@ describe('CompileHarnessUseCase', () => {
     ]);
   });
 
-  it('group-chatはmanager未指定なら先頭参加者を進行役として扱う', () => {
+  it('group-chatはmanager未指定なら先頭参加者を進行役hubとして扱い、自己辺は張らない', () => {
     const executable = usecase.execute(harnessOf('group-chat', { pattern: 'group-chat', participantSlotIds: ['writer', 'reviewer'], selector: 'round-robin', maxRounds: 3 }));
     expect(executable.edges).toEqual([
       { from: 'input', to: 'slot:writer' },
-      { from: 'slot:writer', to: 'slot:writer' },
       { from: 'slot:writer', to: 'slot:reviewer' },
       { from: 'slot:writer', to: 'output' },
       { from: 'slot:reviewer', to: 'output' },
@@ -135,6 +134,16 @@ describe('CompileHarnessUseCase', () => {
     const executable = usecase.execute(harnessOf('group-chat', { pattern: 'group-chat', participantSlotIds: ['writer', 'reviewer'], selector: 'agent', managerSlotId: 'publisher', maxRounds: 3 }));
     expect(executable.edges[0]).toEqual({ from: 'input', to: 'slot:publisher' });
     expect(executable.edges).toContainEqual({ from: 'slot:publisher', to: 'slot:reviewer' });
+  });
+
+  it('group-chatの進行役は参加者を兼ねられない(magenticと同じ不変条件)', () => {
+    expect(() => harnessOf('group-chat', { pattern: 'group-chat', participantSlotIds: ['writer', 'reviewer'], selector: 'agent', managerSlotId: 'writer', maxRounds: 3 }))
+      .toThrow('group-chat manager must not be a participant');
+  });
+
+  it('group-chatのmanagerSlotIdはselectorに関わらず実在スロットを要求する', () => {
+    expect(() => harnessOf('group-chat', { pattern: 'group-chat', participantSlotIds: ['writer', 'reviewer'], selector: 'round-robin', managerSlotId: 'ghost', maxRounds: 3 }))
+      .toThrow('topology.managerSlotId');
   });
 
   it('magenticはmanagerと各参加者を往復し、managerから出力へ抜ける', () => {

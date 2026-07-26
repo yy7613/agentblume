@@ -125,9 +125,11 @@ function validateTopology(topology: HarnessTopology, slots: ReadonlyMap<string, 
       idsExist(topology.participantSlotIds, slots, 'topology.participantSlotIds', 2);
       if (!['round-robin', 'fixed-order', 'agent'].includes(topology.selector)) throw new HarnessValidationError('createAgentHarness: invalid group-chat selector');
       limit(topology.maxRounds, 'topology.maxRounds', 1, 100);
-      if (topology.selector === 'agent') {
-        if (topology.managerSlotId === undefined) throw new HarnessValidationError('createAgentHarness: agent selector requires managerSlotId');
+      if (topology.selector === 'agent' && topology.managerSlotId === undefined) throw new HarnessValidationError('createAgentHarness: agent selector requires managerSlotId');
+      if (topology.managerSlotId !== undefined) {
         slot(slots, topology.managerSlotId, 'topology.managerSlotId');
+        // magenticと同じ不変条件: 進行役は参加者を兼ねない(実行時に進行役が発話者として二重に回るのを防ぎ、compileの自己辺も排除する)。
+        if (topology.participantSlotIds.includes(topology.managerSlotId)) throw new HarnessValidationError('createAgentHarness: group-chat manager must not be a participant');
       }
       return;
     case 'magentic':

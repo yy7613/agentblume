@@ -33,7 +33,16 @@ export class CompileHarnessUseCase {
       }
       case 'agent-as-tools': return [{ from: 'input', to: slot(topology.coordinatorSlotId) }, ...topology.participantSlotIds.flatMap((id) => [{ from: slot(topology.coordinatorSlotId), to: slot(id) }, { from: slot(id), to: slot(topology.coordinatorSlotId) }]), { from: slot(topology.coordinatorSlotId), to: 'output' }];
       case 'handoff': return [{ from: 'input', to: slot(topology.startSlotId) }, ...topology.transitions.map((transition) => ({ from: slot(transition.fromSlotId), to: slot(transition.toSlotId), label: transition.condition })), ...harness.slots.map((item) => ({ from: slot(item.id), to: 'output' }))];
-      case 'group-chat': return [{ from: 'input', to: slot(topology.managerSlotId ?? topology.participantSlotIds[0]!) }, ...topology.participantSlotIds.map((id) => ({ from: slot(topology.managerSlotId ?? topology.participantSlotIds[0]!), to: slot(id) })), ...topology.participantSlotIds.map((id) => ({ from: slot(id), to: 'output' }))];
+      case 'group-chat': {
+        // 進行役未指定(round-robin/fixed-order)は先頭参加者を図上のhubとして扱う。hub自身への自己辺は張らない
+        // (明示managerはドメイン検証で参加者と排他。暗黙hubの場合も自己ループは実行トポロジとして無意味)。
+        const hub = topology.managerSlotId ?? topology.participantSlotIds[0]!;
+        return [
+          { from: 'input', to: slot(hub) },
+          ...topology.participantSlotIds.filter((id) => id !== hub).map((id) => ({ from: slot(hub), to: slot(id) })),
+          ...topology.participantSlotIds.map((id) => ({ from: slot(id), to: 'output' })),
+        ];
+      }
       case 'magentic': return [{ from: 'input', to: slot(topology.managerSlotId) }, ...topology.participantSlotIds.flatMap((id) => [{ from: slot(topology.managerSlotId), to: slot(id) }, { from: slot(id), to: slot(topology.managerSlotId) }]), { from: slot(topology.managerSlotId), to: 'output' }];
     }
   }
