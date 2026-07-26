@@ -384,6 +384,19 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .gate-list .ready { background: #e4f5ef; color: #12634f; }
 .gate-list .locked { background: #f2f3f7; color: #69758a; }
 @media (max-width: 1050px) { .two-column-workspace, .settings-grid { grid-template-columns: 1fr; } }
+/* モデル設定: main / judge を同じ形のカードで横並びにする（フォーム部品は既存クラスを流用）。 */
+.model-settings-card { margin-top: 16px; }
+.model-slot-grid { display: grid; grid-template-columns: repeat(2, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
+.model-slot { border: 1px solid #e3e7ef; border-radius: 9px; padding: 12px 14px; }
+.model-slot > header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.model-slot h3 { margin: 0; font-size: 13px; }
+.model-slot-summary { margin: 6px 0 10px; padding: 7px 9px; border-radius: 7px; background: #f2f4f8; color: #4c586e; font-size: 11px; word-break: break-all; }
+.model-slot .save-actions { margin-left: 0; flex-wrap: wrap; }
+.model-slot-ok { margin: 8px 0 0; font-size: 11px; color: #137058; word-break: break-word; }
+.model-source-kind { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 10px; padding: 0; border: 0; }
+.model-source-kind legend { padding: 0; color: #758198; font-size: 11px; }
+.model-source-kind label { flex-direction: row; align-items: center; gap: 6px; margin: 0; font-size: 11px; }
+@media (max-width: 1050px) { .model-slot-grid { grid-template-columns: 1fr; } }
 
 /* ── エージェント実行チャット（Copilot風 会話UI） ───────────────────────── */
 .cc-chat { position: relative; height: 100vh; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: #f7f8fb; color: #1b2438; }

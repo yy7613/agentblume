@@ -88,6 +88,12 @@ import type {
   SaveMcpServerDto,
   ReplaceMcpServersDto,
   McpServerTestResultDto,
+  ModelSettingsDto,
+  ModelCatalogProviderDto,
+  ModelSlotNameDto,
+  ModelSlotSettingsInputDto,
+  ModelSettingsTestResultDto,
+  SaveModelSettingsDto,
 } from './types';
 import { localizeApiErrorMessage } from './error-messages';
 
@@ -747,6 +753,44 @@ export class ToolApiClient {
   /** 接続テスト。設定ミスと通信障害を区別するため、接続失敗も200 + ok:false で返る。 */
   async testMcpServer(name: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<McpServerTestResultDto> {
     return this.request<McpServerTestResultDto>(`/mcp-servers/${encodeURIComponent(name)}/test`, { method: 'POST', body: JSON.stringify({ scope }), signal });
+  }
+
+  /**
+   * モデル設定（main / judge）。応答の apiKey は常にマスク済み（`{ configured, hint? }`）で、
+   * 平文も封緘済みデータも降りてこない。スロットが省略されていれば env 既定を使用中という意味。
+   */
+  async getModelSettings(scope: TenantScopeDto, signal?: AbortSignal): Promise<ModelSettingsDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return (await this.request<{ settings: ModelSettingsDto }>(`/model-settings?${query}`, { signal })).settings;
+  }
+
+  /**
+   * モデル設定の保存（upsert）。スロットは undefined = 変更なし / null = 設定を消して env 既定へ戻す。
+   * apiKey は **write-only の平文**（文字列=保存 / フィールド省略=既存維持 / 空文字=クリア）。
+   */
+  async saveModelSettings(input: SaveModelSettingsDto): Promise<ModelSettingsDto> {
+    return (await this.request<{ settings: ModelSettingsDto }>('/model-settings', { method: 'PUT', body: JSON.stringify(input) })).settings;
+  }
+
+  /** 疎通テスト。設定ミスと通信障害を区別するため、失敗も200 + ok:false で返る。 */
+  async testModelSettings(scope: TenantScopeDto, slot: ModelSlotNameDto, candidate?: ModelSlotSettingsInputDto, signal?: AbortSignal): Promise<ModelSettingsTestResultDto> {
+    return this.request<ModelSettingsTestResultDto>('/model-settings/test', {
+      method: 'POST',
+      body: JSON.stringify({ scope, slot, ...(candidate === undefined ? {} : { candidate }) }),
+      signal,
+    });
+  }
+
+  /** 登録簿（オフラインの静的データ）。models は provider を除いたモデルID。 */
+  async getModelCatalog(signal?: AbortSignal): Promise<readonly ModelCatalogProviderDto[]> {
+    return (await this.request<{ providers: ModelCatalogProviderDto[] }>('/model-catalog', { signal })).providers;
+  }
+
+  /** OpenAI互換エンドポイントの `/models`。apiKey はクエリに載せず、slot 指定で保存済みキーを使う。 */
+  async listOpenAiCompatibleModels(scope: TenantScopeDto, baseUrl: string, slot?: ModelSlotNameDto, signal?: AbortSignal): Promise<readonly string[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId, baseUrl });
+    if (slot !== undefined) query.set('slot', slot);
+    return (await this.request<{ models: string[] }>(`/model-catalog/openai-compatible-models?${query}`, { signal })).models;
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

@@ -94,6 +94,9 @@ const HEADINGS: Record<string, Bilingual> = {
   DATA_SOURCE_VALIDATION: ['Please check the data source settings', 'データソースの設定を確認してください'],
   WEB_SEARCH_VALIDATION: ['Please check the web search settings', 'Web検索の設定を確認してください'],
 
+  // モデル設定: 鍵ファイルが変わると保存済みAPIキーを開封できない（409）。取るべき行動は再入力のみ。
+  SECRET_CIPHER: ['The saved API key can no longer be read because the encryption key changed. Enter the API key again, then save', '鍵が変わっているため保存済みAPIキーを読み出せません。APIキーを再入力して保存し直してください'],
+
   ETL_GRAPH: ['Please check the node connections', 'ノードの接続を確認してください'],
   ETL_CONFIG: ['Please check the node settings', 'ノードの設定を確認してください'],
   ETL_SCHEMA: ['The column names or types do not match. Check the upstream node output', '列名または型が一致していません。上流ノードの出力を確認してください'],
