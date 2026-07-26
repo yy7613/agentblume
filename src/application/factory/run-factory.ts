@@ -44,6 +44,7 @@ import { ApplyImprovementsUseCase } from './apply-improvements';
 import { FACTORY_OWNER, GenerateAgentAssetsUseCase, makePublishName, type GenerateAgentAssetsResult } from './generate-agent-assets';
 import { aggregateIterationMetrics } from './metrics';
 import { ProfileDataSourcesUseCase } from './profile-data-sources';
+import { buildExistingToolCatalog } from './tool-catalog';
 import { AnalystRole, type AnalystScenarioSummary } from './roles/analyst-role';
 import { PlannerRole } from './roles/planner-role';
 import type { ScenarioRunnerPort } from './scenario-runner-port';
@@ -94,7 +95,9 @@ export class RunFactoryUseCase {
         run = advanceStage(run, 'planning');
         await this.runs.save(run);
         run = await this.event(run, { kind: 'stage_started', at: this.now().toISOString(), stage: 'planning' });
-        const plan = await this.planner.propose({ goal: run.input.goal, profiles, dataSourceIds: run.input.dataSourceIds, options: run.input.options }, signal);
+        // 「作成済みのToolで足りるか」をPlannerに考えさせるための再利用候補（docs/16 §4 Stage 1）。
+        const existingTools = await buildExistingToolCatalog(this.tools, scope);
+        const plan = await this.planner.propose({ goal: run.input.goal, profiles, dataSourceIds: run.input.dataSourceIds, options: run.input.options, existingTools }, signal);
         this.assertNotAborted(signal);
 
         run = setPlan(run, plan);
@@ -133,11 +136,13 @@ export class RunFactoryUseCase {
   async replan(run: FactoryRun, feedback: string | undefined, signal?: AbortSignal): Promise<FactoryRun> {
     let next = run;
     const profiles = await this.profiler.executeAll(next.scope, next.input.dataSourceIds);
+    const existingTools = await buildExistingToolCatalog(this.tools, next.scope);
     const plan = await this.planner.propose({
       goal: next.input.goal,
       profiles,
       dataSourceIds: next.input.dataSourceIds,
       options: next.input.options,
+      existingTools,
       ...(feedback === undefined ? {} : { feedback }),
     }, signal);
     next = setPlan(next, plan);
@@ -162,6 +167,9 @@ export class RunFactoryUseCase {
     current = await this.event(current, { kind: 'stage_started', at: this.now().toISOString(), stage: 'generating-tools' });
 
     const profiles = await this.profiler.executeAll(current.scope, current.input.dataSourceIds);
+    // 計画の `reuse` を解決する集合。Stage 1でPlannerへ提示したのと同じ規則で組み立て直す
+    // （承認待ちを挟んだ再開でも、その時点で有効な既存Toolだけを参照する）。
+    const existingTools = await buildExistingToolCatalog(this.tools, current.scope);
     this.assertNotAborted(signal);
 
     // `onEvent` は generateAgentAssets 内の逐次awaitの合間に同期的に呼ばれる。永続化(save)は非同期のため、
@@ -181,6 +189,7 @@ export class RunFactoryUseCase {
       plan,
       profiles,
       maxRepairAttempts: current.input.options.budget.maxRepairAttempts,
+      existingTools: existingTools.entries,
       onEvent,
     });
     await chain;

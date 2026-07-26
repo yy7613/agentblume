@@ -119,9 +119,9 @@ test('Harness BuilderでAgent割当・検証・保存・Sequential previewまで
   }
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Harness', exact: true }).click();
-  await expect(page.getByText('Agent Harness Builder', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'New harness', exact: true }).click();
+  await page.getByRole('button', { name: 'Multi-Agent', exact: true }).click();
+  await expect(page.getByText('Multi-Agent Builder', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'New multi-agent', exact: true }).click();
   await page.getByLabel('Internal ID').fill('e2e-content-review');
   await page.getByLabel('Display name').fill('E2E Content Review');
   await page.getByLabel('Owner').fill('e2e@example.com');
@@ -145,7 +145,7 @@ test('Harness BuilderでAgent割当・検証・保存・Sequential previewまで
       runId: 'e2e-harness-run', scope, harness: { internalId: 'e2e-content-review', version: '1.0.0', displayName: 'E2E Content Review' }, mode: 'preview', status: 'succeeded', message: 'Review this product announcement.', startedAt: '2026-07-16T00:00:00.000Z', completedAt: '2026-07-16T00:00:01.000Z', response: 'Reviewed and ready to publish.', events: [{ sequence: 1, kind: 'participant_completed', at: '2026-07-16T00:00:01.000Z', slotId: 'publisher', childRunId: 'child-3' }],
     } }) });
   });
-  await page.getByLabel('Harness chat message').fill('Review this product announcement.');
+  await page.getByLabel('Multi-agent chat message').fill('Review this product announcement.');
   await page.getByRole('button', { name: 'Run preview', exact: true }).click();
   await expect(page.getByText('Reviewed and ready to publish.')).toBeVisible();
 
@@ -167,8 +167,8 @@ test('Harness Builderで全オーケストレーションpatternへAgentを割�
     expect(response.status()).toBe(201);
   }
   await page.goto('/');
-  await page.getByRole('button', { name: 'Harness', exact: true }).click();
-  await page.getByRole('button', { name: 'New harness', exact: true }).click();
+  await page.getByRole('button', { name: 'Multi-Agent', exact: true }).click();
+  await page.getByRole('button', { name: 'New multi-agent', exact: true }).click();
   await page.getByLabel('Owner').fill('e2e@example.com');
   await page.getByLabel('Assign agent to Author').selectOption('pattern-author');
   await page.getByLabel('Assign agent to Reviewer').selectOption('pattern-reviewer');

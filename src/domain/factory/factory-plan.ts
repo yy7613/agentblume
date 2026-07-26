@@ -8,6 +8,17 @@
 import type { SideEffect } from '../tool/metadata';
 import { FactoryValidationError } from './errors';
 
+/**
+ * 「新規作成せず既存Toolを再利用する」という計画（docs/16-agent-factory.md §4 Stage 1 再利用判断）。
+ * Plannerへ渡した既存ツールカタログ（`ExistingToolCatalogEntry`）の `internalId` を指す。
+ * 生成段（Stage 2）は再利用先を解決できればToolSmithを呼ばず、解決できなければ新規生成へフォールバックする。
+ */
+export interface FactoryToolReuse {
+  readonly internalId: string;
+  /** なぜその既存Toolで足りるのか（人間がレビューするための理由）。 */
+  readonly rationale?: string;
+}
+
 export interface FactoryToolPlan {
   readonly key: string;
   readonly displayName: string;
@@ -16,6 +27,7 @@ export interface FactoryToolPlan {
   readonly sideEffect: SideEffect;
   readonly outputShape?: string;
   readonly argumentSummary?: string;
+  readonly reuse?: FactoryToolReuse;
 }
 
 export interface FactorySkillPlan {
@@ -80,6 +92,8 @@ function nonEmpty(value: unknown, field: string): asserts value is string {
  * `FactoryPlan` を検証する。不正な計画は `FactoryValidationError` を投げる（副作用なし・不変）。
  * 規則（docs/16-agent-factory.md §4 Stage 1）:
  * - Tool参照は `ctx.dataSourceIds` 内のみ。`write` / `external-action` の副作用は拒否。
+ *   ただし既存Toolの再利用計画（`reuse`）は `dataSourceId: ''`（データソースを読まないTool）を許し、
+ *   代わりに `reuse.internalId` の非空を要求する。
  * - Tool / Skill / Persona / Scenario の件数は各上限（既定 `DEFAULT_FACTORY_PLAN_LIMITS`）以内。
  * - 各コレクション内でキー重複禁止。Skill.toolKeys / Scenario.personaKey / Scenario.expectedToolKeys は既知キーのみ参照可。
  * - 必須文字列は空・空白のみを禁止。Scenario.maxUserTurns は 1..8。
@@ -102,8 +116,13 @@ export function validateFactoryPlan(plan: FactoryPlan, ctx: { readonly dataSourc
     toolKeys.add(tool.key);
     nonEmpty(tool.displayName, `validateFactoryPlan: tools.${index}.displayName`);
     nonEmpty(tool.purpose, `validateFactoryPlan: tools.${index}.purpose`);
-    nonEmpty(tool.dataSourceId, `validateFactoryPlan: tools.${index}.dataSourceId`);
-    if (!dataSourceIds.has(tool.dataSourceId)) throw new FactoryValidationError(`validateFactoryPlan: tools.${index}.dataSourceId references unknown data source: ${tool.dataSourceId}`);
+    // 再利用計画（reuse付き）は既存Toolのグラフをそのまま使うため、データソースを読まないTool
+    // （例: 組み込みの現在日時）も選べるよう `dataSourceId: ''` を許す。新規作成計画は従来どおり必須。
+    const reuse = tool.reuse;
+    if (reuse === undefined) nonEmpty(tool.dataSourceId, `validateFactoryPlan: tools.${index}.dataSourceId`);
+    else nonEmpty(reuse.internalId, `validateFactoryPlan: tools.${index}.reuse.internalId`);
+    const omitsDataSource = reuse !== undefined && tool.dataSourceId === '';
+    if (!omitsDataSource && !dataSourceIds.has(tool.dataSourceId)) throw new FactoryValidationError(`validateFactoryPlan: tools.${index}.dataSourceId references unknown data source: ${tool.dataSourceId}`);
     if (tool.sideEffect === 'write' || tool.sideEffect === 'external-action') throw new FactoryValidationError(`validateFactoryPlan: tools.${index}.sideEffect must be 'read-only' or 'session-write', got '${tool.sideEffect}'`);
   });
 

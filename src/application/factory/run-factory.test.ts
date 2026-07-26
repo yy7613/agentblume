@@ -11,6 +11,7 @@ import { createDefaultRegistry } from '../../domain/etl/nodes';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
 import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
+import { createTool } from '../../domain/tool/tool';
 import { createScenarioRun, type ScenarioRun } from '../../domain/validation/scenario-run';
 import type { FactoryWorkerPort } from './factory-worker';
 import { GenerateAgentPromptUseCase } from '../agent/generate-agent-prompt';
@@ -86,6 +87,41 @@ function validPlanJson(agentDisplayName = 'Sales Assistant'): string {
     personas: [{ key: 'accountant', archetype: 'novice', knowledgeLevel: 'low', patience: 'mid', tone: 'polite', verbosity: 'normal', language: 'ja' }],
     scenarios: [{ key: 'scenario-1', goal: 'find total sales', personaKey: 'accountant', expectedToolKeys: ['lookup'], maxUserTurns: 3 }],
   });
+}
+
+/** 既存の組み込みツール（現在日時）を再利用し、新規Toolは1件だけ作る計画。 */
+const BUILTIN_DATETIME_ID = 'builtin-current-datetime';
+
+function reusePlanJson(): string {
+  return JSON.stringify({
+    agentBrief: { displayName: 'Sales Assistant', role: 'Answers sales questions using the sales data source.' },
+    tools: [
+      { key: 'lookup', displayName: 'Lookup Sales', purpose: 'Look up sales rows.', dataSourceId: 'ds-1', sideEffect: 'read-only' },
+      { key: 'today', displayName: 'Current Datetime', purpose: 'Resolve "this month".', dataSourceId: '', sideEffect: 'read-only', reuse: { internalId: BUILTIN_DATETIME_ID, rationale: 'builtin tool already returns now/date/yearMonth' } },
+    ],
+    skills: [{ key: 'summarize', displayName: 'Summarize', responsibility: 'Summarize sales trends.', activationCondition: 'user asks for a summary', toolKeys: ['lookup', 'today'] }],
+    personas: [{ key: 'accountant', archetype: 'novice', knowledgeLevel: 'low', patience: 'mid', tone: 'polite', verbosity: 'normal', language: 'ja' }],
+    scenarios: [{ key: 'scenario-1', goal: 'find total sales this month', personaKey: 'accountant', expectedToolKeys: ['lookup', 'today'], maxUserTurns: 3 }],
+  });
+}
+
+/** 組み込みツール（`src/builtin-tools.ts` と同じ契約）を、Factory実行前から存在する既存Toolとして置く。 */
+async function seedBuiltinDatetimeTool(toolRepo: InMemoryToolRepository): Promise<void> {
+  await toolRepo.save(createTool({
+    metadata: {
+      internalId: BUILTIN_DATETIME_ID, workingName: 'Current datetime draft', displayName: 'Current Datetime', publishName: 'current_datetime',
+      version: SemVer.of(1, 0, 0), owner: 'builtin', state: 'draft', tenant: scope,
+    },
+    sideEffect: 'read-only',
+    graph: {
+      nodes: [
+        { id: 'now', type: 'current-datetime', config: {} },
+        { id: 'agent-result', type: 'agent-output', config: { shape: 'first-row', format: 'json', maxRows: 1, maxBytes: 4096, overflow: 'error' } },
+      ],
+      edges: [{ from: 'now', to: 'agent-result' }],
+    },
+    agentTool: { name: 'current_datetime', description: 'Returns the current date and time (now, date, yearMonth, time, weekday).' },
+  }));
 }
 
 function validToolProposalJson(): string {
@@ -266,6 +302,40 @@ describe('RunFactoryUseCase', () => {
     expect(scenarioRunner.calls).toHaveLength(1);
     expect(finished?.stage).toBe('reporting');
     expect(finished?.report).toMatchObject({ bestIteration: 1, candidate: { agentId: 'asset-3', version: '1.0.0' } });
+  });
+
+  it('既存ツールカタログを計画へ渡し、reuse指定のToolは新規生成せず既存Toolを参照する', async () => {
+    const { repo, model, runFactory, createFactoryRun, toolRepo, scenarioRepo } = await setup();
+    await seedBuiltinDatetimeTool(toolRepo);
+    model.enqueue(
+      { message: { role: 'assistant', content: reusePlanJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' }, // lookup（新規）だけToolSmithを呼ぶ
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+
+    const created = await createFactoryRun.execute({ scope, goal: { goal: 'Answer sales questions about this month', language: 'ja' }, dataSourceIds: ['ds-1'] });
+    await runFactory.execute(scope, created.id);
+
+    // Plannerには保存済みToolのカタログが渡っている（untrusted data側）。
+    const plannerUserMessage = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
+    expect(plannerUserMessage).toContain(BUILTIN_DATETIME_ID);
+    expect(plannerUserMessage).toContain('current_datetime');
+
+    const finished = await repo.find(scope, created.id);
+    expect(finished?.status).toBe('succeeded');
+    expect(finished?.budget.consumed.roleCalls).toBe(4); // planner + tool-smith(1件のみ) + skill-writer + assembler
+    expect(finished?.events.map((event) => event.kind)).toContain('tool_reused');
+    expect(finished?.artifacts.tools).toHaveLength(2);
+    expect(finished?.artifacts.tools).toContainEqual({ internalId: BUILTIN_DATETIME_ID, version: '1.0.0' });
+    // 既存Toolには新しいバージョンを作らない（再利用であって改訂ではない）。
+    expect(await toolRepo.listVersions(scope, BUILTIN_DATETIME_ID)).toHaveLength(1);
+    // ScenarioのexpectedToolsは再利用Toolの公開名も解決できる。
+    const scenarios = await scenarioRepo.list(scope);
+    const scenarioRef = scenarios[0];
+    if (scenarioRef === undefined) throw new Error('expected a scenario');
+    const scenario = await scenarioRepo.findVersion(scope, scenarioRef.internalId, scenarioRef.latestVersion);
+    expect(scenario?.expectedTools).toContain('current_datetime');
   });
 
   it('reject応答はcancelledとして確定する（再計画はしない）', async () => {

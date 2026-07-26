@@ -9,14 +9,16 @@ import { createDefaultRegistry } from '../../domain/etl/nodes';
 import type { FactoryPlan } from '../../domain/factory/factory-plan';
 import type { FactoryGoalInput } from '../../domain/factory/factory-run';
 import { SemVer } from '../../domain/tool/semver';
+import { createTool } from '../../domain/tool/tool';
 import { GenerateAgentPromptUseCase } from '../agent/generate-agent-prompt';
 import { SaveAgentUseCase } from '../agent/save-agent';
 import { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import { EtlEngine } from '../etl/engine';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
-import { agentToolArgumentsOf, GenerateAgentAssetsUseCase, mergeAgentInputDeclarations } from './generate-agent-assets';
+import { agentToolArgumentsOf, GenerateAgentAssetsUseCase, mergeAgentInputDeclarations, resolveReuseTarget } from './generate-agent-assets';
 import { ProfileDataSourcesUseCase } from './profile-data-sources';
+import { buildExistingToolCatalog, type ExistingToolCatalogEntry } from './tool-catalog';
 import { AssemblerRole } from './roles/assembler-role';
 import { SkillWriterRole } from './roles/skill-writer-role';
 import { ToolSmithRole } from './roles/tool-smith-role';
@@ -42,6 +44,39 @@ const twoToolPlan: FactoryPlan = {
   personas: [],
   scenarios: [],
 };
+
+/** 組み込みツール（`src/builtin-tools.ts` と同じ契約）の再利用を含む計画。 */
+const BUILTIN_DATETIME_ID = 'builtin-current-datetime';
+
+const reusePlan: FactoryPlan = {
+  agentBrief: { displayName: 'Sales Assistant', role: 'Answers sales questions using the sales data source.' },
+  tools: [
+    { key: 'today', displayName: 'Current Datetime', purpose: 'Resolve "this month" to a concrete year-month.', dataSourceId: '', sideEffect: 'read-only', reuse: { internalId: BUILTIN_DATETIME_ID, rationale: 'the builtin tool already returns now/date/yearMonth' } },
+    { key: 'lookup', displayName: 'Lookup Sales', purpose: 'Look up sales rows.', dataSourceId: 'ds-1', sideEffect: 'read-only' },
+  ],
+  skills: [{ key: 'summarize', displayName: 'Summarize', responsibility: 'Summarize sales trends.', activationCondition: 'user asks for a summary', toolKeys: ['lookup', 'today'] }],
+  personas: [],
+  scenarios: [],
+};
+
+/** 過去のFactory実行・手作りで既に保存されているToolを模して、組み込みの現在日時ツールを直接保存する。 */
+async function seedBuiltinDatetimeTool(toolRepo: InMemoryToolRepository): Promise<void> {
+  await toolRepo.save(createTool({
+    metadata: {
+      internalId: BUILTIN_DATETIME_ID, workingName: 'Current datetime draft', displayName: 'Current Datetime', publishName: 'current_datetime',
+      version: SemVer.of(1, 0, 0), owner: 'builtin', state: 'draft', tenant: scope,
+    },
+    sideEffect: 'read-only',
+    graph: {
+      nodes: [
+        { id: 'now', type: 'current-datetime', config: {} },
+        { id: 'agent-result', type: 'agent-output', config: { shape: 'first-row', format: 'json', maxRows: 1, maxBytes: 4096, overflow: 'error' } },
+      ],
+      edges: [{ from: 'now', to: 'agent-result' }],
+    },
+    agentTool: { name: 'current_datetime', description: 'Returns the current date and time (now, date, yearMonth, time, weekday).' },
+  }));
+}
 
 function validToolProposalJson(): string {
   return JSON.stringify({
@@ -287,6 +322,78 @@ describe('GenerateAgentAssetsUseCase', () => {
     expect(agent?.tools).toHaveLength(1);
   });
 
+  it('reuse指定のToolはToolSmithを呼ばず、既存Toolの最新版を参照してAgent/Skillへ組み込む', async () => {
+    const { model, toolRepo, skillRepo, agentRepo, profiles, useCase } = await setup();
+    await seedBuiltinDatetimeTool(toolRepo);
+    const existingTools = (await buildExistingToolCatalog(toolRepo, scope)).entries;
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' }, // lookup（新規）だけToolSmithを呼ぶ
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const events: { kind: string; message?: string }[] = [];
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: reusePlan, profiles, maxRepairAttempts: 2, existingTools, onEvent: (event) => events.push({ kind: event.kind, ...(event.message === undefined ? {} : { message: event.message }) }) });
+
+    // 再利用したToolはロール呼び出しを消費せず、新しいバージョンも作らない。
+    expect(result.roleCallsUsed).toBe(3); // tool-smith(lookup) + skill-writer + assembler
+    expect(model.requests).toHaveLength(3);
+    expect(await toolRepo.listVersions(scope, BUILTIN_DATETIME_ID)).toHaveLength(1);
+    expect(result.toolKeyToRef.get('today')).toEqual({ internalId: BUILTIN_DATETIME_ID, version: '1.0.0' });
+    expect(result.toolKeyToPublishName.get('today')).toBe('current_datetime');
+    expect(result.toolRefs).toHaveLength(2);
+    expect(events.filter((event) => event.kind === 'tool_reused')).toEqual([{ kind: 'tool_reused', message: 'today: current_datetime' }]);
+    expect(events.filter((event) => event.kind === 'tool_generated')).toHaveLength(1);
+
+    // Skill・Agentは既存Tool版をSemVer固定で参照する（Tool使用ガイドにも既存Toolの契約が載る）。
+    const skillRef = result.skillRefs[0];
+    if (skillRef === undefined) throw new Error('expected a skill ref');
+    const skill = await skillRepo.findVersion(scope, skillRef.internalId, SemVer.parse(skillRef.version));
+    expect(skill?.tools.map((ref) => ref.internalId)).toContain(BUILTIN_DATETIME_ID);
+    const agent = await agentRepo.findVersion(scope, result.agentRef.internalId, SemVer.parse(result.agentRef.version));
+    expect(agent?.tools.map((ref) => ref.internalId)).toContain(BUILTIN_DATETIME_ID);
+    expect(agent?.systemPrompt).toContain('current_datetime');
+  });
+
+  it('reuse先がカタログに無い場合は理由を記録して新規生成へフォールバックする', async () => {
+    const { model, profiles, useCase } = await setup();
+    const plan: FactoryPlan = { ...onePlan, tools: [{ ...onePlan.tools[0]!, reuse: { internalId: 'tool-deleted' } }] };
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const events: { kind: string; message?: string }[] = [];
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan, profiles, maxRepairAttempts: 2, existingTools: [], onEvent: (event) => events.push({ kind: event.kind, ...(event.message === undefined ? {} : { message: event.message }) }) });
+
+    expect(events.find((event) => event.kind === 'tool_repair_attempted')?.message).toMatch(/reuse target 'tool-deleted' is not available for reuse/);
+    expect(events.some((event) => event.kind === 'tool_reused')).toBe(false);
+    expect(result.toolRefs).toHaveLength(1);
+    expect(result.toolKeyToRef.get('lookup')?.internalId).not.toBe('tool-deleted');
+  });
+
+  it('再利用が許されない副作用（write）の既存Toolを指すreuseも新規生成へフォールバックする', async () => {
+    const { model, profiles, useCase } = await setup();
+    const writeTool: ExistingToolCatalogEntry = {
+      internalId: 'tool-writer', latestVersion: '1.0.0', publishName: 'writes_rows', displayName: 'Writes rows',
+      toolName: 'writes_rows', description: 'Writes rows somewhere.', inputs: [], sideEffect: 'write', owner: 'human',
+    };
+    const plan: FactoryPlan = { ...onePlan, tools: [{ ...onePlan.tools[0]!, reuse: { internalId: 'tool-writer' } }] };
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const events: string[] = [];
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan, profiles, maxRepairAttempts: 2, existingTools: [writeTool], onEvent: (event) => events.push(event.kind) });
+
+    expect(events).toContain('tool_repair_attempted');
+    expect(events).toContain('tool_generated');
+    expect(result.toolRefs.some((ref) => ref.internalId === 'tool-writer')).toBe(false);
+  });
+
   it('全Toolが修復上限まで失敗した場合はFactoryValidationErrorを投げる', async () => {
     const { model, profiles, useCase } = await setup();
     model.enqueue(
@@ -339,6 +446,31 @@ describe('agentToolArgumentsOf', () => {
     expect(() => agentToolArgumentsOf(graphWith({ ...validArguments, schema: { columns: [{ name: 'minimumAmount', type: 'object', nullable: false }] } }))).toThrow(/must use type string\|number\|boolean\|date/);
     expect(() => agentToolArgumentsOf(graphWith({ schema: validArguments.schema, sample: {} }))).toThrow(/missing a representative value for 'minimumAmount'/);
     expect(() => agentToolArgumentsOf(graphWith(validArguments, { column: 'amount', op: 'gte', value: 100 }))).toThrow(/never used by a filter: minimumAmount/);
+  });
+});
+
+describe('resolveReuseTarget', () => {
+  const entry = (internalId: string, publishName: string, toolName = publishName): ExistingToolCatalogEntry => ({
+    internalId, latestVersion: '1.0.0', publishName, displayName: internalId, toolName, description: 'd', inputs: [], sideEffect: 'read-only', owner: 'builtin',
+  });
+  const catalog = [entry('builtin-current-datetime', 'current_datetime'), entry('tool-b', 'lookup_sales', 'sales_lookup')];
+
+  it('internalId/publishName/toolNameの完全一致で解決する', () => {
+    expect(resolveReuseTarget(catalog, 'builtin-current-datetime')?.internalId).toBe('builtin-current-datetime');
+    expect(resolveReuseTarget(catalog, 'current_datetime')?.internalId).toBe('builtin-current-datetime');
+    expect(resolveReuseTarget(catalog, 'sales_lookup')?.internalId).toBe('tool-b');
+  });
+
+  it('区切り文字の混同(実測: builtin-current_datetime)は正規化一致で救う', () => {
+    expect(resolveReuseTarget(catalog, 'builtin-current_datetime')?.internalId).toBe('builtin-current-datetime');
+    expect(resolveReuseTarget(catalog, 'Current-Datetime')?.internalId).toBe('builtin-current-datetime');
+  });
+
+  it('未知・空・曖昧(複数候補)は解決しない', () => {
+    expect(resolveReuseTarget(catalog, 'unknown-tool')).toBeUndefined();
+    expect(resolveReuseTarget(catalog, '---')).toBeUndefined();
+    const ambiguous = [...catalog, entry('current-datetime', 'current_datetime_v2')];
+    expect(resolveReuseTarget(ambiguous, 'currentdatetime')).toBeUndefined();
   });
 });
 

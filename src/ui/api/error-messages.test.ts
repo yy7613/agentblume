@@ -127,7 +127,7 @@ describe('Zod 詳細の平易化', () => {
 describe('code ベースの見出し', () => {
   it('NOT_FOUND 系はドメイン定型文から ID だけを取り出す', () => {
     expect(ja(404, 'HARNESS_NOT_FOUND', 'DeleteHarness: harness not found: support-bot'))
-      .toBe('ハーネスが見つかりませんでした（ID: support-bot）');
+      .toBe('マルチエージェント構成が見つかりませんでした（ID: support-bot）');
     expect(ja(404, 'AGENT_NOT_FOUND', 'RunAgentPreview: agent not found: triage (version 1.2.0 requested)'))
       .toBe('エージェントが見つかりませんでした（ID: triage (version 1.2.0 requested)）');
     expect(en(404, 'WIKI_PAGE_NOT_FOUND', 'DeleteWiki: wiki page not found: page-1'))

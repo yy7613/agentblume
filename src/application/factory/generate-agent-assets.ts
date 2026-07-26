@@ -6,6 +6,10 @@
  * 順に既存Save系ユースケースへ委譲し、Tool/Skill/Agentをdraftとして保存する。`FactoryRun` レコードには
  * 触れない（`RunFactoryUseCase` が呼び出し後に `artifacts`/`budget` を更新する）。
  *
+ * Stage 2 既存Tool再利用: 計画に `reuse.internalId` があり、渡された既存ツールカタログ（`existingTools`）で
+ * 解決できる場合はToolSmithを呼ばず、その既存Toolの最新版をAgent/Skillの参照へそのまま載せる
+ * （`tool_reused` イベント）。解決できない場合は理由をイベントへ残して新規生成へフォールバックする。
+ *
  * Stage 2 修復ループ: ToolSmithの提案を `ResolveDataSourceGraphUseCase` + `EtlEngine.propagateSchemas`/
  * `preview` で検証し、失敗したらエラーメッセージを添えて再提案させる（`maxRepairAttempts` 回まで）。
  * 修復上限まで失敗したToolは欠落として記録し、計画から除外して続行する（依存するSkillは残る依存Toolだけへ
@@ -28,6 +32,7 @@ import { GenerateAgentPromptUseCase } from '../agent/generate-agent-prompt';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
 import type { DataProfile } from './profile-data-sources';
+import { isReusableSideEffect, type ExistingToolCatalogEntry } from './tool-catalog';
 import { AssemblerRole } from './roles/assembler-role';
 import { SkillWriterRole, type SkillWriterToolContract } from './roles/skill-writer-role';
 import { ToolSmithRole } from './roles/tool-smith-role';
@@ -42,6 +47,11 @@ export interface GenerateAgentAssetsInput {
   readonly plan: FactoryPlan;
   readonly profiles: readonly DataProfile[];
   readonly maxRepairAttempts: number;
+  /**
+   * 再利用候補の既存Tool（`buildExistingToolCatalog` の結果 `entries`）。計画の `reuse.internalId` は
+   * このカタログ内でだけ解決する（Stage 1でPlannerへ提示した集合と、実際に参照する集合を一致させる）。
+   */
+  readonly existingTools?: readonly ExistingToolCatalogEntry[];
   readonly onEvent?: (event: Omit<FactoryEvent, 'sequence'>) => void;
 }
 
@@ -80,8 +90,26 @@ export class GenerateAgentAssetsUseCase {
     const toolKeyToRef = new Map<string, VersionRef>();
     const toolKeyToPublishName = new Map<string, string>();
     const toolKeyToContract = new Map<string, SkillWriterToolContract>();
+    const reusable = input.existingTools ?? [];
 
     for (const toolPlan of input.plan.tools) {
+      // 再利用計画（Stage 1の「既存Toolで足りるか」の判断結果）は、ToolSmithを呼ばずに既存Toolを参照する。
+      // 解決できない（削除済み・カタログ外・許可されない副作用）場合は理由を記録して新規生成へフォールバックする。
+      const reuse = toolPlan.reuse;
+      if (reuse !== undefined) {
+        const existing = resolveReuseTarget(reusable, reuse.internalId);
+        if (existing !== undefined && isReusableSideEffect(existing.sideEffect)) {
+          const ref: VersionRef = { internalId: existing.internalId, version: existing.latestVersion };
+          toolRefs.push(ref);
+          toolKeyToRef.set(toolPlan.key, ref);
+          toolKeyToPublishName.set(toolPlan.key, existing.publishName);
+          toolKeyToContract.set(toolPlan.key, { name: existing.toolName, description: existing.description });
+          emit({ kind: 'tool_reused', at: this.now().toISOString(), stage: 'generating-tools', message: `${toolPlan.key}: ${existing.publishName}`, ref });
+          continue;
+        }
+        emit({ kind: 'tool_repair_attempted', at: this.now().toISOString(), stage: 'generating-tools', message: `${toolPlan.key}: reuse target '${reuse.internalId}' is not available for reuse; generating a new tool instead` });
+      }
+
       const profile = profileByDataSourceId.get(toolPlan.dataSourceId);
       if (profile === undefined) {
         emit({ kind: 'tool_repair_attempted', at: this.now().toISOString(), stage: 'generating-tools', message: `${toolPlan.key}: no data profile available for dataSourceId '${toolPlan.dataSourceId}'` });
@@ -233,6 +261,26 @@ const AGENT_ARGUMENT_TYPES: readonly string[] = ['string', 'number', 'boolean', 
  * サンプル値の型不一致は `EtlEngine.propagateSchemas`/`preview`（agent-input ノード自身の検証）が
  * 先に検出するため、ここでは存在確認だけを行う。
  */
+/**
+ * 計画の `reuse.internalId` をカタログから寛容に解決する。モデルは internalId と publishName /
+ * Tool契約名を混同しやすい（実測: `builtin-current-datetime` を `builtin-current_datetime` と書く）ため、
+ * 完全一致(internalId → publishName → toolName) → 正規化一致(小文字化+英数字以外を除去)の順で探す。
+ * 正規化一致が複数候補に当たる場合は誤参照を避けるため解決しない。
+ */
+export function resolveReuseTarget(catalog: readonly ExistingToolCatalogEntry[], requested: string): ExistingToolCatalogEntry | undefined {
+  const exact = catalog.find((entry) => entry.internalId === requested)
+    ?? catalog.find((entry) => entry.publishName === requested)
+    ?? catalog.find((entry) => entry.toolName === requested);
+  if (exact !== undefined) return exact;
+  const normalize = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const wanted = normalize(requested);
+  if (wanted === '') return undefined;
+  const matches = catalog.filter((entry) =>
+    normalize(entry.internalId) === wanted || normalize(entry.publishName) === wanted || normalize(entry.toolName) === wanted);
+  const unique = new Set(matches.map((entry) => entry.internalId));
+  return unique.size === 1 ? matches[0] : undefined;
+}
+
 /**
  * モデルが「引数1つにつき agent-input ノード1つ」と誤解して複数ノードを生成するケースを
  * 決定的に正規化する: **未接続の** agent-input が2つ以上あれば、schema.columns と sample を

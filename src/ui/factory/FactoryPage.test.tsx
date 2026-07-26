@@ -232,7 +232,10 @@ describe('FactoryPage', () => {
       stage: 'planning',
       plan,
       checkpoint: { kind: 'plan-approval', expiresAt: '2026-07-21T00:00:00.000Z', prompt: 'Approve this plan?', plan },
-      events: [{ sequence: 1, kind: 'stage_started', at: '2026-07-20T00:00:00.010Z', stage: 'planning' }],
+      events: [
+        { sequence: 1, kind: 'stage_started', at: '2026-07-20T00:00:00.010Z', stage: 'planning' },
+        { sequence: 2, kind: 'tool_reused', at: '2026-07-20T00:00:01.000Z', stage: 'generating-tools', message: 'today: current_datetime' },
+      ],
     });
     const client = stubClient({
       listFactoryRuns: vi.fn().mockResolvedValue([waiting]),
@@ -246,9 +249,11 @@ describe('FactoryPage', () => {
     expect(screen.queryByText('waiting-approval')).toBeNull();
     // ステージも翻訳済み。
     expect(screen.getByText('Stage: Planning')).toBeTruthy();
-    // タイムラインのイベント名も翻訳済み。
+    // タイムラインのイベント名も翻訳済み（既存Toolの再利用イベントを含む）。
     expect(screen.getByText('Stage started')).toBeTruthy();
     expect(screen.queryByText('stage_started')).toBeNull();
+    expect(screen.getByText('Tool reused')).toBeTruthy();
+    expect(screen.queryByText('tool_reused')).toBeNull();
   });
 
   it('実行中のrunはrun開始からの経過時間を表示する', async () => {

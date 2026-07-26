@@ -97,7 +97,7 @@ describe('ToolApiClient', () => {
     try {
       const fetcher = vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'HARNESS_NOT_FOUND', message: 'DeleteHarness: harness not found: support-bot' } }, 404));
       const error = await new ToolApiClient('', fetcher as typeof fetch).deleteHarness('support-bot', scope).catch((cause: unknown) => cause);
-      expect(error).toMatchObject({ status: 404, message: 'ハーネスが見つかりませんでした（ID: support-bot）' });
+      expect(error).toMatchObject({ status: 404, message: 'マルチエージェント構成が見つかりませんでした（ID: support-bot）' });
     } finally { vi.unstubAllGlobals(); }
   });
 

@@ -623,7 +623,7 @@ export type FactoryStageDto =
   | 'assembling-agent' | 'generating-validation' | 'validating' | 'analyzing' | 'improving' | 'reporting';
 export type FactoryEventKindDto =
   | 'stage_started' | 'stage_completed' | 'plan_proposed' | 'approval_requested' | 'approval_resolved'
-  | 'tool_generated' | 'tool_repair_attempted' | 'artifact_saved' | 'scenario_run_completed'
+  | 'tool_generated' | 'tool_reused' | 'tool_repair_attempted' | 'artifact_saved' | 'scenario_run_completed'
   | 'analysis_completed' | 'proposal_applied' | 'proposal_rejected' | 'iteration_completed'
   | 'budget_exceeded' | 'run_completed' | 'run_failed' | 'run_cancelled';
 export interface FactoryVersionRefDto { readonly internalId: string; readonly version: string }

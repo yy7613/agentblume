@@ -63,7 +63,7 @@ async function fillMetadata(internalId: string, displayName: string): Promise<vo
 
 // Layer 1（一覧）が既定viewのため、editorの挙動を検証するテストはNew harnessボタン経由で遷移してから始める。
 async function openNewHarnessEditor(client: ToolApiClient, language: 'en' | 'ja' = 'en') {
-  const label = language === 'ja' ? '新規作成' : 'New harness';
+  const label = language === 'ja' ? '新規作成' : 'New multi-agent';
   const rendered = language === 'ja'
     ? render(<I18nProvider initialLanguage="ja"><HarnessBuilder client={client} /></I18nProvider>)
     : render(<HarnessBuilder client={client} />);
@@ -108,25 +108,25 @@ describe('HarnessBuilder', () => {
     // Concurrent: branchが縦に積まれ、slotではないaggregation nodeが現れる。
     // (canvasへscopeする: inspectorのtopology summaryも同じ正規化文字列"Aggregation: collect"を含むため)
     await userEvent.click(screen.getByRole('button', { name: /^Concurrent/ }));
-    const concurrentCanvas = await screen.findByLabelText('Harness canvas');
+    const concurrentCanvas = await screen.findByLabelText('Multi-agent canvas');
     expect(within(concurrentCanvas).getByText('Aggregation: collect')).toBeTruthy();
     expect(container.querySelectorAll('.harness-canvas--concurrent .harness-branch')).toHaveLength(3);
 
     // Agent as tools: coordinatorがhub、2人のparticipantへdashedのask連携が伸びる。
     await userEvent.click(screen.getByRole('button', { name: /^Agent as tools/ }));
-    const agentAsToolsCanvas = await screen.findByLabelText('Harness canvas');
+    const agentAsToolsCanvas = await screen.findByLabelText('Multi-agent canvas');
     expect(within(agentAsToolsCanvas).getAllByText('ask')).toHaveLength(2);
     expect(container.querySelector('.harness-canvas--agent-as-tools .harness-hub-layout')).toBeTruthy();
 
     // Handoff: start slotから2本のhandoff routeが伸びる。
     await userEvent.click(screen.getByRole('button', { name: /^Handoff/ }));
-    const handoffCanvas = await screen.findByLabelText('Harness canvas');
+    const handoffCanvas = await screen.findByLabelText('Multi-agent canvas');
     expect(within(handoffCanvas).getAllByText('handoff')).toHaveLength(2);
     expect(container.querySelectorAll('.harness-canvas--handoff .harness-handoff-route')).toHaveLength(2);
 
     // Group Chat: slotではないround-robin hubが現れる。
     await userEvent.click(screen.getByRole('button', { name: /^Group Chat/ }));
-    const groupChatCanvas = await screen.findByLabelText('Harness canvas');
+    const groupChatCanvas = await screen.findByLabelText('Multi-agent canvas');
     expect(within(groupChatCanvas).getByText('Round-robin · max 3 rounds')).toBeTruthy();
     expect(container.querySelector('.harness-canvas--group-chat .harness-hub-layout')).toBeTruthy();
   });
@@ -149,14 +149,14 @@ describe('HarnessBuilder', () => {
     const client = stubClient();
     await openNewHarnessEditor(client, 'ja');
 
-    // 見出しの英語素通し（'Agent Harness Builder'）を残さない。
-    expect(screen.getByText('ハーネスビルダー')).toBeTruthy();
-    expect(screen.queryByText('Agent Harness Builder')).toBeNull();
+    // 見出しの英語素通し（'Multi-Agent Builder'）を残さない。
+    expect(screen.getByText('マルチエージェントビルダー')).toBeTruthy();
+    expect(screen.queryByText('Multi-Agent Builder')).toBeNull();
     expect(await screen.findByLabelText('Agentを割り当て 作成者')).toBeTruthy();
     expect(screen.getByLabelText('Agentを割り当て レビュアー')).toBeTruthy();
     expect(screen.getByLabelText('Agentを割り当て 公開担当')).toBeTruthy();
 
-    const canvas = screen.getByLabelText('Harnessキャンバス');
+    const canvas = screen.getByLabelText('マルチエージェントキャンバス');
     expect(within(canvas).getByText('入力')).toBeTruthy();
     expect(within(canvas).getByText('出力')).toBeTruthy();
 
@@ -175,7 +175,7 @@ describe('HarnessBuilder', () => {
 
     // vote: hub chipの表示とtopologyのaggregation値が切り替わる（aggregatorSlotIdは付与しない）。
     await userEvent.selectOptions(aggregationSelect, 'vote');
-    const canvas = screen.getByLabelText('Harness canvas');
+    const canvas = screen.getByLabelText('Multi-agent canvas');
     expect(within(canvas).getByText('Aggregation: vote')).toBeTruthy();
 
     // agent: fan-in位置にaggregator専用cardが現れ、参加者columnには含まれない。
@@ -356,7 +356,7 @@ describe('HarnessBuilder', () => {
     it('Harnessが無い場合はempty stateを表示する', async () => {
       const client = stubClient();
       render(<HarnessBuilder client={client} />);
-      expect(await screen.findByText('No harnesses yet.')).toBeTruthy();
+      expect(await screen.findByText('No multi-agents yet.')).toBeTruthy();
     });
 
     it('OpenでgetHarnessの内容をeditorへ復元し、Internal IDを読み取り専用にする', async () => {
@@ -401,7 +401,7 @@ describe('HarnessBuilder', () => {
 
       expect(client.deleteHarness).toHaveBeenCalledWith('existing-harness', expect.any(Object));
       expect(client.listHarnesses).toHaveBeenCalledTimes(2);
-      expect(await screen.findByText('No harnesses yet.')).toBeTruthy();
+      expect(await screen.findByText('No multi-agents yet.')).toBeTruthy();
     });
 
     it('Back to listでeditorから一覧へ戻り、一覧を再取得する', async () => {
@@ -411,8 +411,8 @@ describe('HarnessBuilder', () => {
 
       await userEvent.click(screen.getByRole('button', { name: 'Back to list' }));
 
-      expect(await screen.findByRole('heading', { name: 'Harnesses' })).toBeTruthy();
-      expect(screen.getByRole('button', { name: 'New harness' })).toBeTruthy();
+      expect(await screen.findByRole('heading', { name: 'Multi-Agents' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'New multi-agent' })).toBeTruthy();
       expect(client.listHarnesses).toHaveBeenCalledTimes(2);
     });
   });

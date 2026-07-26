@@ -7,7 +7,10 @@ import type { ImprovementProposal } from './improvement-proposal';
 
 const plan: FactoryPlan = {
   agentBrief: { displayName: '売上アシスタント', role: '売上データについて回答する' },
-  tools: [{ key: 'sales-summary', displayName: '売上集計', purpose: '月次売上を集計する', dataSourceId: 'ds-1', sideEffect: 'read-only', outputShape: 'table', argumentSummary: 'month' }],
+  tools: [
+    { key: 'sales-summary', displayName: '売上集計', purpose: '月次売上を集計する', dataSourceId: 'ds-1', sideEffect: 'read-only', outputShape: 'table', argumentSummary: 'month' },
+    { key: 'today', displayName: '現在日時', purpose: '「今月」を具体的な年月に解決する', dataSourceId: '', sideEffect: 'read-only', reuse: { internalId: 'builtin-current-datetime', rationale: '組み込みツールで足りる' } },
+  ],
   skills: [{ key: 'summarize', displayName: '要約', responsibility: '傾向を要約する', activationCondition: '売上について聞かれたとき', toolKeys: ['sales-summary'] }],
   personas: [{ key: 'accountant', archetype: 'novice', knowledgeLevel: 'low', patience: 'mid', tone: '丁寧', verbosity: 'normal', language: 'ja', extraInstructions: '専門用語を避ける' }],
   scenarios: [{ key: 'monthly-summary', goal: '先月の売上を知りたい', context: '締め前で急いでいる', personaKey: 'accountant', expectedToolKeys: ['sales-summary'], maxUserTurns: 4 }],
@@ -78,6 +81,8 @@ describe('serializeFactoryRun / deserializeFactoryRun', () => {
     const run = makeFullRun();
     const restored = deserializeFactoryRun(serializeFactoryRun(run));
     expect(restored).toEqual(run);
+    // 既存Toolの再利用計画（reuse）も落とさず往復する。
+    expect(restored.plan?.tools[1]?.reuse).toEqual({ internalId: 'builtin-current-datetime', rationale: '組み込みツールで足りる' });
   });
 
   it('waiting-approvalのcheckpoint（planを含む）も往復する', () => {

@@ -69,7 +69,7 @@ test('デモデータの実画面を操作してマニュアル画像を生成�
     await capture(page, '07-chat-result.png');
   }
 
-  await page.getByRole('button', { name: 'ハーネス', exact: true }).click();
+  await page.getByRole('button', { name: 'マルチエージェント', exact: true }).click();
   await page.getByRole('button', { name: '新規作成', exact: true }).click();
   await page.getByRole('button', { name: /^Concurrent/ }).click();
   await page.getByLabel('Agentを割り当て 調査').selectOption('sample-product-assistant');

@@ -25,6 +25,24 @@ describe('validateFactoryPlan', () => {
     expect(() => validateFactoryPlan(plan, ctx)).toThrow(/unknown data source/);
   });
 
+  it('既存Toolの再利用計画はdataSourceIdの省略（空文字）を許す', () => {
+    const plan: FactoryPlan = {
+      ...validPlan,
+      tools: [{ ...validPlan.tools[0]!, dataSourceId: '', reuse: { internalId: 'builtin-current-datetime', rationale: '現在日時は組み込みツールで足りる' } }],
+    };
+    expect(() => validateFactoryPlan(plan, ctx)).not.toThrow();
+  });
+
+  it('再利用計画でもdataSourceIdを指定するなら既知のデータソースでなければならない', () => {
+    const plan: FactoryPlan = { ...validPlan, tools: [{ ...validPlan.tools[0]!, dataSourceId: 'ds-unknown', reuse: { internalId: 'tool-1' } }] };
+    expect(() => validateFactoryPlan(plan, ctx)).toThrow(/unknown data source/);
+  });
+
+  it('reuse.internalIdが空の場合は例外を投げる', () => {
+    const plan: FactoryPlan = { ...validPlan, tools: [{ ...validPlan.tools[0]!, dataSourceId: '', reuse: { internalId: '  ' } }] };
+    expect(() => validateFactoryPlan(plan, ctx)).toThrow(/reuse\.internalId/);
+  });
+
   it.each(['write', 'external-action'] as const)('tool.sideEffectが%sの場合は例外を投げる', (sideEffect) => {
     const plan: FactoryPlan = { ...validPlan, tools: [{ ...validPlan.tools[0]!, sideEffect }] };
     expect(() => validateFactoryPlan(plan, ctx)).toThrow(/sideEffect/);

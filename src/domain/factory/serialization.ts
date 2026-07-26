@@ -23,6 +23,8 @@ const factoryToolPlanSchema = z.object({
   sideEffect: z.enum(SIDE_EFFECTS as [SideEffect, ...SideEffect[]]),
   outputShape: z.string().optional(),
   argumentSummary: z.string().optional(),
+  // 既存Toolの再利用計画（Stage 1で判断し、Stage 2はToolSmithを呼ばずこのToolを参照する）。
+  reuse: z.object({ internalId: z.string(), rationale: z.string().optional() }).optional(),
 });
 const factorySkillPlanSchema = z.object({
   key: z.string(),

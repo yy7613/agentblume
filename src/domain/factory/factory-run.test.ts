@@ -102,6 +102,14 @@ describe('setPlan', () => {
     expect(run.plan?.tools).toHaveLength(1);
   });
 
+  it('再利用計画（reuse）も複製して保存する（元のreuseを変更しても反映されない）', () => {
+    const reuse = { internalId: 'builtin-current-datetime', rationale: '組み込みで足りる' };
+    const mutablePlan: FactoryPlan = { ...plan, tools: [{ ...plan.tools[0]!, dataSourceId: '', reuse }] };
+    const run = setPlan(beginFactoryRun(makeRun()), mutablePlan);
+    reuse.internalId = 'changed';
+    expect(run.plan?.tools[0]?.reuse).toEqual({ internalId: 'builtin-current-datetime', rationale: '組み込みで足りる' });
+  });
+
   it('runningでない場合は例外を投げる', () => {
     expect(() => setPlan(makeRun(), plan)).toThrow(/not running/);
   });

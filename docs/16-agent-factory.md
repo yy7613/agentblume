@@ -90,9 +90,19 @@ flowchart TB
 
 `requirePlanApproval: true` の場合、計画を `waiting-approval` checkpointとして停止する（Magentic計画承認と同じ応答型: `approve` / `revise(feedback)` / `reject`）。既定は `false`（全自動）。
 
+#### 既存ツールの再利用（新規作成の前に考える）
+
+Plannerへは、同じworkspaceに保存済みのToolの要約（**既存ツールカタログ**）を渡す。取得は use case 側（`buildExistingToolCatalog`）の責務で、ロールは値として受け取る。
+
+- 収録対象: `sideEffect` が `read-only` / `session-write` かつ `state` が `deprecated` / `archived` でないTool。1件あたり `{ internalId, latestVersion, publishName, displayName, agentTool契約（name/description）, inputSchemaの列（name:type）, sideEffect }`。件数は上限20件（超過分は切り捨て、総数だけ `existingToolsOmitted` として伝える）。並びは決定的（組み込み → publishName昇順）で、組み込みツールは切り捨てられない。
+- 判断: 計画する各Toolについて「既存カタログに目的を満たすToolがあるか」を先に考える。説明が目的に合致し、引数が過不足なく使えるなら**新規作成せず再利用**し、`tools[].reuse = { internalId, rationale }` を設定する（迷ったら新規作成）。現在日時が必要な場合は組み込みの `current_datetime` を再利用する。
+- 再利用計画は既存Toolのグラフをそのまま使うため、`dataSourceId` は空文字を許す（データソースを読まないToolも選べる）。カタログ本体は利用者が書いた表示名・説明を含むため、プロファイル同様 untrusted data として user message 側へ隔離する。
+
 ### Stage 2: Tool生成（ToolSmith + 修復ループ）
 
-Tool計画ごとに:
+Tool計画に `reuse.internalId` があり、渡された既存ツールカタログで解決できる場合はToolSmithを呼ばず、その既存Toolの**最新版**を `toolRefs` / Tool契約 / 公開名の対応へそのまま載せる（`tool_reused` イベント。既存Toolに新版は作らない）。解決できない場合（削除済み・カタログ外・再利用できない副作用）は理由をイベントへ残して、以下の新規生成へフォールバックする。
+
+新規作成するTool計画ごとに:
 
 1. ToolSmithへノードカタログ（登録済みノード型・config契約）・対象データソースのプロファイル・引数計画を渡し、`ToolGraph` を提案させる。
 2. source ノードは計画の `dataSourceId` を参照する。sink は `agent-output`（必要に応じ `chart-output` / `workspace-output`）。
@@ -233,7 +243,7 @@ interface FactoryReport {
 ```
 
 - 生成資産の出所は `FactoryRun.artifacts` が台帳として一元管理する。Tool / Skill / Agent 側の共通メタデータへは出所フィールドを追加しない（資産側の型を変えない）。
-- イベントは append-only の `FactoryEvent`（sequence付き）として **`FactoryRun` レコード内に埋め込む**（Harness run と同じ形。別テーブルにしない）。主なkind: `stage_started` / `stage_completed` / `plan_proposed` / `approval_requested` / `approval_resolved` / `tool_generated` / `tool_repair_attempted` / `artifact_saved` / `scenario_run_completed` / `analysis_completed` / `proposal_applied` / `proposal_rejected` / `iteration_completed` / `budget_exceeded` / `run_completed` / `run_failed` / `run_cancelled`。`GET /factory-runs/:runId/events` はRunレコードの `events` を返す。
+- イベントは append-only の `FactoryEvent`（sequence付き）として **`FactoryRun` レコード内に埋め込む**（Harness run と同じ形。別テーブルにしない）。主なkind: `stage_started` / `stage_completed` / `plan_proposed` / `approval_requested` / `approval_resolved` / `tool_generated` / `tool_reused` / `tool_repair_attempted` / `artifact_saved` / `scenario_run_completed` / `analysis_completed` / `proposal_applied` / `proposal_rejected` / `iteration_completed` / `budget_exceeded` / `run_completed` / `run_failed` / `run_cancelled`。`GET /factory-runs/:runId/events` はRunレコードの `events` を返す。
 - checkpointはRun record内へ埋め込み、TTL 24時間・型付き応答のみ受け付ける（Harness checkpointと同じ規則）。
 - `FactoryRunRepository` は Harness run と同じ `save`（upsert）/ `find` / `list` 契約とする。workerは進捗のたびに `save` で全レコードを置き換える。
 

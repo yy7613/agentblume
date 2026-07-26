@@ -101,7 +101,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
         activeSessionId = session.id;
         setSessionId(activeSessionId);
       }
-      if (target.kind === 'harness' && attachedImages.length > 0) throw new Error(text('Image input is not available for Harness preview yet.', 'Harness previewではまだ画像入力を利用できません。'));
+      if (target.kind === 'harness' && attachedImages.length > 0) throw new Error(text('Image input is not available for Multi-Agent preview yet.', 'マルチエージェントpreviewではまだ画像入力を利用できません。'));
       const history = target.kind === 'agent' ? buildHistory(turns, content) : [];
       const run = target.kind === 'agent'
         ? await client.runSavedAgent({ scope, agent: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview', sessionId: activeSessionId, ...(history.length > 0 ? { history } : {}), ...(attachedImages.length > 0 ? { images: attachedImages } : {}) })
@@ -250,7 +250,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
           <button type="button" className="cc-new" disabled={busy} onClick={() => void respondToApproval('reject')}>{text('Reject and cancel', '却下して中止')}</button>
         </div>}
         {activeHarnessRun?.status === 'waiting-input' && <div className="cc-alert notice">
-          <span>{activeHarnessRun.checkpoint?.kind === 'handoff-input' ? activeHarnessRun.checkpoint.prompt : text('The Harness is waiting for your message.', 'Harnessは入力待ちです。')}</span>
+          <span>{activeHarnessRun.checkpoint?.kind === 'handoff-input' ? activeHarnessRun.checkpoint.prompt : text('The Multi-Agent is waiting for your message.', 'マルチエージェントは入力待ちです。')}</span>
           <button type="button" className="cc-new" disabled={busy} onClick={() => void cancelInteractiveHarness()}>{text('Cancel run', '実行を中止')}</button>
         </div>}
         <div className="cc-input">
@@ -282,7 +282,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
               >
                 <option value="">{text('Select an agent', 'エージェントを選択')}</option>
                 {agents.map((item) => <option key={item.internalId} value={item.internalId}>{item.displayName} · {item.latestVersion}</option>)}
-                {harnesses.length > 0 && <optgroup label={text('Harnesses', 'Harness')}>
+                {harnesses.length > 0 && <optgroup label={text('Multi-Agents', 'マルチエージェント')}>
                   {harnesses.map((item) => <option key={item.internalId} value={`harness:${item.internalId}`}>{item.displayName} · {item.latestVersion} · {item.pattern}</option>)}
                 </optgroup>}
               </select>
@@ -333,7 +333,7 @@ function Turn({ turn, agentName, text, busy }: { readonly turn: ChatTurn; readon
       : run.checkpoint?.kind === 'magentic-approval'
         ? `${text('Plan approval required:', '計画の承認が必要です:')} ${run.checkpoint.plan}`
         : undefined;
-    return <div className="cc-msg assistant"><span className="cc-avatar assistant" aria-hidden="true">{sparkIcon}</span><div className="cc-bubble"><span className="cc-name">{agentName}</span><p>{run.response ?? run.failure?.message ?? waiting ?? ''}</p>{waiting !== undefined && run.response !== undefined && <p>{waiting}</p>}<div className="cc-steps">{run.events.filter((event) => event.kind !== 'harness_started' && event.kind !== 'harness_completed').map((event) => <span className="cc-step" key={event.sequence}><i className="cc-step-dot" />{event.kind}{event.slotId === undefined ? '' : ` · ${event.slotId}`}</span>)}</div><span className="cc-meta">harness run {run.runId}</span></div></div>;
+    return <div className="cc-msg assistant"><span className="cc-avatar assistant" aria-hidden="true">{sparkIcon}</span><div className="cc-bubble"><span className="cc-name">{agentName}</span><p>{run.response ?? run.failure?.message ?? waiting ?? ''}</p>{waiting !== undefined && run.response !== undefined && <p>{waiting}</p>}<div className="cc-steps">{run.events.filter((event) => event.kind !== 'harness_started' && event.kind !== 'harness_completed').map((event) => <span className="cc-step" key={event.sequence}><i className="cc-step-dot" />{event.kind}{event.slotId === undefined ? '' : ` · ${event.slotId}`}</span>)}</div><span className="cc-meta">multi-agent run {run.runId}</span></div></div>;
   }
   return (
     <div className="cc-msg assistant">

@@ -21,7 +21,7 @@ export type FactoryStage = (typeof FACTORY_STAGES)[number];
 
 export const FACTORY_EVENT_KINDS = [
   'stage_started', 'stage_completed', 'plan_proposed', 'approval_requested', 'approval_resolved',
-  'tool_generated', 'tool_repair_attempted', 'artifact_saved', 'scenario_run_completed',
+  'tool_generated', 'tool_reused', 'tool_repair_attempted', 'artifact_saved', 'scenario_run_completed',
   'analysis_completed', 'proposal_applied', 'proposal_rejected', 'iteration_completed',
   'budget_exceeded', 'run_completed', 'run_failed', 'run_cancelled',
 ] as const;
@@ -271,7 +271,7 @@ function cloneArtifacts(artifacts: FactoryArtifacts): FactoryArtifacts {
 function cloneFactoryPlan(plan: FactoryPlan): FactoryPlan {
   return {
     agentBrief: { ...plan.agentBrief },
-    tools: plan.tools.map((tool) => ({ ...tool })),
+    tools: plan.tools.map((tool) => ({ ...tool, ...(tool.reuse === undefined ? {} : { reuse: { ...tool.reuse } }) })),
     skills: plan.skills.map((skill) => ({ ...skill, toolKeys: [...skill.toolKeys] })),
     personas: plan.personas.map((persona) => ({ ...persona })),
     scenarios: plan.scenarios.map((scenario) => ({ ...scenario, expectedToolKeys: [...scenario.expectedToolKeys] })),

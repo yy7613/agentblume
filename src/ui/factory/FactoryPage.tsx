@@ -52,6 +52,7 @@ function eventKindLabel(kind: FactoryEventDto['kind'], text: Translate): string 
     case 'approval_requested': return text('Approval requested', '承認をリクエスト');
     case 'approval_resolved': return text('Approval resolved', '承認結果を反映');
     case 'tool_generated': return text('Tool generated', 'ツールを生成');
+    case 'tool_reused': return text('Tool reused', 'ツールを再利用');
     case 'tool_repair_attempted': return text('Tool repair attempted', 'ツールの修復を試行');
     case 'artifact_saved': return text('Artifact saved', '資産を保存');
     case 'scenario_run_completed': return text('Scenario run completed', 'シナリオ実行が完了');
