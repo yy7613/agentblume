@@ -165,7 +165,7 @@ function validAnalystProposalJson(): string {
   });
 }
 
-const noopWorker: FactoryWorkerPort = { enqueue: () => {}, cancel: () => {}, shutdown: () => {} };
+const noopWorker: FactoryWorkerPort = { enqueue: () => {}, cancel: () => {}, drainInFlight: async () => true, shutdown: () => {} };
 
 async function setup(options?: { readonly makeScenarioRun?: (input: ScenarioRunnerInput) => ScenarioRun }): Promise<{
   repo: FactoryRunRepository; model: ScriptedModelProvider; runFactory: RunFactoryUseCase;

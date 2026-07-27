@@ -371,6 +371,13 @@ export interface App {
   readonly listTools: ListToolsUseCase;
   readonly deleteTool: DeleteToolUseCase;
   readonly previewTool: PreviewToolUseCase;
+  /**
+   * shutdown猶予（`AGENTCONTEXT_SHUTDOWN_GRACE_MS`）。ワーカーの新規受付を止め、
+   * 実行中のジョブを最大 `graceMs` だけ待ってから abort する。**`close()` の前に呼ぶ**
+   * （`close()` は待たずに即 abort する最終手段）。戻り値は猶予内に全て終わったか。
+   * ジョブの永続化・再起動復旧はまだ無いため、abort されたジョブは再開されない。
+   */
+  drainWorkers(graceMs: number): Promise<boolean>;
   /** SqliteToolRepository の close を委譲する（InMemory は no-op）。 */
   close(): void;
 }
@@ -754,6 +761,11 @@ export function createApp(options?: AppOptions): App {
     listTools: new ListToolsUseCase(repo),
     deleteTool: new DeleteToolUseCase(repo),
     previewTool: new PreviewToolUseCase(repo, engine, resolveDataSources),
+    // 2つのワーカーは互いに独立なので同時に待つ（直列にすると猶予が最大2倍かかる）。
+    drainWorkers: async (graceMs: number) => {
+      const drained = await Promise.all([experimentWorker.drainInFlight(graceMs), factoryWorker.drainInFlight(graceMs)]);
+      return drained.every(Boolean);
+    },
     // 接続は1本しかないので解放も1回だけ。前段が失敗しても後段は必ず走らせ、最初の失敗を投げ直す。
     close: () => {
       const steps: Array<() => void> = [

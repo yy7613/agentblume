@@ -15,9 +15,31 @@
 | **Harness Builder** — マルチエージェント構成をパターン別の構造図で編集（Concurrentのfan-out＋集約） ![Harness Builder](docs/assets/demo-manual/08-harness-builder.png) | **Agent Factory** — やりたいこと＋データソースからAgent一式を自動生成・自動改善 ![Agent Factory](docs/assets/demo-manual/09-factory.png) |
 | **データソース** — CSV/JSON登録とDB接続カタログ ![データソース](docs/assets/demo-manual/01-data-sources.png) | **長期記憶** — Wikiページの編集・検索とAgentへのアタッチ ![長期記憶](docs/assets/demo-manual/04-wiki-memory.png) |
 
+## 必要なもの
+
+| | 要件 | 備考 |
+|---|---|---|
+| **Node.js** | **22.9.0 以上**（`.nvmrc` は 22.19.0） | 組み込みSQLite（`node:sqlite`）が 22.5.0 以降、`.env` 読み込みに使う `--env-file-if-exists` が 22.9.0 以降。`package.json` の `engines` にも明記している |
+| **npm** | Node 同梱のもの | |
+| **PowerShell 7+** (`pwsh`) | 開発用スクリプトのみ | 本番起動（`npm start`）には不要 |
+| **LM Studio**（任意） | Agent実行・Factory・評価を動かす場合 | OpenAI互換サーバーを起動し、モデルをロードしておく。既定の接続先は `http://127.0.0.1:1234/v1`。未設定でもUI・Tool Builder・データソースは動く |
+
+セットアップ:
+
+```powershell
+nvm use          # .nvmrc がある場合
+npm install
+copy .env.example .env   # 任意。設定を書き換える場合
+```
+
+`.env` はAPIプロセスが Node の `--env-file-if-exists=.env` で読む（無くてもエラーにならない）。
+**シェルに既に設定されている環境変数は `.env` より優先される。**
+読まれるenvの全量と既定値は [.env.example](.env.example) にある。起動時に全項目をまとめて検証し、
+不正な値があれば「どの変数の、どの値が、何を期待されているか」を並べて起動を中止する。
+
 ## ローカル開発
 
-PowerShellからAPIとUIをまとめて起動する。
+PowerShellからAPIとUIをまとめて起動する。UIはVite開発サーバー（5173）が配信し、APIへはプロキシする。
 
 ```powershell
 .\scripts\start-dev.ps1
@@ -57,6 +79,45 @@ npm run test:e2e
 npm run typecheck
 npm run build
 ```
+
+## ビルドと本番起動
+
+```powershell
+npm run build   # UI（dist/ui）とサーバー（dist/server）の両方を出力する
+npm start       # dist/server/server.js を node が直接実行する（tsx は開発専用）
+```
+
+`npm start` は `dist/ui` を見つけるとAPIと**同じポート**からUIを配信する。ブラウザで
+`http://127.0.0.1:3030` を開けばそのまま使える（Vite開発サーバーは不要）。
+`dist/ui` が無ければAPIだけを提供する。開発用の `npm run serve` は `dist/ui` を配信しない
+（古いビルドを掴むとソースを直しても画面が変わらないため）。UI付きで確認したいときは `npm start` を使う。
+
+| エンドポイント | 用途 |
+|---|---|
+| `GET /health` | liveness。プロセスが生きているかだけを見る（依存は叩かない）。落ちたら再起動する判断に使う |
+| `GET /ready` | readiness。DBへ実際に読み取りを1本通す。失敗時は `503` と失敗した依存名を返す |
+
+どちらも `AGENTCONTEXT_SOURCE_REVISION` を設定していれば `revision` を返すので、
+「今動いているのがどのビルドか」を外から確認できる。
+
+補足:
+
+- 既定のlistenは `127.0.0.1:3030`。別マシンから触らせる場合は `AGENTCONTEXT_HOST=0.0.0.0`。
+  **認証はまだ実装していない**ので、公開網へは直接出さないこと。
+- Agent実行・Harness実行（最大1時間）はHTTPリクエストの中で動く。この経路を切らないため、
+  Fastifyの `connectionTimeout`（無通信でソケットを切る設定）は無効のままにしている。
+  リバースプロキシを挟む場合は、そちらのタイムアウトも長時間実行に合わせる必要がある。
+- ビルド成果物（`dist/`）は `.gitignore` 済み。
+
+### 停止（graceful shutdown）
+
+`Ctrl+C`（SIGINT）または SIGTERM で停止する。処理中のHTTPリクエストを終わらせたあと、
+**実行中**の実験・Factory Runの完了を既定10秒まで待ってから中断する
+（`AGENTCONTEXT_SHUTDOWN_GRACE_MS` で変更、`0` なら待たない）。
+待たずに落としたいときは **もう一度 `Ctrl+C`** を押すと猶予を打ち切って即終了する。
+
+> ジョブの永続化と再起動後の再開はまだ実装していない。猶予を過ぎて中断されたジョブは
+> 失敗として記録され、再開されない。長い実験の最中は停止を避けること。
 
 ## データの保存先
 

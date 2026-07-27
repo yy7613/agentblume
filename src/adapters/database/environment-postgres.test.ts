@@ -12,7 +12,19 @@ describe('EnvironmentPostgresConnectionCatalog', () => {
   it('未構成・パスワード未設定を接続せず利用不可として返す', async () => {
     await expect(testEnvironmentPostgresConnection('missing', { AGENTCONTEXT_DB_CONNECTIONS: configured })).resolves.toMatchObject({ driver: 'postgresql', available: false, error: 'connection is not configured' });
     await expect(testEnvironmentPostgresConnection('sales', { AGENTCONTEXT_DB_CONNECTIONS: configured })).resolves.toMatchObject({ driver: 'postgresql', available: false, error: 'password environment variable is not configured' });
-    expect(new EnvironmentPostgresConnectionCatalog({ AGENTCONTEXT_DB_CONNECTIONS: 'not-json' }).list()).toEqual([]);
+  });
+
+  it('未設定・空文字は接続なしとして扱う', () => {
+    expect(new EnvironmentPostgresConnectionCatalog({}).list()).toEqual([]);
+    expect(new EnvironmentPostgresConnectionCatalog({ AGENTCONTEXT_DB_CONNECTIONS: '   ' }).list()).toEqual([]);
+  });
+
+  // 以前は catch で {} を返していたため、カンマ1つの打ち間違いで全接続が画面から静かに消えた。
+  it('JSONとして壊れた設定は握り潰さず失敗させる', async () => {
+    expect(() => new EnvironmentPostgresConnectionCatalog({ AGENTCONTEXT_DB_CONNECTIONS: 'not-json' }).list()).toThrow(/not valid JSON/);
+    expect(() => new EnvironmentPostgresConnectionCatalog({ AGENTCONTEXT_DB_CONNECTIONS: '[]' }).list()).toThrow(/JSON object/);
+    await expect(testEnvironmentPostgresConnection('sales', { AGENTCONTEXT_DB_CONNECTIONS: '{oops' })).rejects.toThrow(/not valid JSON/);
+    await expect(new EnvironmentPostgresConnectionCatalog({ AGENTCONTEXT_DB_CONNECTIONS: 'null' }).readTable('sales', 'public.x', 1)).rejects.toThrow(/JSON object/);
   });
 
   it('不正な接続設定を除外し、接続失敗時も詳細を漏らさない', async () => {

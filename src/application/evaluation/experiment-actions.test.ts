@@ -26,7 +26,7 @@ describe('experiment action use cases', () => {
     const dataset = createEvaluationDataset({ metadata, cases: [{ id: 'case', kind: 'turn', input: 'x', tags: [], source: 'manual' }] });
     const profile = createEvaluatorProfile({ metadata: { ...metadata, internalId: 'profile' }, metrics: [{ id: 'quality', kind: 'code', scorer: 'completeness', weight: 1, required: true }] });
     const repo = new Repo(); const enqueue = vi.fn();
-    const create = new CreateExperimentUseCase(repo, { findVersion: async () => dataset } as unknown as EvaluationDatasetRepository, { findVersion: async () => profile } as unknown as EvaluatorProfileRepository, { findVersion: async () => ({ kind: 'normal' }) } as unknown as AgentRepository, { enqueue, cancel: vi.fn(), shutdown: vi.fn() }, () => ({ provider: 'test', model: 'model', modelConfigHash: 'hash' }), () => 'exp', () => new Date('2026-07-10T00:00:00Z'));
+    const create = new CreateExperimentUseCase(repo, { findVersion: async () => dataset } as unknown as EvaluationDatasetRepository, { findVersion: async () => profile } as unknown as EvaluatorProfileRepository, { findVersion: async () => ({ kind: 'normal' }) } as unknown as AgentRepository, { enqueue, cancel: vi.fn(), drainInFlight: vi.fn().mockResolvedValue(true), shutdown: vi.fn() }, () => ({ provider: 'test', model: 'model', modelConfigHash: 'hash' }), () => 'exp', () => new Date('2026-07-10T00:00:00Z'));
     const value = await create.execute({ scope, target: { agentId: 'agent', version: v }, dataset: { id: 'set', version: v }, evaluatorProfile: { id: 'profile', version: v }, repetitions: 1 });
     expect(value).toMatchObject({ status: 'queued', progress: { total: 1 } }); expect(enqueue).toHaveBeenCalledWith(scope, 'exp');
   });
@@ -37,7 +37,7 @@ describe('experiment action use cases', () => {
     const repo = new Repo(); const enqueue = vi.fn();
     const dataset = createEvaluationDataset({ metadata: { internalId: 'set', workingName: 's', displayName: 's', publishName: 's', version: v, owner: 'o', state: 'draft', tenant: scope }, cases: [{ id: 'case', kind: 'turn', input: 'hello', tags: [], source: 'manual' }] });
     const profile = createEvaluatorProfile({ metadata: { ...dataset.metadata, internalId: 'profile' }, metrics: [{ id: 'quality', kind: 'code', scorer: 'completeness', weight: 1, required: true }] });
-    const create = new CreateExperimentUseCase(repo, { findVersion: async () => dataset } as unknown as EvaluationDatasetRepository, { findVersion: async () => profile } as unknown as EvaluatorProfileRepository, { findVersion: async () => ({ kind: 'normal' }) } as unknown as AgentRepository, { enqueue, cancel: vi.fn(), shutdown: vi.fn() }, () => { throw new Error('Stored API key could not be decrypted'); }, () => 'exp', () => new Date('2026-07-10T00:00:00Z'));
+    const create = new CreateExperimentUseCase(repo, { findVersion: async () => dataset } as unknown as EvaluationDatasetRepository, { findVersion: async () => profile } as unknown as EvaluatorProfileRepository, { findVersion: async () => ({ kind: 'normal' }) } as unknown as AgentRepository, { enqueue, cancel: vi.fn(), drainInFlight: vi.fn().mockResolvedValue(true), shutdown: vi.fn() }, () => { throw new Error('Stored API key could not be decrypted'); }, () => 'exp', () => new Date('2026-07-10T00:00:00Z'));
 
     const value = await create.execute({ scope, target: { agentId: 'agent', version: v }, dataset: { id: 'set', version: v }, evaluatorProfile: { id: 'profile', version: v }, repetitions: 1 });
 
@@ -46,7 +46,7 @@ describe('experiment action use cases', () => {
   });
 
   it('cancel/query/resumeとNotFoundを処理する', async () => {
-    const repo = new Repo(); repo.value = startExperiment(makeExperiment(), 'start'); const worker = { enqueue: vi.fn(), cancel: vi.fn(), shutdown: vi.fn() } satisfies ExperimentWorkerPort;
+    const repo = new Repo(); repo.value = startExperiment(makeExperiment(), 'start'); const worker = { enqueue: vi.fn(), cancel: vi.fn(), drainInFlight: vi.fn().mockResolvedValue(true), shutdown: vi.fn() } satisfies ExperimentWorkerPort;
     expect(await new QueryExperimentsUseCase(repo).get(scope, 'exp')).toMatchObject({ status: 'running' });
     expect(await new CancelExperimentUseCase(repo, worker, () => new Date('2026-07-10T00:00:01Z')).execute(scope, 'exp')).toMatchObject({ status: 'cancelled' }); expect(worker.cancel).toHaveBeenCalled();
     repo.value = interruptExperiment(startExperiment(makeExperiment(), 'start'), 'stop');

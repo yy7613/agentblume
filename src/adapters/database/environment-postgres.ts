@@ -1,4 +1,5 @@
 import { Client } from 'pg';
+import { DataSourceValidationError } from '../../application/data-source/manage-data-sources';
 import type { DatabaseConnectionCatalog } from '../../application/data-source/manage-data-sources';
 import type { DatabaseReadPort } from '../../application/data-source/manage-data-sources';
 import type { DatabaseConnectionStatus, DatabaseConnectionSummary } from '../../domain/data-source/data-source';
@@ -6,21 +7,37 @@ import type { Row } from '../../domain/data/types';
 
 interface ConnectionConfig { readonly driver: 'postgresql'; readonly host: string; readonly port?: number; readonly database: string; readonly username: string; readonly passwordEnv: string; readonly ssl?: boolean; readonly allowedTables: readonly string[] }
 
+/**
+ * `AGENTCONTEXT_DB_CONNECTIONS` を読む。
+ *
+ * **JSONとして壊れている場合は握り潰さず投げる。** 以前は `catch { return {}; }` だったため、
+ * カンマ1つの打ち間違いで全DB接続が画面から消え、しかもどこにも理由が出なかった。
+ * 起動時には `src/config/environment.ts` が同じ内容をzodで検証して起動を止めるので、
+ * ここへ到達するのは「起動後にenvを差し替えた」ような経路だけになる。
+ * 個々のエントリの形式違反は従来どおり黙って除外する（他の正しい接続まで巻き添えにしないため）。
+ */
 function readConnections(env: NodeJS.ProcessEnv): Record<string, ConnectionConfig> {
+  const raw = env['AGENTCONTEXT_DB_CONNECTIONS'];
+  if (raw === undefined || raw.trim() === '') return {};
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(env['AGENTCONTEXT_DB_CONNECTIONS'] ?? '{}');
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    return Object.fromEntries(Object.entries(parsed).flatMap(([id, value]) => {
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) return [];
-      const config = value as Record<string, unknown>;
-      if (config['driver'] !== 'postgresql' || typeof config['host'] !== 'string' || typeof config['database'] !== 'string' || typeof config['username'] !== 'string' || typeof config['passwordEnv'] !== 'string') return [];
-      if (config['port'] !== undefined && (typeof config['port'] !== 'number' || !Number.isInteger(config['port']) || config['port'] < 1 || config['port'] > 65_535)) return [];
-      if (config['ssl'] !== undefined && typeof config['ssl'] !== 'boolean') return [];
-      const tables = config['allowedTables'];
-      if (tables !== undefined && (!Array.isArray(tables) || tables.some((table) => typeof table !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(table)))) return [];
-      return [[id, { driver: 'postgresql', host: config['host'], ...(config['port'] === undefined ? {} : { port: config['port'] }), database: config['database'], username: config['username'], passwordEnv: config['passwordEnv'], ...(config['ssl'] === undefined ? {} : { ssl: config['ssl'] }), allowedTables: (tables as string[] | undefined) ?? [] }]];
-    })) as Record<string, ConnectionConfig>;
-  } catch { return {}; }
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new DataSourceValidationError(`AGENTCONTEXT_DB_CONNECTIONS is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new DataSourceValidationError('AGENTCONTEXT_DB_CONNECTIONS must be a JSON object keyed by connection id');
+  }
+  return Object.fromEntries(Object.entries(parsed).flatMap(([id, value]) => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return [];
+    const config = value as Record<string, unknown>;
+    if (config['driver'] !== 'postgresql' || typeof config['host'] !== 'string' || typeof config['database'] !== 'string' || typeof config['username'] !== 'string' || typeof config['passwordEnv'] !== 'string') return [];
+    if (config['port'] !== undefined && (typeof config['port'] !== 'number' || !Number.isInteger(config['port']) || config['port'] < 1 || config['port'] > 65_535)) return [];
+    if (config['ssl'] !== undefined && typeof config['ssl'] !== 'boolean') return [];
+    const tables = config['allowedTables'];
+    if (tables !== undefined && (!Array.isArray(tables) || tables.some((table) => typeof table !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(table)))) return [];
+    return [[id, { driver: 'postgresql', host: config['host'], ...(config['port'] === undefined ? {} : { port: config['port'] }), database: config['database'], username: config['username'], passwordEnv: config['passwordEnv'], ...(config['ssl'] === undefined ? {} : { ssl: config['ssl'] }), allowedTables: (tables as string[] | undefined) ?? [] }]];
+  })) as Record<string, ConnectionConfig>;
 }
 
 /** AGENTCONTEXT_DB_CONNECTIONSを安全な接続カタログとして公開する。 */
@@ -59,10 +76,11 @@ function toCell(value: unknown): string | number | boolean | Date | null {
 }
 
 export async function testEnvironmentPostgresConnection(id: string, env: NodeJS.ProcessEnv = process.env): Promise<DatabaseConnectionStatus> {
+  // 設定の読み取りは try の外に置く。中に入れると `AGENTCONTEXT_DB_CONNECTIONS` の構文エラーまで
+  // 'connection test failed' に丸められ、握り潰しをやめた意味が無くなる。
+  const config = readConnections(env)[id];
   let client: Client | undefined;
   try {
-    const connections = readConnections(env);
-    const config = connections[id];
     if (config === undefined) return { id, driver: 'postgresql', available: false, error: 'connection is not configured' };
     const password = env[config.passwordEnv];
     if (password === undefined || password === '') return { id, available: false, driver: config.driver, error: 'password environment variable is not configured' };

@@ -107,6 +107,85 @@ if (Test-Path -LiteralPath $lmStudioConfigPath) {
   . $lmStudioConfigPath
 }
 
+# .env の読み取りは Node 側（`npm run serve` の --env-file-if-exists）が本番であり、ここでは
+# 「このスクリプト自身が判断に使う3つ」(profile / port / sampleData) の既定値を揃えるためだけに読む。
+# これが無いと、.env に AGENTCONTEXT_PORT=3031 と書いてもスクリプトは 3030 を空きポート判定・
+# health URL・UIプロキシ先に使い、しかも子プロセスへ 3030 を渡して .env を上書きしてしまう。
+# 完全なパースは Node に任せる（ここでは `KEY=VALUE`、`#` コメント、外側の引用符だけを解釈する）。
+function Read-DotEnvFile {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path
+  )
+
+  $values = @{}
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return $values
+  }
+
+  foreach ($line in Get-Content -LiteralPath $Path) {
+    $trimmed = $line.Trim()
+    if ($trimmed.Length -eq 0 -or $trimmed.StartsWith('#')) {
+      continue
+    }
+    if ($trimmed.StartsWith('export ')) {
+      $trimmed = $trimmed.Substring(7).Trim()
+    }
+    $separator = $trimmed.IndexOf('=')
+    if ($separator -lt 1) {
+      continue
+    }
+    $key = $trimmed.Substring(0, $separator).Trim()
+    $value = $trimmed.Substring($separator + 1).Trim()
+    if ($value.Length -ge 2 -and (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'")))) {
+      $value = $value.Substring(1, $value.Length - 2)
+    }
+    $values[$key] = $value
+  }
+
+  return $values
+}
+
+$dotEnv = Read-DotEnvFile -Path (Join-Path $repoRoot '.env')
+
+function Get-DotEnvValue {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Name
+  )
+
+  if ($dotEnv.ContainsKey($Name) -and $dotEnv[$Name].Trim().Length -gt 0) {
+    return $dotEnv[$Name].Trim()
+  }
+  return $null
+}
+
+# コマンドラインで明示した値 > .env > スクリプト既定 の順で決める。
+if (-not $PSBoundParameters.ContainsKey('Profile')) {
+  $profileFromEnv = Get-DotEnvValue -Name 'AGENTCONTEXT_PROFILE'
+  if ($null -ne $profileFromEnv) {
+    if ($profileFromEnv -notin @('local', 'test')) {
+      throw ".env の AGENTCONTEXT_PROFILE が不正です: '$profileFromEnv' ('local' または 'test')"
+    }
+    $Profile = $profileFromEnv
+  }
+}
+
+if (-not $PSBoundParameters.ContainsKey('ApiPort')) {
+  $portFromEnv = Get-DotEnvValue -Name 'AGENTCONTEXT_PORT'
+  if ($null -ne $portFromEnv) {
+    $parsedPort = 0
+    if (-not [int]::TryParse($portFromEnv, [ref]$parsedPort) -or $parsedPort -lt 1 -or $parsedPort -gt 65535) {
+      throw ".env の AGENTCONTEXT_PORT が不正です: '$portFromEnv' (1-65535 の整数)"
+    }
+    $ApiPort = $parsedPort
+  }
+}
+
+if (-not $SampleData) {
+  $SampleData = (Get-DotEnvValue -Name 'AGENTCONTEXT_SAMPLE_DATA') -eq 'true'
+}
+
 $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $npmCommand) {
   $npmCommand = Get-Command npm -ErrorAction Stop
@@ -595,6 +674,9 @@ if (-not $ApiOnly) {
 $targets = @()
 $sampleDataEnvironment = if ($SampleData) { 'true' } else { 'false' }
 if (-not $UiOnly) {
+  # ここで渡すのは「このスクリプトが決めた3つ」だけでよい。残りの env は `npm run serve` が
+  # --env-file-if-exists=.env で自分で読む。Node は既に設定済みの環境変数を .env より優先するため、
+  # ここで渡した値がそのまま勝つ（-Profile / -ApiPort / -SampleData の指定が .env に負けない）。
   $targets += [pscustomobject]@{
     Name = 'api'
     Arguments = 'run serve'
@@ -609,6 +691,8 @@ if (-not $UiOnly) {
 }
 
 if (-not $ApiOnly) {
+  # vite は `.env` の AGENTCONTEXT_API_URL を process.env へは入れない（VITE_ 接頭辞のものだけ）。
+  # プロキシ先は API のポートと必ず一致させたいので、ここから明示的に渡す。
   $targets += [pscustomobject]@{
     Name = 'ui'
     Arguments = "run dev:ui -- --port $UiPort --strictPort"

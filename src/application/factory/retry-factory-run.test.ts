@@ -22,6 +22,7 @@ class RecordingWorker implements FactoryWorkerPort {
   readonly enqueued: { readonly scope: TenantScope; readonly runId: string }[] = [];
   enqueue(scope: TenantScope, runId: string): void { this.enqueued.push({ scope, runId }); }
   cancel(): void {}
+  async drainInFlight(): Promise<boolean> { return true; }
   shutdown(): void {}
 }
 

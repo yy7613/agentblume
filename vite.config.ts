@@ -10,6 +10,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/health': apiTarget,
+      '/ready': apiTarget,
       '/tools': apiTarget,
       '/tool-drafts': apiTarget,
       '/runs': apiTarget,

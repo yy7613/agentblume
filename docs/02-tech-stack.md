@@ -173,3 +173,101 @@ InMemory配線では `NoopUnitOfWork` がそのまま実行する。
 > プレビュー・テスト・本番実行を明確に表示し、使用データと権限を分離する（`ideas-v2.md §8`）。
 >
 > SQLiteは初期開発の永続ストアであり、InMemoryはテスト専用とする。DB固有機能をユースケース層へ漏らさず、SQLiteとPostgreSQLのAdapterに同じ`StoragePort`契約テストを適用する。
+
+---
+
+## 6. ビルドと起動
+
+### ランタイム要件
+
+| 項目 | 値 | 根拠 |
+|---|---|---|
+| Node.js | **>= 22.9.0**（`package.json` の `engines`、`.nvmrc` は `22.19.0`） | `node:sqlite`（組込みSQLite）が 22.5.0 以降、`.env` を読む `--env-file-if-exists` が 22.9.0 以降 |
+| 起動フラグ | `--experimental-sqlite --disable-warning=ExperimentalWarning` | `node:sqlite` は Node 22 系では実験的機能でフラグが要る（ADR-0004） |
+
+### スクリプト
+
+| script | 内容 |
+|---|---|
+| `npm run build` | `build:ui` → `build:server` |
+| `npm run build:ui` | `vite build` → `dist/ui`（SPA） |
+| `npm run build:server` | `vite build --config vite.server.config.ts` → `dist/server`（SSRビルド） |
+| `npm start` | `node ... dist/server/server.js`（本番。tsx を使わない） |
+| `npm run serve` | `node ... --import tsx src/server.ts`（開発。TypeScriptを直接実行） |
+
+### なぜサーバーのビルドが tsc ではなく vite（SSRビルド）なのか
+
+このリポジトリの相対 import は**拡張子なし**（`import { buildServer } from './api/server'`）で書かれている。
+`tsc` は import 指定子を書き換えないため、`noEmit` を外して JS を出しても Node の ESM ローダーが
+`./api/server` を解決できず `ERR_MODULE_NOT_FOUND` になる。全ソースへ `.js` を足す変更は影響範囲が大きい。
+そこで既存 devDependency の vite で解決済みの相対パスへ書き換える（**新規依存はゼロ**）。
+
+出力は **`preserveModules: true`（1ファイルへまとめない）**。`src/mastra-runtime-env.ts` は
+「`@mastra/*` を読み込む前に env を立てる」ための副作用専用モジュールで、各エントリポイントの
+最初の import に置くことで評価順を ESM の言語仕様として固定している。単一チャンクへインライン化すると
+その本体コードは「全 import の評価後」へ移動し、`import '@mastra/core'` の方が先に走ってしまう。
+`package.json` の `dependencies` は vite の SSR ビルドが既定で external にするため、`node_modules` は本番でも必要。
+
+### ビルド済みUIの配信
+
+`npm start`（`dist/server/server.js`）は隣の `dist/ui` を探し、見つかれば **APIと同じポート**から
+[`@fastify/static`](https://github.com/fastify/fastify-static)（公式プラグイン）で配信する。
+自前実装ではなくプラグインを採るのは、Content-Type / ETag / Last-Modified / Range / パストラバーサル防止を
+自分で持たずに済むため。`wildcard: false`（ファイル単位でルートを張る）にして、未登録パスは Fastify の
+`setNotFoundHandler` へ落とす。そこで「APIの接頭辞」「拡張子つき（＝ファイル要求）」「GET/HEAD以外」を
+除いたものだけを `index.html` へフォールバックさせる（綴り間違いのAPIパスにHTMLを返すと、UIは
+「JSONでない応答」で失敗して原因が分からなくなる）。
+`npm run serve`（開発）は `dist/ui` を探索しない。古いビルドを掴むとソースを直しても画面が変わらず、
+Vite 開発サーバー（5173）との違いに気づけなくなるため。開発時のUI配信は従来どおり Vite が行う。
+
+### env の検証（fail-fast）
+
+`src/config/environment.ts` が **読まれているenvの全量**をzodで定義し、プロセス起動の最初に一括検証する。
+1件でも不正なら「どの変数の、どの値が、何を期待されているか」を並べて `exit 1` する。
+`.env.example` はこの定義と一致させる。とくに `AGENTCONTEXT_DB_CONNECTIONS` は
+JSONの構文エラーも構造エラー（フィールド名の打ち間違い等）も**起動失敗**にする。
+以前は adapters 側が `catch { return {}; }` で握り潰していたため、カンマ1つの間違いで
+DB接続が画面から静かに消えていた。
+
+### HTTPタイムアウト
+
+| 設定 | 値 | 根拠 |
+|---|---|---|
+| `bodyLimit` | 10 MiB | チャットの画像（最大2枚・各3 MiB）をBase64化した約8 MiB + メタデータ |
+| `requestTimeout` | 120000 ms | **リクエストを受信し終える**までの上限（`server.requestTimeout`）。応答＝ハンドラの実行時間は対象外なので、10分のモデル呼び出しや最大1時間のHarness実行を殺さない。Fastifyの既定は `0`（無効）で、ボディを少しずつしか送らない接続がソケットを握り続けられた |
+| `keepAliveTimeout` | 72000 ms | 応答完了後のkeep-aliveソケットを閉じるまで。実行中のリクエストには影響しない（Fastify既定値の明示） |
+| `connectionTimeout` | **0（無効のまま）** | 無通信でソケットを切る設定。有効にすると「モデルが長考中で何も流れていない」Agent/Harness実行が落ちる。長時間経路をワーカー化してHTTPリクエストから切り離すまでは無効を維持する |
+
+### liveness / readiness
+
+| エンドポイント | 内容 |
+|---|---|
+| `GET /health` | liveness。プロセスが生きているかだけを見る（依存は叩かない）。`{ status: 'ok', node, uptimeSeconds, revision? }` |
+| `GET /ready` | readiness。必須依存（DB）への読み取りを1本通す。全て成功で `200 { status: 'ready', checks }`、1つでも失敗すれば `503 { status: 'unready', checks }` |
+
+`revision` は `AGENTCONTEXT_SOURCE_REVISION` を設定したときだけ返す（どのビルドが動いているかの確認用）。
+
+### graceful shutdown
+
+SIGINT / SIGTERM を受けると `src/server.ts` が次の順で降りる。順序に意味がある。
+
+| 順 | 処理 | 目的 |
+|---|---|---|
+| 1 | `server.close()` | 新規接続を止め、処理中のHTTPリクエストを終わらせる |
+| 2 | `app.drainWorkers(graceMs)` | ワーカーの新規受付を止め、**実行中**のジョブを最大 `graceMs` 待つ |
+| 3 | `app.mcpClient.close()` | stdio接続の子プロセスを孤児にしないよう先に閉じる |
+| 4 | `app.close()` | DBハンドル等を解放（ワーカーへの最終中断も兼ねる） |
+
+| env | 既定 | 内容 |
+|---|---|---|
+| `AGENTCONTEXT_SHUTDOWN_GRACE_MS` | `10000` | 実行中の実験・Factory Runの完了を待つ上限（0以上の整数・ミリ秒）。`0` は待たずに中断 |
+
+以前は 2 が無く、`app.close()` が実行中のジョブを**即中断してキューごと捨てて**いた（`Ctrl+C` が
+「進行中の実験・Factory Runを捨てる」操作になっていた）。猶予を過ぎたジョブは従来どおり中断する。
+未実行のキューは待たずに捨てる（待っても実行しないものを抱える意味がない）。
+ジョブの永続化と再起動後の再開は未実装なので、**中断されたジョブは再開されない**（次段の課題）。
+猶予が長すぎる場合に備え、**2回目の SIGINT / SIGTERM で猶予を打ち切って即終了**する（exit 1）。
+
+猶予の実体は `IdleLatch`（`src/adapters/worker/idle-latch.ts`）。`InProcessExperimentWorker` と
+`InProcessFactoryWorker` は独立した実装だが、この待ち合わせだけは共有して1箇所で検証する。
+待ち合わせタイマーは `unref()` する（待ちたいのはジョブであってタイマーではない）。
