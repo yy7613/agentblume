@@ -212,7 +212,7 @@ describe('MastraModelProvider', () => {
     expect(fake.bodies).toHaveLength(0);
   });
 
-  it('structured outputをresponse_formatとしてリクエストへ渡す', async () => {
+  it('structured outputをresponse_formatとしてリクエストへ渡し、strictもワイヤへ載せる', async () => {
     const fake = await fakeOf([textChunk('{"answer":"42"}', 'stop')]);
 
     await provider(fake).complete({
@@ -223,12 +223,62 @@ describe('MastraModelProvider', () => {
       },
     });
 
+    // strict が落ちると構造化出力の失敗率が上がる。AI SDK の型には無いので送信直前に載せ直している。
     expect(fake.bodies[0]?.['response_format']).toEqual({
       type: 'json_schema',
       json_schema: {
         name: 'answer',
+        strict: true,
         schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'], additionalProperties: false },
       },
+    });
+  });
+
+  it('strict:false はそのまま false として送る（勝手に true へ倒さない）', async () => {
+    const fake = await fakeOf([textChunk('{"answer":"42"}', 'stop')]);
+
+    await provider(fake).complete({
+      messages: [],
+      responseFormat: {
+        name: 'answer', strict: false,
+        schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'], additionalProperties: false },
+      },
+    });
+
+    expect(fake.bodies[0]?.['response_format']).toMatchObject({ json_schema: { strict: false } });
+  });
+
+  it('responseFormat未指定なら response_format を送らない', async () => {
+    const fake = await fakeOf([textChunk('x', 'stop')]);
+
+    await provider(fake).complete({ messages: [] });
+
+    expect(Object.keys(fake.bodies[0] ?? {})).not.toContain('response_format');
+  });
+
+  it('usageチャンクを要求するため stream_options.include_usage をボディへ入れる', async () => {
+    // Mastra は createOpenAICompatible へ includeUsage を渡さないため、これが無いと
+    // usage チャンクが来ず ModelCompletion.usage が undefined になり、コスト集計が無言で消える。
+    // フェイクサーバーは要求の有無に関わらず usage を返すので、**ボディを直接**検査する。
+    const fake = await fakeOf([textChunk('hi', 'stop')]);
+
+    await provider(fake).complete({ messages: [] });
+
+    expect(fake.bodies[0]).toMatchObject({ stream: true, stream_options: { include_usage: true } });
+  });
+
+  it('include_usage を要求した結果 usage を組み立てられる', async () => {
+    const fake = await startFake((body, res) => {
+      // include_usage を要求されたときだけ usage チャンクを返す実サーバー相当の挙動。
+      const wants = (body['stream_options'] as { include_usage?: boolean } | undefined)?.include_usage === true;
+      sse(res, [
+        textChunk('hi', 'stop'),
+        ...(wants ? [{ id: 'cmpl-1', choices: [], usage: { prompt_tokens: 7, completion_tokens: 2, total_tokens: 9 } }] : []),
+      ]);
+    });
+
+    await expect(provider(fake).complete({ messages: [] })).resolves.toMatchObject({
+      usage: { promptTokens: 7, completionTokens: 2, totalTokens: 9 },
     });
   });
 
@@ -302,6 +352,74 @@ describe('MastraModelProvider', () => {
     await assertion;
   });
 
+  describe('空ストリーム', () => {
+    it('choiceデルタが1つも来なければ「空の成功」にせず失敗させる', async () => {
+      // 即 [DONE]（プロキシの空応答・モデル未ロード時のLM Studio等）。finishパートは必ず出るので
+      // ガードが無いと content:null → response 空文字 → Run succeeded で確定してしまう。
+      const fake = await fakeOf([]);
+
+      await expect(provider(fake).complete({ messages: [] })).rejects.toMatchObject({
+        name: 'ModelProviderError',
+        message: 'Model stream returned no completion choice',
+      });
+    });
+
+    it('choicesが空の配列だけを流すストリームも失敗させる', async () => {
+      const fake = await fakeOf([{ id: 'cmpl-1', choices: [] }, { id: 'cmpl-1', choices: [] }]);
+
+      await expect(provider(fake).complete({ messages: [] })).rejects.toMatchObject({
+        message: 'Model stream returned no completion choice',
+      });
+    });
+
+    it('本文が空文字のデルタしか来ないストリームも失敗させる', async () => {
+      // AI SDK は空デルタをパートとして流さないため、空文字だけの応答は「即[DONE]」と区別できない。
+      // どちらも結果は「response が空文字の succeeded」で等しく壊れているので、まとめて失敗させる。
+      const fake = await fakeOf([
+        { id: 'cmpl-1', choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] },
+        { id: 'cmpl-1', choices: [{ index: 0, delta: { content: '' }, finish_reason: 'stop' }] },
+      ]);
+
+      await expect(provider(fake).complete({ messages: [] })).rejects.toMatchObject({
+        message: 'Model stream returned no completion choice',
+      });
+    });
+
+    it('reasoningだけの応答は「出力あり」として扱う（本文が無くても失敗させない）', async () => {
+      const fake = await fakeOf([
+        { id: 'cmpl-1', choices: [{ index: 0, delta: { reasoning_content: '長考' } }] },
+        { id: 'cmpl-1', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+      ]);
+
+      await expect(provider(fake).complete({ messages: [] })).resolves.toMatchObject({
+        message: { content: null }, finishReason: 'stop',
+      });
+    });
+  });
+
+  describe('モデル未設定', () => {
+    it('モデル名が空なら「未設定」と分かる文言で外部通信前に失敗する', async () => {
+      const fetcher = vi.fn<typeof fetch>();
+      vi.stubGlobal('fetch', fetcher);
+      // LM_STUDIO_MODEL 未設定 → 工場が擬似接頭辞を付けて 'local/' になる経路。
+      const model = new MastraModelProvider({ model: { id: 'local/', url: 'http://127.0.0.1:1/v1' } });
+
+      await expect(model.complete({ messages: [] })).rejects.toMatchObject({
+        name: 'ModelProviderError',
+        message: 'Model is not configured. Choose a model in model settings, or set the LM_STUDIO_MODEL environment variable.',
+      });
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it('モデルIDが空文字でも同じ文言で失敗する', async () => {
+      const model = new MastraModelProvider({ model: { id: '', url: 'http://127.0.0.1:1/v1' } });
+
+      await expect(model.complete({ messages: [] })).rejects.toMatchObject({
+        message: expect.stringContaining('Model is not configured') as unknown as string,
+      });
+    });
+  });
+
   it('モデルIDが provider/model 形式でなければ外部通信せず拒否する', async () => {
     const fetcher = vi.fn<typeof fetch>();
     vi.stubGlobal('fetch', fetcher);
@@ -366,6 +484,20 @@ describe('MastraModelProvider', () => {
 
       await expect(provider(fake, { timeoutMs: 250, idleTimeoutMs: 10_000 }).complete({ messages: [] }))
         .rejects.toMatchObject({ message: 'Model request timed out: exceeded total limit 250ms' });
+    });
+
+    it('doStream()自体がabortを無視して吊ってもタイムアウトで脱出する', async () => {
+      // 読み取り区間だけを race させていると、接続確立前に吊ったリクエストから抜けられない。
+      // abort を尊重しない transport を模して、doStream() の await も race していることを固定する。
+      vi.stubGlobal('fetch', () => new Promise<Response>(() => { /* 永久に解決しない */ }));
+      const model = new MastraModelProvider({
+        model: { id: 'local/local-model', url: 'http://127.0.0.1:1/v1' },
+        timeoutMs: 10_000, idleTimeoutMs: 120,
+      });
+
+      await expect(model.complete({ messages: [] })).rejects.toMatchObject({
+        message: 'Model request timed out: no output for 120ms',
+      });
     });
 
     it('パートが来続ける限りidleTimeoutMsを超えても継続する', async () => {

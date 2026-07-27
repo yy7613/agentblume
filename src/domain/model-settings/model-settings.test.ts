@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ModelSettingsValidationError } from './errors';
-import { createModelSettings, createModelSlotSettings, modelSlot } from './model-settings';
+import { createModelSettings, createModelSlotSettings, isHttpBaseUrl, modelSlot, normalizeBaseUrl, sameBaseUrl, sameModelDestination } from './model-settings';
 import { createSealedSecret, isSealedSecret, secretHint } from './sealed-secret';
 import { deserializeModelSettings, serializeModelSettings } from './serialization';
 
@@ -26,8 +26,11 @@ describe('SealedSecret', () => {
 
   it('hint は平文の末尾4文字だけ（先頭は残さない）', () => {
     expect(secretHint('sk-super-secret-value-1234')).toBe('1234');
-    expect(secretHint('ab')).toBe('ab');
-    expect(secretHint('')).toBe('');
+    expect(secretHint('abcde')).toBe('bcde');
+  });
+
+  it('4文字以下の平文は hint を作らない（平文が丸ごとマスク表示に載るため）', () => {
+    for (const plaintext of ['', 'a', 'ab', 'abc', 'abcd']) expect(secretHint(plaintext)).toBe('');
   });
 
   it('空の暗号文（空文字の封緘）は許す', () => {
@@ -80,10 +83,65 @@ describe('createModelSettings', () => {
     expect(() => createModelSlotSettings({ source: 'openai-compatible', baseUrl: 'http://h/v1', model: 'x'.repeat(300) })).toThrow(/at most/);
   });
 
+  it('baseUrl に資格情報（userinfo）を埋め込めない（平文でDB・応答・ログに残るため）', () => {
+    for (const baseUrl of ['https://user:pass@host/v1', 'https://user@host/v1', 'http://:pass@host/v1']) {
+      expect(() => createModelSlotSettings({ source: 'openai-compatible', baseUrl, model: 'm' })).toThrow(/credentials/);
+    }
+    // エラー文言に資格情報を載せない。
+    try { createModelSlotSettings({ source: 'openai-compatible', baseUrl: 'https://user:hunter2@host/v1', model: 'm' }); }
+    catch (error) { expect((error as Error).message).not.toContain('hunter2'); }
+  });
+
   it('未知の source / 非オブジェクトを拒否する', () => {
     expect(() => createModelSlotSettings({ source: 'anthropic-direct', model: 'x' })).toThrow(/source/);
     expect(() => createModelSlotSettings('main')).toThrow(/must be an object/);
     expect(() => createModelSlotSettings(null)).toThrow(/must be an object/);
+  });
+});
+
+describe('isHttpBaseUrl', () => {
+  it('http(s) かつ資格情報を含まないURLだけを受け入れる', () => {
+    for (const value of ['http://127.0.0.1:1234/v1', 'https://api.example.com/v1', ' https://api.example.com/v1 ']) {
+      expect(isHttpBaseUrl(value)).toBe(true);
+    }
+    for (const value of ['ftp://host/v1', 'file:///c:/x', 'javascript:alert(1)', 'not a url', '', '   ', 'https://user:pass@host/v1', 'https://user@host/v1', 42, undefined]) {
+      expect(isHttpBaseUrl(value)).toBe(false);
+    }
+    expect(isHttpBaseUrl(`http://h/${'x'.repeat(600)}`)).toBe(false);
+  });
+});
+
+describe('normalizeBaseUrl / sameBaseUrl / sameModelDestination', () => {
+  it('origin + pathname だけを小文字で見る（末尾スラッシュ・既定ポート・query は無視）', () => {
+    expect(normalizeBaseUrl('HTTP://127.0.0.1:1234/V1/')).toBe('http://127.0.0.1:1234/v1');
+    expect(normalizeBaseUrl('http://127.0.0.1:1234/v1')).toBe('http://127.0.0.1:1234/v1');
+    expect(sameBaseUrl('https://API.example.com/v1/', 'https://api.example.com:443/v1')).toBe(true);
+    expect(sameBaseUrl('http://127.0.0.1:1234/v1?x=1#f', 'http://127.0.0.1:1234/v1')).toBe(true);
+  });
+
+  it('ホスト・ポート・パス・スキームが違えば別の宛先', () => {
+    expect(sameBaseUrl('http://127.0.0.1:1234/v1', 'http://127.0.0.1:5678/v1')).toBe(false);
+    expect(sameBaseUrl('http://127.0.0.1:1234/v1', 'https://127.0.0.1:1234/v1')).toBe(false);
+    expect(sameBaseUrl('http://127.0.0.1:1234/v1', 'http://evil.example.com/v1')).toBe(false);
+    expect(sameBaseUrl('http://127.0.0.1:1234/v1', 'http://127.0.0.1:1234/other')).toBe(false);
+  });
+
+  it('URLとして読めない値も落ちずに文字列比較へ倒れる', () => {
+    expect(normalizeBaseUrl('  Not A Url/  ')).toBe('not a url');
+    expect(sameBaseUrl('not a url', 'NOT A URL')).toBe(true);
+  });
+
+  it('宛先の同一性は source / provider接頭辞 / baseUrl で決まる', () => {
+    const stored = { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'local' } as const;
+    expect(sameModelDestination(stored, { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1/', model: 'other' })).toBe(true);
+    expect(sameModelDestination(stored, { source: 'openai-compatible', baseUrl: 'https://evil.example.com/v1', model: 'local' })).toBe(false);
+    expect(sameModelDestination(stored, { source: 'registry', model: 'openai/gpt-4o' })).toBe(false);
+
+    const registry = { source: 'registry', model: 'openai/gpt-4o' } as const;
+    expect(sameModelDestination(registry, { source: 'registry', model: 'openai/o4-mini' })).toBe(true);
+    expect(sameModelDestination(registry, { source: 'registry', model: 'OpenAI/gpt-4o' })).toBe(true);
+    expect(sameModelDestination(registry, { source: 'registry', model: 'anthropic/claude-sonnet-4-5' })).toBe(false);
+    expect(sameModelDestination(registry, { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'x' })).toBe(false);
   });
 });
 

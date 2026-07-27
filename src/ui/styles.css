@@ -396,6 +396,10 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .model-source-kind { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 10px; padding: 0; border: 0; }
 .model-source-kind legend { padding: 0; color: #758198; font-size: 11px; }
 .model-source-kind label { flex-direction: row; align-items: center; gap: 6px; margin: 0; font-size: 11px; }
+/* 補足注記（何をテストするか・一覧取得中・保存済みキーを使わなかった旨）。本文より一段弱く出す。 */
+.model-slot-note { margin: 6px 0 0; font-size: 11px; color: #6d7893; word-break: break-word; }
+/* 揮発ストレージ警告: 保存しても再起動で消えるため、カード先頭で目立たせる。 */
+.model-storage-warning { margin: 10px 0 0; padding: 9px 11px; border: 1px solid #e6c68a; border-left-width: 4px; border-radius: 7px; background: #fdf5e6; color: #7a5a12; font-size: 12px; font-weight: 600; }
 @media (max-width: 1050px) { .model-slot-grid { grid-template-columns: 1fr; } }
 
 /* ── エージェント実行チャット（Copilot風 会話UI） ───────────────────────── */

@@ -12,6 +12,7 @@ import type { ModelSettingsRepository } from '../../domain/model-settings/model-
 import {
   createModelSettings,
   createModelSlotSettings,
+  sameModelDestination,
   type ModelSettings,
   type ModelSettingsSource,
   type ModelSlotSettings,
@@ -31,12 +32,21 @@ export type ModelSlotSettingsView =
   | { readonly source: 'registry'; readonly model: string; readonly apiKey: MaskedApiKeyView }
   | { readonly source: 'openai-compatible'; readonly baseUrl: string; readonly model: string; readonly apiKey: MaskedApiKeyView };
 
+/**
+ * 設定の保存先が永続か揮発か。
+ * `ephemeral` は `AGENTCONTEXT_DB_PATH` 未指定（= `:memory:`）の運用で、
+ * プロセスを落とすと設定が消える。UIが警告を出せるように返す。
+ */
+export type ModelSettingsStorageKind = 'persistent' | 'ephemeral';
+
 export interface ModelSettingsView {
   readonly scope: TenantScope;
   /** 未設定のスロットは省略される（= env 既定を使う）。 */
   readonly main?: ModelSlotSettingsView;
   readonly judge?: ModelSlotSettingsView;
   readonly updatedAt?: string;
+  /** 参照（Get）時のみ付く。 */
+  readonly storage?: ModelSettingsStorageKind;
 }
 
 /** 保存入力。apiKey は write-only の平文。 */
@@ -77,10 +87,14 @@ export function toModelSettingsView(scope: TenantScope, settings: ModelSettings 
 }
 
 export class GetModelSettingsUseCase {
-  constructor(private readonly repo: ModelSettingsRepository) {}
+  constructor(
+    private readonly repo: ModelSettingsRepository,
+    /** 配線側（composition root）が決める保存先の性質。 */
+    private readonly storage: ModelSettingsStorageKind = 'persistent',
+  ) {}
 
   async execute(scope: TenantScope): Promise<ModelSettingsView> {
-    return toModelSettingsView(scope, await this.repo.find(scope));
+    return { ...toModelSettingsView(scope, await this.repo.find(scope)), storage: this.storage };
   }
 }
 
@@ -93,6 +107,8 @@ export class SaveModelSettingsUseCase {
 
   async execute(input: SaveModelSettingsInput): Promise<ModelSettingsView> {
     const existing = await this.repo.find(input.scope);
+    // 両スロット未指定は no-op。保存すると updatedAt だけが進み、未保存なら空行が生まれる。
+    if (input.main === undefined && input.judge === undefined) return toModelSettingsView(input.scope, existing);
     const main = await this.resolveSlot(input.main, existing?.main);
     const judge = await this.resolveSlot(input.judge, existing?.judge);
     const settings = createModelSettings({
@@ -111,14 +127,17 @@ export class SaveModelSettingsUseCase {
   ): Promise<ModelSlotSettings | undefined> {
     if (input === undefined) return existing;
     if (input === null) return undefined;
-    const apiKey = await this.resolveKey(input.apiKey, existing?.apiKey);
+    // 宛先（provider / エンドポイント）が変わったなら既存キーは継承しない。
+    // 継承すると LM Studio 用のダミーキーが OpenAI へ送られる等、キーが意図しない宛先へ渡る。
+    const inheritable = existing !== undefined && sameModelDestination(existing, input);
+    const apiKey = await this.resolveKey(input.apiKey, inheritable ? existing.apiKey : undefined);
     const base = input.source === 'registry'
       ? { source: 'registry', model: input.model }
       : { source: 'openai-compatible', baseUrl: input.baseUrl, model: input.model };
     return createModelSlotSettings({ ...base, ...(apiKey === undefined ? {} : { apiKey }) });
   }
 
-  /** 文字列 → 封緘 / undefined → 既存維持 / 空・null → クリア。 */
+  /** 文字列 → 封緘 / undefined → 既存維持（同一宛先のときだけ） / 空・null → クリア。 */
   private async resolveKey(value: string | null | undefined, existing: SealedSecret | undefined): Promise<SealedSecret | undefined> {
     if (value === undefined) return existing;
     if (value === null || value.trim() === '') return undefined;

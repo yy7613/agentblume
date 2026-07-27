@@ -37,7 +37,7 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
     );
     return { result };
   });
-  app.get('/runtime/capabilities', async () => ({ analysisAssistant: { enabled: deps.suggestAnalysisConfig.available() } }));
+  app.get('/runtime/capabilities', async () => ({ analysisAssistant: { enabled: await deps.suggestAnalysisConfig.available() } }));
   app.post('/tool-drafts/suggest-analysis-config', async (request) => {
     const body = parseWith(analysisSuggestionBodySchema, request.body);
     return { proposal: await deps.suggestAnalysisConfig.execute({ graph: body.graph, nodeId: body.nodeId, intent: body.intent }) };

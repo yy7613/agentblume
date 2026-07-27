@@ -94,8 +94,10 @@ const HEADINGS: Record<string, Bilingual> = {
   DATA_SOURCE_VALIDATION: ['Please check the data source settings', 'データソースの設定を確認してください'],
   WEB_SEARCH_VALIDATION: ['Please check the web search settings', 'Web検索の設定を確認してください'],
 
-  // モデル設定: 鍵ファイルが変わると保存済みAPIキーを開封できない（409）。取るべき行動は再入力のみ。
-  SECRET_CIPHER: ['The saved API key can no longer be read because the encryption key changed. Enter the API key again, then save', '鍵が変わっているため保存済みAPIキーを読み出せません。APIキーを再入力して保存し直してください'],
+  // モデル設定の入力不正（400）。LM Studio 前提の実行エラー文言に混ぜない。
+  MODEL_SETTINGS_VALIDATION: ['Please check the model settings', 'モデル設定の入力内容を確認してください'],
+  // モデル一覧の取得失敗（502）。実行エラーではなく「一覧が引けない」だけ。
+  MODEL_CATALOG: ['Could not fetch the model list. Check the endpoint and its API key, then retry', 'モデル一覧を取得できませんでした。エンドポイントとAPIキーを確認して再試行してください'],
 
   ETL_GRAPH: ['Please check the node connections', 'ノードの接続を確認してください'],
   ETL_CONFIG: ['Please check the node settings', 'ノードの設定を確認してください'],
@@ -118,6 +120,19 @@ const STATUS_HEADINGS: Record<number, Bilingual> = {
   503: ['The API server is unavailable. Wait a moment, then retry', 'APIサーバーが応答できません。時間をおいて再試行してください'],
   504: ['The request timed out. Wait a moment, then retry', 'リクエストがタイムアウトしました。時間をおいて再試行してください'],
 };
+
+/**
+ * SECRET_CIPHER は status で意味が違う（src/api/error-mapping.ts）。
+ * 500 = 鍵ファイル自体が読めない（再入力しても直らない運用障害）、409 = 保存済みキーを復号できない（再入力で直る）。
+ */
+const SECRET_CIPHER_KEY_FILE: Bilingual = [
+  'The encryption key file could not be read. Check AGENTCONTEXT_SECRET_KEY_PATH (re-entering the API key will not fix this)',
+  '鍵ファイルが読めない、または不正です。AGENTCONTEXT_SECRET_KEY_PATH を確認してください（APIキーの再入力では復旧しません）',
+];
+const SECRET_CIPHER_DECRYPT: Bilingual = [
+  'The saved API key could not be decrypted. Enter the API key again, then save',
+  '保存済みAPIキーを復号できません。APIキーを再入力して保存し直してください',
+];
 
 const SERVER_HEADING: Bilingual = ['The server hit an error. Wait a moment, then retry', 'サーバーでエラーが発生しました。時間をおいて再試行してください'];
 const CLIENT_HEADING: Bilingual = ['The request was rejected. Please check your input', 'リクエストが受け付けられませんでした。入力内容を確認してください'];
@@ -192,28 +207,49 @@ const TYPES: Record<string, Bilingual> = {
 const REQUEST_LABEL = /^invalid (?:body|query|request|params|input):\s*/i;
 const FIELD_PATH = /^(\(root\)|[A-Za-z0-9_.]+):\s+(.+)$/;
 
-/** MODEL 系 / LM Studio 由来の失敗は次の行動が分かる文言へ置き換える。 */
+/**
+ * **モデル「実行」の失敗**だけを次の行動が分かる文言へ置き換える対象コード。
+ *
+ * `code.startsWith('MODEL')` の前方一致にすると、モデル設定の入力不正（`MODEL_SETTINGS_VALIDATION`・400）や
+ * モデル一覧の取得失敗（`MODEL_CATALOG`・502）まで「モデル実行に失敗しました」に化ける。
+ * どちらも実行前の設定操作なので、完全一致リストで実行エラーとは分けて扱う。
+ */
+const MODEL_RUN_CODES = new Set(['MODEL_PROVIDER', 'JUDGE_PROVIDER']);
+/** MODEL 接頭辞を持つが実行エラーではないコード（見出し + 原文で扱う）。 */
+const MODEL_SETTINGS_CODES = new Set(['MODEL_SETTINGS_VALIDATION', 'MODEL_CATALOG']);
+
 function isModelFailure(code: string, raw: string): boolean {
-  return code.startsWith('MODEL') || code === 'JUDGE_PROVIDER' || raw.includes('LM Studio');
+  if (MODEL_SETTINGS_CODES.has(code)) return false;
+  return MODEL_RUN_CODES.has(code) || raw.includes('LM Studio');
 }
 
+/**
+ * モデル実行失敗の文言。**プロバイダ中立**にする（v36でモデルプロバイダを選べるようになったため、
+ * OpenAI のキー誤りに「LM Studioを確認」と促すのは誤誘導）。ローカル LM Studio 利用者向けの
+ * 確認事項は括弧の補足に留める。
+ */
 function modelMessage(raw: string, language: ErrorLanguage): string {
   const ja = language === 'ja';
-  if (/abort|timed out|timeout/i.test(raw)) {
-    return ja
-      ? 'モデル実行がタイムアウトしました。LM Studioの稼働状況とモデルのロードを確認し、再試行してください。'
-      : 'The model run timed out. Check that LM Studio is running with the model loaded, then retry.';
-  }
   if (/not configured/i.test(raw)) {
     return ja
-      ? 'モデルが未設定です。LM Studioで使うモデル名（LM_STUDIO_MODEL）を設定してから再試行してください。'
-      : 'The model is not configured. Set the LM Studio model name (LM_STUDIO_MODEL), then retry.';
+      ? 'モデルが未設定です。設定画面でモデルを選ぶか、環境変数 LM_STUDIO_MODEL を設定してください。'
+      : 'The model is not configured. Choose a model in model settings, or set the LM_STUDIO_MODEL environment variable.';
+  }
+  if (/abort|timed out|timeout/i.test(raw)) {
+    return ja
+      ? 'モデル実行がタイムアウトしました。モデルサーバーの応答とモデルのロード状況を確認して再試行してください（ローカルLM Studioを使う場合は起動しているか確認）。'
+      : 'The model run timed out. Check that the model server responds and the model is loaded, then retry (if you use a local LM Studio, check that it is running).';
   }
   const http = /HTTP (\d{3})/.exec(raw);
   if (http !== null) {
+    if (http[1] === '401' || http[1] === '403') {
+      return ja
+        ? `モデルサーバーの認証に失敗しました（HTTP ${http[1]}）。設定画面のAPIキーを確認して再試行してください。`
+        : `The model server rejected the credentials (HTTP ${http[1]}). Check the API key in model settings, then retry.`;
+    }
     return ja
-      ? `モデルサーバーがHTTP ${http[1]} を返しました。LM Studioのログとモデル設定を確認して再試行してください。`
-      : `The model server returned HTTP ${http[1]}. Check the LM Studio log and model settings, then retry.`;
+      ? `モデルサーバーがHTTP ${http[1]} を返しました。設定画面のモデル設定とエンドポイントを確認して再試行してください。`
+      : `The model server returned HTTP ${http[1]}. Check the model settings and endpoint, then retry.`;
   }
   if (/invalid|non-object|no completion/i.test(raw)) {
     return ja
@@ -222,13 +258,13 @@ function modelMessage(raw: string, language: ErrorLanguage): string {
   }
   if (/fail|refus|econnrefused|fetch|connect/i.test(raw)) {
     return ja
-      ? 'モデルサーバーに接続できませんでした。LM Studioが起動しているか確認して再試行してください。'
-      : 'Could not reach the model server. Check that LM Studio is running, then retry.';
+      ? 'モデルサーバーに接続できませんでした。設定画面のモデル設定とエンドポイントを確認してください（ローカルLM Studioを使う場合は起動しているか確認）。'
+      : 'Could not reach the model server. Check the model settings and endpoint (if you use a local LM Studio, check that it is running).';
   }
   const detail = raw === '' ? '' : (ja ? `（${raw}）` : ` (${raw})`);
   return ja
-    ? `モデル実行に失敗しました。LM Studioの稼働状況を確認して再試行してください。${detail}`
-    : `The model run failed. Check LM Studio, then retry.${detail}`;
+    ? `モデル実行に失敗しました。設定画面のモデル設定を確認して再試行してください。${detail}`
+    : `The model run failed. Check the model settings, then retry.${detail}`;
 }
 
 function statusHeading(status: number, language: ErrorLanguage): string {
@@ -355,10 +391,41 @@ function localizeEtlDetail(message: string, language: ErrorLanguage): string | u
   return undefined;
 }
 
+/**
+ * モデル設定（`src/domain/model-settings`）の検証定型文。`MODEL_SETTINGS_VALIDATION` の見出しに続く
+ * 詳細として出るため、「何をどう直すか」が分かる文へ置き換える（実行エラー文言とは別系統）。
+ */
+function localizeModelSettingsDetail(message: string, language: ErrorLanguage): string | undefined {
+  const ja = language === 'ja';
+  let matched = /^createModelSettings: [A-Za-z0-9_.]+ must be in 'provider\/model' form(?:, but got '(.*)')?$/.exec(message);
+  if (matched !== null) {
+    const got = matched[1] === undefined ? '' : (ja ? `、入力値: ${matched[1]}` : `, received '${matched[1]}'`);
+    return ja ? `モデルは provider/model 形式で入力してください（例: openai/gpt-4o${got}）` : `the model must be in 'provider/model' form (for example openai/gpt-4o${got})`;
+  }
+
+  matched = /^createModelSettings: [A-Za-z0-9_.]+ must be a valid URL: (.+)$/.exec(message);
+  if (matched !== null) return ja ? `ベースURLの形式が正しくありません: ${matched[1]}` : `the base URL is not a valid URL: ${matched[1]}`;
+
+  matched = /^createModelSettings: [A-Za-z0-9_.]+ must use http\(s\): (.+)$/.exec(message);
+  if (matched !== null) return ja ? `ベースURLは http または https を指定してください: ${matched[1]}` : `the base URL must use http(s): ${matched[1]}`;
+
+  if (/^createModelSettings: [A-Za-z0-9_.]+ must not embed credentials/.test(message)) {
+    return ja ? 'ベースURLに認証情報（user:password@host）を含めないでください' : 'the base URL must not embed credentials (user:password@host)';
+  }
+
+  matched = /^createModelSettings: ([A-Za-z0-9_.]+) must be a non-empty string$/.exec(message);
+  if (matched !== null) return ja ? `${localizeFieldPath(matched[1] ?? '', language)}: 必須です` : `${localizeFieldPath(matched[1] ?? '', language)}: is required`;
+
+  return undefined;
+}
+
 /** 変換できたら平易な文言、できなければ undefined（呼び出し側が原文を残す）。 */
 function localizeMessageText(message: string, language: ErrorLanguage): string | undefined {
   const etl = localizeEtlDetail(message, language);
   if (etl !== undefined) return etl;
+
+  const modelSettings = localizeModelSettingsDetail(message, language);
+  if (modelSettings !== undefined) return modelSettings;
 
   const ja = language === 'ja';
   const required = ja ? '必須です' : 'is required';
@@ -471,12 +538,18 @@ export interface ApiErrorPayload {
   readonly serverMessage: string;
 }
 
+/** code（+ SECRET_CIPHER は status）から見出しを決める。 */
+function headingFor(payload: ApiErrorPayload, language: ErrorLanguage): string {
+  if (payload.code === 'SECRET_CIPHER') return pick(payload.status === 500 ? SECRET_CIPHER_KEY_FILE : SECRET_CIPHER_DECRYPT, language);
+  const known = HEADINGS[payload.code];
+  return known === undefined ? statusHeading(payload.status, language) : pick(known, language);
+}
+
 /** サーバー生メッセージをユーザー向け文言へ。language 省略時はエラー発生時点で判定する。 */
 export function localizeApiErrorMessage(payload: ApiErrorPayload, language: ErrorLanguage = detectErrorLanguage()): string {
   const raw = payload.serverMessage.trim();
   if (isModelFailure(payload.code, raw)) return modelMessage(raw, language);
-  const known = HEADINGS[payload.code];
-  const heading = known === undefined ? statusHeading(payload.status, language) : pick(known, language);
+  const heading = headingFor(payload, language);
   const detail = OPAQUE_DETAIL.has(payload.code) ? '' : localizeDetail(raw, language);
   if (detail === '' || detail === heading) return heading;
   return language === 'ja' ? `${heading}（${detail}）` : `${heading} (${detail})`;

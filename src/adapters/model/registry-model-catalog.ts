@@ -2,23 +2,37 @@
  * adapters層: モデル選択肢の提示。
  *
  * providers() は @mastra/core にバンドルされた登録簿（オフラインで解決できる静的データ）から作る。
- * 138プロバイダ × 数十モデルと大きいため、1プロバイダあたり先頭 MODEL_CATALOG_MODEL_LIMIT 件へ切る
- * （UIは検索・自由入力も併用する前提）。
+ * 138プロバイダ × 数十モデルと大きいので、**見出しとモデル一覧を分ける**:
+ *   - providers() … id / name / envVar / modelCount だけ（軽量・全プロバイダ）
+ *   - providerModels(id) … そのプロバイダのチャットモデル**全件**（件数で切らない）
+ * かつては1応答へ全部詰めて「1プロバイダ50件・辞書順」で切っていたが、openrouter のように
+ * 数百件あるプロバイダでは `openai/*` `google/*` 等の主要モデルが丸ごと落ちていた。
+ *
+ * チャット以外のモデル（embedding / whisper / TTS / 画像・動画生成 / rerank / moderation）は
+ * main / judge スロットに設定できないので、モデル名の慣用パターンで除外する。
  *
  * listOpenAiCompatibleModels() だけが実ネットワークへ出る（ローカルの LM Studio / vLLM を想定）。
  * 失敗は空配列で握りつぶさず ModelCatalogError にする（UIが「0件」と「繋がらない」を区別できるように）。
  */
+import '../../mastra-runtime-env'; // @mastra より先に評価する（import順が意味を持つ・並べ替え禁止）。
 import { PROVIDER_REGISTRY, getProviderConfig } from '@mastra/core/llm';
 import { ModelCatalogError, type ModelCatalogPort, type ModelCatalogProvider } from '../../application/model-settings/model-catalog';
 
-// 登録簿の動的更新（ネットワーク取得）を止める。オフラインファースト。
-process.env['MASTRA_OFFLINE'] ??= '1';
-process.env['MASTRA_TELEMETRY_DISABLED'] ??= 'true';
-
-/** 1プロバイダあたりの提示上限。 */
-export const MODEL_CATALOG_MODEL_LIMIT = 50;
 /** モデル一覧取得のタイムアウト（ローカル前提なので短く）。 */
 export const MODEL_LIST_TIMEOUT_MS = 5_000;
+
+/**
+ * チャット用途で使えないモデルを示す慣用パターン。
+ * モデル名は登録簿ごとに命名が揺れるため、部分一致（小文字化後）で見る。
+ */
+const NON_CHAT_PATTERNS = ['embedding', 'embed-', 'whisper', 'image', 'dall-e', 'video', 'tts', 'audio', 'rerank', 'moderation'] as const;
+
+/** チャットスロットに設定できるモデルIDか（純関数）。 */
+export function isChatModelId(modelId: string): boolean {
+  const id = modelId.trim().toLowerCase();
+  if (id === '') return false;
+  return !NON_CHAT_PATTERNS.some((pattern) => id.includes(pattern));
+}
 
 function envVarOf(value: string | readonly string[] | undefined): string | undefined {
   if (typeof value === 'string') return value === '' ? undefined : value;
@@ -42,24 +56,34 @@ function parseModelIds(payload: unknown): readonly string[] {
 }
 
 export class RegistryModelCatalog implements ModelCatalogPort {
-  private cached: readonly ModelCatalogProvider[] | undefined;
+  private cached: ReadonlyMap<string, { readonly provider: ModelCatalogProvider; readonly models: readonly string[] }> | undefined;
+  private cachedProviders: readonly ModelCatalogProvider[] | undefined;
 
   /** 登録簿は静的なので一度だけ組み立てて使い回す。 */
   providers(): readonly ModelCatalogProvider[] {
+    if (this.cachedProviders === undefined) this.cachedProviders = [...this.index().values()].map((entry) => entry.provider);
+    return this.cachedProviders;
+  }
+
+  providerModels(providerId: string): readonly string[] | undefined {
+    return this.index().get(providerId.trim())?.models;
+  }
+
+  private index(): ReadonlyMap<string, { readonly provider: ModelCatalogProvider; readonly models: readonly string[] }> {
     if (this.cached !== undefined) return this.cached;
-    const providers: ModelCatalogProvider[] = [];
+    const entries: { readonly provider: ModelCatalogProvider; readonly models: readonly string[] }[] = [];
     for (const id of Object.keys(PROVIDER_REGISTRY)) {
       const config = getProviderConfig(id);
       if (config === undefined) continue;
       const envVar = envVarOf(config.apiKeyEnvVar);
-      providers.push({
-        id,
-        name: config.name,
-        ...(envVar === undefined ? {} : { envVar }),
-        models: [...config.models].sort((left, right) => left.localeCompare(right)).slice(0, MODEL_CATALOG_MODEL_LIMIT),
+      const models = [...config.models].filter(isChatModelId).sort((left, right) => left.localeCompare(right));
+      entries.push({
+        provider: { id, name: config.name, ...(envVar === undefined ? {} : { envVar }), modelCount: models.length },
+        models,
       });
     }
-    this.cached = providers.sort((left, right) => left.name.localeCompare(right.name));
+    entries.sort((left, right) => left.provider.name.localeCompare(right.provider.name));
+    this.cached = new Map(entries.map((entry) => [entry.provider.id, entry]));
     return this.cached;
   }
 

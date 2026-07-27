@@ -5,15 +5,13 @@
  * buildServer で Fastify を組み立てて listen する。
  * SIGINT / SIGTERM で server.close() + app.close() のグレースフルシャットダウン。
  */
+// Mastra 用 env（テレメトリ無効化・オフライン）を最初に確定させる。
+// import は記述順に評価されるため、この行は @mastra を辿る import より必ず前に置く（並べ替え禁止）。
+import './mastra-runtime-env';
 import { buildServer } from './api/server';
 import { seedBuiltinTools } from './builtin-tools';
 import { createApp } from './composition/root';
 import { seedSampleData } from './sample-data';
-
-// Mastra Evals(@mastra/core)同梱の外部テレメトリを無効化する（オフラインファースト）。
-process.env['MASTRA_TELEMETRY_DISABLED'] ??= 'true';
-// モデル登録簿の動的取得（ネットワーク）も止める。プロセス起動時のenvで効かせるのが確実。
-process.env['MASTRA_OFFLINE'] ??= '1';
 
 const app = createApp();
 const server = buildServer(app, { logger: true });

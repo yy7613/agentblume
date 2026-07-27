@@ -63,11 +63,23 @@ function snapshotOf(options: ResolvedSlotOptions, hash: string, sourceRevision: 
   return { provider, model: slash > 0 ? options.model.id.slice(slash + 1) : options.model.id, modelConfigHash: hash, ...revision };
 }
 
-/** 設定の同一性を表すハッシュ。平文キーも入力に含める（差し替えを検知するため）。 */
+/**
+ * APIキーを「同じキーなら同じ・違えば違う」だけの値へ潰す。
+ *
+ * modelConfigHash は Run記録・API応答・UI に出る公開値である。入力の他項目（id / url /
+ * timeout など）は GET で読めるため、平文キーをそのままハッシュ入力に混ぜると
+ * 「候補キーを入れてハッシュが一致するか試す」検証オラクルになりうる。
+ * 先に sha256 を通しておけば、公開ハッシュから平文キーの総当たりが直接には繋がらない。
+ */
+function keyFingerprint(apiKey: string | undefined): string | null {
+  return apiKey === undefined ? null : createHash('sha256').update(apiKey).digest('hex');
+}
+
+/** 設定の同一性を表すハッシュ。キーは指紋として入力に含める（差し替えを検知するため）。 */
 function hashOptions(options: ResolvedSlotOptions): string {
   const model = typeof options.model === 'string'
     ? { id: options.model }
-    : { id: options.model.id, url: options.model.url ?? null, apiKey: options.model.apiKey ?? null };
+    : { id: options.model.id, url: options.model.url ?? null, apiKey: keyFingerprint(options.model.apiKey) };
   return createHash('sha256').update(JSON.stringify({
     model,
     capabilities: options.capabilities ?? null,
@@ -84,6 +96,12 @@ export class SwitchableModelProvider implements ModelProviderPort {
    * 能力を返す。設定を保存した直後の1回だけ、次の complete() までは旧設定の能力が見える。
    */
   private current: ResolvedAdapter;
+  /**
+   * 進行中の解決。並行 complete() が同時に走っても設定の読み出しとアダプタ生成は1回で済ませる。
+   * 直列化しないと、設定変更直後の同時実行で factory.create が複数回走り、
+   * アダプタ内部（Mastraの解決済みモデル）のキャッシュを捨て合うことになる。
+   */
+  private inFlight: Promise<ResolvedAdapter> | undefined;
 
   constructor(
     private readonly repo: ModelSettingsRepository,
@@ -119,7 +137,21 @@ export class SwitchableModelProvider implements ModelProviderPort {
     return this.current.snapshot;
   }
 
+  /**
+   * 設定を解決してアダプタを得る。進行中の解決があればそれを共有する
+   * （後着の呼び出しは「ひとつ前の解決結果」を受け取りうるが、それは解決を開始した時点の
+   * 設定という意味で正しく、直列化しない場合の競合と等価である）。
+   */
   private async resolve(): Promise<ResolvedAdapter> {
+    const shared = this.inFlight;
+    if (shared !== undefined) return shared;
+    const started = this.resolveOnce();
+    this.inFlight = started;
+    try { return await started; }
+    finally { if (this.inFlight === started) this.inFlight = undefined; }
+  }
+
+  private async resolveOnce(): Promise<ResolvedAdapter> {
     const options = await this.resolveOptions();
     const hash = hashOptions(options);
     if (hash === this.current.hash) return this.current;

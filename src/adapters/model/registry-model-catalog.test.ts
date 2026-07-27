@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ModelCatalogError } from '../../application/model-settings/model-catalog';
-import { MODEL_CATALOG_MODEL_LIMIT, RegistryModelCatalog } from './registry-model-catalog';
+import { RegistryModelCatalog, isChatModelId } from './registry-model-catalog';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -12,28 +12,69 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
+describe('isChatModelId', () => {
+  it('チャット以外の慣用パターンを除外する', () => {
+    for (const id of ['text-embedding-3-small', 'nomic-embed-text', 'whisper-large-v3', 'gpt-image-1', 'dall-e-3', 'veo-3-video', 'tts-1-hd', 'gpt-4o-audio-preview', 'rerank-v3.5', 'omni-moderation-latest', '   ']) {
+      expect(isChatModelId(id)).toBe(false);
+    }
+  });
+
+  it('チャットモデルは通す（大文字小文字を問わない）', () => {
+    for (const id of ['gpt-4o', 'GPT-4O-MINI', 'openai/gpt-4o', 'qwen/qwen3-4b', 'claude-sonnet-4-5', 'gemini-2.5-pro']) {
+      expect(isChatModelId(id)).toBe(true);
+    }
+  });
+});
+
 describe('RegistryModelCatalog#providers', () => {
-  it('バンドル済み登録簿からプロバイダを組み立てる（ネットワーク不要）', () => {
+  it('バンドル済み登録簿からプロバイダの見出しを組み立てる（ネットワーク不要・モデル一覧は含めない）', () => {
     stubFetch(() => { throw new Error('network must not be used'); });
     const providers = new RegistryModelCatalog().providers();
 
     expect(providers.length).toBeGreaterThan(10);
     const openai = providers.find((provider) => provider.id === 'openai');
     expect(openai).toMatchObject({ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY' });
-    expect(openai?.models).toContain('gpt-4o');
-    // モデルIDは provider を除いた形（設定値は `${id}/${model}`）。
-    expect(openai?.models.every((model) => !model.startsWith('openai/'))).toBe(true);
+    expect(openai?.modelCount).toBeGreaterThan(0);
+    // 応答を軽くするため一覧は入れない（`GET /model-catalog/:providerId/models` で取る）。
+    expect(openai).not.toHaveProperty('models');
   });
 
-  it('1プロバイダあたりの提示数を上限で切る', () => {
-    for (const provider of new RegistryModelCatalog().providers()) {
-      expect(provider.models.length).toBeLessThanOrEqual(MODEL_CATALOG_MODEL_LIMIT);
+  it('モデル一覧は件数で切らない（辞書順クリップで主要モデルを落とさない）', () => {
+    const catalog = new RegistryModelCatalog();
+    const openai = catalog.providerModels('openai') ?? [];
+
+    expect(openai).toContain('gpt-4o');
+    // モデルIDは provider を除いた形（設定値は `${id}/${model}`）。
+    expect(openai.every((model) => !model.startsWith('openai/'))).toBe(true);
+    // 昇順で、件数は modelCount と一致する。
+    expect([...openai].sort((left, right) => left.localeCompare(right))).toEqual([...openai]);
+    expect(catalog.providers().find((provider) => provider.id === 'openai')?.modelCount).toBe(openai.length);
+
+    // かつて50件の辞書順クリップで全滅していた openrouter の主要ベンダーが残る。
+    const openrouter = catalog.providerModels('openrouter');
+    if (openrouter !== undefined && openrouter.length > 50) {
+      for (const vendor of ['openai/', 'google/', 'qwen/']) {
+        expect(openrouter.some((model) => model.startsWith(vendor))).toBe(true);
+      }
     }
+  });
+
+  it('非チャットモデルは一覧にも件数にも含めない', () => {
+    const catalog = new RegistryModelCatalog();
+    for (const provider of catalog.providers()) {
+      expect((catalog.providerModels(provider.id) ?? []).every(isChatModelId)).toBe(true);
+    }
+    expect(catalog.providerModels('openai')).not.toContain('text-embedding-3-small');
+  });
+
+  it('未知のプロバイダは undefined', () => {
+    expect(new RegistryModelCatalog().providerModels('no-such-provider')).toBeUndefined();
   });
 
   it('二度目以降は同じ配列を返す（静的データのキャッシュ）', () => {
     const catalog = new RegistryModelCatalog();
     expect(catalog.providers()).toBe(catalog.providers());
+    expect(catalog.providerModels('openai')).toBe(catalog.providerModels('openai'));
   });
 });
 

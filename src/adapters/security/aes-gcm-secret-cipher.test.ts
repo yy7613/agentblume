@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SecretCipherError } from '../../application/model-settings/secret-cipher';
-import { AesGcmSecretCipher, SECRET_KEY_FILE_NAME, resolveSecretKeyPath } from './aes-gcm-secret-cipher';
+import { AesGcmSecretCipher, SECRET_KEY_FILE_NAME, legacySecretKeyPath, resolveSecretKeyPath } from './aes-gcm-secret-cipher';
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -79,13 +79,44 @@ describe('AesGcmSecretCipher', () => {
     expect(readFileSync(keyPath, 'utf8').trim()).toBe(material);
   });
 
-  it('壊れた鍵ファイルは SecretCipherError（鍵の中身は出さない）', async () => {
+  it('壊れた鍵ファイルは key-unavailable（鍵の中身も絶対パスも出さない）', async () => {
     const dir = tempDir();
     const keyPath = join(dir, 'secret.key');
     writeFileSync(keyPath, 'too-short', 'utf8');
     const cipher = new AesGcmSecretCipher({ keyPath });
 
-    await expect(cipher.seal('x')).rejects.toThrow(/Secret key file is invalid/);
+    await expect(cipher.seal('x')).rejects.toThrow(/secret key file is invalid/i);
+    await expect(cipher.seal('x')).rejects.toMatchObject({ reason: 'key-unavailable' });
+    // パスにはホームディレクトリ名（利用者名）が入り得るのでメッセージへ載せない。
+    await expect(cipher.seal('x')).rejects.toSatisfy((error: Error) => !error.message.includes(keyPath) && !error.message.includes(dir));
+  });
+
+  it('鍵ファイルを作れない場合も key-unavailable（パスを出さない）', async () => {
+    const dir = tempDir();
+    // ファイルをディレクトリ扱いさせて mkdir / write を失敗させる。
+    const blocker = join(dir, 'blocker');
+    writeFileSync(blocker, 'not a directory', 'utf8');
+    const cipher = new AesGcmSecretCipher({ keyPath: join(blocker, 'secret.key') });
+
+    await expect(cipher.seal('x')).rejects.toMatchObject({ reason: 'key-unavailable' });
+    await expect(cipher.seal('x')).rejects.toSatisfy((error: Error) => !error.message.includes(dir));
+  });
+
+  it('復号失敗は decrypt-failed（キーの再入力で直る）', async () => {
+    const cipher = new AesGcmSecretCipher({ keyPath: join(tempDir(), 'secret.key') });
+    const sealed = await cipher.seal('decrypt-reason-secret');
+
+    await expect(cipher.open({ ...sealed, tag: Buffer.alloc(16).toString('base64') })).rejects.toMatchObject({ reason: 'decrypt-failed' });
+  });
+
+  it('鍵ファイルが壊れているときの open は decrypt-failed に丸めない', async () => {
+    const dir = tempDir();
+    const keyPath = join(dir, 'secret.key');
+    const sealed = await new AesGcmSecretCipher({ keyPath }).seal('key-unavailable-secret');
+
+    writeFileSync(keyPath, 'broken', 'utf8');
+
+    await expect(new AesGcmSecretCipher({ keyPath }).open(sealed)).rejects.toMatchObject({ reason: 'key-unavailable' });
   });
 
   it('ephemeral() はファイルを使わない揮発鍵で動く', async () => {
@@ -108,17 +139,38 @@ describe('AesGcmSecretCipher', () => {
 describe('resolveSecretKeyPath', () => {
   it('AGENTCONTEXT_SECRET_KEY_PATH を最優先する', () => {
     const dir = tempDir();
+    writeFileSync(join(dir, SECRET_KEY_FILE_NAME), 'legacy', 'utf8');
     expect(resolveSecretKeyPath({ AGENTCONTEXT_SECRET_KEY_PATH: join(dir, 'k.key'), AGENTCONTEXT_DB_PATH: join(dir, 'db.sqlite') })).toBe(join(dir, 'k.key'));
   });
 
-  it('未設定なら DB と同じディレクトリの鍵ファイル', () => {
+  it('既定はホーム配下（鍵と暗号文を同じフォルダに置かない）', () => {
     const dir = tempDir();
-    expect(resolveSecretKeyPath({ AGENTCONTEXT_DB_PATH: join(dir, 'db.sqlite') })).toBe(join(dir, SECRET_KEY_FILE_NAME));
-  });
-
-  it('DBパスが無い / :memory: ならホーム配下へ退避する', () => {
     expect(resolveSecretKeyPath({})).toMatch(/[\\/]\.agentblume[\\/]secret\.key$/);
     expect(resolveSecretKeyPath({ AGENTCONTEXT_DB_PATH: ':memory:' })).toMatch(/[\\/]\.agentblume[\\/]secret\.key$/);
+    // DBパスがあってもそこには作らない（旧既定は廃止）。
+    expect(resolveSecretKeyPath({ AGENTCONTEXT_DB_PATH: join(dir, 'db.sqlite') })).toMatch(/[\\/]\.agentblume[\\/]secret\.key$/);
+  });
+
+  it('後方互換: 旧既定（DBと同じディレクトリ）に鍵が既にあればそれを使う', () => {
+    const dir = tempDir();
+    const legacy = join(dir, SECRET_KEY_FILE_NAME);
+    writeFileSync(legacy, 'existing-key-material', 'utf8');
+
+    expect(resolveSecretKeyPath({ AGENTCONTEXT_DB_PATH: join(dir, 'db.sqlite') })).toBe(legacy);
+    expect(legacySecretKeyPath({ AGENTCONTEXT_DB_PATH: join(dir, 'db.sqlite') })).toBe(legacy);
+    expect(legacySecretKeyPath({ AGENTCONTEXT_DB_PATH: ':memory:' })).toBeUndefined();
+    expect(legacySecretKeyPath({})).toBeUndefined();
+  });
+
+  it('後方互換の鍵は移行後も同じ平文を復元できる', async () => {
+    const dir = tempDir();
+    const legacy = join(dir, SECRET_KEY_FILE_NAME);
+    const env = { AGENTCONTEXT_DB_PATH: join(dir, 'db.sqlite') };
+    // 旧配置で鍵を作った状態を再現する。
+    const sealed = await new AesGcmSecretCipher({ keyPath: legacy }).seal('legacy-secret-9999');
+
+    expect(await new AesGcmSecretCipher({ env }).open(sealed)).toBe('legacy-secret-9999');
+    expect(new AesGcmSecretCipher({ env }).keyPath()).toBe(legacy);
   });
 
   it('env 未指定のインスタンスは process.env のパスを使う', () => {

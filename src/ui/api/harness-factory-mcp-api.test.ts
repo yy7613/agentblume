@@ -189,7 +189,8 @@ describe('ToolApiClient model settings contract', () => {
   it('設定の取得・保存・スロットnullでのenv既定戻しを扱う（応答のapiKeyはマスク済み）', async () => {
     const settings = { scope, main: { source: 'registry', model: 'openai/gpt-4o', apiKey: { configured: true, hint: 'abcd' } }, updatedAt: 'now' };
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ settings }))
+      // GET だけが storage（persistent / ephemeral）を返す。
+      .mockResolvedValueOnce(jsonResponse({ settings: { ...settings, storage: 'ephemeral' } }))
       .mockResolvedValueOnce(jsonResponse({ settings }))
       .mockResolvedValueOnce(jsonResponse({ settings: { scope } }));
     const client = new ToolApiClient('/api', fetcher as typeof fetch);
@@ -197,7 +198,7 @@ describe('ToolApiClient model settings contract', () => {
     // apiKey は write-only の平文（応答には決して現れない）。
     const saveInput: SaveModelSettingsDto = { scope, main: { source: 'registry', model: 'openai/gpt-4o', apiKey: 'sk-secret-abcd' } };
 
-    await expect(client.getModelSettings(scope, controller.signal)).resolves.toMatchObject({ main: { apiKey: { configured: true, hint: 'abcd' } } });
+    await expect(client.getModelSettings(scope, controller.signal)).resolves.toMatchObject({ main: { apiKey: { configured: true, hint: 'abcd' } }, storage: 'ephemeral' });
     await expect(client.saveModelSettings(saveInput)).resolves.toMatchObject({ main: { model: 'openai/gpt-4o' } });
     await expect(client.saveModelSettings({ scope, judge: null })).resolves.toEqual({ scope });
 
@@ -210,42 +211,64 @@ describe('ToolApiClient model settings contract', () => {
   });
 
   it('疎通テストはcandidate有無で本文を変え、失敗も例外ではなくok:falseで返る', async () => {
+    // usedStoredKey は必須フィールド（宛先不一致で保存済みキーを使わなかったことをUIへ伝える）。
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ ok: true, latencyMs: 1234, reply: 'pong' }))
-      .mockResolvedValueOnce(jsonResponse({ ok: false, error: 'HTTP 401' }));
+      .mockResolvedValueOnce(jsonResponse({ ok: true, latencyMs: 1234, reply: 'pong', usedStoredKey: false }))
+      .mockResolvedValueOnce(jsonResponse({ ok: false, error: 'HTTP 401', usedStoredKey: true }));
     const client = new ToolApiClient('/api', fetcher as typeof fetch);
     const controller = new AbortController();
     const candidate = { source: 'openai-compatible' as const, baseUrl: 'http://127.0.0.1:1234/v1', model: 'qwen/qwen3-4b' };
 
-    await expect(client.testModelSettings(scope, 'main', candidate, controller.signal)).resolves.toEqual({ ok: true, latencyMs: 1234, reply: 'pong' });
-    await expect(client.testModelSettings(scope, 'judge')).resolves.toEqual({ ok: false, error: 'HTTP 401' });
+    await expect(client.testModelSettings(scope, 'main', candidate, controller.signal)).resolves.toEqual({ ok: true, latencyMs: 1234, reply: 'pong', usedStoredKey: false });
+    await expect(client.testModelSettings(scope, 'judge')).resolves.toEqual({ ok: false, error: 'HTTP 401', usedStoredKey: true });
 
     expect(fetcher.mock.calls[0]?.[0]).toBe('/api/model-settings/test');
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: 'POST', body: JSON.stringify({ scope, slot: 'main', candidate }), signal: controller.signal });
     expect(JSON.parse(String((fetcher.mock.calls[1]?.[1] as RequestInit).body))).toEqual({ scope, slot: 'judge' });
   });
 
-  it('登録簿とOpenAI互換モデル一覧を取得する（キーはクエリに載せずslotで指定する）', async () => {
-    const providers = [{ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', models: ['gpt-4o'] }];
+  it('登録簿の見出しとプロバイダ別モデル一覧を2段で取得する', async () => {
+    // /model-catalog は modelCount だけを返す（138プロバイダ分のモデルを載せない）。
+    const providers = [{ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', modelCount: 2 }];
     const fetcher = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ providers }))
-      .mockResolvedValueOnce(jsonResponse({ models: ['qwen/qwen3-4b'] }))
-      .mockResolvedValueOnce(jsonResponse({ models: [] }));
+      .mockResolvedValueOnce(jsonResponse({ models: ['gpt-4o', 'gpt-4o-mini'] }));
     const client = new ToolApiClient('/api', fetcher as typeof fetch);
     const controller = new AbortController();
 
     await expect(client.getModelCatalog(controller.signal)).resolves.toEqual(providers);
-    await expect(client.listOpenAiCompatibleModels(scope, 'http://127.0.0.1:1234/v1', 'judge')).resolves.toEqual(['qwen/qwen3-4b']);
-    await expect(client.listOpenAiCompatibleModels(scope, 'http://127.0.0.1:1234/v1')).resolves.toEqual([]);
+    await expect(client.getProviderModels('openai', controller.signal)).resolves.toEqual(['gpt-4o', 'gpt-4o-mini']);
 
     expect(fetcher.mock.calls[0]?.[0]).toBe('/api/model-catalog');
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ signal: controller.signal });
-    const listed = String(fetcher.mock.calls[1]?.[0]);
-    expect(listed).toContain('/api/model-catalog/openai-compatible-models?');
-    expect(listed).toContain('baseUrl=http%3A%2F%2F127.0.0.1%3A1234%2Fv1');
-    expect(listed).toContain('slot=judge');
-    expect(listed).not.toContain('apiKey');
-    expect(String(fetcher.mock.calls[2]?.[0])).not.toContain('slot=');
+    expect(fetcher.mock.calls[1]?.[0]).toBe('/api/model-catalog/openai/models');
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({ signal: controller.signal });
+  });
+
+  it('プロバイダIDはパスへエンコードして渡す', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ models: [] }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    await expect(client.getProviderModels('vendor/x')).resolves.toEqual([]);
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/api/model-catalog/vendor%2Fx/models');
+  });
+
+  it('OpenAI互換モデル一覧はPOST + JSON本文で送る（GETは廃止・キーは本文にも載せない）', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ models: ['qwen/qwen3-4b'], usedStoredKey: true }))
+      .mockResolvedValueOnce(jsonResponse({ models: [], usedStoredKey: false }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    const controller = new AbortController();
+
+    await expect(client.listOpenAiCompatibleModels(scope, 'http://127.0.0.1:1234/v1', 'judge', controller.signal))
+      .resolves.toEqual({ models: ['qwen/qwen3-4b'], usedStoredKey: true });
+    await expect(client.listOpenAiCompatibleModels(scope, 'http://127.0.0.1:1234/v1')).resolves.toEqual({ models: [], usedStoredKey: false });
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/api/model-catalog/openai-compatible-models');
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: 'POST', signal: controller.signal });
+    expect(JSON.parse(String((fetcher.mock.calls[0]?.[1] as RequestInit).body))).toEqual({ scope, baseUrl: 'http://127.0.0.1:1234/v1', slot: 'judge' });
+    expect(String((fetcher.mock.calls[0]?.[1] as RequestInit).body)).not.toContain('apiKey');
+    // slot 省略時は本文にも載せない（保存済みキーを一切使わない問い合わせ）。
+    expect(JSON.parse(String((fetcher.mock.calls[1]?.[1] as RequestInit).body))).toEqual({ scope, baseUrl: 'http://127.0.0.1:1234/v1' });
   });
 });
 

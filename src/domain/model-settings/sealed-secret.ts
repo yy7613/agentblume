@@ -28,9 +28,14 @@ export interface SealedSecret {
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
-/** マスク表示用のヒントを作る。空文字は空文字のまま（未設定と区別しない）。 */
+/**
+ * マスク表示用のヒントを作る。
+ *
+ * 平文が SECRET_HINT_LENGTH 以下のときは**ヒントを作らない**（空文字）。
+ * 末尾4文字を出す規約のままでは短いキーの平文が丸ごとヒントに載ってしまうため。
+ */
 export function secretHint(plaintext: string): string {
-  return plaintext.length <= SECRET_HINT_LENGTH ? plaintext : plaintext.slice(-SECRET_HINT_LENGTH);
+  return plaintext.length <= SECRET_HINT_LENGTH ? '' : plaintext.slice(-SECRET_HINT_LENGTH);
 }
 
 function base64(value: unknown, field: string, allowEmpty = false): string {

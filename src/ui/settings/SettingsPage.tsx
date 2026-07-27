@@ -1,17 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { ModelCatalogProviderDto, ModelSettingsDto, ModelSlotNameDto } from '../api/types';
+import type { ModelCatalogProviderDto, ModelSettingsDto, ModelSlotNameDto, ModelSlotSettingsDto } from '../api/types';
 import { useI18n } from '../i18n';
 import {
-  EMPTY_MODEL_SLOT_FORM, MANUAL_MODEL_OPTION, apiKeyPlaceholder, applyFetchedModels, modelChoiceSelectValue,
-  modelSettingsErrorText, modelSlotSaveBlocked, modelSlotSummary, modelTestSummary, providerModels,
-  providerOptionLabel, selectModelChoice, toModelSlotForm, toModelSlotInput, withProvider,
+  EMPTY_MODEL_SLOT_FORM, MANUAL_MODEL_OPTION, apiKeyPlaceholder, applyFetchedModels, applyRegistryModels,
+  modelChoiceSelectValue, modelSettingsErrorText, modelSlotSaveBlocked, modelSlotSummary, modelTestMode,
+  modelTestModeNote, modelTestSummary, providerOptionLabel, selectModelChoice, shouldWarnStoredKeyUnused,
+  storageWarning, storedKeyUnusedNote, toModelSlotForm, toModelSlotInput, withProvider,
   type ModelSlotFormValue,
 } from './model-settings-form';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
-interface SlotFeedback { readonly kind: 'ok' | 'error'; readonly message: string }
+interface SlotFeedback { readonly kind: 'ok' | 'error'; readonly message: string; readonly note?: string }
 type SlotForms = Readonly<Record<ModelSlotNameDto, ModelSlotFormValue>>;
 
 /**
@@ -19,6 +20,13 @@ type SlotForms = Readonly<Record<ModelSlotNameDto, ModelSlotFormValue>>;
  *
  * **平文APIキーをこの画面が持つのは入力欄の state だけ**である。保存に成功したら入力欄を捨てて
  * マスク済みサマリを再取得し、以後は `…abcd` のヒントしか画面に残らない。
+ *
+ * カタログは2段構成（`/model-catalog` は見出しのみ、モデル一覧はプロバイダ単位で別取得）なので、
+ * プロバイダを選んだ時点で一覧を遅延fetchし、同じ providerId の再取得はキャッシュで省く。
+ *
+ * 非同期処理中もテキスト入力は止めない（打鍵を邪魔しない）。そのぶん**古い応答で入力を巻き戻さない**
+ * ことが要になるため、(1) 反映は必ず関数型setStateで最新stateへマージし、(2) リクエスト時の
+ * providerId / baseUrl と現在値が違う応答は捨てる。
  */
 function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
   const { text } = useI18n();
@@ -27,54 +35,150 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
   const [forms, setForms] = useState<SlotForms>({ main: EMPTY_MODEL_SLOT_FORM, judge: EMPTY_MODEL_SLOT_FORM });
   const [feedback, setFeedback] = useState<Readonly<Partial<Record<ModelSlotNameDto, SlotFeedback>>>>({});
   const [busy, setBusy] = useState(false);
+  const [loadingModels, setLoadingModels] = useState<Readonly<Partial<Record<ModelSlotNameDto, boolean>>>>({});
   // 読み込み失敗は原因のまま持ち、表示時にローカライズする（言語切替で再取得しないため）。
   const [loadFailure, setLoadFailure] = useState<unknown>();
 
+  // 非同期ハンドラは「クリック時のstate」ではなく常に最新のフォーム値を読む（stale closure対策）。
+  const formsRef = useRef(forms);
+  formsRef.current = forms;
+  /** providerId → モデル一覧。同じプロバイダへ戻ったときに再取得しない。 */
+  const modelCache = useRef(new Map<string, readonly string[]>());
+  /** 取得中の providerId → 進行中リクエスト。main / judge が同じプロバイダでも1回で済ませる。 */
+  const pendingModels = useRef(new Map<string, Promise<readonly string[]>>());
+  /** 実行中リクエスト。アンマウント時に全部abortしてsetStateを防ぐ。 */
+  const inFlight = useRef(new Set<AbortController>());
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    const running = inFlight.current;
+    return () => {
+      mounted.current = false;
+      for (const controller of running) controller.abort();
+      running.clear();
+    };
+  }, []);
+
+  function begin(): AbortController {
+    const controller = new AbortController();
+    inFlight.current.add(controller);
+    return controller;
+  }
+
+  /** 保存済みDTO → フォーム。取得済みの一覧があれば即座に当てて選択欄が空になる瞬間を作らない。 */
+  const formFrom = useCallback((slot: ModelSlotSettingsDto | undefined, catalog: readonly ModelCatalogProviderDto[]): ModelSlotFormValue => {
+    const form = toModelSlotForm(slot, catalog);
+    const cached = modelCache.current.get(form.providerId);
+    return cached === undefined ? form : applyRegistryModels(form, cached);
+  }, []);
+
   const load = useCallback(async () => {
+    const controller = begin();
     try {
-      const [catalog, saved] = await Promise.all([client.getModelCatalog(), client.getModelSettings(scope)]);
+      const [catalog, saved] = await Promise.all([client.getModelCatalog(controller.signal), client.getModelSettings(scope, controller.signal)]);
+      if (!mounted.current) return;
       setProviders(catalog);
       setSettings(saved);
-      setForms({ main: toModelSlotForm(saved.main, catalog), judge: toModelSlotForm(saved.judge, catalog) });
-    } catch (cause) { setLoadFailure(cause); }
-  }, [client]);
+      setForms({ main: formFrom(saved.main, catalog), judge: formFrom(saved.judge, catalog) });
+    } catch (cause) { if (mounted.current && !controller.signal.aborted) setLoadFailure(cause); }
+    finally { inFlight.current.delete(controller); }
+  }, [client, formFrom]);
   useEffect(() => { void load(); }, [load]);
 
-  function replaceForm(slot: ModelSlotNameDto, next: ModelSlotFormValue): void {
-    setForms((current) => ({ ...current, [slot]: next }));
-  }
   function updateForm(slot: ModelSlotNameDto, patch: Partial<ModelSlotFormValue>): void {
     setForms((current) => ({ ...current, [slot]: { ...current[slot], ...patch } }));
   }
   function note(slot: ModelSlotNameDto, value: SlotFeedback | undefined): void {
     setFeedback((current) => ({ ...current, [slot]: value }));
   }
-
-  /** テスト・保存中は全スロットを busy にする（同じ設定を並行更新させない）。 */
-  async function runAction(slot: ModelSlotNameDto, action: () => Promise<SlotFeedback>): Promise<void> {
-    setBusy(true);
-    note(slot, undefined);
-    try { note(slot, await action()); }
-    catch (cause) { note(slot, { kind: 'error', message: modelSettingsErrorText(cause, text) }); }
-    finally { setBusy(false); }
+  /** PUT の応答には storage が付かないので、GET で得た値を持ち越す。 */
+  function mergeSettings(saved: ModelSettingsDto): void {
+    setSettings((current) => (saved.storage === undefined && current?.storage !== undefined ? { ...saved, storage: current.storage } : saved));
   }
 
-  /** 保存前のフォーム値で試す。未入力（保存できない状態）のときだけ candidate を省き、保存済み/env既定を試す。 */
+  /** 選択中プロバイダのモデル一覧を（キャッシュ経由で）フォームへ反映する。 */
+  async function ensureProviderModels(slot: ModelSlotNameDto, providerId: string): Promise<void> {
+    if (providerId === '') return;
+    const apply = (models: readonly string[]): void => {
+      // 取得中にプロバイダを変えていたら捨てる（古い一覧で選択を巻き戻さない）。
+      setForms((current) => (current[slot].providerId !== providerId ? current : { ...current, [slot]: applyRegistryModels(current[slot], models) }));
+    };
+    const cached = modelCache.current.get(providerId);
+    if (cached !== undefined) { apply(cached); return; }
+    let request = pendingModels.current.get(providerId);
+    if (request === undefined) {
+      const controller = begin();
+      request = client.getProviderModels(providerId, controller.signal)
+        .then((models) => { modelCache.current.set(providerId, models); return models; })
+        .finally(() => { inFlight.current.delete(controller); pendingModels.current.delete(providerId); });
+      pendingModels.current.set(providerId, request);
+    }
+    setLoadingModels((current) => ({ ...current, [slot]: true }));
+    try {
+      const models = await request;
+      if (mounted.current) apply(models);
+    } catch (cause) {
+      // アンマウント（=abort）由来の失敗は表示しない。
+      if (!mounted.current) return;
+      // 一覧が引けなくてもモデル名は手入力で指定できる。
+      apply([]);
+      note(slot, { kind: 'error', message: text('Could not load this provider’s model list. Enter the model name manually.', 'このプロバイダのモデル一覧を取得できませんでした。モデル名は手入力できます。'), note: modelSettingsErrorText(cause, text) });
+    } finally {
+      if (mounted.current) setLoadingModels((current) => ({ ...current, [slot]: false }));
+    }
+  }
+
+  // プロバイダ選択（と registry への切り替え）でモデル一覧を遅延取得する。
+  // 依存はプロバイダIDだけ（ensureProviderModels は ref と関数型setStateしか触らないので毎レンダー作り直してよい）。
+  const mainProvider = forms.main.source === 'registry' ? forms.main.providerId : '';
+  const judgeProvider = forms.judge.source === 'registry' ? forms.judge.providerId : '';
+  useEffect(() => { void ensureProviderModels('main', mainProvider); }, [mainProvider]);
+  useEffect(() => { void ensureProviderModels('judge', judgeProvider); }, [judgeProvider]);
+
+  /** テスト・保存中は全スロットを busy にする（同じ設定を並行更新させない）。 */
+  async function runAction(slot: ModelSlotNameDto, action: (signal: AbortSignal) => Promise<SlotFeedback>): Promise<void> {
+    const controller = begin();
+    setBusy(true);
+    note(slot, undefined);
+    try {
+      const result = await action(controller.signal);
+      if (mounted.current) note(slot, result);
+    } catch (cause) {
+      if (mounted.current && !controller.signal.aborted) note(slot, { kind: 'error', message: modelSettingsErrorText(cause, text) });
+    } finally {
+      inFlight.current.delete(controller);
+      if (mounted.current) setBusy(false);
+    }
+  }
+
+  /**
+   * 疎通テスト。**編集済みなのに候補として送れないフォームではボタンを塞ぐ**（modelTestMode）。
+   * candidate を省くとサーバーは保存済み/env既定（ローカルLM Studio）を試すため、
+   * 「別プロバイダを選んだつもりが ok」という嘘の成功になる。
+   */
   async function testSlot(slot: ModelSlotNameDto): Promise<void> {
-    await runAction(slot, async (): Promise<SlotFeedback> => {
-      const form = forms[slot];
-      const candidate = modelSlotSaveBlocked(form) ? undefined : toModelSlotInput(form);
-      const result = await client.testModelSettings(scope, slot, candidate);
-      return { kind: result.ok ? 'ok' : 'error', message: modelTestSummary(result, text) };
+    await runAction(slot, async (signal): Promise<SlotFeedback> => {
+      const form = formsRef.current[slot];
+      const saved = settings?.[slot];
+      const candidate = modelTestMode(form, saved) === 'candidate' ? toModelSlotInput(form) : undefined;
+      const result = await client.testModelSettings(scope, slot, candidate, signal);
+      return {
+        kind: result.ok ? 'ok' : 'error',
+        message: modelTestSummary(result, text),
+        ...(shouldWarnStoredKeyUnused(result.usedStoredKey, form, saved) ? { note: storedKeyUnusedNote(text) } : {}),
+      };
     });
   }
 
   async function saveSlot(slot: ModelSlotNameDto): Promise<void> {
     await runAction(slot, async (): Promise<SlotFeedback> => {
-      const value = toModelSlotInput(forms[slot]);
+      const value = toModelSlotInput(formsRef.current[slot]);
       const saved = await client.saveModelSettings(slot === 'main' ? { scope, main: value } : { scope, judge: value });
-      setSettings(saved);
-      replaceForm(slot, toModelSlotForm(saved[slot], providers));
+      if (!mounted.current) return { kind: 'ok', message: '' };
+      mergeSettings(saved);
+      // 保存後は「サーバーが受け取った内容」が真なので、そのスロットだけを応答で置き換える。
+      setForms((current) => ({ ...current, [slot]: formFrom(saved[slot], providers) }));
       return { kind: 'ok', message: text('Saved. The API key field was cleared.', '保存しました。APIキー欄はクリアしました。') };
     });
   }
@@ -82,21 +186,29 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
   async function resetSlot(slot: ModelSlotNameDto): Promise<void> {
     await runAction(slot, async (): Promise<SlotFeedback> => {
       const saved = await client.saveModelSettings(slot === 'main' ? { scope, main: null } : { scope, judge: null });
-      setSettings(saved);
-      replaceForm(slot, toModelSlotForm(saved[slot], providers));
+      if (!mounted.current) return { kind: 'ok', message: '' };
+      mergeSettings(saved);
+      setForms((current) => ({ ...current, [slot]: formFrom(saved[slot], providers) }));
       return { kind: 'ok', message: text('Reverted to the environment default.', '環境変数の既定に戻しました。') };
     });
   }
 
-  /** 保存済みキーが要るエンドポイントもあるので slot を渡す（キーはクエリに載せない）。 */
+  /** 保存済みキーが要るエンドポイントもあるので slot を渡す（キーは本文にも載せない）。 */
   async function fetchModels(slot: ModelSlotNameDto): Promise<void> {
-    await runAction(slot, async (): Promise<SlotFeedback> => {
-      const form = forms[slot];
-      const models = await client.listOpenAiCompatibleModels(scope, form.baseUrl.trim(), slot);
-      replaceForm(slot, applyFetchedModels(form, models));
-      return models.length === 0
-        ? { kind: 'error', message: text('The endpoint returned no models.', 'モデルを取得できませんでした。') }
-        : { kind: 'ok', message: text(`Fetched ${models.length} model(s).`, `モデルを${models.length}件取得しました。`) };
+    await runAction(slot, async (signal): Promise<SlotFeedback> => {
+      const form = formsRef.current[slot];
+      const saved = settings?.[slot];
+      const requested = form.baseUrl.trim();
+      const result = await client.listOpenAiCompatibleModels(scope, requested, slot, signal);
+      // 応答を待つ間にベースURLが変わっていたら、別サーバーの一覧なので捨てる。
+      if (formsRef.current[slot].baseUrl.trim() !== requested) {
+        return { kind: 'error', message: text('The base URL changed while loading, so the fetched list was discarded.', '取得中にベースURLが変わったため、取得した一覧は破棄しました。') };
+      }
+      setForms((current) => (current[slot].baseUrl.trim() !== requested ? current : { ...current, [slot]: applyFetchedModels(current[slot], result.models) }));
+      const storedKeyNote = shouldWarnStoredKeyUnused(result.usedStoredKey, form, saved) ? { note: storedKeyUnusedNote(text) } : {};
+      return result.models.length === 0
+        ? { kind: 'error', message: text('The endpoint returned no models.', 'モデルを取得できませんでした。'), ...storedKeyNote }
+        : { kind: 'ok', message: text(`Fetched ${result.models.length} model(s).`, `モデルを${result.models.length}件取得しました。`), ...storedKeyNote };
     });
   }
 
@@ -105,6 +217,8 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
     const saved = settings?.[slot];
     const provider = providers.find((candidate) => candidate.id === form.providerId);
     const result = feedback[slot];
+    const testMode = modelTestMode(form, saved);
+    const testNote = modelTestModeNote(testMode, saved, text);
     const label = (field: string): string => `${title} · ${field}`;
     return <article className="model-slot" key={slot}>
       <header><h3>{title}</h3><code>{slot}</code></header>
@@ -125,7 +239,7 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
       {form.source === 'registry' ? <>
         <label>{text('Provider', 'プロバイダ')}
           <select aria-label={label(text('Provider', 'プロバイダ'))} value={form.providerId}
-            onChange={(event) => replaceForm(slot, withProvider(form, event.target.value))}>
+            onChange={(event) => setForms((current) => ({ ...current, [slot]: withProvider(current[slot], event.target.value) }))}>
             {providers.map((entry) => <option key={entry.id} value={entry.id}>{providerOptionLabel(entry)}</option>)}
           </select>
         </label>
@@ -133,10 +247,11 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
           <select aria-label={label(text('Model', 'モデル'))} value={modelChoiceSelectValue(form.registryModel)}
             onChange={(event) => updateForm(slot, { registryModel: selectModelChoice(form.registryModel, event.target.value) })}>
             <option value="">{text('Select a model', 'モデルを選択')}</option>
-            {providerModels(providers, form.providerId).map((model) => <option key={model} value={model}>{model}</option>)}
+            {form.registryModels.map((model) => <option key={model} value={model}>{model}</option>)}
             <option value={MANUAL_MODEL_OPTION}>{text('Enter manually', '手入力')}</option>
           </select>
         </label>
+        {loadingModels[slot] === true && <p className="model-slot-note" role="status">{text('Loading the model list…', 'モデル一覧を取得中…')}</p>}
         {form.registryModel.manual && <label>{text('Model name', 'モデル名')}
           <input aria-label={label(text('Model name', 'モデル名'))} value={form.registryModel.value} placeholder="gpt-4o"
             onChange={(event) => updateForm(slot, { registryModel: { value: event.target.value, manual: true } })} />
@@ -161,8 +276,9 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
         </label>}
       </>}
       <label>{text('API key', 'APIキー')}
-        <input type="password" aria-label={label(text('API key', 'APIキー'))} value={form.apiKey} disabled={form.clearKey}
-          placeholder={apiKeyPlaceholder(saved, provider, text)} onChange={(event) => updateForm(slot, { apiKey: event.target.value })} />
+        {/* 保存失敗時も入力を捨てない（再入力の手間を避ける）ぶん、パスワードマネージャの誤保存を防ぐ。 */}
+        <input type="password" autoComplete="new-password" aria-label={label(text('API key', 'APIキー'))} value={form.apiKey} disabled={form.clearKey}
+          placeholder={apiKeyPlaceholder(saved, provider, form.source, text)} onChange={(event) => updateForm(slot, { apiKey: event.target.value })} />
       </label>
       <label className="structured-output-toggle">
         <input type="checkbox" aria-label={label(text('Remove the saved key', '保存済みキーを削除'))} checked={form.clearKey}
@@ -170,21 +286,24 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
         {text('Remove the saved key', '保存済みキーを削除')}
       </label>
       <div className="save-actions">
-        <button type="button" className="secondary" aria-label={label(text('Test', 'テスト'))}
-          disabled={busy} onClick={() => void testSlot(slot)}>{text('Test', 'テスト')}</button>
+        <button type="button" className="secondary" aria-label={label(text('Test', 'テスト'))} {...(testNote === undefined ? {} : { title: testNote })}
+          disabled={busy || testMode === 'blocked'} onClick={() => void testSlot(slot)}>{text('Test', 'テスト')}</button>
         <button type="button" className="primary" aria-label={label(text('Save', '保存'))}
           disabled={busy || modelSlotSaveBlocked(form)} onClick={() => void saveSlot(slot)}>{text('Save', '保存')}</button>
         <button type="button" className="secondary" aria-label={label(text('Use env default', 'env既定に戻す'))}
           disabled={busy || saved === undefined} onClick={() => void resetSlot(slot)}>{text('Use env default', 'env既定に戻す')}</button>
       </div>
-      {result !== undefined && <p className={result.kind === 'error' ? 'field-error' : 'model-slot-ok'}>{result.message}</p>}
+      {testNote !== undefined && <p className="model-slot-note">{testNote}</p>}
+      {result !== undefined && <p className={result.kind === 'error' ? 'field-error' : 'model-slot-ok'} role={result.kind === 'error' ? 'alert' : 'status'}>{result.message}</p>}
+      {result?.note !== undefined && <p className="model-slot-note" role="status">{result.note}</p>}
     </article>;
   }
 
   return <section className="workspace-card model-settings-card">
     <h2>{text('Model provider', 'モデルプロバイダ')}</h2>
     <p className="empty-state">{text('Choose the model per slot: main runs Agents, judge runs LLM-as-judge evaluations. An unset slot keeps the environment default. API keys are stored write-only and never sent back to the browser.', 'スロットごとにモデルを選びます。main はエージェント実行、judge は評価（LLM judge）に使います。未設定のスロットは環境変数の既定のままです。APIキーは書き込み専用で保存され、ブラウザへ戻されることはありません。')}</p>
-    {loadFailure !== undefined && <div className="api-error">{modelSettingsErrorText(loadFailure, text)}</div>}
+    {storageWarning(settings?.storage, text) !== undefined && <p className="model-storage-warning" role="status">{storageWarning(settings?.storage, text)}</p>}
+    {loadFailure !== undefined && <div className="api-error" role="alert">{modelSettingsErrorText(loadFailure, text)}</div>}
     <div className="model-slot-grid">
       {renderSlot('main', text('Main model', 'メインモデル'))}
       {renderSlot('judge', text('Judge model', '評価モデル'))}

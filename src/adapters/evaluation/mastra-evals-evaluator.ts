@@ -5,6 +5,7 @@
  * Mastra のエージェントI/O形へ写像して実行し、EvaluationScore[] へ正規化する。
  * 外部SDK(@mastra/*)への依存は本アダプタ内に隔離する（depcruise）。
  */
+import '../../mastra-runtime-env'; // @mastra より先に評価する（import順が意味を持つ・並べ替え禁止）。
 import {
   createCompletenessScorer,
   createContentSimilarityScorer,
@@ -13,9 +14,6 @@ import {
 } from '@mastra/evals/scorers/prebuilt';
 import type { EvaluationScore } from '../../domain/evaluation/evaluation';
 import type { AgentEvaluatorPort, EvaluationInput } from '../../application/evaluation/evaluator';
-
-// @mastra/core 同梱の posthog テレメトリを無効化する（オフラインファースト・外部送信抑止）。
-process.env['MASTRA_TELEMETRY_DISABLED'] ??= 'true';
 
 /** 利用する Mastra スコアラーの最小I/F（run の戻りから score/reason だけ読む）。 */
 interface MastraScorer {

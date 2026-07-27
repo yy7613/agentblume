@@ -90,9 +90,12 @@ import type {
   McpServerTestResultDto,
   ModelSettingsDto,
   ModelCatalogProviderDto,
+  ModelCatalogProviderModelsDto,
   ModelSlotNameDto,
   ModelSlotSettingsInputDto,
   ModelSettingsTestResultDto,
+  ListOpenAiCompatibleModelsDto,
+  OpenAiCompatibleModelsResultDto,
   SaveModelSettingsDto,
 } from './types';
 import { localizeApiErrorMessage } from './error-messages';
@@ -781,16 +784,28 @@ export class ToolApiClient {
     });
   }
 
-  /** 登録簿（オフラインの静的データ）。models は provider を除いたモデルID。 */
+  /**
+   * 登録簿の見出し（オフラインの静的データ）。**モデル一覧は含まない**（`modelCount` のみ）。
+   * 選んだプロバイダのモデルは getProviderModels で個別に取る2段構成。
+   */
   async getModelCatalog(signal?: AbortSignal): Promise<readonly ModelCatalogProviderDto[]> {
     return (await this.request<{ providers: ModelCatalogProviderDto[] }>('/model-catalog', { signal })).providers;
   }
 
-  /** OpenAI互換エンドポイントの `/models`。apiKey はクエリに載せず、slot 指定で保存済みキーを使う。 */
-  async listOpenAiCompatibleModels(scope: TenantScopeDto, baseUrl: string, slot?: ModelSlotNameDto, signal?: AbortSignal): Promise<readonly string[]> {
-    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId, baseUrl });
-    if (slot !== undefined) query.set('slot', slot);
-    return (await this.request<{ models: string[] }>(`/model-catalog/openai-compatible-models?${query}`, { signal })).models;
+  /** 1プロバイダぶんのチャットモデル全件（provider 接頭辞なし。設定値は `${providerId}/${model}`）。 */
+  async getProviderModels(providerId: string, signal?: AbortSignal): Promise<readonly string[]> {
+    return (await this.request<ModelCatalogProviderModelsDto>(`/model-catalog/${encodeURIComponent(providerId)}/models`, { signal })).models;
+  }
+
+  /**
+   * OpenAI互換エンドポイントの `/models`。
+   * **GET ではなく POST**（保存済みキーを使い得る操作を単純リクエストにしない = CSRF緩和）。
+   * apiKey は送らず slot 指定で保存済みキーを使うが、宛先が保存済み設定と違えば
+   * サーバーはキーを使わず `usedStoredKey: false` を返す。
+   */
+  async listOpenAiCompatibleModels(scope: TenantScopeDto, baseUrl: string, slot?: ModelSlotNameDto, signal?: AbortSignal): Promise<OpenAiCompatibleModelsResultDto> {
+    const body: ListOpenAiCompatibleModelsDto = { scope, baseUrl, ...(slot === undefined ? {} : { slot }) };
+    return this.request<OpenAiCompatibleModelsResultDto>('/model-catalog/openai-compatible-models', { method: 'POST', body: JSON.stringify(body), signal });
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

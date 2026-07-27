@@ -8,12 +8,17 @@
  * - 応答（ModelSlotSettingsDto）の apiKey はマスク済み（`{ configured, hint? }`）で、平文は含まれない。
  * - 保存入力の apiKey は write-only の平文で、**入力欄に文字が入っているときだけ**送る。
  *   空のまま保存 = フィールドごと省略 = 既存キーを維持。明示的な削除は clearKey（空文字送信）。
+ *
+ * **モデル一覧は静的参照では作れない**（v36でカタログが2段構成になり、`/model-catalog` は
+ * `modelCount` だけを返す）。よってこのモジュールは一覧を「引く」責務を持たず、
+ * 画面が遅延fetchした配列を受け取ってフォームへ適用する（applyRegistryModels / applyFetchedModels）。
  */
 import { ApiError } from '../api/tool-api';
 import type {
   MaskedApiKeyDto,
   ModelCatalogProviderDto,
   ModelSettingsSourceDto,
+  ModelSettingsStorageDto,
   ModelSlotSettingsDto,
   ModelSlotSettingsInputDto,
   ModelSettingsTestResultDto,
@@ -36,6 +41,8 @@ export interface ModelSlotFormValue {
   readonly providerId: string;
   /** registry のモデル（provider接頭辞なし）。 */
   readonly registryModel: ModelChoiceValue;
+  /** 選択中プロバイダのモデル候補（遅延fetch結果）。未取得なら空。 */
+  readonly registryModels: readonly string[];
   /** openai-compatible のエンドポイント。 */
   readonly baseUrl: string;
   readonly compatModel: ModelChoiceValue;
@@ -51,6 +58,7 @@ export const EMPTY_MODEL_SLOT_FORM: ModelSlotFormValue = {
   source: 'registry',
   providerId: '',
   registryModel: { value: '', manual: false },
+  registryModels: [],
   baseUrl: '',
   compatModel: { value: '', manual: false },
   compatModels: [],
@@ -58,13 +66,17 @@ export const EMPTY_MODEL_SLOT_FORM: ModelSlotFormValue = {
   clearKey: false,
 };
 
-function providerOf(providers: readonly ModelCatalogProviderDto[], id: string): ModelCatalogProviderDto | undefined {
-  return providers.find((provider) => provider.id === id);
-}
+/**
+ * 未設定スロットの既定プロバイダ。
+ * カタログは name 昇順なので先頭は `302ai` のような無名プロバイダになりがちで、
+ * 「何も選んでいないのに 302ai が選択済み」に見える。最も一般的な `openai` を優先する。
+ */
+export const PREFERRED_DEFAULT_PROVIDER = 'openai';
 
-/** 選択中プロバイダのモデル候補（未選択・未知プロバイダなら空）。 */
-export function providerModels(providers: readonly ModelCatalogProviderDto[], id: string): readonly string[] {
-  return providerOf(providers, id)?.models ?? [];
+export function defaultProviderId(providers: readonly ModelCatalogProviderDto[]): string {
+  return providers.some((provider) => provider.id === PREFERRED_DEFAULT_PROVIDER)
+    ? PREFERRED_DEFAULT_PROVIDER
+    : (providers[0]?.id ?? '');
 }
 
 /** `'openai/gpt-4o'` → `['openai', 'gpt-4o']`。最初の `/` で分ける（モデル名側の `/` は残す）。 */
@@ -75,33 +87,39 @@ export function splitRegistryModel(model: string): readonly [provider: string, n
 
 /**
  * 保存済み設定（マスク済み）→ フォーム値。未設定（env既定）のスロットは
- * 先頭プロバイダを選んだ空フォームにする。APIキー入力欄は常に空で始める（平文は保持しない）。
+ * 既定プロバイダを選んだ空フォームにする。APIキー入力欄は常に空で始める（平文は保持しない）。
+ *
+ * モデル候補は非同期に取るため、ここでは `manual` を立てない。
+ * 一覧が届いた時点で applyRegistryModels が「カタログに無いモデル = 手入力」を確定させる。
  */
 export function toModelSlotForm(slot: ModelSlotSettingsDto | undefined, providers: readonly ModelCatalogProviderDto[]): ModelSlotFormValue {
-  const firstProvider = providers[0]?.id ?? '';
-  if (slot === undefined) return { ...EMPTY_MODEL_SLOT_FORM, providerId: firstProvider };
+  const fallback = defaultProviderId(providers);
+  if (slot === undefined) return { ...EMPTY_MODEL_SLOT_FORM, providerId: fallback };
   if (slot.source === 'registry') {
     const [providerId, name] = splitRegistryModel(slot.model);
-    const resolved = providerId === '' ? firstProvider : providerId;
     return {
       ...EMPTY_MODEL_SLOT_FORM,
       source: 'registry',
-      providerId: resolved,
-      registryModel: { value: name, manual: !providerModels(providers, resolved).includes(name) },
+      providerId: providerId === '' ? fallback : providerId,
+      registryModel: { value: name, manual: false },
     };
   }
   return {
     ...EMPTY_MODEL_SLOT_FORM,
     source: 'openai-compatible',
-    providerId: firstProvider,
+    providerId: fallback,
     baseUrl: slot.baseUrl,
     compatModel: { value: slot.model, manual: false },
   };
 }
 
-/** プロバイダを変えたらモデル選択はリセットする（別プロバイダの候補は無効なため）。 */
+/**
+ * プロバイダを変えたらモデル選択と候補はリセットする（別プロバイダの候補は無効なため）。
+ * 同じプロバイダを選び直したときは何もしない（一覧の再取得は走らないので、消すと復旧できない）。
+ */
 export function withProvider(form: ModelSlotFormValue, providerId: string): ModelSlotFormValue {
-  return { ...form, providerId, registryModel: { value: '', manual: false } };
+  if (form.providerId === providerId) return form;
+  return { ...form, providerId, registryModel: { value: '', manual: false }, registryModels: [] };
 }
 
 /** `<select>` の選択 → モデル入力状態。「手入力」を選んだら値を保ったままテキスト入力へ切り替える。 */
@@ -114,7 +132,18 @@ export function modelChoiceSelectValue(choice: ModelChoiceValue): string {
   return choice.manual ? MANUAL_MODEL_OPTION : choice.value;
 }
 
-/** 取得したモデル一覧を反映する。現在の入力が一覧にあれば維持し、無ければ先頭を選ぶ。 */
+/**
+ * 取得したプロバイダのモデル一覧を反映する（registry 側）。
+ * 現在値は消さない（保存済みモデルを勝手に付け替えない）。一覧に無ければ手入力状態へ倒し、
+ * 既に手入力中なら手入力のまま保つ（fetch中に打った文字を巻き戻さない）。
+ */
+export function applyRegistryModels(form: ModelSlotFormValue, models: readonly string[]): ModelSlotFormValue {
+  const value = form.registryModel.value;
+  const manual = form.registryModel.manual || (value !== '' && !models.includes(value));
+  return { ...form, registryModels: models, registryModel: { value, manual } };
+}
+
+/** 取得したモデル一覧を反映する（openai-compatible 側）。現在の入力が一覧にあれば維持し、無ければ先頭を選ぶ。 */
 export function applyFetchedModels(form: ModelSlotFormValue, models: readonly string[]): ModelSlotFormValue {
   const keep = models.includes(form.compatModel.value);
   return {
@@ -137,6 +166,51 @@ export function modelSlotModelValue(form: ModelSlotFormValue): string {
 export function modelSlotSaveBlocked(form: ModelSlotFormValue): boolean {
   if (modelSlotModelValue(form) === '') return true;
   return form.source === 'openai-compatible' && form.baseUrl.trim() === '';
+}
+
+/**
+ * フォームが保存済み設定から動いているか。
+ * 「テストが何をテストしたか」を決めるために要る（editedなのに候補を送れない = テスト不能）。
+ */
+export function modelSlotFormEdited(form: ModelSlotFormValue, saved: ModelSlotSettingsDto | undefined): boolean {
+  if (form.apiKey !== '' || form.clearKey) return true;
+  const model = modelSlotModelValue(form);
+  if (saved === undefined) return model !== '' || form.source !== 'registry' || form.baseUrl.trim() !== '';
+  if (form.source !== saved.source) return true;
+  if (saved.source === 'openai-compatible' && form.baseUrl.trim() !== saved.baseUrl) return true;
+  return model !== saved.model;
+}
+
+/**
+ * テストボタンの意味。
+ * - `candidate` … 画面の入力値をそのまま試す。
+ * - `saved` … 入力が保存済み設定と同じ（=未編集）なので、保存済み/env既定を試す。
+ * - `blocked` … 編集済みだが候補として送れない（モデル未選択など）。**押させない**。
+ *
+ * blocked を押せてしまうと candidate が省かれ、サーバーは保存済み/env既定（ローカルLM Studio）を
+ * テストして ok を返す。「Anthropicを選んだつもりが成功した」という嘘の成功になるため塞ぐ。
+ */
+export type ModelTestMode = 'candidate' | 'saved' | 'blocked';
+
+export function modelTestMode(form: ModelSlotFormValue, saved: ModelSlotSettingsDto | undefined): ModelTestMode {
+  if (!modelSlotSaveBlocked(form)) return 'candidate';
+  return modelSlotFormEdited(form, saved) ? 'blocked' : 'saved';
+}
+
+/** テストボタンの補足（何をテストするか / なぜ押せないか）。candidate は自明なので注記なし。 */
+export function modelTestModeNote(mode: ModelTestMode, saved: ModelSlotSettingsDto | undefined, text: Translate): string | undefined {
+  if (mode === 'blocked') {
+    return text(
+      'Finish the model selection to test it. The edited values cannot be sent yet, and testing now would only check the saved settings.',
+      'モデルの選択を完了するとテストできます。編集中の値はまだ送れないため、いま実行しても保存済み設定を試すことになります。',
+    );
+  }
+  if (mode === 'saved') {
+    return saved === undefined
+      ? text('Tests the environment default (this slot is unset).', '環境変数の既定をテストします（このスロットは未設定です）。')
+      : text('Tests the saved settings (the form is unchanged).', '保存済み設定をテストします（フォームは未編集です）。');
+  }
+  return undefined;
 }
 
 /**
@@ -166,28 +240,101 @@ export function modelSlotSummary(slot: ModelSlotSettingsDto | undefined, text: T
     : text(`Saved: ${slot.model} @ ${slot.baseUrl} (${key})`, `保存済み: ${slot.model} @ ${slot.baseUrl}（${key}）`);
 }
 
-/** APIキー入力欄のプレースホルダ。保存済みなら「空のままで維持」、未設定なら環境変数名を案内する。 */
-export function apiKeyPlaceholder(slot: ModelSlotSettingsDto | undefined, provider: ModelCatalogProviderDto | undefined, text: Translate): string {
+/**
+ * APIキー入力欄のプレースホルダ。
+ * - 保存済み: 「空のままで維持」。**4文字以下のキーは hint が付かない**ので、その場合はヒント欄を出さない。
+ * - 未設定 + registry: そのプロバイダの環境変数名を案内する。
+ * - 未設定 + openai-compatible: プロバイダ登録簿とは無関係な宛先なので、**選択中プロバイダの
+ *   envVar は案内しない**（OpenAI互換のローカル宛に OPENAI_API_KEY を促すのは誤誘導）。
+ */
+export function apiKeyPlaceholder(
+  slot: ModelSlotSettingsDto | undefined,
+  provider: ModelCatalogProviderDto | undefined,
+  source: ModelSettingsSourceDto,
+  text: Translate,
+): string {
   if (slot?.apiKey.configured === true) {
-    const hint = slot.apiKey.hint === undefined ? '' : `…${slot.apiKey.hint}`;
-    return text(`Saved: ${hint} (leave blank to keep)`, `保存済み: ${hint}（空のままで維持）`);
+    return slot.apiKey.hint === undefined
+      ? text('Saved (leave blank to keep)', '保存済み（空のままで維持）')
+      : text(`Saved: …${slot.apiKey.hint} (leave blank to keep)`, `保存済み: …${slot.apiKey.hint}（空のままで維持）`);
   }
+  if (source === 'openai-compatible') return text('Not set (env LM_STUDIO_API_KEY also works)', '未設定（環境変数 LM_STUDIO_API_KEY でも可）');
   if (provider?.envVar === undefined) return text('Not set', '未設定');
   return text(`Not set (env ${provider.envVar} also works)`, `未設定（環境変数 ${provider.envVar} でも可）`);
 }
 
+/**
+ * 疎通テストの失敗文（`result.error`）の日本語化。
+ *
+ * 失敗は 200 + `ok:false` で返るので ApiError を通らず、localizeApiErrorMessage の対象外になる。
+ * よく出るパターンだけを日本語にし、**未知は原文のまま**返す（詳細を握りつぶさない）。
+ * 日本語でも原文を括弧で残す（error-messages.ts と同じ流儀）。
+ */
+export function localizeModelTestError(raw: string, text: Translate): string {
+  const message = raw.trim();
+  if (message === '') return text('Test failed', 'テストに失敗しました');
+  const detail = text('', `（${message}）`);
+  if (/decrypt|secret could not|sealed/i.test(message)) {
+    return text(message, `保存済みAPIキーを復号できませんでした。APIキーを再入力して保存し直してください。${detail}`);
+  }
+  if (/\b(401|403)\b|unauthorized|forbidden|invalid api key|authentication|api key/i.test(message)) {
+    return text(message, `認証に失敗しました。APIキーを確認してください。${detail}`);
+  }
+  if (/timeout|timed out|abort/i.test(message)) {
+    return text(message, `タイムアウトしました。モデルサーバーの応答とモデルのロード状況を確認してください。${detail}`);
+  }
+  if (/econnrefused|enotfound|eai_again|fetch failed|connect|network|socket/i.test(message)) {
+    return text(message, `モデルサーバーに接続できませんでした。エンドポイントと稼働状況を確認してください。${detail}`);
+  }
+  return message;
+}
+
 /** 疎通テスト結果の表示文言。成功は latency と応答の先頭を出す。 */
 export function modelTestSummary(result: ModelSettingsTestResultDto, text: Translate): string {
-  return result.ok ? `ok (${result.latencyMs}ms): ${result.reply}` : result.error === '' ? text('Test failed', 'テストに失敗しました') : result.error;
+  return result.ok ? `ok (${result.latencyMs}ms): ${result.reply}` : localizeModelTestError(result.error, text);
 }
 
 /**
- * 失敗の表示文言。409（鍵ファイル変更などで復号不能）はキー再入力へ誘導する。
+ * 「保存済みキーを使わなかった」を注記すべきか。
+ *
+ * `usedStoredKey:false` は「キーが無い」ときも立つため、そのまま出すと未設定スロットで
+ * 毎回警告が出てしまう。**保存済みキーがあるのに使われなかった**（= 宛先が保存済み設定と違う）
+ * ときだけ注記する。自分でキーを入力した場合は当然使われないので対象外。
+ */
+export function shouldWarnStoredKeyUnused(usedStoredKey: boolean, form: ModelSlotFormValue, saved: ModelSlotSettingsDto | undefined): boolean {
+  if (usedStoredKey || form.apiKey !== '' || form.clearKey) return false;
+  return saved?.apiKey.configured === true;
+}
+
+export function storedKeyUnusedNote(text: Translate): string {
+  return text(
+    'The saved API key was not used because the destination differs from the saved settings. Enter the key for this destination.',
+    '宛先が保存済み設定と異なるため、保存済みキーは使用しませんでした。この宛先向けのキーを入力してください。',
+  );
+}
+
+/** 揮発ストレージ（`:memory:` DB）で動作中の警告。再起動で保存内容が消える。 */
+export function storageWarning(storage: ModelSettingsStorageDto | undefined, text: Translate): string | undefined {
+  if (storage !== 'ephemeral') return undefined;
+  return text(
+    'This workspace runs on ephemeral storage. Saved model settings are lost on restart — set AGENTCONTEXT_DB_PATH to keep them.',
+    'このワークスペースは揮発ストレージで動作中です。保存したモデル設定は再起動で消えます（AGENTCONTEXT_DB_PATH を設定してください）。',
+  );
+}
+
+/**
+ * 失敗の表示文言。SECRET_CIPHER は status で意味が違う（409=再入力で直る / 500=鍵ファイル不正で直らない）。
  * それ以外は ApiError が既にローカライズ済みの message を持つのでそのまま使う。
  */
 export function modelSettingsErrorText(cause: unknown, text: Translate): string {
+  if (cause instanceof ApiError && cause.code === 'SECRET_CIPHER' && cause.status === 500) {
+    return text(
+      'The encryption key file could not be read. Check AGENTCONTEXT_SECRET_KEY_PATH (re-entering the API key will not fix this).',
+      '鍵ファイルが読めない、または不正です。AGENTCONTEXT_SECRET_KEY_PATH を確認してください（APIキーの再入力では復旧しません）。',
+    );
+  }
   if (cause instanceof ApiError && cause.status === 409) {
-    return text('The encryption key changed. Enter the API key again, then save.', '鍵が変わっています。APIキーを再入力してください。');
+    return text('The saved API key could not be decrypted. Enter the API key again, then save.', '保存済みAPIキーを復号できません。APIキーを再入力してください。');
   }
   return cause instanceof Error ? cause.message : text('Request failed', 'リクエストに失敗しました');
 }

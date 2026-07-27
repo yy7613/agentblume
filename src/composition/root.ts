@@ -567,13 +567,19 @@ export function createApp(options?: AppOptions): App {
   const staticJudgeSnapshot: ExperimentModelSnapshot = profile === 'test'
     ? { provider: 'scripted-judge', model: 'scripted-judge', modelConfigHash: hashConfig({ profile: 'test', purpose: 'judge' }) }
     : { provider: 'lm-studio-judge', model: process.env['JUDGE_LM_STUDIO_MODEL'] ?? '', modelConfigHash: hashConfig({ baseUrl: process.env['JUDGE_LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['JUDGE_LM_STUDIO_MODEL'] ?? '' }) };
-  const judgeSnapshot = options?.judgeModelSnapshot ?? judgeSwitchable?.lastSnapshot() ?? staticJudgeSnapshot;
   // StructuredJudgeEvaluator は complete() 直後に snapshot() を読むため、
   // lastSnapshot()（同期・直近解決値）で「実際に使った設定」が記録される。
   const judgeEvaluator = new StructuredJudgeEvaluator(
     judgeModelProvider,
     options?.judgeModelSnapshot ?? (judgeSwitchable === undefined ? staticJudgeSnapshot : () => judgeSwitchable.lastSnapshot()),
   );
+  /**
+   * judge の指紋を評価の**前**に解決する。これが無いと、UIでjudgeを切り替えた直後の
+   * 失敗レコードに env 既定由来の指紋が残り、capabilities() のガードも古い設定を見る。
+   */
+  const resolveJudgeSnapshot = options?.judgeModelSnapshot === undefined && judgeSwitchable !== undefined
+    ? (): Promise<ExperimentModelSnapshot> => judgeSwitchable.currentSnapshot()
+    : undefined;
   const staticSnapshot: ExperimentModelSnapshot = profile === 'test'
     ? { provider: 'scripted', model: 'scripted', modelConfigHash: hashConfig({ profile: 'test' }) }
     : { provider: 'lm-studio', model: process.env['LM_STUDIO_MODEL'] ?? '', modelConfigHash: hashConfig({ baseUrl: process.env['LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['LM_STUDIO_MODEL'] ?? '' }), ...(sourceRevision !== undefined ? { sourceRevision } : {}) };
@@ -596,7 +602,7 @@ export function createApp(options?: AppOptions): App {
   const saveWikiPage = new SaveWikiPageUseCase(wikiAdapter.repo);
   const runScenario = new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo);
   const evaluator = new MastraEvalsEvaluator();
-  const runExperiment = new RunExperimentUseCase(experimentAdapter.repo, evaluationDatasetAdapter.repo, evaluatorProfileAdapter.repo, agentAdapter.repo, scenarioAdapter.repo, runAgentPreview, runScenario, evaluator, undefined, undefined, { rubrics: judgeRubricAdapter.repo, evaluator: judgeEvaluator }, telemetry);
+  const runExperiment = new RunExperimentUseCase(experimentAdapter.repo, evaluationDatasetAdapter.repo, evaluatorProfileAdapter.repo, agentAdapter.repo, scenarioAdapter.repo, runAgentPreview, runScenario, evaluator, undefined, undefined, { rubrics: judgeRubricAdapter.repo, evaluator: judgeEvaluator, ...(resolveJudgeSnapshot === undefined ? {} : { resolveSnapshot: resolveJudgeSnapshot }) }, telemetry);
   const experimentWorker = new InProcessExperimentWorker(runExperiment);
   const submitRunFeedback = new SubmitRunFeedbackUseCase(runAdapter.repo, operationsAdapter.repo);
 
@@ -695,7 +701,8 @@ export function createApp(options?: AppOptions): App {
     deleteMcpServer: new DeleteMcpServerUseCase(mcpServerAdapter.repo),
     replaceMcpServers: new ReplaceMcpServersUseCase(mcpServerAdapter.repo),
     testMcpServer: new TestMcpServerUseCase(mcpServerAdapter.repo, mcpClient),
-    getModelSettings: new GetModelSettingsUseCase(modelSettingsAdapter.repo),
+    // 保存先が :memory:（AGENTCONTEXT_DB_PATH 未指定）なら再起動で設定が消えることをUIへ伝える。
+    getModelSettings: new GetModelSettingsUseCase(modelSettingsAdapter.repo, profile === 'local' && (path ?? ':memory:') !== ':memory:' ? 'persistent' : 'ephemeral'),
     saveModelSettings: new SaveModelSettingsUseCase(modelSettingsAdapter.repo, secretCipher),
     testModelSettings: new TestModelSettingsUseCase(modelSettingsAdapter.repo, secretCipher, modelProviderFactory, envSlotDefault),
     queryModelCatalog: new QueryModelCatalogUseCase(modelCatalog, modelSettingsAdapter.repo, secretCipher),
@@ -753,7 +760,13 @@ export function createApp(options?: AppOptions): App {
     queryWikiSpaces: new QueryWikiSpacesUseCase(wikiAdapter.repo),
     deleteWikiSpace: new DeleteWikiSpaceUseCase(wikiAdapter.repo),
     draftTool: new DraftToolUseCase(engine, resolveDataSources),
-    suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, profile !== 'test' && (process.env['ANALYSIS_ASSISTANT_ENABLED'] ?? 'true') !== 'false' && (process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== ''),
+    suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, async () => {
+      if (profile === 'test' || (process.env['ANALYSIS_ASSISTANT_ENABLED'] ?? 'true') === 'false') return false;
+      // モデルはUIからも設定できるため、envだけで判定しない（保存済みのmainスロットがあればそれで足りる）。
+      if ((process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== '') return true;
+      try { return (await modelSettingsAdapter.repo.find(modelSettingsScope))?.main !== undefined; }
+      catch { return false; } // 設定が読めない/復号できない場合は「使えない」側へ倒す。
+    }),
     saveTool,
     getTool: new GetToolUseCase(repo),
     listToolVersions: new ListToolVersionsUseCase(repo),

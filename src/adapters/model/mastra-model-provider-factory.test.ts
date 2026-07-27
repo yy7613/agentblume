@@ -54,4 +54,15 @@ describe('MastraModelProviderFactory', () => {
     const provider = new MastraModelProviderFactory().create({ model: 'openai/gpt-4o', capabilities: ['chat'] });
     expect(provider.capabilities()).toEqual(['chat']);
   });
+
+  it('モデル名が空でも生成自体は失敗させず、complete() で「未設定」と分かる文言にする', async () => {
+    // LM_STUDIO_MODEL 未設定の env 既定。生成は起動時（SwitchableModelProvider のコンストラクタ）に
+    // 走るため、ここで throw すると設定を保存する前にアプリが起動できなくなる。
+    const provider = new MastraModelProviderFactory().create({ model: { id: '', url: 'http://127.0.0.1:1234/v1' } });
+
+    expect(internals(provider).spec.id).toBe('local/');
+    await expect(provider.complete({ messages: [] })).rejects.toMatchObject({
+      message: expect.stringContaining('Model is not configured') as unknown as string,
+    });
+  });
 });

@@ -28,11 +28,16 @@ class FakeFactory implements ModelProviderFactoryPort {
 class FakeCatalog implements ModelCatalogPort {
   lastKey: string | undefined;
   lastBaseUrl = '';
+  calls = 0;
   failure: Error | undefined;
   providers(): readonly ModelCatalogProvider[] {
-    return [{ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', models: ['gpt-4o', 'o4-mini'] }];
+    return [{ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', modelCount: 2 }];
+  }
+  providerModels(providerId: string): readonly string[] | undefined {
+    return providerId === 'openai' ? ['gpt-4o', 'o4-mini'] : undefined;
   }
   async listOpenAiCompatibleModels(baseUrl: string, apiKey?: string): Promise<readonly string[]> {
+    this.calls += 1;
     this.lastBaseUrl = baseUrl; this.lastKey = apiKey;
     if (this.failure !== undefined) throw this.failure;
     return ['local-a', 'local-b'];
@@ -52,10 +57,11 @@ describe('model settings routes', () => {
 
   const registrySlot = { source: 'registry', model: 'openai/gpt-4o' } as const;
 
-  it('未保存ならスコープだけを返す（env 既定を使う状態）', async () => {
+  it('未保存ならスコープと保存先の種別だけを返す（env 既定を使う状態）', async () => {
     const response = await server.inject({ method: 'GET', url: '/model-settings', query: scope });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ settings: { scope } });
+    // testプロファイルはInMemory＝再起動で消えるので ephemeral。
+    expect(response.json()).toEqual({ settings: { scope, storage: 'ephemeral' } });
   });
 
   it('保存・参照ともに応答へ平文キーも封緘済みデータも現れない', async () => {
@@ -114,39 +120,112 @@ describe('model settings routes', () => {
   it('疎通テストは成功も失敗も200（ok フラグで区別する）', async () => {
     const ok = await server.inject({ method: 'POST', url: '/model-settings/test', payload: { scope, slot: 'main', candidate: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'local-model', apiKey: SECRET } } });
     expect(ok.statusCode).toBe(200);
-    expect(ok.json()).toMatchObject({ ok: true, reply: 'ok' });
+    expect(ok.json()).toMatchObject({ ok: true, reply: 'ok', usedStoredKey: false });
     expect(factory.created.at(-1)?.model).toMatchObject({ id: 'local-model', url: 'http://127.0.0.1:1234/v1', apiKey: SECRET });
 
     factory.failure = new ModelProviderError(`Model request failed: bad key ${SECRET}`);
     const failed = await server.inject({ method: 'POST', url: '/model-settings/test', payload: { scope, slot: 'main', candidate: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'local-model', apiKey: SECRET } } });
     expect(failed.statusCode).toBe(200);
-    expect(failed.json()).toEqual({ ok: false, error: 'Model request failed: bad key ***' });
+    expect(failed.json()).toEqual({ ok: false, error: 'Model request failed: bad key ***', usedStoredKey: false });
     expect(failed.body).not.toContain(SECRET);
   });
 
-  it('登録簿カタログを返す', async () => {
-    const response = await server.inject({ method: 'GET', url: '/model-catalog' });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ providers: [{ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', models: ['gpt-4o', 'o4-mini'] }] });
+  it('疎通テストの入力不正は ok:false ではなく400', async () => {
+    for (const candidate of [
+      { source: 'openai-compatible', model: 'local-model' },                                  // baseUrl 必須
+      { source: 'openai-compatible', baseUrl: 'ftp://host/v1', model: 'local-model' },        // http(s) 限定
+      { source: 'openai-compatible', baseUrl: 'https://user:pass@host/v1', model: 'm' },      // 資格情報埋め込み禁止
+    ]) {
+      const response = await server.inject({ method: 'POST', url: '/model-settings/test', payload: { scope, slot: 'main', candidate } });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(factory.created).toHaveLength(0);
   });
 
-  it('OpenAI互換のモデル一覧は保存済みキー（slot指定時）を使い、クエリのapiKeyは無視する', async () => {
+  it('候補の宛先が保存済みと違えば保存済みキーを使わない（usedStoredKey:false）', async () => {
     await server.inject({ method: 'PUT', url: '/model-settings', payload: { scope, main: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'local-model', apiKey: SECRET } } });
 
-    const withoutSlot = await server.inject({ method: 'GET', url: '/model-catalog/openai-compatible-models', query: { ...scope, baseUrl: 'http://127.0.0.1:1234/v1', apiKey: 'sk-from-query-should-be-ignored' } });
-    expect(withoutSlot.json()).toEqual({ models: ['local-a', 'local-b'] });
+    const away = await server.inject({ method: 'POST', url: '/model-settings/test', payload: { scope, slot: 'main', candidate: { source: 'openai-compatible', baseUrl: 'https://evil.example.com/v1', model: 'local-model' } } });
+
+    expect(away.json()).toMatchObject({ ok: true, usedStoredKey: false });
+    expect(factory.created.at(-1)?.model).toEqual({ id: 'local-model', url: 'https://evil.example.com/v1' });
+    expect(away.body).not.toContain(SECRET);
+  });
+
+  it('宛先が変わる保存ではキーを継承しない', async () => {
+    await server.inject({ method: 'PUT', url: '/model-settings', payload: { scope, main: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'local-model', apiKey: SECRET } } });
+
+    const moved = await server.inject({ method: 'PUT', url: '/model-settings', payload: { scope, main: { source: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' } } });
+
+    expect(moved.json().settings.main.apiKey).toEqual({ configured: false });
+  });
+
+  it('スロット未指定の PUT は no-op（updatedAt を進めず、未保存なら空行も作らない）', async () => {
+    const empty = await server.inject({ method: 'PUT', url: '/model-settings', payload: { scope } });
+    expect(empty.json()).toEqual({ settings: { scope } });
+
+    await server.inject({ method: 'PUT', url: '/model-settings', payload: { scope, main: registrySlot } });
+    const saved = (await server.inject({ method: 'GET', url: '/model-settings', query: scope })).json().settings;
+    const noop = await server.inject({ method: 'PUT', url: '/model-settings', payload: { scope } });
+    expect(noop.json().settings.updatedAt).toBe(saved.updatedAt);
+  });
+
+  it('登録簿カタログは見出しだけを返し、モデル一覧は別ルートで取る', async () => {
+    const response = await server.inject({ method: 'GET', url: '/model-catalog' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ providers: [{ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', modelCount: 2 }] });
+
+    const models = await server.inject({ method: 'GET', url: '/model-catalog/openai/models' });
+    expect(models.statusCode).toBe(200);
+    expect(models.json()).toEqual({ models: ['gpt-4o', 'o4-mini'] });
+  });
+
+  it('未知のプロバイダのモデル一覧は400', async () => {
+    const response = await server.inject({ method: 'GET', url: '/model-catalog/no-such/models' });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe('BAD_REQUEST');
+  });
+
+  it('OpenAI互換のモデル一覧はPOSTのみ（GETは廃止・単純リクエストで発火させない）', async () => {
+    const legacy = await server.inject({ method: 'GET', url: '/model-catalog/openai-compatible-models', query: { ...scope, baseUrl: 'http://127.0.0.1:1234/v1', slot: 'main' } });
+    expect(legacy.statusCode).toBe(404);
+    expect(catalog.calls).toBe(0);
+  });
+
+  it('保存済みキーは宛先が一致するときだけ使う（任意URLへ送らせない）', async () => {
+    await server.inject({ method: 'PUT', url: '/model-settings', payload: { scope, main: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'local-model', apiKey: SECRET } } });
+
+    const withoutSlot = await server.inject({ method: 'POST', url: '/model-catalog/openai-compatible-models', payload: { scope, baseUrl: 'http://127.0.0.1:1234/v1' } });
+    expect(withoutSlot.json()).toEqual({ models: ['local-a', 'local-b'], usedStoredKey: false });
     expect(catalog.lastKey).toBeUndefined();
 
-    const withSlot = await server.inject({ method: 'GET', url: '/model-catalog/openai-compatible-models', query: { ...scope, baseUrl: 'http://127.0.0.1:1234/v1', slot: 'main' } });
+    const withSlot = await server.inject({ method: 'POST', url: '/model-catalog/openai-compatible-models', payload: { scope, baseUrl: 'http://127.0.0.1:1234/v1', slot: 'main' } });
     expect(withSlot.statusCode).toBe(200);
+    expect(withSlot.json()).toMatchObject({ usedStoredKey: true });
     expect(catalog.lastKey).toBe(SECRET);
     expect(catalog.lastBaseUrl).toBe('http://127.0.0.1:1234/v1');
+
+    // 別宛先を指定してもキーは付かない（CSRFで漏らさない）。
+    const elsewhere = await server.inject({ method: 'POST', url: '/model-catalog/openai-compatible-models', payload: { scope, baseUrl: 'https://evil.example.com/v1', slot: 'main' } });
+    expect(elsewhere.statusCode).toBe(200);
+    expect(elsewhere.json()).toMatchObject({ usedStoredKey: false });
+    expect(catalog.lastKey).toBeUndefined();
+    expect(elsewhere.body).not.toContain(SECRET);
+  });
+
+  it('baseUrl は保存経路と同じ検証を通す（http(s) 限定・資格情報埋め込み禁止）', async () => {
+    for (const baseUrl of ['ftp://host/v1', 'not a url', 'https://user:pass@host/v1']) {
+      const response = await server.inject({ method: 'POST', url: '/model-catalog/openai-compatible-models', payload: { scope, baseUrl } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe('BAD_REQUEST');
+    }
+    expect(catalog.calls).toBe(0);
   });
 
   it('モデル一覧の取得失敗は502（MODEL_CATALOG）', async () => {
     catalog.failure = new ModelCatalogError('Could not list models from http://127.0.0.1:1234/v1/models');
 
-    const response = await server.inject({ method: 'GET', url: '/model-catalog/openai-compatible-models', query: { ...scope, baseUrl: 'http://127.0.0.1:1234/v1' } });
+    const response = await server.inject({ method: 'POST', url: '/model-catalog/openai-compatible-models', payload: { scope, baseUrl: 'http://127.0.0.1:1234/v1' } });
 
     expect(response.statusCode).toBe(502);
     expect(response.json().error.code).toBe('MODEL_CATALOG');

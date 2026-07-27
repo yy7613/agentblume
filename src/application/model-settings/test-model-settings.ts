@@ -6,9 +6,16 @@
  * 誤ってUIから長い推論を走らせない。
  *
  * 秘密の扱い: 候補にキーが無ければ保存済みキーを開封して使う（UIでキーを再入力させない）。
+ * ただし**流用するのは宛先が一致するときだけ**である。candidate は baseUrl / provider を自由に
+ * 指定できるため、宛先を見ずに流用すると「保存済みキーを任意の宛先へ送らせる」経路になる。
+ * 不一致ならキー無しで試し、`usedStoredKey: false` で「保存済みキーは使っていない」と伝える。
  * 平文は工場へ渡す一時変数としてのみ存在し、**エラー文言へ混ざり込まないよう伏せ字化する**。
+ *
+ * 入力そのものが不正（http以外のURL等）なら**例外のまま投げる**（api で 400）。
+ * `ok:false` は「設定は形として妥当だが繋がらなかった」だけを意味する。
  */
-import { createModelSlotSettings, modelSlot, type ModelSlotName, type ModelSlotSettings } from '../../domain/model-settings/model-settings';
+import { createModelSlotSettings, modelSlot, sameModelDestination, type ModelSlotName, type ModelSlotSettings } from '../../domain/model-settings/model-settings';
+import { ModelSettingsValidationError } from '../../domain/model-settings/errors';
 import type { ModelSettingsRepository } from '../../domain/model-settings/model-settings-repository';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { ModelProviderFactoryPort, ResolvedSlotOptions } from './model-provider-factory';
@@ -31,8 +38,14 @@ export interface TestModelSettingsInput {
 }
 
 export type ModelSettingsTestResult =
-  | { readonly ok: true; readonly latencyMs: number; readonly reply: string }
-  | { readonly ok: false; readonly error: string };
+  | { readonly ok: true; readonly latencyMs: number; readonly reply: string; readonly usedStoredKey: boolean }
+  | { readonly ok: false; readonly error: string; readonly usedStoredKey: boolean };
+
+/** 解決済みの試行設定と「保存済みキーを流用したか」。 */
+interface ResolvedProbe {
+  readonly options: ResolvedSlotOptions;
+  readonly usedStoredKey: boolean;
+}
 
 function clip(value: string, max: number): string {
   const text = value.trim();
@@ -60,33 +73,43 @@ export class TestModelSettingsUseCase {
 
   async execute(input: TestModelSettingsInput, signal?: AbortSignal): Promise<ModelSettingsTestResult> {
     let plaintextKey: string | undefined;
+    let usedStoredKey = false;
     try {
       const resolved = await this.resolveOptions(input);
-      plaintextKey = typeof resolved.model === 'string' ? undefined : resolved.model.apiKey;
-      return await this.probe(resolved, signal);
+      usedStoredKey = resolved.usedStoredKey;
+      plaintextKey = typeof resolved.options.model === 'string' ? undefined : resolved.options.model.apiKey;
+      return { ...await this.probe(resolved.options, signal), usedStoredKey };
     } catch (error) {
+      // 入力の不変条件違反は疎通の失敗ではないので、そのまま api へ返して 400 にする。
+      if (error instanceof ModelSettingsValidationError) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, error: redact(clip(message === '' ? 'model test failed' : message, MAX_ERROR_CHARS), plaintextKey === undefined ? [] : [plaintextKey]) };
+      return { ok: false, error: redact(clip(message === '' ? 'model test failed' : message, MAX_ERROR_CHARS), plaintextKey === undefined ? [] : [plaintextKey]), usedStoredKey };
     }
   }
 
-  private async resolveOptions(input: TestModelSettingsInput): Promise<ResolvedSlotOptions> {
+  private async resolveOptions(input: TestModelSettingsInput): Promise<ResolvedProbe> {
     const stored = modelSlot(await this.repo.find(input.scope), input.slot);
     if (input.candidate === undefined) {
       if (stored === undefined) {
         const fallback = this.envDefault?.(input.slot);
         if (fallback === undefined) throw new Error(`Model settings are not configured for slot '${input.slot}'`);
-        return fallback;
+        return { options: fallback, usedStoredKey: false };
       }
-      return toResolvedSlotOptions(stored, stored.apiKey === undefined ? undefined : await this.cipher.open(stored.apiKey));
+      return {
+        options: toResolvedSlotOptions(stored, stored.apiKey === undefined ? undefined : await this.cipher.open(stored.apiKey)),
+        usedStoredKey: stored.apiKey !== undefined,
+      };
     }
     // 候補のキーは write-only 入力と同じ規約: 未指定なら保存済みキーを流用、空文字ならキー無し。
+    // ただし流用は宛先一致時に限る（不一致ならキー無しで試す）。
     const candidate = this.toSlot(input.candidate);
     const key = input.candidate.apiKey;
-    const plaintext = key === undefined
-      ? (stored?.apiKey === undefined ? undefined : await this.cipher.open(stored.apiKey))
-      : (key === null || key.trim() === '' ? undefined : key);
-    return toResolvedSlotOptions(candidate, plaintext);
+    if (key !== undefined) {
+      return { options: toResolvedSlotOptions(candidate, key === null || key.trim() === '' ? undefined : key), usedStoredKey: false };
+    }
+    const inheritable = stored !== undefined && stored.apiKey !== undefined && sameModelDestination(stored, input.candidate);
+    const plaintext = inheritable && stored.apiKey !== undefined ? await this.cipher.open(stored.apiKey) : undefined;
+    return { options: toResolvedSlotOptions(candidate, plaintext), usedStoredKey: plaintext !== undefined };
   }
 
   /** 候補設定はドメイン検証を通す（キーは含めない。ここでは形だけを見る）。 */
@@ -99,7 +122,7 @@ export class TestModelSettingsUseCase {
     );
   }
 
-  private async probe(options: ResolvedSlotOptions, signal?: AbortSignal): Promise<ModelSettingsTestResult> {
+  private async probe(options: ResolvedSlotOptions, signal?: AbortSignal): Promise<{ readonly ok: true; readonly latencyMs: number; readonly reply: string }> {
     const provider = this.factory.create({
       ...options,
       timeoutMs: MODEL_TEST_TIMEOUT_MS,

@@ -14,15 +14,24 @@ export interface SecretCipherPort {
 }
 
 /**
+ * 失敗の種別。**利用者が取れる行動が違う**ので分ける。
+ * - `decrypt-failed` … 鍵は読めたが復号できない（鍵の差し替え・改竄）。キーの再入力で直る → 409。
+ * - `key-unavailable` … 鍵ファイル自体が読めない・壊れている。再入力しても直らない（運用者の対処）→ 500。
+ */
+export type SecretCipherFailureReason = 'key-unavailable' | 'decrypt-failed';
+
+/**
  * 封緘・開封の失敗（鍵ファイルの差し替え・破損・改竄検知）。
  *
- * メッセージには**秘密値も鍵も含めない**。利用者が取るべき行動（キーの再入力）だけを伝える。
- * api では 409（設定を保存し直す必要がある状態）へ写す。
+ * メッセージには**秘密値も鍵も、鍵ファイルの絶対パスも含めない**
+ * （パスにはホームディレクトリ名＝利用者名が入り得る）。
  */
 export class SecretCipherError extends Error {
   readonly code = 'SECRET_CIPHER';
-  constructor(message: string, override readonly cause?: unknown) {
+  readonly reason: SecretCipherFailureReason;
+  constructor(message: string, override readonly cause?: unknown, reason: SecretCipherFailureReason = 'decrypt-failed') {
     super(message);
     this.name = 'SecretCipherError';
+    this.reason = reason;
   }
 }

@@ -8,6 +8,11 @@
  * - 登録簿のモデル（url なし）は `'provider/model'` 文字列のまま渡す（キーがある場合だけオブジェクト形）。
  *
  * timeout / maxTokens は呼び出し側の指定 > 工場の既定（env 由来）の順で決める。
+ *
+ * モデル名が空（`LM_STUDIO_MODEL` 未設定の env 既定など）でも**ここでは失敗させない**。
+ * create() は起動時の配線（SwitchableModelProvider のコンストラクタ）から呼ばれるため、
+ * ここで throw すると「モデルを設定する画面に到達する前にアプリが起動できない」ことになる。
+ * 空モデル名は MastraModelProvider が complete() 時点で「未設定」と分かる文言で拒否する。
  */
 import type { ModelProviderFactoryPort, ResolvedSlotOptions } from '../../application/model-settings/model-provider-factory';
 import type { ModelProviderPort } from '../../application/model/model-provider';

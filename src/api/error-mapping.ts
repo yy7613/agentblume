@@ -148,9 +148,10 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof McpClientError) return httpError(502, err.code, err.message);
 
   // モデル設定（v34）: 入力不正は400。復号失敗は「保存し直しが必要」な状態なので409
-  // （メッセージに秘密値は含まれない）。モデル一覧の取得失敗は外部依存の失敗なので502。
+  // （メッセージに秘密値は含まれない）。鍵ファイル自体が読めない場合は再入力しても直らない
+  // 運用上の障害なので 500 にする。モデル一覧の取得失敗は外部依存の失敗なので502。
   if (err instanceof ModelSettingsValidationError) return httpError(400, err.code, err.message);
-  if (err instanceof SecretCipherError) return httpError(409, err.code, err.message);
+  if (err instanceof SecretCipherError) return httpError(err.reason === 'key-unavailable' ? 500 : 409, err.code, err.message);
   if (err instanceof ModelCatalogError) return httpError(502, err.code, err.message);
 
   if (err instanceof UnsafeToolError) return httpError(403, err.code, err.message);

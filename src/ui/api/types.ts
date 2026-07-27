@@ -870,12 +870,19 @@ export interface MaskedApiKeyDto {
 export type ModelSlotSettingsDto =
   | { readonly source: 'registry'; readonly model: string; readonly apiKey: MaskedApiKeyDto }
   | { readonly source: 'openai-compatible'; readonly baseUrl: string; readonly model: string; readonly apiKey: MaskedApiKeyDto };
+/**
+ * 設定の保存先。`ephemeral` は再起動で設定が消える（サーバーが `:memory:` DBで動いている）。
+ * UIは「揮発ストレージのため再起動で消えます」と警告する。
+ */
+export type ModelSettingsStorageDto = 'persistent' | 'ephemeral';
 /** GET/PUT /model-settings の `settings`。スロット省略 = env 既定を使用中。 */
 export interface ModelSettingsDto {
   readonly scope: TenantScopeDto;
   readonly main?: ModelSlotSettingsDto;
   readonly judge?: ModelSlotSettingsDto;
   readonly updatedAt?: string;
+  /** GET のみ。PUT の応答には付かない。 */
+  readonly storage?: ModelSettingsStorageDto;
 }
 /** PUT /model-settings の body のスロット部（apiKey は write-only）。 */
 export interface ModelSlotSettingsInputDto {
@@ -896,17 +903,42 @@ export interface TestModelSettingsDto {
   readonly slot: ModelSlotNameDto;
   readonly candidate?: ModelSlotSettingsInputDto;
 }
-/** 疎通テストの結果。接続失敗も ok:false として200で返る。 */
+/**
+ * 疎通テストの結果。接続失敗も ok:false として200で返る（入力不正は 400）。
+ * `usedStoredKey` が false のとき、candidate の宛先が保存済み設定と異なるため
+ * 保存済みキーを使わずに試している（UIは「キーを入力してください」と促せる）。
+ */
 export type ModelSettingsTestResultDto =
-  | { readonly ok: true; readonly latencyMs: number; readonly reply: string }
-  | { readonly ok: false; readonly error: string };
-/** GET /model-catalog。models は provider を除いたモデルID（設定値は `${id}/${model}`）。 */
+  | { readonly ok: true; readonly latencyMs: number; readonly reply: string; readonly usedStoredKey: boolean }
+  | { readonly ok: false; readonly error: string; readonly usedStoredKey: boolean };
+/**
+ * GET /model-catalog は**見出しだけ**を返す（モデル一覧は含まない）。
+ * モデル一覧は `GET /model-catalog/:providerId/models` で個別に取る（全件・クリップなし）。
+ */
 export interface ModelCatalogProviderDto {
   readonly id: string;
   readonly name: string;
   readonly envVar?: string;
-  readonly models: readonly string[];
+  /** 選択可能なチャットモデル数。 */
+  readonly modelCount: number;
 }
 export interface ModelCatalogDto {
   readonly providers: readonly ModelCatalogProviderDto[];
+}
+/** GET /model-catalog/:providerId/models。models は provider を除いたモデルID（設定値は `${id}/${model}`）。 */
+export interface ModelCatalogProviderModelsDto {
+  readonly models: readonly string[];
+}
+/** POST /model-catalog/openai-compatible-models の body（GETは廃止・CSRF緩和）。 */
+export interface ListOpenAiCompatibleModelsDto {
+  readonly scope: TenantScopeDto;
+  readonly baseUrl: string;
+  /** 指定時、保存済みキーは**保存済み baseUrl と一致するときだけ**使われる。 */
+  readonly slot?: ModelSlotNameDto;
+}
+/** POST /model-catalog/openai-compatible-models の応答。 */
+export interface OpenAiCompatibleModelsResultDto {
+  readonly models: readonly string[];
+  /** 保存済みキーを実際に使ったか（宛先不一致なら false）。 */
+  readonly usedStoredKey: boolean;
 }

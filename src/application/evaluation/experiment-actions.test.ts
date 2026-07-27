@@ -31,6 +31,20 @@ describe('experiment action use cases', () => {
     expect(value).toMatchObject({ status: 'queued', progress: { total: 1 } }); expect(enqueue).toHaveBeenCalledWith(scope, 'exp');
   });
 
+  it('モデル指紋の解決に失敗しても起票は止めず、解決できなかったことをレコードへ残す', async () => {
+    // 指紋は観測情報であって起票の前提条件ではない。Run側は解決失敗を握って実行を続けるので、
+    // 起票だけが SecretCipherError で 409 になるのは非対称だった（方針をRun側へ揃える）。
+    const repo = new Repo(); const enqueue = vi.fn();
+    const dataset = createEvaluationDataset({ metadata: { internalId: 'set', workingName: 's', displayName: 's', publishName: 's', version: v, owner: 'o', state: 'draft', tenant: scope }, cases: [{ id: 'case', kind: 'turn', input: 'hello', tags: [], source: 'manual' }] });
+    const profile = createEvaluatorProfile({ metadata: { ...dataset.metadata, internalId: 'profile' }, metrics: [{ id: 'quality', kind: 'code', scorer: 'completeness', weight: 1, required: true }] });
+    const create = new CreateExperimentUseCase(repo, { findVersion: async () => dataset } as unknown as EvaluationDatasetRepository, { findVersion: async () => profile } as unknown as EvaluatorProfileRepository, { findVersion: async () => ({ kind: 'normal' }) } as unknown as AgentRepository, { enqueue, cancel: vi.fn(), shutdown: vi.fn() }, () => { throw new Error('Stored API key could not be decrypted'); }, () => 'exp', () => new Date('2026-07-10T00:00:00Z'));
+
+    const value = await create.execute({ scope, target: { agentId: 'agent', version: v }, dataset: { id: 'set', version: v }, evaluatorProfile: { id: 'profile', version: v }, repetitions: 1 });
+
+    expect(value).toMatchObject({ status: 'queued', snapshot: { provider: 'unresolved', model: 'unresolved', modelConfigHash: 'unresolved' } });
+    expect(enqueue).toHaveBeenCalledWith(scope, 'exp');
+  });
+
   it('cancel/query/resumeとNotFoundを処理する', async () => {
     const repo = new Repo(); repo.value = startExperiment(makeExperiment(), 'start'); const worker = { enqueue: vi.fn(), cancel: vi.fn(), shutdown: vi.fn() } satisfies ExperimentWorkerPort;
     expect(await new QueryExperimentsUseCase(repo).get(scope, 'exp')).toMatchObject({ status: 'running' });

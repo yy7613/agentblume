@@ -202,34 +202,80 @@ describe('status フォールバック（未知の code）', () => {
   });
 });
 
-describe('モデル実行（LM Studio）', () => {
-  it('タイムアウト・中断は稼働確認とリトライを促す', () => {
-    expect(ja(502, 'MODEL_PROVIDER', 'LM Studio request was aborted or timed out'))
-      .toBe('モデル実行がタイムアウトしました。LM Studioの稼働状況とモデルのロードを確認し、再試行してください。');
-    expect(en(502, 'MODEL_PROVIDER', 'LM Studio request was aborted or timed out'))
-      .toBe('The model run timed out. Check that LM Studio is running with the model loaded, then retry.');
+describe('モデル実行の失敗（プロバイダ中立）', () => {
+  it('タイムアウト・中断は応答確認とリトライを促す（LM Studioは括弧の補足に留める）', () => {
+    expect(ja(502, 'MODEL_PROVIDER', 'Model request was aborted or timed out'))
+      .toBe('モデル実行がタイムアウトしました。モデルサーバーの応答とモデルのロード状況を確認して再試行してください（ローカルLM Studioを使う場合は起動しているか確認）。');
+    expect(en(502, 'MODEL_PROVIDER', 'Model request was aborted or timed out'))
+      .toContain('The model run timed out.');
   });
 
-  it('未設定・HTTP失敗・応答不正・接続失敗をそれぞれ案内する', () => {
-    expect(ja(502, 'MODEL_PROVIDER', 'LM Studio model is not configured (set LM_STUDIO_MODEL)')).toContain('LM_STUDIO_MODEL');
-    expect(ja(502, 'MODEL_PROVIDER', 'LM Studio request failed with HTTP 404')).toBe('モデルサーバーがHTTP 404 を返しました。LM Studioのログとモデル設定を確認して再試行してください。');
-    expect(en(502, 'MODEL_PROVIDER', 'LM Studio request failed with HTTP 404')).toContain('HTTP 404');
-    expect(ja(502, 'MODEL_PROVIDER', 'LM Studio returned an invalid chat completion')).toContain('ツール呼び出しに対応したモデル');
-    expect(en(502, 'MODEL_PROVIDER', 'LM Studio returned no completion choice')).toContain('shorten the prompt');
-    expect(ja(502, 'MODEL_PROVIDER', 'LM Studio request failed')).toBe('モデルサーバーに接続できませんでした。LM Studioが起動しているか確認して再試行してください。');
-    expect(en(502, 'MODEL_PROVIDER', 'fetch failed')).toBe('Could not reach the model server. Check that LM Studio is running, then retry.');
+  it('未設定は設定画面かLM_STUDIO_MODELへ誘導する（v36の新メッセージ）', () => {
+    const raw = 'Model is not configured. Choose a model in model settings, or set the LM_STUDIO_MODEL environment variable.';
+    expect(ja(502, 'MODEL_PROVIDER', raw)).toBe('モデルが未設定です。設定画面でモデルを選ぶか、環境変数 LM_STUDIO_MODEL を設定してください。');
+    expect(en(502, 'MODEL_PROVIDER', raw)).toContain('Choose a model in model settings');
+  });
+
+  it('HTTP失敗は認証エラーとそれ以外を分ける（プロバイダを決め打ちしない）', () => {
+    expect(ja(502, 'MODEL_PROVIDER', 'Model request failed with HTTP 401')).toBe('モデルサーバーの認証に失敗しました（HTTP 401）。設定画面のAPIキーを確認して再試行してください。');
+    expect(en(502, 'MODEL_PROVIDER', 'Model request failed with HTTP 403')).toContain('Check the API key in model settings');
+    expect(ja(502, 'MODEL_PROVIDER', 'Model request failed with HTTP 404')).toBe('モデルサーバーがHTTP 404 を返しました。設定画面のモデル設定とエンドポイントを確認して再試行してください。');
+    expect(en(502, 'MODEL_PROVIDER', 'Model request failed with HTTP 404')).toContain('HTTP 404');
+    expect(ja(502, 'MODEL_PROVIDER', 'Model request failed with HTTP 404')).not.toContain('LM Studio');
+  });
+
+  it('応答不正・空応答・接続失敗をそれぞれ案内する', () => {
+    expect(ja(502, 'MODEL_PROVIDER', 'Model returned an invalid chat completion')).toContain('ツール呼び出しに対応したモデル');
+    expect(en(502, 'MODEL_PROVIDER', 'Model stream returned no completion choice')).toContain('shorten the prompt');
+    expect(ja(502, 'MODEL_PROVIDER', 'Model stream returned no completion choice')).toContain('モデルの応答を解釈できませんでした');
+    expect(ja(502, 'MODEL_PROVIDER', 'Model request failed')).toBe('モデルサーバーに接続できませんでした。設定画面のモデル設定とエンドポイントを確認してください（ローカルLM Studioを使う場合は起動しているか確認）。');
+    expect(en(502, 'MODEL_PROVIDER', 'fetch failed')).toContain('Could not reach the model server.');
   });
 
   it('未知のモデル失敗は原文を添えて案内する', () => {
-    expect(ja(502, 'MODEL_PROVIDER', 'offline')).toBe('モデル実行に失敗しました。LM Studioの稼働状況を確認して再試行してください。（offline）');
-    expect(en(502, 'MODEL_PROVIDER', 'offline')).toBe('The model run failed. Check LM Studio, then retry. (offline)');
-    expect(ja(502, 'MODEL_PROVIDER', '')).toBe('モデル実行に失敗しました。LM Studioの稼働状況を確認して再試行してください。');
-    expect(en(502, 'MODEL_PROVIDER', '')).toBe('The model run failed. Check LM Studio, then retry.');
+    expect(ja(502, 'MODEL_PROVIDER', 'offline')).toBe('モデル実行に失敗しました。設定画面のモデル設定を確認して再試行してください。（offline）');
+    expect(en(502, 'MODEL_PROVIDER', 'offline')).toBe('The model run failed. Check the model settings, then retry. (offline)');
+    expect(ja(502, 'MODEL_PROVIDER', '')).toBe('モデル実行に失敗しました。設定画面のモデル設定を確認して再試行してください。');
+    expect(en(502, 'MODEL_PROVIDER', '')).toBe('The model run failed. Check the model settings, then retry.');
   });
 
   it('審査プロバイダ失敗とメッセージ内 LM Studio 検出も同じ導線にする', () => {
     expect(ja(502, 'JUDGE_PROVIDER', 'judge model timed out')).toContain('タイムアウト');
-    expect(ja(500, 'INTERNAL', 'LM Studio request was aborted or timed out')).toContain('LM Studioの稼働状況');
+    expect(ja(500, 'INTERNAL', 'LM Studio request was aborted or timed out')).toContain('モデル実行がタイムアウト');
+  });
+});
+
+describe('モデル設定・カタログの失敗は実行エラーと混ぜない', () => {
+  it('MODEL_SETTINGS_VALIDATION は入力ミスとして扱い、provider/model 形式を案内する', () => {
+    const raw = "createModelSettings: main.model must be in 'provider/model' form, but got 'gpt-4o'";
+    expect(ja(400, 'MODEL_SETTINGS_VALIDATION', raw)).toBe('モデル設定の入力内容を確認してください（モデルは provider/model 形式で入力してください（例: openai/gpt-4o、入力値: gpt-4o））');
+    expect(ja(400, 'MODEL_SETTINGS_VALIDATION', raw)).not.toContain('LM Studio');
+    expect(en(400, 'MODEL_SETTINGS_VALIDATION', raw)).toContain("must be in 'provider/model' form");
+  });
+
+  it('ベースURLの不正もモデル実行エラーにしない', () => {
+    expect(ja(400, 'MODEL_SETTINGS_VALIDATION', 'createModelSettings: main.baseUrl must use http(s): ftp://x')).toContain('http または https');
+    expect(ja(400, 'MODEL_SETTINGS_VALIDATION', 'createModelSettings: main.baseUrl must be a valid URL: not a url')).toContain('ベースURLの形式');
+    expect(ja(400, 'MODEL_SETTINGS_VALIDATION', 'createModelSettings: main.baseUrl must not embed credentials (user:password@host)')).toContain('認証情報');
+    expect(ja(400, 'MODEL_SETTINGS_VALIDATION', 'createModelSettings: main.model must be a non-empty string')).toContain('必須です');
+    // 未知の検証文言は見出し + 原文で残す。
+    expect(ja(400, 'MODEL_SETTINGS_VALIDATION', 'createModelSettings: props is required')).toBe('モデル設定の入力内容を確認してください（createModelSettings: props is required）');
+  });
+
+  it('MODEL_CATALOG（一覧取得失敗・502）は「実行に失敗」ではなく一覧取得の失敗として出す', () => {
+    const raw = 'Could not list models from http://127.0.0.1:1234/v1/models';
+    expect(ja(502, 'MODEL_CATALOG', raw)).toBe(`モデル一覧を取得できませんでした。エンドポイントとAPIキーを確認して再試行してください（${raw}）`);
+    expect(ja(502, 'MODEL_CATALOG', raw)).not.toContain('LM Studio');
+    expect(en(502, 'MODEL_CATALOG', 'Model list response did not contain a data array')).toContain('Could not fetch the model list');
+  });
+
+  it('SECRET_CIPHER は 500（鍵ファイル不正）と 409（復号失敗）で文言を分ける', () => {
+    expect(ja(500, 'SECRET_CIPHER', 'Secret key file is unreadable')).toContain('AGENTCONTEXT_SECRET_KEY_PATH');
+    expect(ja(500, 'SECRET_CIPHER', 'Secret key file is unreadable')).toContain('再入力では復旧しません');
+    expect(en(500, 'SECRET_CIPHER', 'Secret key file is unreadable')).toContain('will not fix this');
+    expect(ja(409, 'SECRET_CIPHER', 'Stored secret could not be decrypted')).toContain('APIキーを再入力');
+    expect(ja(409, 'SECRET_CIPHER', 'Stored secret could not be decrypted')).not.toContain('AGENTCONTEXT_SECRET_KEY_PATH');
+    expect(en(409, 'SECRET_CIPHER', 'Stored secret could not be decrypted')).toContain('Enter the API key again');
   });
 });
 

@@ -19,6 +19,18 @@ test-results/
 .env.*
 !.env.example
 scripts/lm-studio.local.ps1
+# 秘密値の暗号鍵（誤コミットすると暗号化の意味が消える）
+*.secret.key
+agentblume.secret.key
+secret.key
+
+# Local database (APIキーの暗号文を含む)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 
 # Editor & OS
 .DS_Store

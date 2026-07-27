@@ -64,6 +64,20 @@ function registryModel(value: unknown, field: string): string {
   return model;
 }
 
+/**
+ * baseUrl として受け入れる形かどうか（api層の入口検証と共有する純関数）。
+ *
+ * userinfo 付き（`https://user:pass@host`）を弾くのは、baseUrl が**封緘対象外**で
+ * DB・API応答・ログに平文のまま残るためである（URLへ秘密を書かせない）。
+ */
+export function isHttpBaseUrl(value: unknown): boolean {
+  if (typeof value !== 'string' || value.trim() === '' || value.trim().length > MODEL_BASE_URL_MAX_LENGTH) return false;
+  let parsed: URL;
+  try { parsed = new URL(value.trim()); } catch { return false; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  return parsed.username === '' && parsed.password === '';
+}
+
 function httpUrl(value: unknown, field: string): string {
   nonEmpty(value, field);
   const raw = bounded(value, field, MODEL_BASE_URL_MAX_LENGTH);
@@ -73,7 +87,62 @@ function httpUrl(value: unknown, field: string): string {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new ModelSettingsValidationError(`createModelSettings: ${field} must use http(s): ${raw}`);
   }
+  // 資格情報を含み得るのでメッセージにURLは載せない。
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new ModelSettingsValidationError(`createModelSettings: ${field} must not embed credentials (user:password@host)`);
+  }
   return raw;
+}
+
+/**
+ * 宛先の同一性判定に使う正規化（純関数）。
+ *
+ * 「小文字化した origin + 末尾スラッシュを除いた pathname」だけを見る。
+ * query / fragment は宛先の同一性に寄与しないので落とす。URLとして解釈できない値は
+ * 文字列としてだけ正規化する（判定は必ず「不一致寄り」に倒れる）。
+ */
+export function normalizeBaseUrl(value: string): string {
+  const raw = value.trim();
+  let parsed: URL;
+  try { parsed = new URL(raw); } catch { return raw.toLowerCase().replace(/\/+$/, ''); }
+  return `${parsed.origin.toLowerCase()}${parsed.pathname.replace(/\/+$/, '').toLowerCase()}`;
+}
+
+/** 2つの baseUrl が同じ宛先を指すか。 */
+export function sameBaseUrl(left: string, right: string): boolean {
+  return normalizeBaseUrl(left) === normalizeBaseUrl(right);
+}
+
+/**
+ * APIキーを流用してよいかを決める「宛先」。
+ *
+ * registry は provider 接頭辞（キーはプロバイダ単位で発行される）、
+ * openai-compatible は正規化済み baseUrl（キーはエンドポイント単位）で同一性を見る。
+ */
+export type ModelDestination =
+  | { readonly source: 'registry'; readonly provider: string }
+  | { readonly source: 'openai-compatible'; readonly baseUrl: string };
+
+export interface ModelDestinationInput {
+  readonly source: ModelSettingsSource;
+  readonly baseUrl?: string;
+  readonly model: string;
+}
+
+export function modelDestination(input: ModelDestinationInput): ModelDestination {
+  if (input.source === 'registry') {
+    const slash = input.model.indexOf('/');
+    return { source: 'registry', provider: (slash > 0 ? input.model.slice(0, slash) : input.model).trim().toLowerCase() };
+  }
+  return { source: 'openai-compatible', baseUrl: normalizeBaseUrl(input.baseUrl ?? '') };
+}
+
+/** 宛先が同じなら保存済みキーを流用してよい。 */
+export function sameModelDestination(left: ModelDestinationInput, right: ModelDestinationInput): boolean {
+  const a = modelDestination(left);
+  const b = modelDestination(right);
+  if (a.source !== b.source) return false;
+  return a.source === 'registry' && b.source === 'registry' ? a.provider === b.provider : a.source === 'openai-compatible' && b.source === 'openai-compatible' && a.baseUrl === b.baseUrl;
 }
 
 /**

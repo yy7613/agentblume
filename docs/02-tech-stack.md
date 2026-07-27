@@ -132,6 +132,15 @@ flowchart LR
 | `LM_STUDIO_API_KEY` | 未設定 | Bearer tokenが必要な場合のみ設定 |
 | `LM_STUDIO_TIMEOUT_MS` | `600000` | local推論の総時間timeout（正のミリ秒）。ハング検知は `LM_STUDIO_IDLE_TIMEOUT_MS`（既定60000）が担うため長めに取る |
 
+### 秘密値の保管（local）
+
+| env | 既定 | 内容 |
+|---|---|---|
+| `AGENTCONTEXT_SECRET_KEY_PATH` | `~/.agentblume/secret.key` | UIから保存したAPIキーを暗号化する鍵ファイル（AES-256-GCM・32バイト）のパス。初回利用時に自動生成する。**DBとは別の場所に置く**（DBファイルだけが流出しても平文キーを復元できないようにするため）。旧版がDBと同じディレクトリに `agentblume.secret.key` を作っている場合はそれを読み続ける |
+
+> 鍵ファイルとDBファイルは `.gitignore` 済み。鍵を失うと保存済みAPIキーは復号できない（UIから再入力すれば復旧する）。
+> Windows（NTFS）では鍵ファイルへの `chmod 0o600` が実効性を持たないため、保護はOSのACL・ディスク暗号化に依存する。
+
 > プレビュー・テスト・本番実行を明確に表示し、使用データと権限を分離する（`ideas-v2.md §8`）。
 >
 > SQLiteは初期開発の永続ストアであり、InMemoryはテスト専用とする。DB固有機能をユースケース層へ漏らさず、SQLiteとPostgreSQLのAdapterに同じ`StoragePort`契約テストを適用する。

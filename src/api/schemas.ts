@@ -16,7 +16,7 @@ import { SURVEY_QUESTION_KINDS } from '../domain/validation/survey';
 import { CODE_SCORERS } from '../domain/evaluation/evaluator-profile';
 import { EVALUATION_CASE_SOURCES } from '../domain/evaluation/evaluation-dataset';
 import { JUDGE_REFERENCE_POLICIES } from '../domain/evaluation/judge-rubric';
-import { MODEL_BASE_URL_MAX_LENGTH, MODEL_ID_MAX_LENGTH, MODEL_SETTINGS_SOURCES, MODEL_SLOT_NAMES } from '../domain/model-settings/model-settings';
+import { MODEL_BASE_URL_MAX_LENGTH, MODEL_ID_MAX_LENGTH, MODEL_SLOT_NAMES, isHttpBaseUrl } from '../domain/model-settings/model-settings';
 
 /** テナントスコープ（tenantId / workspaceId 非空）。 */
 export const tenantScopeSchema = z.object({
@@ -628,14 +628,25 @@ export const testMcpServerBodySchema = z.object({ scope: tenantScopeSchema });
  * apiKey は **write-only の平文**（応答には決して含めない）。
  *   文字列 → 保存時に封緘 / 省略 → 既存のキーを維持 / 空文字・null → クリア。
  * スロット自体を null にすると設定を消して env 既定へ戻す。
- * 詳細な不変条件（`provider/model` 形式・baseUrl の http(s)）はドメインが一手に担う。
+ * `provider/model` 形式の検証はドメインが一手に担うが、**baseUrl は入口で必ず縛る**
+ * （http(s) 限定・資格情報埋め込み禁止。保存経路以外でも同じ検証を通すため）。
  */
-const modelSlotSettingsInputSchema = z.object({
-  source: z.enum(MODEL_SETTINGS_SOURCES),
-  baseUrl: z.string().min(1).max(MODEL_BASE_URL_MAX_LENGTH).optional(),
-  model: z.string().min(1).max(MODEL_ID_MAX_LENGTH),
-  apiKey: z.string().max(4096).nullable().optional(),
-});
+const modelBaseUrlSchema = z.string().min(1).max(MODEL_BASE_URL_MAX_LENGTH)
+  .refine(isHttpBaseUrl, { message: 'must be an http(s) URL without embedded credentials' });
+/** source ごとに baseUrl の要否が違うので判別unionにする（openai-compatible は必須）。 */
+const modelSlotSettingsInputSchema = z.discriminatedUnion('source', [
+  z.object({
+    source: z.literal('registry'),
+    model: z.string().min(1).max(MODEL_ID_MAX_LENGTH),
+    apiKey: z.string().max(4096).nullable().optional(),
+  }),
+  z.object({
+    source: z.literal('openai-compatible'),
+    baseUrl: modelBaseUrlSchema,
+    model: z.string().min(1).max(MODEL_ID_MAX_LENGTH),
+    apiKey: z.string().max(4096).nullable().optional(),
+  }),
+]);
 export const modelSettingsQuerySchema = scopeQuerySchema;
 export const saveModelSettingsBodySchema = z.object({
   scope: tenantScopeSchema,
@@ -648,11 +659,17 @@ export const testModelSettingsBodySchema = z.object({
   candidate: modelSlotSettingsInputSchema.optional(),
 });
 /**
- * OpenAI互換エンドポイントのモデル一覧。
- * **apiKey はクエリで受け取らない**（URL・アクセスログへ秘密値が残るため）。
- * 保存済みキーを使いたい場合は slot を指定する。
+ * OpenAI互換エンドポイントのモデル一覧（**POST**）。
+ *
+ * 保存済みキーを使い得る操作なので、GET（単純リクエスト）では受けない。
+ * JSON body を要求することで `<img src=...>` / form 送信からは呼べなくなる（CSRF緩和）。
+ * **apiKey は受け取らない**。保存済みキーを使いたい場合は slot を指定する
+ * （実際に使うのは保存済み baseUrl と一致する宛先のときだけ）。
  */
-export const openAiCompatibleModelsQuerySchema = scopeQuerySchema.extend({
-  baseUrl: z.string().min(1).max(MODEL_BASE_URL_MAX_LENGTH),
+export const openAiCompatibleModelsBodySchema = z.object({
+  scope: tenantScopeSchema,
+  baseUrl: modelBaseUrlSchema,
   slot: z.enum(MODEL_SLOT_NAMES).optional(),
 });
+/** GET /model-catalog/:providerId/models のパスパラメータ。 */
+export const modelCatalogProviderParamsSchema = z.object({ providerId: z.string().min(1).max(128) });

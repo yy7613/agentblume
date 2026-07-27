@@ -13,7 +13,7 @@ import type { RunRepository } from '../../domain/run/run-repository';
 import { EtlEngine } from '../etl/engine';
 import type { JsonObject, ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../model/model-provider';
 import { AgentRunError, RunFailedError, UnsafeToolError } from './errors';
-import { queryWorkspaceTable, RunAgentPreviewUseCase } from './run-agent-preview';
+import { queryWorkspaceTable, RunAgentPreviewUseCase, type RunObservabilityOptions } from './run-agent-preview';
 import { toolToModelDefinition } from './tool-schema';
 import { FakeWikiRepository } from '../memory/memory-repositories.fixtures';
 import { createWikiSpace } from '../../domain/memory/wiki-space';
@@ -727,12 +727,13 @@ function harnessUseCase(options: {
   readonly mcpServers?: McpServerRepository;
   readonly mcpClient?: McpClientPort;
   readonly now?: () => Date;
+  readonly observability?: RunObservabilityOptions;
 }): RunAgentPreviewUseCase {
   let sequence = 0;
   return new RunAgentPreviewUseCase(
     new StaticRepository(options.tool ?? null), new EtlEngine(createDefaultRegistry()), options.model,
     options.runs ?? new MemoryRuns(), () => `run-${(sequence += 1)}`, options.now ?? (() => new Date('2026-07-11T00:00:00.000Z')),
-    new StaticAgents(options.agent), undefined, undefined,
+    new StaticAgents(options.agent), undefined, options.observability,
     options.wiki, options.sessions, options.artifacts, undefined, options.webSearch,
     options.mcpServers, options.mcpClient,
   );
@@ -1023,6 +1024,43 @@ describe('RunAgentPreviewUseCase tool approval', () => {
     const stored = runs.records.get(paused.runId);
     expect(stored?.status).toBe('succeeded');
     expect(stored?.checkpoint).toBeUndefined();
+  });
+
+  it('再開でもモデル設定を先に解決してから capabilities ガードを通す', async () => {
+    /**
+     * 切替可能な配線の capabilities() は「最後に解決したアダプタ」の能力を返す同期契約なので、
+     * 解決を挟まずに prepareLoop を通すと env 既定由来の古い能力でガードが誤判定する。
+     * 「解決するまで tool-calling を持たないモデル」で、再開経路が解決を先に走らせることを固定する。
+     */
+    const runs = new MemoryRuns();
+    const queue: ModelCompletion[] = [toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('Alice: 42')];
+    const requests: ModelCompletionRequest[] = [];
+    let resolved = false;
+    const model: ModelProviderPort = {
+      capabilities: () => resolved ? ['chat', 'tool-calling'] : ['chat'],
+      complete: async (request) => {
+        requests.push(request);
+        const item = queue.shift();
+        if (item === undefined) throw new Error('missing completion');
+        return item;
+      },
+    };
+    const observability: RunObservabilityOptions = {
+      model: { provider: 'openai-compatible', model: 'stale', modelConfigHash: 'stale' },
+      resolveModel: async () => { resolved = true; return { provider: 'openai-compatible', model: 'switched', modelConfigHash: 'switched' }; },
+    };
+    const usecase = harnessUseCase({ agent: approvalAgent(), model, tool: makeTool('session-write'), runs, observability });
+
+    const paused = await usecase.executeSaved({ scope, agentId: 'approver', message: 'go', mode: 'preview', interactive: true });
+    expect(paused.status).toBe('waiting-approval');
+    // 承認待ちの間にUIでモデルを切り替えた状況（次の解決まで能力は古いまま）。
+    resolved = false;
+
+    const resumed = await usecase.resumeSavedRun({ scope, runId: paused.runId, decision: 'approve' });
+
+    expect(resumed.response).toBe('Alice: 42');
+    expect(resolved).toBe(true);
+    expect(runs.records.get(paused.runId)?.status).toBe('succeeded');
   });
 
   it('reject再開は拒否結果をモデルへ渡し、代替案で完走できる', async () => {

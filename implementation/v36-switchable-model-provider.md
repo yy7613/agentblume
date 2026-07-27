@@ -38,14 +38,40 @@ strict / Zod v4 / Vitest / 非mutate / depcruise 0違反 / カバレッジゲー
 - 設定画面に「モデル」セクション: main/judge 各スロット = ソースradio（レジストリ/OpenAI互換）→ プロバイダ・モデルのドロップダウン（手入力フォールバック）→ APIキー（password、placeholderでhint表示、「保存済みキーを削除」チェック）→ テスト/保存/env既定に戻す。フォーム⇔DTO変換は `src/ui/settings/model-settings-form.ts`（純関数）。
 - 旧「Model provider」env表示カードは「Environment defaults」へ改称。
 
+## 4.5 レビュー是正（v36.1）
+
+初版のレビューで見つかった問題をすべて修正した。要点:
+
+**秘密の取り扱い**
+- **キーは宛先に紐づく**: 保存済みAPIキーを流用するのは「要求 baseUrl / provider が保存済みスロットと一致する」ときだけ（`sameModelDestination`）。保存時も、キー未入力で宛先が変わったら既存キーを**継承せずクリア**する。旧実装は任意の宛先へキーを送れた。
+- `GET /model-catalog/openai-compatible-models` を **POST 化**（単純GETのままだと `<img src>` だけで保存済みキーを外部URLへ送らせるCSRFが成立した）。baseUrl は全経路で保存時と同じ http(s)・userinfo禁止の検証を通す。
+- 鍵ファイルの既定を `~/.agentblume/secret.key` に変更（旧: DBと同ディレクトリ = フォルダごとの同期・ZIP・コミットで鍵と暗号文が一緒に動く）。旧パスに鍵があればそれを読む後方互換あり。`.gitignore` に鍵とDBを追加。
+- `SecretCipherError.reason` を `key-unavailable`(500) / `decrypt-failed`(409) に分離（前者は再入力しても直らないため案内を変える）。エラー本文から絶対パスを除去。4文字以下のキーは hint を作らない。
+
+**ランタイムの正しさ**
+- **usage 欠落の是正**: Mastra は `includeUsage` を配線しないため OpenAI互換経路で usage が落ち、コスト・トークン集計が無言で消えていた。ルーターインスタンスの `resolveLanguageModel` をインスタンス単位でシャドウし、解決された内側モデルの config へ `includeUsage` と `transformRequestBody`（`response_format.json_schema.strict` の注入にも使用）を後付けする。リクエストボディを直接アサートするテストで固定。
+- 空ストリーム（choiceデルタ皆無）を「無言の成功」にせず `ModelProviderError` へ。
+- judge スロットにも指紋の事前解決を配線（失敗レコードに古い指紋が残り、さらに `model:''` がドメイン検証に落ちて judge の失敗がケース全体の失敗へ化けていた）。`resumeSavedRun` でも設定解決を先に走らせ、capabilities ガードが古い値で通らないようにした。
+- 価格解決に後方互換エイリアス（`openai-compatible` → `lm-studio` / `lm-studio-judge`）。`modelConfigHash` の入力は平文キーではなくキー指紋。`SwitchableModelProvider` は in-flight な解決を共有。`doStream()` の await も abort と race。
+- `MASTRA_OFFLINE` / `MASTRA_TELEMETRY_DISABLED` は副作用専用モジュール `src/mastra-runtime-env.ts` に集約し、Mastra を使う全モジュールの**最初の import** に置く（ESM のホイスティングで `import` 後の代入は手遅れなため。import順が意味を持つ）。
+
+**API・UI**
+- `/model-catalog` を2段構成に（見出しは `modelCount` のみ、モデル一覧は `GET /model-catalog/:providerId/models`）。50件の辞書順クリップで OpenRouter の主要モデルが全滅していた問題を解消し、非チャットモデル（embedding/whisper/画像/TTS 等）を除外。
+- `isModelFailure` を完全一致リスト化（`MODEL_SETTINGS_VALIDATION` / `MODEL_CATALOG` が実行エラー文言に化けていた）。エラー文言から LM Studio 決め打ちを排除。
+- テストボタンが「編集中の設定を送れないときに保存済み設定をテストして ok を返す」嘘の成功を解消（送れない状態は disabled、保存済みをテストする場合は明示）。
+- 揮発ストレージ警告、`usedStoredKey:false` の注記、モデル一覧取得の race（古い応答の破棄）、AbortSignal、`role="alert"/"status"`、テスト失敗文言の日本語化、`autoComplete="new-password"`。
+- 分析アシスタントの有効判定を `LM_STUDIO_MODEL` env 固定から「env または保存済み main スロット」の動的判定へ（UIで設定しても永久に無効だった）。
+
 ## 5. 挙動差分・既知の制約
 
 - localプロファイルの実行経路が `LmStudioModelProvider` → `SwitchableModelProvider`（中身 `MastraModelProvider`）へ。snapshot.provider ラベルが `lm-studio` → `openai-compatible` に変わり **modelConfigHash も変化**（`AGENTCONTEXT_MODEL_PRICING_JSON` を provider=lm-studio で書いている場合は要更新）。
 - Mastra経路は `stream_options.include_usage` を送らないため、usageを自発返却しないサーバーでは usage が undefined（LM Studioは返す）。
-- `suggestAnalysisConfig` の有効判定は依然 `LM_STUDIO_MODEL` env 依存（UI設定では有効化されない。要対応なら次版）。
-- `error-messages.ts` の `isModelFailure()` が `code.startsWith('MODEL')` のため、`MODEL_SETTINGS_VALIDATION`/`MODEL_CATALOG` がLM Studio前提の文言に吸われる（完全一致リスト化が本筋、未対応）。
 - モデル設定のスコープ既定は `AGENTCONTEXT_TENANT_ID`/`AGENTCONTEXT_WORKSPACE_ID`（`local`/`default`）。UIも同スコープを使用。
+- 価格表の provider ラベルは `openai-compatible` だが、`lm-studio` / `lm-studio-judge` で書かれた既存の `AGENTCONTEXT_MODEL_PRICING_JSON` もエイリアスで引ける（完全一致が優先。逆方向は引かない）。
+- usage/strict の補正は Mastra 内部構造（`resolveLanguageModel` が返す openai-compatible モデルの config）に依存する。SDK更新時に壊れたら、リクエストボディをアサートするテストが落ちて気づける設計。
+- 実験の snapshot は、モデル設定が復号できない場合 `provider:'unresolved'` になり得る（起票自体は止めない = Run側と同じ方針）。
+- MCPサーバー設定の env/headers は依然平文（v35のまま）。封緘するなら JSON等価編集との両立設計が必要。
 
 ## 6. 検証
 
-`npx vitest run` 228 files / **2062 passed**、`npm run typecheck` 0、`npm run depcruise` 0（688 modules）、`npm run test:cov` **合格**（Stmts 91.21 / Branch 81.82 / Funcs 92.09 / Lines 95.53 — v35時点から4指標とも改善）。vitestは大文字ドライブ（`E:\`）で実行。
+v36.1（レビュー是正後）: `npx vitest run` 228 files / **2148 passed**、`npm run typecheck` 0、`npm run depcruise` 0（690 modules）、`npm run test:cov` **合格**（Stmts 91.31 / Branch 81.98 / Funcs 92.14 / Lines 95.60）。vitestは大文字ドライブ（`E:\`）で実行。

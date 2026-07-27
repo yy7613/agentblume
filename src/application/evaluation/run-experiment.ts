@@ -15,9 +15,27 @@ import type { ScenarioRun } from '../../domain/validation/scenario-run';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { JudgeEvaluatorPort } from './judge-evaluator';
 import { JudgeEvaluationError } from '../../domain/evaluation/errors';
-import type { JudgeEvaluationRecord } from '../../domain/evaluation/experiment';
+import type { ExperimentModelSnapshot, JudgeEvaluationRecord } from '../../domain/evaluation/experiment';
 import type { TelemetryPort } from '../operations/telemetry';
 import { safeStartSpan } from '../operations/telemetry';
+
+/**
+ * judge スロットの配線。`resolveSnapshot` は「これから実際に使う設定」を**評価の前に**解決する。
+ *
+ * judge には main の `resolveModel` に相当する事前解決が無く、`evaluator.snapshot()` は
+ * 「最後に解決したアダプタ」の同期値を返すだけだった。そのため UI で judge を切り替えた直後の
+ * 失敗レコードには env 既定由来の誤った指紋（`{provider:'openai-compatible', model:''}`）が残る。
+ * 事前解決を挟むと、失敗レコードの指紋も、`capabilities()` を見るガードも最新設定を見る。
+ */
+export interface JudgeSlotOptions {
+  readonly rubrics: JudgeRubricRepository;
+  readonly evaluator: JudgeEvaluatorPort;
+  /** 実行時点の judge 設定を解決する。失敗しても評価は止めない（観測情報であり前提条件ではない）。 */
+  readonly resolveSnapshot?: () => Promise<ExperimentModelSnapshot>;
+}
+
+/** judge 未配線のときに記録へ残す指紋。 */
+const UNCONFIGURED_JUDGE: ExperimentModelSnapshot = { provider: 'unconfigured-judge', model: 'unconfigured-judge', modelConfigHash: 'unconfigured-judge' };
 
 type Delay = (ms: number) => Promise<void>;
 const defaultDelay: Delay = async (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,7 +57,7 @@ export class RunExperimentUseCase {
     private readonly evaluator: AgentEvaluatorPort,
     private readonly now: () => Date = () => new Date(),
     private readonly delay: Delay = defaultDelay,
-    private readonly judgeOptions?: { readonly rubrics: JudgeRubricRepository; readonly evaluator: JudgeEvaluatorPort },
+    private readonly judgeOptions?: JudgeSlotOptions,
     private readonly telemetry?: TelemetryPort,
   ) {}
 
@@ -115,7 +133,8 @@ export class RunExperimentUseCase {
     const scores: { metric: string; score: number; reason?: string }[] = []; const records: JudgeEvaluationRecord[] = [];
     for (const metric of profile.metrics) {
       if (metric.kind !== 'judge') continue;
-      const model = this.judgeOptions?.evaluator.snapshot() ?? { provider: 'unconfigured-judge', model: 'unconfigured-judge', modelConfigHash: 'unconfigured-judge' };
+      // 評価を始める前に指紋を確定させる。ここで解決しておけば失敗レコードにも正しい設定が残る。
+      const model = await this.resolveJudgeSnapshot();
       try {
         if (this.judgeOptions === undefined) throw new JudgeEvaluationError('JUDGE_PROVIDER', 'Judge evaluator is not configured');
         const rubric = await this.judgeOptions.rubrics.findVersion(experiment.scope, metric.rubric.id, metric.rubric.version); if (rubric === null) throw new JudgeEvaluationError('JUDGE_INPUT', `Judge rubric not found: ${metric.rubric.id}@${metric.rubric.version.toString()}`);
@@ -126,6 +145,21 @@ export class RunExperimentUseCase {
       }
     }
     return { scores, records };
+  }
+
+  /**
+   * judge の指紋を「実際に使う設定」で解決する。
+   * 事前解決が配線されていない（＝切替不可な配線・明示注入）ときは従来どおり同期値を使う。
+   * 解決に失敗しても Run 側と同じく静的な値へ落として評価は続ける。
+   */
+  private async resolveJudgeSnapshot(): Promise<ExperimentModelSnapshot> {
+    const options = this.judgeOptions;
+    if (options === undefined) return UNCONFIGURED_JUDGE;
+    if (options.resolveSnapshot !== undefined) {
+      try { return await options.resolveSnapshot(); }
+      catch { /* 設定が壊れていても評価は続ける。指紋は同期値へフォールバックする。 */ }
+    }
+    return options.evaluator.snapshot();
   }
 
   private scenarioScores(run: ScenarioRun, questions: readonly { readonly id: string; readonly kind: string; readonly min?: number; readonly max?: number }[]): { metric: string; score: number }[] {

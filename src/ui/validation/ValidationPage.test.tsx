@@ -144,6 +144,22 @@ describe('ValidationPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'run-1' }));
     await waitFor(() => expect(getRunTrace).toHaveBeenCalledWith('run-1', scope));
     expect(await screen.findByText('1 · model-response')).toBeTruthy();
+    expect(screen.getByText(/scripted\/model/)).toBeTruthy();
+  });
+
+  it('モデル設定を解決できずに起票された実験は unresolved を平文で説明する', async () => {
+    // 起票は通す仕様（指紋は観測情報）なので、UIは 'unresolved/unresolved' ではなく理由を出す。
+    const unresolved = { id: 'exp-x', scope, target: { agentId: 'agent', version: '1.0.0' }, dataset: { id: 'set', version: '1.0.0' }, evaluatorProfile: { id: 'profile', version: '1.0.0' }, repetitions: 1, status: 'queued', snapshot: { provider: 'unresolved', model: 'unresolved', modelConfigHash: 'unresolved' }, progress: { completed: 0, total: 1 }, createdAt: 'now' };
+    const client = stubClient({
+      listExperiments: vi.fn().mockResolvedValue([unresolved]),
+      getExperiment: vi.fn().mockResolvedValue(unresolved),
+      listExperimentResults: vi.fn().mockResolvedValue([]),
+    });
+    render(<ValidationPage client={client} />);
+    await userEvent.click(screen.getByRole('tab', { name: 'Experiments' }));
+    await userEvent.click(await screen.findByRole('button', { name: /agent@1.0.0/ }));
+    expect(await screen.findByText(/model settings unresolved/)).toBeTruthy();
+    expect(screen.queryByText(/unresolved\/unresolved/)).toBeNull();
   });
 
   it('Experimentの版選択・cancel・interrupted resumeを操作する（cancelは確認ダイアログ経由）', async () => {

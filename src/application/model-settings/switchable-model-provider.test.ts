@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { InMemoryModelSettingsRepository } from '../../adapters/storage/in-memory-model-settings-repository';
 import { createModelSettings } from '../../domain/model-settings/model-settings';
@@ -182,6 +183,51 @@ describe('SwitchableModelProvider', () => {
     const repo = new InMemoryModelSettingsRepository();
     const provider = new SwitchableModelProvider(repo, new FakeCipher(), new FakeFactory(), 'main', envDefault, scope, { sourceRevision: 'abc123' });
     expect((await provider.currentSnapshot()).sourceRevision).toBe('abc123');
+  });
+
+  it('modelConfigHash の入力に平文APIキーを混ぜない（公開ハッシュを検証オラクルにしない）', async () => {
+    const { provider, repo, cipher } = make();
+    await repo.save(createModelSettings({
+      scope,
+      main: { source: 'registry', model: 'openai/gpt-4o', apiKey: await cipher.seal('sk-secret-9999') },
+      updatedAt: '2026-07-26T00:00:00.000Z',
+    }));
+
+    await provider.complete(request);
+
+    // 他の入力項目（id / url / timeout）は GET で読める公開値なので、キーを平文で混ぜると
+    // 「候補キーでハッシュを再計算して一致を見る」総当たりが成立してしまう。先に指紋化する。
+    const expected = createHash('sha256').update(JSON.stringify({
+      model: { id: 'openai/gpt-4o', url: null, apiKey: createHash('sha256').update('sk-secret-9999').digest('hex') },
+      capabilities: null, timeoutMs: null, idleTimeoutMs: null, maxTokens: null,
+    })).digest('hex');
+    expect((await provider.currentSnapshot()).modelConfigHash).toBe(expected);
+  });
+
+  it('並行 complete() で解決を共有し、アダプタを二重生成しない', async () => {
+    const { provider, repo, factory } = make();
+    await provider.complete(request);
+    const before = factory.created.length;
+    await repo.save(createModelSettings({ scope, main: { source: 'registry', model: 'openai/gpt-4o' }, updatedAt: '2026-07-26T00:00:00.000Z' }));
+
+    const completions = await Promise.all([provider.complete(request), provider.complete(request), provider.complete(request)]);
+
+    expect(completions.map((completion) => completion.message.content)).toEqual(['"openai/gpt-4o"', '"openai/gpt-4o"', '"openai/gpt-4o"']);
+    // 直列化が無いと factory.create が3回走り、アダプタ内部のモデルキャッシュを捨て合う。
+    expect(factory.created.length).toBe(before + 1);
+  });
+
+  it('解決に失敗しても次回の解決をブロックしない（in-flight を握りっぱなしにしない）', async () => {
+    const repo = new InMemoryModelSettingsRepository();
+    let broken = true;
+    const original = repo.find.bind(repo);
+    repo.find = async (target) => { if (broken) throw new Error('db is gone'); return original(target); };
+    const { provider } = make(repo);
+
+    await expect(provider.complete(request)).rejects.toThrow(ModelProviderError);
+    broken = false;
+
+    await expect(provider.complete(request)).resolves.toMatchObject({ finishReason: 'stop' });
   });
 
   it('登録簿モデル（キー無し）は文字列のまま工場へ渡る', async () => {

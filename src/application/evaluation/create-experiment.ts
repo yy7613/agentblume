@@ -16,6 +16,15 @@ export interface CreateExperimentInput {
   readonly repetitions?: number;
 }
 
+/**
+ * モデル設定を解決できなかったときに実験レコードへ残す指紋。
+ *
+ * 指紋は「どの設定で走ったか」を後から辿るための**観測情報**であり、起票の前提条件ではない。
+ * Run 側は解決失敗を握って静的な指紋で実行を続けるため、起票だけが 409 で落ちるのは非対称だった。
+ * 起票は通し、ただし「モデル設定が解決できていない」ことがレコードから読み取れるようにする。
+ */
+const UNRESOLVED_SNAPSHOT: ExperimentModelSnapshot = { provider: 'unresolved', model: 'unresolved', modelConfigHash: 'unresolved' };
+
 export class CreateExperimentUseCase {
   constructor(
     private readonly experiments: ExperimentRepository,
@@ -39,10 +48,16 @@ export class CreateExperimentUseCase {
     const repetitions = input.repetitions ?? 1;
     const experiment = createExperiment({
       id: this.makeId(), scope: input.scope, target: input.target, dataset: input.dataset, evaluatorProfile: input.evaluatorProfile,
-      repetitions, status: 'queued', snapshot: await this.snapshot(), progress: { completed: 0, total: dataset.cases.length * repetitions }, createdAt: this.now().toISOString(),
+      repetitions, status: 'queued', snapshot: await this.resolveSnapshot(), progress: { completed: 0, total: dataset.cases.length * repetitions }, createdAt: this.now().toISOString(),
     });
     await this.experiments.create(experiment);
     this.worker.enqueue(input.scope, experiment.id);
     return experiment;
+  }
+
+  /** 指紋の解決失敗で起票を止めない（Run側と同じ方針）。壊れていることはレコードに残す。 */
+  private async resolveSnapshot(): Promise<ExperimentModelSnapshot> {
+    try { return await this.snapshot(); }
+    catch { return UNRESOLVED_SNAPSHOT; }
   }
 }

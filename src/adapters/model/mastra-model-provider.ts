@@ -7,6 +7,10 @@
  *   ＋ 二段タイムアウト ＋ ModelProviderError への正規化
  * だけを担う。外部SDK(@mastra/*)への依存は本アダプタ内に隔離する（depcruise）。
  */
+// env は @mastra/core の評価より前に確定させる必要がある。import は記述順に評価されるため
+// この行は必ず '@mastra/core/*' より前に置く（並べ替え禁止。詳細は src/mastra-runtime-env.ts）。
+import '../../mastra-runtime-env';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { ModelRouterLanguageModel, modelSupportsAttachments } from '@mastra/core/llm';
 import {
   ModelProviderError,
@@ -20,11 +24,6 @@ import {
   type ModelUsage,
   type ModelProviderPort,
 } from '../../application/model/model-provider';
-
-// @mastra/core 同梱の posthog テレメトリを無効化する（オフラインファースト・外部送信抑止）。
-process.env['MASTRA_TELEMETRY_DISABLED'] ??= 'true';
-// モデル登録簿の動的取得（ネットワーク）も止める。恒久的にはプロセス起動時のenv（src/server.ts）で効かせる。
-process.env['MASTRA_OFFLINE'] ??= '1';
 
 /** OpenAI互換のカスタムエンドポイント（LM Studio・vLLM 等）を直接指す設定。 */
 export interface MastraOpenAiCompatibleModel {
@@ -65,10 +64,107 @@ const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
 const MAX_DETAIL_CHARS = 300;
 /** `data:<mediaType>;base64,<payload>` のみ分解する（それ以外は URL としてそのまま渡す）。 */
 const BASE64_DATA_URL = /^data:([^;,]+);base64,(.*)$/s;
+/**
+ * モデル名が空のときの文言。UI側のエラー変換に頼らず、これ単体で次の行動が分かる英文にする
+ * （`'local/'` のような内部表現を見せた「'provider/model' 形式ではない」は原因が伝わらない）。
+ */
+const MODEL_NOT_CONFIGURED =
+  'Model is not configured. Choose a model in model settings, or set the LM_STUDIO_MODEL environment variable.';
+/**
+ * ストリームに実質的な出力が1つも無かったときの文言。
+ * 空SSE・即 `[DONE]`・プロキシの空応答を「空文字の成功」で確定させないための番人。
+ */
+const NO_COMPLETION_CHOICE = 'Model stream returned no completion choice';
+/** 「モデルの出力」ではない制御パート。これしか来なければ応答が空だったと判定する。 */
+const CONTROL_PART_TYPES: ReadonlySet<string> = new Set(['stream-start', 'response-metadata', 'finish', 'error', 'raw']);
 
 interface RouterModelId {
   readonly providerId: string;
   readonly modelId: string;
+}
+
+// ---------------------------------------------------------------------------
+// ワイヤ補正: Mastra が OpenAI互換プロバイダへ渡さない2つの設定を後付けする
+//
+// 調査結果（@mastra/core 1.50.x 同梱の @ai-sdk/openai-compatible 1.0.39）:
+//  - `ModelRouterLanguageModel` のコンストラクタは `{id|providerId+modelId, url, apiKey, headers}`
+//    だけを転記する**ホワイトリスト**で、`fetch` も `includeUsage` も受け付けない。
+//  - Mastra は `createOpenAICompatible({name, apiKey, baseURL, headers, supportsStructuredOutputs})`
+//    しか渡さないため、`stream_options.include_usage` が**常に送られない**
+//    （= usageチャンクが来ない = ModelCompletion.usage が undefined = コスト集計が無言で消える）。
+//  - `providerOptions` 経由の裏道も使えない。doStream は `{...args, stream:true, stream_options: …}`
+//    の順で組むので、args へ差し込んだ `stream_options` は undefined で上書きされる。
+//  - `responseFormat.strict` は AI SDK v2 の型自体に存在せず、openai-compatible の
+//    `response_format.json_schema` にも `strict` は載らない。
+//
+// そこで「Mastra が解決した**内側のモデル**の config」に、そのライブラリ自身が読む設定
+// （`includeUsage` / `transformRequestBody`）を後付けする。ワイヤ形式ではなく
+// openai-compatible の公開オプションに乗るので、素のボディ改造より意図が明確に残る。
+// 適用先は url 指定（= 必ず openai-compatible に落ちる経路）に限定する。登録簿モデルは
+// ネイティブSDK（@ai-sdk/openai 等）へ解決され、include_usage も strict も既定で送られる。
+// ---------------------------------------------------------------------------
+
+/** 解決済みモデルが持つ config のうち、本アダプタが後付けする部分だけの視界。 */
+interface TunableModelConfig {
+  includeUsage?: boolean;
+  transformRequestBody?: (body: Record<string, unknown>) => Record<string, unknown>;
+}
+
+/** 1回の complete() に紐づく補正指示。complete() は並行に走るのでインスタンス変数では持てない。 */
+interface RequestTuning {
+  /** `response_format.json_schema.strict` へ載せる値。responseFormat 未指定なら undefined。 */
+  readonly strict: boolean | undefined;
+}
+
+const requestTuning = new AsyncLocalStorage<RequestTuning>();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * 送信直前のボディを補正する（openai-compatible の `transformRequestBody` フック）。
+ * - `stream_options.include_usage`: ストリーム要求なら必ず付ける（usage欠落の根治）。
+ * - `response_format.json_schema.strict`: Port の指定をワイヤへ戻す。
+ * 想定と違う形をしていたら何もしない（素通し）。
+ */
+function tuneRequestBody(body: Record<string, unknown>): Record<string, unknown> {
+  const tuned: Record<string, unknown> = { ...body };
+  if (tuned['stream'] === true) tuned['stream_options'] = { include_usage: true };
+  const strict = requestTuning.getStore()?.strict;
+  const format = tuned['response_format'];
+  if (strict !== undefined && isRecord(format) && format['type'] === 'json_schema' && isRecord(format['json_schema'])) {
+    tuned['response_format'] = { ...format, json_schema: { ...format['json_schema'], strict } };
+  }
+  return tuned;
+}
+
+/**
+ * Mastra が解決した内側のモデルへ補正を差し込む。
+ * 形が想定と違う（Mastra の内部構造が変わった）場合は黙って諦める — その時は
+ * 「include_usage がボディに入ること」を固定した単体テストが落ちて気付ける。
+ */
+function tuneResolvedModel<T>(model: T): T {
+  const config = (model as { config?: unknown } | null)?.config;
+  if (!isRecord(config)) return model;
+  const tunable = config as TunableModelConfig;
+  tunable.includeUsage = true;
+  tunable.transformRequestBody = tuneRequestBody;
+  return model;
+}
+
+/**
+ * `resolveLanguageModel`（Mastra内部のモデル解決）をインスタンス単位で包み、
+ * 解決されたモデルへ補正を差し込む。プロトタイプではなく**自身のプロパティ**を生やすので
+ * 他の ModelRouterLanguageModel には影響しない。
+ */
+function withTunedModelResolution(router: ModelRouterLanguageModel): ModelRouterLanguageModel {
+  type Resolve = (args: unknown) => Promise<unknown>;
+  const holder = router as unknown as { resolveLanguageModel?: Resolve };
+  const original = holder.resolveLanguageModel;
+  if (typeof original !== 'function') return router;
+  holder.resolveLanguageModel = async (args: unknown): Promise<unknown> => tuneResolvedModel(await original.call(router, args));
+  return router;
 }
 
 interface ToolCallDraft {
@@ -84,18 +180,32 @@ interface StreamState {
   finishReason: FinishPart['finishReason'] | undefined;
   usage: FinishPart['usage'] | undefined;
   error: unknown | undefined;
+  /**
+   * 制御パート以外（本文・推論・ツール）を1つでも受け取ったか。
+   * `finish` パートは choice が1つも無くても必ず出るため、これが false のまま終わったら
+   * 「空の成功」ではなく失敗として扱う。
+   */
+  received: boolean;
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** `'provider/model'` を最初の `/` で分解する。ネストしたIDは modelId 側に残す。 */
+/**
+ * `'provider/model'` を最初の `/` で分解する。ネストしたIDは modelId 側に残す。
+ *
+ * モデル名だけが空（`''` / `'local/'`）のときは「未設定」として扱い、形式エラーではなく
+ * 設定を促す文言で失敗させる。工場が付ける擬似接頭辞（`local/`）が利用者に見えると
+ * 「何を直せばよいか」が伝わらないため。
+ */
 function splitModelId(id: string): RouterModelId {
   const trimmed = id.trim();
+  if (trimmed === '') throw new ModelProviderError(MODEL_NOT_CONFIGURED);
   const slash = trimmed.indexOf('/');
   const providerId = slash > 0 ? trimmed.slice(0, slash) : '';
-  const modelId = slash > 0 ? trimmed.slice(slash + 1) : '';
+  const modelId = slash > 0 ? trimmed.slice(slash + 1).trim() : '';
+  if (providerId !== '' && modelId === '') throw new ModelProviderError(MODEL_NOT_CONFIGURED);
   if (providerId === '' || modelId === '') {
     throw new ModelProviderError(`Model id must be in 'provider/model' form, but got '${trimmed}'`);
   }
@@ -190,6 +300,10 @@ function toTools(request: ModelCompletionRequest): Pick<CallOptions, 'tools' | '
   };
 }
 
+/**
+ * AI SDK v2 の `responseFormat` には `strict` が無い（型にもワイヤ変換にも存在しない）。
+ * Port の `strict` は送信直前のボディ補正（tuneRequestBody）で `json_schema.strict` へ戻す。
+ */
 function toResponseFormat(request: ModelCompletionRequest): Pick<CallOptions, 'responseFormat'> {
   const format = request.responseFormat;
   if (format === undefined) return {};
@@ -213,7 +327,7 @@ function toUsage(usage: FinishPart['usage'] | undefined): ModelUsage | undefined
 }
 
 function createState(): StreamState {
-  return { content: [], toolCalls: new Map(), finishReason: undefined, usage: undefined, error: undefined };
+  return { content: [], toolCalls: new Map(), finishReason: undefined, usage: undefined, error: undefined, received: false };
 }
 
 function draftOf(state: StreamState, id: string): ToolCallDraft {
@@ -226,6 +340,8 @@ function draftOf(state: StreamState, id: string): ToolCallDraft {
 
 /** 未知パート（reasoning・source・raw 等）は捨てる。蓄積するのは本文・ツール・終了情報だけ。 */
 function applyPart(state: StreamState, part: StreamPart): void {
+  // 内容を捨てるパートでも「モデルが何か出力した」事実だけは記録する（空ストリーム検知用）。
+  if (!CONTROL_PART_TYPES.has(part.type)) state.received = true;
   switch (part.type) {
     case 'text-delta':
       if (part.delta !== '') state.content.push(part.delta);
@@ -293,23 +409,33 @@ function detailOf(error: unknown): string {
 }
 
 /**
+ * abort されたら reject する番人。`doStream()` 呼び出しとストリーム読み取りの
+ * **両方**を同じ番人と race させる（前者を守らないと、接続確立前に吊ったリクエストが
+ * タイムアウトを踏んでも脱出できない）。
+ */
+function abortWatcher(signal: AbortSignal): Promise<never> {
+  const aborted = new Promise<never>((_, reject) => {
+    const fail = (): void => reject(new Error('Model stream aborted'));
+    if (signal.aborted) { fail(); return; }
+    signal.addEventListener('abort', fail, { once: true });
+  });
+  // race に負けた側の rejection が unhandled にならないようにする。
+  void aborted.catch(() => {});
+  return aborted;
+}
+
+/**
  * ストリームパートを読み進めながら state を積み上げる。
  * abort は transport 任せにせず読み取りと race させ、
  * ストリームが abort を尊重しない実装でも必ず脱出する。
  */
 async function readStream(
   stream: ReadableStream<StreamPart>,
-  signal: AbortSignal,
+  aborted: Promise<never>,
   onPart: () => void,
 ): Promise<StreamState> {
   const reader = stream.getReader();
   const state = createState();
-  const aborted = new Promise<never>((_, reject) => {
-    const fail = (): void => reject(new Error('Model stream aborted'));
-    if (signal.aborted) { fail(); return; }
-    signal.addEventListener('abort', fail, { once: true });
-  });
-  void aborted.catch(() => {});
   try {
     for (;;) {
       const result = await Promise.race([reader.read(), aborted]);
@@ -371,8 +497,9 @@ export class MastraModelProvider implements ModelProviderPort {
     if (signal?.aborted === true) controller.abort();
     else signal?.addEventListener('abort', abort, { once: true });
     armIdle();
+    const aborted = abortWatcher(controller.signal);
     try {
-      const { stream } = await router.doStream({
+      const call = (): Promise<StreamResult> => router.doStream({
         prompt: toPrompt(request.messages),
         ...toTools(request),
         ...toResponseFormat(request),
@@ -380,11 +507,19 @@ export class MastraModelProvider implements ModelProviderPort {
         ...(this.options.maxTokens !== undefined ? { maxOutputTokens: this.options.maxTokens } : {}),
         abortSignal: controller.signal,
       });
-      const state = await readStream(stream, controller.signal, armIdle);
+      // strict は AI SDK の CallOptions に無いので、送信直前のボディ補正（tuneRequestBody）へ
+      // 非同期コンテキストで受け渡す。complete() は並行に走るためインスタンス変数では持てない。
+      const tuning: RequestTuning = { strict: request.responseFormat?.strict };
+      // doStream() 自体も abort と race させる（接続確立前に吊っても必ず脱出する）。
+      const { stream } = await Promise.race([requestTuning.run(tuning, call), aborted]);
+      const state = await readStream(stream, aborted, armIdle);
       // 認証解決失敗やプロバイダ側エラーは例外ではなく error パートで届く。
       if (state.error !== undefined) {
         throw new ModelProviderError(this.redact(`Model request failed${detailOf(state.error)}`), state.error);
       }
+      // 空SSE・即[DONE]・プロキシの空応答は finish パートだけが届く。ここで止めないと
+      // 「content が空文字の成功」として Run が succeeded で確定してしまう。
+      if (!state.received) throw new ModelProviderError(NO_COMPLETION_CHOICE);
       return toCompletion(state);
     } catch (error) {
       if (error instanceof ModelProviderError) throw error;
@@ -406,13 +541,16 @@ export class MastraModelProvider implements ModelProviderPort {
   private model(): ModelRouterLanguageModel {
     if (this.router !== undefined) return this.router;
     const { providerId, modelId } = splitModelId(this.spec.id);
-    this.router = new ModelRouterLanguageModel({
+    const router = new ModelRouterLanguageModel({
       providerId,
       modelId,
       ...(this.spec.url !== undefined ? { url: this.spec.url } : {}),
       ...(this.spec.apiKey !== undefined ? { apiKey: this.spec.apiKey } : {}),
       ...(this.spec.headers !== undefined ? { headers: { ...this.spec.headers } } : {}),
     });
+    // url 指定は Mastra 内部で必ず openai-compatible へ落ちる経路。そこだけ補正を差し込む
+    // （登録簿モデルはネイティブSDKへ解決され、include_usage も strict も既定で送られる）。
+    this.router = this.spec.url === undefined ? router : withTunedModelResolution(router);
     return this.router;
   }
 

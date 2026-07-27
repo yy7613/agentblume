@@ -95,4 +95,53 @@ describe('RunExperimentUseCase', () => {
     expect((await runner.execute(scope, 'exp')).status).toBe('completed'); expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({ input: 'question', output: 'answer', reference: 'reference' }), undefined);
     expect(experiments.results[0]).toMatchObject({ scores: [{ metric: 'judge-required', score: 0.9, reason: 'correct' }], judgeEvaluations: [{ metricId: 'judge-required', required: true, status: 'succeeded', model: snapshot, score: 0.9, reason: 'correct' }, { metricId: 'judge-optional', required: false, status: 'failed', error: { code: 'JUDGE_SCHEMA', message: 'broken schema' } }] });
   });
+
+  describe('judge指紋の事前解決', () => {
+    /** judge メトリクス1件だけのプロファイルで RunExperimentUseCase を組む。 */
+    function judgeRunner(judge: JudgeEvaluatorPort, resolveSnapshot?: () => Promise<{ provider: string; model: string; modelConfigHash: string }>) {
+      const experiments = new Experiments();
+      const dataset = createEvaluationDataset({ metadata: { internalId: 'set', workingName: 's', displayName: 's', publishName: 's', version: v, owner: 'o', state: 'draft', tenant: scope }, cases: [{ id: 'case', kind: 'turn', input: 'question', tags: [], source: 'manual' }] });
+      const profile = createEvaluatorProfile({ metadata: { ...dataset.metadata, internalId: 'profile' }, metrics: [{ id: 'judge-optional', kind: 'judge', rubric: { id: 'rubric', version: v }, weight: 1, required: false }] });
+      const rubric = createJudgeRubric({ metadata: { ...dataset.metadata, internalId: 'rubric' }, instructions: 'Judge.', referencePolicy: 'optional', reasonRequired: true, criteria: [{ id: 'q', label: 'Q', description: 'Quality', weight: 1, levels: [{ score: 0, label: 'Bad', description: 'Bad' }, { score: 1, label: 'Good', description: 'Good' }] }] });
+      const runAgent = { executeSaved: vi.fn().mockResolvedValue({ runId: 'run', response: 'answer', trace: [], usage: {} }) } as unknown as RunAgentPreviewUseCase;
+      const runner = new RunExperimentUseCase(experiments, { findVersion: async () => dataset } as unknown as EvaluationDatasetRepository, { findVersion: async () => profile } as unknown as EvaluatorProfileRepository, { findVersion: async () => ({ kind: 'normal' }) } as unknown as AgentRepository, {} as ScenarioRepository, runAgent, {} as RunScenarioUseCase, { evaluate: vi.fn().mockResolvedValue([]) }, () => new Date(), vi.fn(), { rubrics: { findVersion: async () => rubric } as unknown as JudgeRubricRepository, evaluator: judge, ...(resolveSnapshot === undefined ? {} : { resolveSnapshot }) });
+      return { runner, experiments };
+    }
+
+    it('失敗レコードにも「実際に使う設定」の指紋を残す（env既定の古い指紋を残さない）', async () => {
+      // UIで judge を切り替えた直後、evaluator.snapshot() はまだ env 既定（model:''）を返す。
+      const stale = { provider: 'openai-compatible', model: '', modelConfigHash: 'stale' };
+      const fresh = { provider: 'openai-compatible', model: 'switched-judge', modelConfigHash: 'fresh' };
+      const judge = { snapshot: () => stale, evaluate: vi.fn().mockRejectedValue(new JudgeEvaluationError('JUDGE_PROVIDER', 'judge is down')), compare: vi.fn() } as JudgeEvaluatorPort;
+      const { runner, experiments } = judgeRunner(judge, async () => fresh);
+
+      expect((await runner.execute(scope, 'exp')).status).toBe('completed');
+
+      expect(experiments.results[0]?.judgeEvaluations?.[0]).toMatchObject({ status: 'failed', model: fresh, error: { code: 'JUDGE_PROVIDER' } });
+      // env既定の指紋（model:''）のままだと domain の検証に落ちて judge の失敗が
+      // ケースごと失敗へ化ける。事前解決はその二次被害も同時に消す。
+      expect(experiments.results[0]?.status).toBe('succeeded');
+    });
+
+    it('事前解決が失敗しても評価は止めず、同期の指紋へフォールバックする', async () => {
+      // 鍵ファイル差し替え等で設定を開封できないケース。Run側と同じく観測情報の欠落で実行は止めない。
+      const last = { provider: 'openai-compatible', model: 'last-resolved-judge', modelConfigHash: 'last' };
+      const judge = { snapshot: () => last, evaluate: vi.fn().mockRejectedValue(new JudgeEvaluationError('JUDGE_PROVIDER', 'judge is down')), compare: vi.fn() } as JudgeEvaluatorPort;
+      const { runner, experiments } = judgeRunner(judge, async () => { throw new Error('key file changed'); });
+
+      expect((await runner.execute(scope, 'exp')).status).toBe('completed');
+
+      expect(experiments.results[0]?.judgeEvaluations?.[0]).toMatchObject({ status: 'failed', model: last });
+    });
+
+    it('事前解決が配線されていなければ従来どおり同期の指紋を使う', async () => {
+      const snapshot = { provider: 'scripted-judge', model: 'judge', modelConfigHash: 'judge-hash' };
+      const judge = { snapshot: () => snapshot, evaluate: vi.fn().mockRejectedValue(new JudgeEvaluationError('JUDGE_SCHEMA', 'broken')), compare: vi.fn() } as JudgeEvaluatorPort;
+      const { runner, experiments } = judgeRunner(judge);
+
+      await runner.execute(scope, 'exp');
+
+      expect(experiments.results[0]?.judgeEvaluations?.[0]).toMatchObject({ status: 'failed', model: snapshot });
+    });
+  });
 });

@@ -7,10 +7,15 @@ export interface AnalysisConfigProposal { readonly nodeId: string; readonly node
 
 /** LLMは設定案のみを返す。検証済みでも、適用・保存はUIの明示操作が必要。 */
 export class SuggestAnalysisConfigUseCase {
-  constructor(private readonly engine: EtlEngine, private readonly model: ModelProviderPort, private readonly enabled: boolean) {}
-  available(): boolean { return this.enabled && this.model.capabilities().includes('structured-output'); }
+  /**
+   * `enabled` を関数で受けるのは、モデルがUIから切り替えられるため。
+   * 起動時のenvだけで固定すると「UIでモデルを設定したのに永久に無効」「envは残っているが
+   * 実際の宛先は別プロバイダ」というズレが起きる（都度、現在の設定を見て判定する）。
+   */
+  constructor(private readonly engine: EtlEngine, private readonly model: ModelProviderPort, private readonly enabled: () => boolean | Promise<boolean>) {}
+  async available(): Promise<boolean> { return await this.enabled() && this.model.capabilities().includes('structured-output'); }
   async execute(input: { readonly graph: ToolGraph; readonly nodeId: string; readonly intent: string }): Promise<AnalysisConfigProposal> {
-    if (!this.available()) throw new ModelProviderError('analysis assistant is not configured');
+    if (!await this.available()) throw new ModelProviderError('analysis assistant is not configured');
     if (input.intent.trim() === '') throw new ModelProviderError('analysis assistant requires an intent');
     const node = input.graph.nodes.find((item) => item.id === input.nodeId);
     if (node === undefined || !ANALYSIS_TYPES.has(node.type)) throw new ModelProviderError('analysis assistant supports analysis nodes only');

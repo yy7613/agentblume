@@ -873,6 +873,13 @@ export class RunAgentPreviewUseCase {
 
     const agent = await this.loadAgent(input.scope, checkpoint.agentRef.internalId, SemVer.parse(checkpoint.agentRef.version));
     const session = await this.resolveSession(input.scope, { internalId: agent.metadata.internalId, version: agent.metadata.version.toString() }, checkpoint.sessionId);
+    /**
+     * 再開経路でも、prepareLoop のガード（tool-calling / structured-output / vision）を通す前に
+     * モデル設定を解決しておく。切替可能な配線の capabilities() は「最後に解決したアダプタ」の
+     * 能力を返す同期契約なので、これを省くと env 既定由来の古い能力で判定してしまう。
+     * 記録として残す指紋は Run 開始時のもの（stored.model）のままにする。
+     */
+    await this.currentModelSnapshot();
     const started = resumeRunRecord(stored);
     await this.runRepo.save(started);
     const trace: RunTraceEvent[] = [...stored.trace];
