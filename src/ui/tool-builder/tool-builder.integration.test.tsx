@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
 import type { PreviewResultDto, PropagationResultDto, SerializedToolDto } from '../api/types';
+import { draftKey, readDraft } from '../hooks/useDraftPersistence';
 import { ToolBuilder } from './ToolBuilder';
 import { useToolBuilderStore } from './store';
 
@@ -21,7 +22,7 @@ const sample: PreviewResultDto = {
   nodes: { 'filter-1': { nodeId: 'filter-1', truncated: false, table: { schema: { columns: [{ name: 'age', type: 'number', nullable: false }] }, rows: [{ age: 30 }] } } },
 };
 
-beforeEach(() => { useToolBuilderStore.getState().reset(); vi.useFakeTimers(); });
+beforeEach(() => { localStorage.clear(); useToolBuilderStore.getState().reset(); vi.useFakeTimers(); });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe('ToolBuilder preview integration', () => {
@@ -168,5 +169,40 @@ describe('ToolBuilder preview integration', () => {
     // join結果の期待行が描画される。
     expect(screen.getByRole('cell', { name: 'Alice' })).toBeTruthy();
     expect(screen.getByRole('cell', { name: '90' })).toBeTruthy();
+  });
+
+  describe('下書きの自動保存と復元', () => {
+    const newToolKey = draftKey('tool-builder', { tenantId: 'local', workspaceId: 'default' });
+    const idleClient = () => ({ inferDraft: vi.fn().mockResolvedValue(valid), previewDraft: vi.fn().mockResolvedValue(sample), listTools: vi.fn().mockResolvedValue([]) }) as unknown as ToolApiClient;
+
+    it('グラフとメタデータを退避し、画面を離れても失わない', async () => {
+      const { unmount } = render(<ToolBuilder client={idleClient()} />);
+      fireEvent.click(screen.getByRole('button', { name: 'New tool' }));
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Draft tool' } });
+      act(() => useToolBuilderStore.getState().addNode('filter'));
+      unmount();
+
+      const saved = readDraft<{ metadata: { displayName: string }; nodes: readonly unknown[] }>(newToolKey);
+      expect(saved?.value.metadata.displayName).toBe('Draft tool');
+      expect(saved?.value.nodes).toHaveLength(3);
+    });
+
+    it('復元バナーからグラフを戻せる', async () => {
+      const { unmount } = render(<ToolBuilder client={idleClient()} />);
+      fireEvent.click(screen.getByRole('button', { name: 'New tool' }));
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Draft tool' } });
+      act(() => useToolBuilderStore.getState().addNode('filter'));
+      unmount();
+
+      act(() => useToolBuilderStore.getState().reset());
+      render(<ToolBuilder client={idleClient()} />);
+      fireEvent.click(screen.getByRole('button', { name: 'New tool' }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+
+      expect(useToolBuilderStore.getState().metadata.displayName).toBe('Draft tool');
+      expect(useToolBuilderStore.getState().nodes).toHaveLength(3);
+      expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull();
+    });
   });
 });

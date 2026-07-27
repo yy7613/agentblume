@@ -114,6 +114,16 @@ describe('useDraftPersistence', () => {
     expect(result.current.dirty).toBe(false);
   });
 
+  it('入力を元に戻して離脱したときは、消した内容を書き戻さない', () => {
+    vi.useFakeTimers();
+    const { rerender, unmount } = setup({ name: '' });
+    rerender({ value: { name: 'typo' }, enabled: true, key: 'draft-key' });
+    act(() => { vi.advanceTimersByTime(100); });
+    rerender({ value: { name: '' }, enabled: true, key: 'draft-key' });
+    unmount();
+    expect(localStorage.getItem('draft-key')).toBeNull();
+  });
+
   it('beforeunloadでも保留分を書き出す', () => {
     vi.useFakeTimers();
     const { rerender } = setup({ name: '' });

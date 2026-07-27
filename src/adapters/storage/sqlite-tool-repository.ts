@@ -4,6 +4,9 @@
  * `node:sqlite` の DatabaseSync を用いる（実行フラグ --experimental-sqlite は
  * vitest.config.ts の poolOptions.forks.execArgv で付与済み）。
  * definition_json に serializeTool の JSON を保存し、取得時に deserializeTool で復元する。
+ *
+ * 接続とスキーマは `SqliteRepositoryBase` / `migrations.ts` が持つ（このクラスはクエリだけ）。
+ * コンストラクタはパス文字列（自前で開く）と共有ハンドル（借りる）の両方を受け取る。
  */
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import { VersionConflictError } from '../../domain/tool/errors';

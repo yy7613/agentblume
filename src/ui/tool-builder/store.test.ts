@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { SerializedToolDto } from '../api/types';
-import { currentGraph, flowToGraph, missingRequiredMetadata, useToolBuilderStore } from './store';
+import { currentGraph, flowToGraph, missingRequiredMetadata, toolBuilderDraft, useToolBuilderStore } from './store';
 
 beforeEach(() => useToolBuilderStore.getState().reset());
 
@@ -275,5 +275,28 @@ describe('tool builder store', () => {
       { from: 'left-1', to: 'join-1', toInput: 0 },
       { from: 'right-1', to: 'join-1', toInput: 1 },
     ]);
+  });
+
+  it('下書きの切り出しと復元でmetadata・ノード・エッジが往復する', () => {
+    const store = useToolBuilderStore.getState();
+    store.setMetadata('internalId', 'draft-tool');
+    store.setMetadata('displayName', 'Draft tool');
+    useToolBuilderStore.getState().addNode('filter');
+    const snapshot = JSON.parse(JSON.stringify(toolBuilderDraft(useToolBuilderStore.getState())));
+
+    useToolBuilderStore.getState().reset();
+    expect(useToolBuilderStore.getState().metadata.internalId).toBe('');
+
+    useToolBuilderStore.getState().applyDraft(snapshot);
+    const restored = useToolBuilderStore.getState();
+    expect(restored.metadata.internalId).toBe('draft-tool');
+    expect(restored.metadata.displayName).toBe('Draft tool');
+    expect(restored.nodes.map((node) => node.id)).toEqual(snapshot.nodes.map((node: { id: string }) => node.id));
+    expect(restored.edges.map((edge) => edge.id)).toEqual(snapshot.edges.map((edge: { id: string }) => edge.id));
+    // 派生状態は捨てて自動プレビューに再計算させる。
+    expect(restored.selectedNodeId).toBe(snapshot.nodes[0].id);
+    expect(restored.propagation).toBeUndefined();
+    expect(restored.preview).toBeUndefined();
+    expect(restored.saveError).toBeUndefined();
   });
 });

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConfirmDialog } from './ConfirmDialog';
 
@@ -37,5 +38,43 @@ describe('ConfirmDialog', () => {
     render(<ConfirmDialog {...baseProps} open busy />);
     expect(screen.getByRole('button', { name: '削除' })).toHaveProperty('disabled', true);
     expect(screen.getByRole('button', { name: 'キャンセル' })).toHaveProperty('disabled', true);
+  });
+
+  it('Escapeで閉じる（キーボードだけで脱出できる）', async () => {
+    const onCancel = vi.fn();
+    render(<ConfirmDialog {...baseProps} open onCancel={onCancel} />);
+    await userEvent.keyboard('{Escape}');
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('開いたら最初のボタンへフォーカスし、Tabをダイアログ内に閉じ込める', async () => {
+    render(<ConfirmDialog {...baseProps} open />);
+    const cancel = screen.getByRole('button', { name: 'キャンセル' });
+    const confirm = screen.getByRole('button', { name: '削除' });
+    expect(document.activeElement).toBe(cancel);
+
+    await userEvent.tab();
+    expect(document.activeElement).toBe(confirm);
+    // 末尾から先頭へ折り返す（背後の画面へ抜けない）。
+    await userEvent.tab();
+    expect(document.activeElement).toBe(cancel);
+    await userEvent.tab({ shift: true });
+    expect(document.activeElement).toBe(confirm);
+  });
+
+  it('閉じたら開く前の要素へフォーカスを戻す', async () => {
+    function Host() {
+      const [open, setOpen] = useState(false);
+      return <>
+        <button type="button" onClick={() => setOpen(true)}>開く</button>
+        <ConfirmDialog {...baseProps} open={open} onCancel={() => setOpen(false)} />
+      </>;
+    }
+    render(<Host />);
+    const opener = screen.getByRole('button', { name: '開く' });
+    await userEvent.click(opener);
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(document.activeElement).toBe(opener);
   });
 });

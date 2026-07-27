@@ -280,6 +280,18 @@ describe('AgentBuilder', () => {
       expect((within(dialog).getByRole('checkbox', { name: 'Tool approval' }) as HTMLInputElement).checked).toBe(false);
     });
 
+    it('ハーネスダイアログはEscapeで閉じ、フォーカスをHarnessボタンへ戻す', async () => {
+      const client = stubClient();
+      await openNewAgentEditor(client);
+      const opener = screen.getByRole('button', { name: /^Harness/ });
+      await userEvent.click(opener);
+      expect(screen.getByRole('dialog', { name: 'Runtime harness' })).toBeTruthy();
+
+      await userEvent.keyboard('{Escape}');
+      expect(screen.queryByRole('dialog', { name: 'Runtime harness' })).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Harness/ }));
+    });
+
     it('2つ有効にしてApplyすると6キーすべてを含むharnessを保存ペイロードへ載せる', async () => {
       const client = stubClient();
       (client.saveAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.0.0' } });

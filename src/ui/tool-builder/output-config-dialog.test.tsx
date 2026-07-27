@@ -41,4 +41,16 @@ describe('output configuration dialog', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Apply settings' }));
     expect(useToolBuilderStore.getState().nodes.find((node) => node.id === id)?.data.config).toMatchObject({ graph: { sourceColumn: 'id', targetColumn: 'name' } });
   });
+
+  it('Escapeで閉じ、フォーカスを開いたボタンへ戻す（キーボードで脱出できる）', async () => {
+    useToolBuilderStore.getState().addNode('agent-output');
+    render(<NodeInspector />);
+    const opener = screen.getByRole('button', { name: 'Open settings' });
+    await userEvent.click(opener);
+    expect(screen.getByRole('dialog', { name: 'Node configuration' })).toBeTruthy();
+
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Node configuration' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open settings' }));
+  });
 });

@@ -257,6 +257,11 @@ describe('ChatPage', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Trend · chart/ }));
     expect(await screen.findByRole('dialog', { name: 'Chart preview' })).toBeTruthy();
     expect(client.getSessionArtifact).toHaveBeenCalledWith('session-1', 'chart-1', { tenantId: 'local', workspaceId: 'default' });
+
+    // キーボードだけで脱出でき、フォーカスは開いたArtifactボタンへ戻る。
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Chart preview' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Trend · chart/ }));
   });
 
   it('数値ポイントが無いチャートは翻訳済みの空状態文言を表示する', async () => {
@@ -295,5 +300,30 @@ describe('ChatPage', () => {
     render(<ChatPage client={client} />);
     expect(await screen.findByText('offline')).toBeTruthy();
     expect(screen.getByText('Save an Agent in Agent Builder first.')).toBeTruthy();
+  });
+
+  it('会話が上限を超えると古いturnを落とし、落としたことを表示する', async () => {
+    let counter = 0;
+    const client = {
+      listAgents: vi.fn().mockResolvedValue([{ internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '2.0.0', kind: 'normal', state: 'draft' }]),
+      runSavedAgent: vi.fn().mockImplementation(() => { counter += 1; return Promise.resolve({ runId: `run-${counter}`, response: `answer ${counter}`, trace: [], usage: {}, mode: 'preview' }); }),
+    } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+
+    // 1往復で2turn積まれるため、51往復で上限100件を超える。
+    const composer = screen.getByLabelText('Chat message');
+    for (let round = 1; round <= 51; round += 1) {
+      fireEvent.change(composer, { target: { value: `question ${round}` } });
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      await waitFor(() => expect(client.runSavedAgent).toHaveBeenCalledTimes(round));
+      await screen.findByText(`answer ${round}`);
+    }
+
+    expect(await screen.findByText('2 older message(s) were removed from this view.')).toBeTruthy();
+    // 最初の往復は表示から消え、最新の往復は残る。
+    expect(screen.queryByText('question 1')).toBeNull();
+    expect(screen.getByText('question 51')).toBeTruthy();
+    expect(screen.getByText('answer 51')).toBeTruthy();
   });
 });
