@@ -186,4 +186,34 @@ describe('factory routes', () => {
     const invalid = await server.inject({ method: 'POST', url: '/factory-runs', payload: { scope, goal: { goal: 'x', language: 'ja' }, dataSourceIds: [] } });
     expect(invalid.statusCode).toBe(400);
   });
+
+  it('既存Agent強化モード（baseAgent指定）は dataSourceIds 0件・省略でも202で受け付け、入力へ反映する', async () => {
+    const zero = await server.inject({
+      method: 'POST', url: '/factory-runs',
+      payload: { scope, goal: { goal: '既存Agentを強化する', language: 'ja' }, dataSourceIds: [], baseAgent: { internalId: 'agent-1', version: '1.0.0' } },
+    });
+    expect(zero.statusCode).toBe(202);
+    expect(zero.json().run.input).toMatchObject({ dataSourceIds: [], baseAgent: { internalId: 'agent-1', version: '1.0.0' } });
+
+    // dataSourceIds ごと省略しても強化モードなら受け付ける（version省略時は最新版が起点）。
+    const omitted = await server.inject({
+      method: 'POST', url: '/factory-runs',
+      payload: { scope, goal: { goal: '既存Agentを強化する', language: 'ja' }, baseAgent: { internalId: 'agent-1' } },
+    });
+    expect(omitted.statusCode).toBe(202);
+    expect(omitted.json().run.input).toMatchObject({ dataSourceIds: [], baseAgent: { internalId: 'agent-1' } });
+    expect(omitted.json().run.input.baseAgent.version).toBeUndefined();
+
+    // 生成モード（baseAgent無し）でdataSourceIdsを省略するのは従来どおり400。
+    const generation = await server.inject({ method: 'POST', url: '/factory-runs', payload: { scope, goal: { goal: 'x', language: 'ja' } } });
+    expect(generation.statusCode).toBe(400);
+    expect(generation.json().error.code).toBe('BAD_REQUEST');
+
+    // 強化モードでも上限5件は超えられない。
+    const tooMany = await server.inject({
+      method: 'POST', url: '/factory-runs',
+      payload: { scope, goal: { goal: 'x', language: 'ja' }, dataSourceIds: ['a', 'b', 'c', 'd', 'e', 'f'], baseAgent: { internalId: 'agent-1' } },
+    });
+    expect(tooMany.statusCode).toBe(400);
+  });
 });

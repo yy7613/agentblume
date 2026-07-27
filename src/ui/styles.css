@@ -660,6 +660,13 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 
 /* Agent Factory（v33） */
 .factory-input-column { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.factory-mode-select { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 0 0 14px; padding: 8px 12px; border: 1px solid #dce1eb; border-radius: 8px; }
+.factory-mode-select legend { font-size: 11px; font-weight: 700; color: #526078; padding: 0 4px; }
+.factory-mode-select label { flex-direction: row; align-items: center; gap: 6px; margin: 0; font-size: 12px; }
+.factory-mode-badge { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; border-radius: 99px; padding: 3px 9px; background: #eef1f6; color: #526078; }
+.factory-mode-badge.enhance { background: #e6edff; color: #3a4fa8; }
+.factory-field-hint { margin: -8px 0 12px; font-size: 11px; line-height: 1.5; color: #758198; }
+.factory-source-select .factory-field-hint { margin: 0 0 4px; }
 .factory-source-select { border: 1px solid #dce1eb; border-radius: 8px; padding: 10px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 6px; }
 .factory-source-select legend { font-size: 11px; font-weight: 700; color: #526078; padding: 0 4px; }
 .factory-page .checkbox-label { align-self: start; margin-bottom: 14px; }

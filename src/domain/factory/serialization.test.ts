@@ -22,6 +22,9 @@ const proposals: readonly ImprovementProposal[] = [
   { kind: 'tool-contract-revision', toolId: 'tool-1', agentTool: { name: 'newName', description: '新しい説明' }, rationale: '説明が不十分' },
   { kind: 'tool-graph-revision', toolId: 'tool-1', graph: { nodes: [{ id: 'n1', type: 'source', config: { sourceId: 'ds-1' } }], edges: [{ from: 'n1', to: 'n2', toInput: 0 }] }, rationale: 'グラフ修正' },
   { kind: 'add-tool', plan: plan.tools[0]!, rationale: '不足Tool追加' },
+  { kind: 'add-skill', plan: { key: 'anomaly', displayName: '異常値の説明', responsibility: '異常な売上行を説明する', activationCondition: '数字が不自然だと聞かれたとき', inputDescription: '質問', outputDescription: '説明', instructions: 'sales_lookup で行を取得し、外れ値を説明する', toolRefs: ['tool-1', 'sales-summary'] }, rationale: '不足Skill追加' },
+  // 任意フィールド（input/outputDescription）を省いた形も往復できること。
+  { kind: 'add-skill', plan: { key: 'minimal', displayName: '最小', responsibility: 'r', activationCondition: 'c', instructions: 'i', toolRefs: [] }, rationale: '最小形' },
 ];
 
 function makeFullRun(): FactoryRun {
@@ -89,6 +92,16 @@ describe('serializeFactoryRun / deserializeFactoryRun', () => {
     const run: FactoryRun = { ...makeFullRun(), status: 'waiting-approval', report: undefined, checkpoint: { kind: 'plan-approval', expiresAt: '2026-07-21T00:00:00Z', prompt: '計画を確認してください', plan } };
     const restored = deserializeFactoryRun(serializeFactoryRun(run));
     expect(restored).toEqual(run);
+  });
+
+  it('既存Agent強化モードの input.baseAgent（版指定あり/なし・データソース0件）も往復する', () => {
+    const base = makeFullRun();
+    const pinned: FactoryRun = { ...base, input: { ...base.input, dataSourceIds: [], baseAgent: { internalId: 'agent-1', version: '0.1.0' } } };
+    expect(deserializeFactoryRun(serializeFactoryRun(pinned))).toEqual(pinned);
+    const latest: FactoryRun = { ...base, input: { ...base.input, baseAgent: { internalId: 'agent-1' } } };
+    expect(deserializeFactoryRun(serializeFactoryRun(latest)).input.baseAgent).toEqual({ internalId: 'agent-1' });
+    // 生成モード（baseAgent未指定）は従来どおりフィールドごと現れない。
+    expect(deserializeFactoryRun(serializeFactoryRun(base)).input.baseAgent).toBeUndefined();
   });
 
   it('failureを含むfailed runも往復する', () => {

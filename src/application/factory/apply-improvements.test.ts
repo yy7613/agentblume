@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ScriptedModelProvider } from '../../adapters/model/scripted-model-provider';
 import { InMemoryAgentRepository } from '../../adapters/storage/in-memory-agent-repository';
 import { InMemoryDataSourceRepository } from '../../adapters/storage/in-memory-data-source-repository';
 import { InMemorySkillRepository } from '../../adapters/storage/in-memory-skill-repository';
@@ -15,6 +16,8 @@ import { EtlEngine } from '../etl/engine';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
 import { ApplyImprovementsUseCase } from './apply-improvements';
+import { ProfileDataSourcesUseCase } from './profile-data-sources';
+import { ToolSmithRole } from './roles/tool-smith-role';
 
 const scope = { tenantId: 't', workspaceId: 'w' };
 
@@ -36,7 +39,42 @@ const invalidGraph: ToolGraph = {
   edges: [{ from: 'src', to: 'sel' }, { from: 'sel', to: 'out' }],
 };
 
-async function setup() {
+/** ToolSmithが返す妥当な提案（`ds-1` を読む read-only グラフ）。 */
+function validToolSmithProposalJson(): string {
+  return JSON.stringify({
+    graph: {
+      nodes: [
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+        { id: 'out', type: 'agent-output', config: { shape: 'summary', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
+      ],
+      edges: [{ from: 'src', to: 'out' }],
+    },
+    agentTool: { name: 'summarize_sales', description: 'Summarize all sales rows.' },
+  });
+}
+
+/** ToolSmithが返す不正な提案（存在しない列をselectするためスキーマ伝播でエラーになる）。 */
+function invalidToolSmithProposalJson(): string {
+  return JSON.stringify({
+    graph: {
+      nodes: [
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+        { id: 'sel', type: 'select', config: { columns: ['does_not_exist'] } },
+        { id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
+      ],
+      edges: [{ from: 'src', to: 'sel' }, { from: 'sel', to: 'out' }],
+    },
+    agentTool: { name: 'summarize_sales', description: 'Summarize all sales rows.' },
+  });
+}
+
+/** 決定的なid列（新規Tool/Skillのinternalidを検証しやすくする）。 */
+function makeSequentialId(prefix: string): () => string {
+  let next = 0;
+  return () => { next += 1; return `${prefix}-${next}`; };
+}
+
+async function setup(options?: { readonly withToolCreation?: boolean }) {
   const dataSources = new InMemoryDataSourceRepository();
   await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Sales', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 30, createdAt: '', updatedAt: '' }, 'id,amount\n1,100\n2,200');
   const engine = new EtlEngine(createDefaultRegistry());
@@ -49,7 +87,13 @@ async function setup() {
   const saveSkill = new SaveSkillUseCase(skillRepo, toolRepo);
   const saveAgent = new SaveAgentUseCase(agentRepo, toolRepo, skillRepo);
   const generateAgentPrompt = new GenerateAgentPromptUseCase(toolRepo, skillRepo, agentRepo);
-  const useCase = new ApplyImprovementsUseCase(agentRepo, skillRepo, toolRepo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine);
+  const model = new ScriptedModelProvider();
+  const toolCreation = options?.withToolCreation === true
+    ? { toolSmith: new ToolSmithRole(model), resolveDataSources: resolver, profiler: new ProfileDataSourcesUseCase(dataSources, resolver, engine) }
+    : undefined;
+  const useCase = new ApplyImprovementsUseCase(
+    agentRepo, skillRepo, toolRepo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine, undefined, toolCreation, makeSequentialId('new'),
+  );
 
   const tool = await saveTool.execute({
     scope, internalId: 'tool-1', workingName: 'lookup (draft)', displayName: 'Lookup Sales', publishName: 'factory_tool_lookup', owner: 'agent-factory',
@@ -68,7 +112,7 @@ async function setup() {
   });
   const agentRef: VersionRef = { internalId: agent.metadata.internalId, version: agent.metadata.version.toString() };
 
-  return { agentRepo, skillRepo, toolRepo, useCase, agentRef, toolId: tool.metadata.internalId, skillId: skill.metadata.internalId };
+  return { agentRepo, skillRepo, toolRepo, saveAgent, model, useCase, agentRef, toolId: tool.metadata.internalId, skillId: skill.metadata.internalId };
 }
 
 describe('ApplyImprovementsUseCase', () => {
@@ -177,15 +221,184 @@ describe('ApplyImprovementsUseCase', () => {
     expect(result.newAgentRef).toEqual(agentRef);
   });
 
-  it('add-tool提案は常にrejectedになる（M4スコープ外）', async () => {
+  it('add-tool: 依存が注入されていない配線では却下される（従来どおり）', async () => {
     const { useCase, agentRef } = await setup();
     const proposal: ImprovementProposal = { kind: 'add-tool', plan: { key: 'extra', displayName: 'Extra', purpose: 'p', dataSourceId: 'ds-1', sideEffect: 'read-only' }, rationale: 'need more data' };
 
     const result = await useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4 });
 
     expect(result.applied).toHaveLength(0);
-    expect(result.rejected).toEqual([{ proposal, reason: 'add-tool application is a later slice' }]);
+    expect(result.rejected).toEqual([{ proposal, reason: 'add-tool is not configured' }]);
     expect(result.newAgentRef).toEqual(agentRef);
+  });
+
+  it('add-tool: 修復ループが通ればToolを保存しAgent新版のtoolsへ追加する', async () => {
+    const { agentRepo, toolRepo, model, useCase, agentRef, toolId } = await setup({ withToolCreation: true });
+    model.enqueue({ message: { role: 'assistant', content: validToolSmithProposalJson() }, finishReason: 'stop' });
+    const proposal: ImprovementProposal = { kind: 'add-tool', plan: { key: 'summary', displayName: 'Summarize Sales', purpose: 'Summarize all sales rows.', dataSourceId: 'ds-1', sideEffect: 'read-only' }, rationale: 'the agent cannot aggregate' };
+
+    const result = await useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4 });
+
+    expect(result.rejected).toHaveLength(0);
+    expect(result.applied).toHaveLength(1);
+    expect(result.applied[0]?.resultingVersion).toEqual({ internalId: 'new-1', version: '1.0.0' });
+
+    const savedTool = await toolRepo.findVersion(scope, 'new-1', SemVer.of(1, 0, 0));
+    expect(savedTool?.metadata.owner).toBe('agent-factory');
+    expect(savedTool?.sideEffect).toBe('read-only');
+    expect(savedTool?.agentTool?.name).toBe('summarize_sales');
+
+    const newAgent = await agentRepo.findVersion(scope, agentRef.internalId, SemVer.parse(result.newAgentRef.version));
+    // 既存Tool参照は残したまま、新Toolが追加される（差替ではなく和集合）。
+    expect(newAgent?.tools.map((ref) => ref.internalId)).toEqual([toolId, 'new-1']);
+  });
+
+  it('add-tool: ToolSmithが修復上限まで直せなければ却下され、Agent新版も作らない', async () => {
+    const { model, useCase, agentRef } = await setup({ withToolCreation: true });
+    model.enqueue(
+      { message: { role: 'assistant', content: invalidToolSmithProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: invalidToolSmithProposalJson() }, finishReason: 'stop' },
+    );
+    const proposal: ImprovementProposal = { kind: 'add-tool', plan: { key: 'broken', displayName: 'Broken', purpose: 'p', dataSourceId: 'ds-1', sideEffect: 'read-only' }, rationale: 'r' };
+
+    const result = await useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4, maxRepairAttempts: 1 });
+
+    expect(result.applied).toHaveLength(0);
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0]?.reason).toMatch(/add-tool could not be generated/);
+    expect(result.rejected[0]?.reason).toMatch(/graph validation failed/);
+    expect(result.newAgentRef).toEqual(agentRef);
+  });
+
+  it('add-tool: read-only/session-write以外の副作用はToolSmithを呼ばずに却下する', async () => {
+    const { model, useCase, agentRef } = await setup({ withToolCreation: true });
+    const proposal: ImprovementProposal = { kind: 'add-tool', plan: { key: 'writer', displayName: 'Writer', purpose: 'p', dataSourceId: 'ds-1', sideEffect: 'write' }, rationale: 'r' };
+
+    const result = await useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4 });
+
+    expect(result.applied).toHaveLength(0);
+    expect(result.rejected[0]?.reason).toMatch(/sideEffect must be 'read-only' or 'session-write'/);
+    expect(model.requests).toHaveLength(0);
+    expect(result.newAgentRef).toEqual(agentRef);
+  });
+
+  it('add-tool: 存在しないデータソースはプロファイル解決に失敗して却下される', async () => {
+    const { useCase, agentRef } = await setup({ withToolCreation: true });
+    const proposal: ImprovementProposal = { kind: 'add-tool', plan: { key: 'ghost', displayName: 'Ghost', purpose: 'p', dataSourceId: 'ds-missing', sideEffect: 'read-only' }, rationale: 'r' };
+
+    const result = await useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4 });
+
+    expect(result.applied).toHaveLength(0);
+    expect(result.rejected[0]?.reason).toMatch(/data source not found/);
+  });
+
+  it('add-skill: 既存Toolを参照する新Skillを保存しAgent新版のskillsへ追加する', async () => {
+    const { agentRepo, skillRepo, useCase, agentRef, skillId } = await setup();
+    const proposal: ImprovementProposal = {
+      kind: 'add-skill',
+      plan: {
+        key: 'explain', displayName: 'Explain Anomalies', responsibility: 'Explain unusual sales rows.',
+        activationCondition: 'user asks why a number looks odd', instructions: 'Fetch rows with lookup_sales, then explain the outliers.',
+        toolRefs: ['lookup_sales'], // Tool契約名でも解決できる。
+      },
+      rationale: 'no skill covers anomaly explanations',
+    };
+
+    const result = await useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4 });
+
+    expect(result.rejected).toHaveLength(0);
+    expect(result.applied).toHaveLength(1);
+    expect(result.applied[0]?.resultingVersion).toEqual({ internalId: 'new-1', version: '1.0.0' });
+
+    const savedSkill = await skillRepo.findVersion(scope, 'new-1', SemVer.of(1, 0, 0));
+    expect(savedSkill?.instructions).toContain('explain the outliers');
+    expect(savedSkill?.metadata.owner).toBe('agent-factory');
+    expect(savedSkill?.tools.map((ref) => ref.internalId)).toEqual(['tool-1']);
+    // 未指定のinput/outputDescriptionはresponsibilityから決定的に補われる。
+    expect(savedSkill?.inputDescription).toContain('Explain unusual sales rows.');
+
+    const newAgent = await agentRepo.findVersion(scope, agentRef.internalId, SemVer.parse(result.newAgentRef.version));
+    expect(newAgent?.skills.map((ref) => ref.internalId)).toEqual([skillId, 'new-1']);
+  });
+
+  it('add-skill: Agentが持たないToolを参照すると却下される', async () => {
+    const { useCase, agentRef } = await setup();
+    const proposal: ImprovementProposal = {
+      kind: 'add-skill',
+      plan: {
+        key: 'ghost', displayName: 'Ghost', responsibility: 'r', activationCondition: 'c', instructions: 'i',
+        toolRefs: ['tool_that_does_not_exist'],
+      },
+      rationale: 'r',
+    };
+
+    const result = await useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4 });
+
+    expect(result.applied).toHaveLength(0);
+    expect(result.rejected[0]?.reason).toMatch(/add-skill references a tool that the agent does not have: tool_that_does_not_exist/);
+    expect(result.newAgentRef).toEqual(agentRef);
+  });
+
+  it('add-tool + add-skill: 同一イテレーションで追加したToolをplan.keyで参照できる', async () => {
+    const { agentRepo, skillRepo, model, useCase, agentRef } = await setup({ withToolCreation: true });
+    model.enqueue({ message: { role: 'assistant', content: validToolSmithProposalJson() }, finishReason: 'stop' });
+    const proposals: ImprovementProposal[] = [
+      { kind: 'add-tool', plan: { key: 'summary', displayName: 'Summarize Sales', purpose: 'Summarize all sales rows.', dataSourceId: 'ds-1', sideEffect: 'read-only' }, rationale: 'aggregate' },
+      {
+        kind: 'add-skill',
+        plan: { key: 'report', displayName: 'Report', responsibility: 'Report monthly totals.', activationCondition: 'user asks for totals', instructions: 'Call summarize_sales and report the totals.', toolRefs: ['summary'] },
+        rationale: 'wrap the new tool',
+      },
+    ];
+
+    const result = await useCase.execute({ scope, agentRef, proposals, maxProposals: 4 });
+
+    expect(result.rejected).toHaveLength(0);
+    expect(result.applied).toHaveLength(2);
+    const savedSkill = await skillRepo.findVersion(scope, 'new-2', SemVer.of(1, 0, 0));
+    expect(savedSkill?.tools.map((ref) => ref.internalId)).toEqual(['new-1']);
+
+    const newAgent = await agentRepo.findVersion(scope, agentRef.internalId, SemVer.parse(result.newAgentRef.version));
+    expect(newAgent?.tools.map((ref) => ref.internalId)).toContain('new-1');
+    expect(newAgent?.skills.map((ref) => ref.internalId)).toContain('new-2');
+  });
+
+  it('既存Agentの設定（kind/agents/mcpServers/harness/output/state/wikis）を新版でも保持する', async () => {
+    const { agentRepo, skillRepo, saveAgent, useCase, skillId } = await setup();
+    // 委譲先のサブエージェント（能力なし）を1件用意する。
+    const sub = await saveAgent.execute({
+      scope, internalId: 'sub-1', workingName: 'helper (draft)', displayName: 'Helper', publishName: 'helper_agent', owner: 'human',
+      kind: 'normal', systemPrompt: 'You help.', tools: [],
+    });
+    const skill = await skillRepo.findVersion(scope, skillId, SemVer.of(1, 0, 0));
+    if (skill === null) throw new Error('expected the seeded skill');
+    const rich = await saveAgent.execute({
+      scope, internalId: 'agent-rich', workingName: 'rich (draft)', displayName: 'Rich Assistant', publishName: 'rich_agent', owner: 'human',
+      kind: 'evaluator',
+      systemPrompt: '# Role\nYou evaluate.\n\n# Extra rules\nBe strict.',
+      skills: [{ internalId: skill.metadata.internalId, version: skill.metadata.version }],
+      tools: skill.tools.map((ref) => ({ internalId: ref.internalId, version: ref.version })),
+      agents: [{ internalId: sub.metadata.internalId, version: sub.metadata.version, usage: 'delegate research' }],
+      mcpServers: ['docs-server'],
+      harness: { fileMemory: true, todoProvider: false, compaction: true, webSearch: false, toolApproval: true, functionInvocation: true },
+      output: { name: 'verdict_output', fields: [{ name: 'verdict', type: 'string', required: true }] },
+      state: 'published',
+    });
+    const richRef: VersionRef = { internalId: rich.metadata.internalId, version: rich.metadata.version.toString() };
+    const proposal: ImprovementProposal = { kind: 'skill-instructions-revision', skillId, instructions: 'Use lookup_sales, then explain the verdict.', rationale: 'sharpen' };
+
+    const result = await useCase.execute({ scope, agentRef: richRef, proposals: [proposal], maxProposals: 4 });
+
+    expect(result.rejected).toHaveLength(0);
+    const newAgent = await agentRepo.findVersion(scope, richRef.internalId, SemVer.parse(result.newAgentRef.version));
+    expect(newAgent?.kind).toBe('evaluator');
+    expect(newAgent?.agents).toEqual([{ internalId: 'sub-1', version: SemVer.of(1, 0, 0), usage: 'delegate research' }]);
+    expect(newAgent?.mcpServers).toEqual(['docs-server']);
+    expect(newAgent?.harness).toEqual({ fileMemory: true, todoProvider: false, compaction: true, webSearch: false, toolApproval: true, functionInvocation: true });
+    expect(newAgent?.output).toEqual({ name: 'verdict_output', fields: [{ name: 'verdict', type: 'string', required: true }] });
+    expect(newAgent?.metadata.state).toBe('published');
+    // Skillは新版へ引き上がっている（保全と改訂が両立する）。
+    expect(newAgent?.skills[0]?.version.toString()).toBe('1.0.1');
   });
 
   it('system-prompt-revision: role/rules双方があれば新しいAgent版を組み立てる', async () => {

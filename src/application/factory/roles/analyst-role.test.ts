@@ -87,6 +87,116 @@ describe('AnalystRole', () => {
     expect(result.proposals[0]).toMatchObject({ kind: 'skill-instructions-revision', skillId: 'skill-1' });
   });
 
+  it('add-skill: toolRefsが現行Tool（id/契約名）か同一レスポンスのadd-toolのplan.keyを指せば通る', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({
+      message: {
+        role: 'assistant',
+        content: JSON.stringify({
+          findings: [],
+          proposals: [
+            { kind: 'add-tool', plan: { key: 'summary', displayName: 'Summarize Sales', purpose: 'Aggregate sales.', dataSourceId: 'ds-1', sideEffect: 'read-only' }, rationale: 'no aggregation available' },
+            { kind: 'add-skill', plan: { key: 'report', displayName: 'Report', responsibility: 'Report totals.', activationCondition: 'user asks for totals', instructions: 'Call the new tool then report.', toolRefs: ['summary', 'lookup_sales', 'tool-1'] }, rationale: 'wrap the new tool' },
+          ],
+          summary: 's',
+        }),
+      },
+      finishReason: 'stop',
+    });
+    const role = new AnalystRole(model);
+
+    const result = await role.propose({ ...baseInput(), availableDataSources: [{ dataSourceId: 'ds-1', name: 'Sales', format: 'csv', columns: ['id:number', 'amount:number'] }] });
+
+    expect(result.proposals.map((proposal) => proposal.kind)).toEqual(['add-tool', 'add-skill']);
+    expect(String(model.requests[0]?.messages[1]?.content)).toContain('availableDataSources');
+  });
+
+  it('add-tool: availableDataSources未指定・未知のdataSourceIdを指す提案は破棄される', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({
+      message: {
+        role: 'assistant',
+        content: JSON.stringify({
+          findings: [],
+          proposals: [{ kind: 'add-tool', plan: { key: 'x', displayName: 'X', purpose: 'p', dataSourceId: 'ds-1', sideEffect: 'read-only' }, rationale: 'r' }],
+          summary: 's',
+        }),
+      },
+      finishReason: 'stop',
+    });
+    const role = new AnalystRole(model);
+
+    const result = await role.propose(baseInput());
+
+    expect(result.proposals).toHaveLength(0);
+    expect(String(model.requests[0]?.messages[1]?.content)).not.toContain('availableDataSources');
+  });
+
+  it('add-skill: 解決できないtoolRefを含む提案は破棄される', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({
+      message: {
+        role: 'assistant',
+        content: JSON.stringify({
+          findings: [],
+          proposals: [{ kind: 'add-skill', plan: { key: 'ghost', displayName: 'Ghost', responsibility: 'r', activationCondition: 'c', instructions: 'i', toolRefs: ['nope'] }, rationale: 'r' }],
+          summary: 's',
+        }),
+      },
+      finishReason: 'stop',
+    });
+    const role = new AnalystRole(model);
+
+    const result = await role.propose(baseInput());
+
+    expect(result.proposals).toHaveLength(0);
+  });
+
+  it('能力追加（add-tool/add-skill）は1イテレーション合計2件までで、超過分は破棄される', async () => {
+    const model = new ScriptedModelProvider();
+    const addSkill = (key: string): unknown => ({ kind: 'add-skill', plan: { key, displayName: key, responsibility: 'r', activationCondition: 'c', instructions: 'i', toolRefs: ['tool-1'] }, rationale: 'r' });
+    model.enqueue({
+      message: {
+        role: 'assistant',
+        content: JSON.stringify({
+          findings: [],
+          proposals: [
+            addSkill('a'),
+            { kind: 'skill-instructions-revision', skillId: 'skill-1', instructions: 'kept', rationale: 'r' },
+            addSkill('b'),
+            addSkill('c'),
+          ],
+          summary: 's',
+        }),
+      },
+      finishReason: 'stop',
+    });
+    const role = new AnalystRole(model);
+
+    const result = await role.propose(baseInput());
+
+    expect(result.proposals.map((proposal) => proposal.kind)).toEqual(['add-skill', 'skill-instructions-revision', 'add-skill']);
+    expect(result.proposals.filter((proposal) => proposal.kind === 'add-skill').map((proposal) => proposal.plan.key)).toEqual(['a', 'b']);
+  });
+
+  it('add-skill: plan.instructionsが空だとFactoryValidationErrorを投げる', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({
+      message: {
+        role: 'assistant',
+        content: JSON.stringify({
+          findings: [],
+          proposals: [{ kind: 'add-skill', plan: { key: 'k', displayName: 'd', responsibility: 'r', activationCondition: 'c', instructions: '  ', toolRefs: [] }, rationale: 'r' }],
+          summary: 's',
+        }),
+      },
+      finishReason: 'stop',
+    });
+    const role = new AnalystRole(model);
+
+    await expect(role.propose(baseInput())).rejects.toThrow(/plan.instructions must be a non-empty string/);
+  });
+
   it('structured-output capabilityがないモデルは利用不可', async () => {
     const capabilities: readonly ModelCapability[] = ['chat'];
     const model: ModelProviderPort = {

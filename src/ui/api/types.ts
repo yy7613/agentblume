@@ -783,6 +783,14 @@ export interface FactoryReportDto {
   readonly openFindings: readonly FactoryFindingDto[];
   readonly metricsByIteration: readonly FactoryIterationMetricsDto[];
 }
+/**
+ * 強化対象の既存Agent。設定されているRunは「既存Agentの強化モード」で走る
+ * （新しいAgentを作らず、このAgentへTool/Skillを追加した新版を作る）。`version` 省略時は最新版が起点。
+ */
+export interface FactoryBaseAgentDto {
+  readonly internalId: string;
+  readonly version?: string;
+}
 export interface FactoryRunDto {
   readonly id: string;
   readonly scope: TenantScopeDto;
@@ -790,6 +798,8 @@ export interface FactoryRunDto {
     readonly goal: FactoryGoalInputDto;
     readonly dataSourceIds: readonly string[];
     readonly options: FactoryOptionsDto;
+    /** 未設定なら0→1生成モードのRun。 */
+    readonly baseAgent?: FactoryBaseAgentDto;
   };
   readonly status: FactoryRunStatusDto;
   readonly stage: FactoryStageDto;
@@ -807,6 +817,8 @@ export interface FactoryRunDto {
 export interface CreateFactoryRunDto {
   readonly scope: TenantScopeDto;
   readonly goal: FactoryGoalInputDto;
+  /** 指定すると既存Agent強化モード。このとき `dataSourceIds` は空配列でよい（生成モードは1件以上必須）。 */
+  readonly baseAgent?: FactoryBaseAgentDto;
   readonly dataSourceIds: readonly string[];
   readonly options?: {
     readonly maxIterations?: number;

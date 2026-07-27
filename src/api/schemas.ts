@@ -561,8 +561,14 @@ export const factoryRunBodySchema = z.object({
     constraints: z.string().min(1).optional(),
     language: z.enum(['ja', 'en']),
   }),
-  dataSourceIds: z.array(z.string().min(1)).min(1).max(5),
+  /** 強化対象の既存Agent（省略時は0→1生成モード）。`version` 省略時は最新版を起点にする。 */
+  baseAgent: z.object({ internalId: z.string().min(1), version: z.string().min(1).optional() }).optional(),
+  // 強化モードは既存Agentのプロンプト改善だけでも成立するため0件を許す。生成モードは下の refine で1件必須。
+  dataSourceIds: z.array(z.string().min(1)).max(5).default([]),
   options: factoryOptionsInputSchema.optional(),
+}).refine((body) => body.baseAgent !== undefined || body.dataSourceIds.length >= 1, {
+  path: ['dataSourceIds'],
+  message: 'dataSourceIds must contain at least 1 entry unless baseAgent is specified',
 });
 export const factoryRunListQuerySchema = scopeQuerySchema.extend({
   limit: z.coerce.number().int().min(1).max(100).optional(),

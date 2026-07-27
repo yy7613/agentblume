@@ -138,6 +138,27 @@ Stage 1 の Planner が既に `FactoryPlan.personas` / `FactoryPlan.scenarios` �
 
 **Scenario集合はRun内で凍結する。** 以降のイテレーションでScenarioを書き換えない（回帰比較の成立条件）。新Agent版の再検証は `RunScenarioUseCase` の既存の対象上書き（`input.target`）で行うため、Scenario版の改訂は不要である。Analystがシナリオ自体の欠陥を検出した場合はFindingとしてレポートに残すのみとする。
 
+### 既存Agentの強化モード（`input.baseAgent`）
+
+`FactoryRun.input.baseAgent = { internalId, version? }` を指定したRunは、**0→1生成ではなく既存Agentの強化**として走る（`version` 省略時は最新版が起点）。ステージ構成・イベント種別・停止条件は生成モードと同一で、各段の意味だけを読み替える。新しい `FactoryStage` / `FactoryEventKind` は追加しない。
+
+| ステージ | 生成モード | 強化モード |
+|---|---|---|
+| Stage 0 Profile | `dataSourceIds`（1..5）をプロファイル | 起点Agentをロードして現有能力を把握 + `dataSourceIds`（**0..5**）をプロファイル。存在しない／`kind` が `normal` でないAgentはRunを失敗させる |
+| Stage 1 Plan | Agent一式を設計 | **ギャップ計画**: Plannerへ `currentAgent`（displayName / systemPrompt / Tool契約 / Skill責務）を渡し、既にある能力は再計画させず不足分だけを計画させる。Tool/Skillとも0件の計画が正当（プロンプト改善だけのRun） |
+| Stage 2-3 Tools/Skills | 計画どおり生成 | 同じ（計画された**追加分のみ**）。1件も作れなくてもRunは失敗させない（既存Agentはそのまま動くため） |
+| Stage 4 Agent | 新しいAgentをdraft保存 | 起点Agentの**patch新版**。Tool/Skill参照は既存との和集合（同 internalId は新版優先）、systemPromptは決定的合成の「Skillガイド」「Tool使用ガイド」節だけを差し替え、役割文・実行規則・利用者が書き足した節はそのまま残す（Assemblerは呼ばない）。追加が0件なら新版を作らず既存版をそのまま起点にする |
+| Stage 5 検証資産 | 生成Agent版を `target` に | 起点Agent（または統合後の新版）を `target` に。以降は無改修 |
+| 改善ループ | 既存どおり | 既存どおり（`ApplyImprovementsUseCase` が既存Agentの設定を保全して新版を作る） |
+
+制約:
+
+- **既存Agentのメタデータ・設定を潰さない**: `displayName` / `publishName` / `owner`（`agent-factory` で上書きしない）/ `kind` / `state` / サブエージェント / `mcpServers` / `harness` / `output` / `persona` / `wikis` は起点版の値をそのまま引き継ぐ。
+- 起点Agentの `systemPrompt` は利用者が書いた資産として扱い、LLMに書き直させない（改善ループの `system-prompt-revision` だけが書き換えられる）。Builder標準の見出し（`# Skillガイド` / `# Tool使用ガイド`）が見つからない場合は、`# 実行規則` の手前（無ければ末尾）へガイドを差し込む。
+- 起点Agentの `systemPrompt` はプロンプト注入の観点で untrusted data として扱い、Plannerへは user message 側（`<untrusted-data>`）で渡す。
+- 強化モードであることは既存のイベント／レポートで表す: `stage_started`(profiling) の `message` が `enhancing agent <displayName>@<version>`、`stage_started`(assembling-agent) の `message` が統合結果、`FactoryReport.summary` の先頭が `Enhanced existing agent <displayName>@<version>.`。
+- 失敗Runの `retry` は `baseAgent` も引き継ぐ（強化のつもりのRunを0→1生成として再実行しない）。
+
 ## 5. 改善ループ
 
 ```mermaid
@@ -181,14 +202,17 @@ type ImprovementProposal =
   | { kind: 'skill-instructions-revision'; skillId: string; instructions: string; activationCondition?: string; rationale: string }
   | { kind: 'tool-contract-revision'; toolId: string; agentTool: { name?: string; description?: string }; rationale: string }
   | { kind: 'tool-graph-revision'; toolId: string; graph: ToolGraph; rationale: string }
-  | { kind: 'add-tool'; plan: FactoryToolPlan; rationale: string };
+  | { kind: 'add-tool'; plan: FactoryToolPlan; rationale: string }
+  | { kind: 'add-skill'; plan: FactoryAddSkillPlan; rationale: string };
 ```
 
 適用規則:
 
-- `tool-graph-revision` / `add-tool` はStage 2と同じエンジン検証・修復ループ・副作用制限を通す。
-- 改訂はすべて既存Save系ユースケース経由のdraft新版として保存し、Agentの参照を新版へ差し替えた**新Agent版**を作る。既存版は不変（回帰比較・巻き戻しが常に可能）。
-- 1イテレーションで適用する提案数に上限を設ける（既定4）。検証に落ちた提案は破棄し、`proposal_rejected` イベントへ理由を残す。
+- `tool-graph-revision` / `add-tool` はStage 2と同じエンジン検証・修復ループ・副作用制限を通す。`add-tool` の再提案回数はRunの `budget.maxRepairAttempts` に従う。
+- 改訂はすべて既存Save系ユースケース経由のdraft新版として保存し、Agentの参照を新版へ差し替えた**新Agent版**を作る。既存版は不変（回帰比較・巻き戻しが常に可能）。新Agent版は起点Agentの設定（`kind` / サブエージェント / `mcpServers` / `harness` / `output` / `persona` / `wikis` / 公開状態）をすべて引き継ぐ。
+- `add-tool` / `add-skill` は「無い能力を足す」提案で、Tool/Skillを新規保存した上でAgent新版の参照へ**追加**する（既存参照の版差替とは別経路）。`add-skill` の `plan.toolRefs` は「対象Agentが今持つTool」か「同一イテレーションの `add-tool`」だけを指せる（internalId / publishName / Tool契約名 / `add-tool` の `plan.key` の順で解決し、1つでも解決できなければ提案ごと却下）。
+- `add-tool` は Analyst へ `availableDataSources`（Stage 0 プロファイルの要約）が渡っている場合だけ提案でき、そこに無い `dataSourceId` を指す提案は破棄する。1イテレーションの追加系（`add-tool` + `add-skill`）は合計2件までに絞る（改訂の枠を食い潰さないため）。
+- 1イテレーションで適用する提案数に上限を設ける（既定4）。`system-prompt-revision` は1イテレーションにつき1件のみ。検証に落ちた提案は破棄し、`proposal_rejected` イベントへ理由を残す。
 
 ## 6. ドメインモデル
 
@@ -204,8 +228,9 @@ interface FactoryRun {
   scope: TenantScope;
   input: {
     goal: { goal: string; targetUsers?: string; constraints?: string; language: 'ja' | 'en' };
-    dataSourceIds: readonly string[];        // 1..5
+    dataSourceIds: readonly string[];        // 生成モード 1..5 / 強化モード 0..5
     options: FactoryOptions;
+    baseAgent?: { internalId: string; version?: string };  // 指定時は既存Agent強化モード（§4）
   };
   status: FactoryRunStatus;
   stage: FactoryStage;
@@ -292,6 +317,17 @@ POST   /factory-runs/:runId/cancel
   },
   "dataSourceIds": ["ds-sales-csv"],
   "options": { "maxIterations": 3, "requirePlanApproval": false }
+}
+```
+
+既存Agentの強化（§4「既存Agentの強化モード」）は `baseAgent` を添える。このとき `dataSourceIds` は0件（または省略）でよく、既存Agentのプロンプト改善だけのRunも成立する。`version` を省略すると最新版が起点になる。
+
+```json
+{
+  "scope": { "tenantId": "local", "workspaceId": "default" },
+  "goal": { "goal": "回答に根拠の行を必ず示せるようにしたい", "language": "ja" },
+  "baseAgent": { "internalId": "agent-sales-assistant" },
+  "dataSourceIds": []
 }
 ```
 

@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
-import type { DataSourceDto, FactoryPlanDto, FactoryRunDto } from '../api/types';
+import type { AgentSummaryDto, DataSourceDto, FactoryPlanDto, FactoryRunDto } from '../api/types';
 import { FactoryPage } from './FactoryPage';
 
 afterEach(cleanup);
@@ -12,6 +12,10 @@ const scope = { tenantId: 'local', workspaceId: 'default' };
 
 const dataSources: readonly DataSourceDto[] = [
   { id: 'ds-sales', tenant: scope, name: 'Sales CSV', createdAt: 'now', updatedAt: 'now', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 100 },
+];
+
+const agents: readonly AgentSummaryDto[] = [
+  { internalId: 'agent-sales', displayName: 'Sales Assistant', publishName: 'sales_assistant', latestVersion: '1.2.0', kind: 'normal', state: 'draft' },
 ];
 
 function baseRun(overrides: Partial<FactoryRunDto> = {}): FactoryRunDto {
@@ -50,6 +54,7 @@ function stubClient(overrides: Record<string, unknown> = {}): ToolApiClient {
   return {
     listDataSources: vi.fn().mockResolvedValue(dataSources),
     listFactoryRuns: vi.fn().mockResolvedValue([]),
+    listAgents: vi.fn().mockResolvedValue(agents),
     ...overrides,
   } as unknown as ToolApiClient;
 }
@@ -330,5 +335,192 @@ describe('FactoryPage', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
     await screen.findByText(/Stage:/);
     expect(screen.queryByRole('button', { name: 'Retry run' })).toBeNull();
+  });
+
+  it('既定は生成モードで対象Agentセレクタを出さず、強化モードに切り替えると出す', async () => {
+    const client = stubClient();
+    render(<FactoryPage client={client} />);
+    await screen.findByText('Sales CSV');
+    expect(screen.queryByLabelText('Factory base agent')).toBeNull();
+    expect(screen.queryByText('Optional — add data sources only if the agent needs new tools.')).toBeNull();
+
+    await userEvent.click(screen.getByRole('radio', { name: 'Enhance an existing agent' }));
+    const select = await screen.findByLabelText('Factory base agent');
+    expect(select).toBeTruthy();
+    // データソースが任意である旨を注記し、goalの説明も強化向けに変わる。
+    expect(screen.getByText('Optional — add data sources only if the agent needs new tools.')).toBeTruthy();
+    expect(screen.getByText('Describe how the existing agent should improve.')).toBeTruthy();
+    // 選択肢は displayName + 最新バージョン。
+    expect(screen.getByRole('option', { name: 'Sales Assistant (1.2.0)' })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('radio', { name: 'Create a new agent' }));
+    expect(screen.queryByLabelText('Factory base agent')).toBeNull();
+    expect(screen.getByText('Describe what kind of agent you want to create.')).toBeTruthy();
+  });
+
+  it('Agent一覧の取得だけが失敗しても、データソースと実行履歴は表示できる', async () => {
+    const client = stubClient({ listAgents: vi.fn().mockRejectedValue(new Error('agents unavailable')) });
+    render(<FactoryPage client={client} />);
+    await screen.findByText('Sales CSV');
+    expect(screen.queryByText('agents unavailable')).toBeNull();
+    await userEvent.click(screen.getByRole('radio', { name: 'Enhance an existing agent' }));
+    expect(screen.getByText('No agents to enhance. Create one first.')).toBeTruthy();
+  });
+
+  it('強化モードではAgentが0件のとき説明を出し、モード切替自体は無効化しない', async () => {
+    const client = stubClient({ listAgents: vi.fn().mockResolvedValue([]) });
+    render(<FactoryPage client={client} />);
+    await screen.findByText('Sales CSV');
+    const enhanceRadio = screen.getByRole('radio', { name: 'Enhance an existing agent' });
+    expect((enhanceRadio as HTMLInputElement).disabled).toBe(false);
+
+    await userEvent.click(enhanceRadio);
+    expect(await screen.findByText('No agents to enhance. Create one first.')).toBeTruthy();
+    expect(screen.queryByLabelText('Factory base agent')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Start factory run' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('強化モードはデータソース未選択でも開始でき、baseAgent付きでcreateFactoryRunを呼ぶ', async () => {
+    const created = baseRun({ input: { ...baseRun().input, dataSourceIds: [], baseAgent: { internalId: 'agent-sales' } } });
+    const createFactoryRun = vi.fn().mockResolvedValue(created);
+    const client = stubClient({
+      createFactoryRun,
+      getFactoryRun: vi.fn().mockResolvedValue(created),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+    });
+    render(<FactoryPage client={client} />);
+    await screen.findByText('Sales CSV');
+
+    await userEvent.click(screen.getByRole('radio', { name: 'Enhance an existing agent' }));
+    await userEvent.type(screen.getByLabelText('Factory goal'), 'Improve totals accuracy');
+    await userEvent.selectOptions(await screen.findByLabelText('Factory base agent'), 'agent-sales');
+
+    const startButton = screen.getByRole('button', { name: 'Start factory run' }) as HTMLButtonElement;
+    expect(startButton.disabled).toBe(false);
+    await userEvent.click(startButton);
+
+    await waitFor(() => expect(createFactoryRun).toHaveBeenCalledWith({
+      scope,
+      goal: { goal: 'Improve totals accuracy', language: 'ja' },
+      baseAgent: { internalId: 'agent-sales' },
+      dataSourceIds: [],
+      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false },
+    }));
+  });
+
+  it('強化モードで対象Agent未選択なら開始できず理由を表示する', async () => {
+    const client = stubClient();
+    render(<FactoryPage client={client} />);
+    await screen.findByText('Sales CSV');
+
+    await userEvent.click(screen.getByRole('radio', { name: 'Enhance an existing agent' }));
+    expect(screen.getByText('Select the agent to enhance and enter what to improve.')).toBeTruthy();
+
+    await userEvent.type(screen.getByLabelText('Factory goal'), 'Improve totals accuracy');
+    const startButton = screen.getByRole('button', { name: 'Start factory run' }) as HTMLButtonElement;
+    expect(startButton.disabled).toBe(true);
+    expect(screen.getByText('Select the agent to enhance.')).toBeTruthy();
+
+    await userEvent.selectOptions(await screen.findByLabelText('Factory base agent'), 'agent-sales');
+    expect(startButton.disabled).toBe(false);
+    expect(screen.queryByText('Select the agent to enhance.')).toBeNull();
+  });
+
+  it('一覧ラベルと詳細バッジが強化モードのRunで変わる', async () => {
+    const enhanceRun = baseRun({
+      status: 'running',
+      input: { ...baseRun().input, dataSourceIds: [], baseAgent: { internalId: 'agent-sales' } },
+    });
+    const client = stubClient({
+      listFactoryRuns: vi.fn().mockResolvedValue([enhanceRun]),
+      getFactoryRun: vi.fn().mockResolvedValue(enhanceRun),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+    });
+    render(<FactoryPage client={client} />);
+
+    // 一覧ラベルは goal ではなく対象Agent名で表示される。
+    const listItem = await screen.findByRole('button', { name: /Enhance: Sales Assistant/ });
+    await userEvent.click(listItem);
+    await screen.findByText(/Stage:/);
+    expect(screen.getByText('Enhance')).toBeTruthy();
+    expect(screen.queryByText('Create')).toBeNull();
+  });
+
+  it('生成モードのRunの詳細では新規作成バッジを出す', async () => {
+    const running = baseRun({ status: 'running' });
+    const client = stubClient({
+      listFactoryRuns: vi.fn().mockResolvedValue([running]),
+      getFactoryRun: vi.fn().mockResolvedValue(running),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+    });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText(/Stage:/);
+    expect(screen.getByText('Create')).toBeTruthy();
+    expect(screen.queryByText('Enhance')).toBeNull();
+  });
+
+  it('強化モードの承認カードは既存Agentへの変更計画として追加Tool/Skill/検証シナリオ件数を出す', async () => {
+    const waiting = baseRun({
+      status: 'waiting-approval',
+      stage: 'planning',
+      input: { ...baseRun().input, dataSourceIds: [], baseAgent: { internalId: 'agent-sales' } },
+      plan,
+      checkpoint: { kind: 'plan-approval', expiresAt: '2026-07-21T00:00:00.000Z', prompt: 'Approve this change?', plan },
+    });
+    const client = stubClient({
+      listFactoryRuns: vi.fn().mockResolvedValue([waiting]),
+      getFactoryRun: vi.fn().mockResolvedValue(waiting),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+    });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Enhance: Sales Assistant/ }));
+    await screen.findByText('Approve this change?');
+
+    expect(screen.getByText('Change plan approval required')).toBeTruthy();
+    expect(screen.getByText(/Change plan for existing agent/).textContent).toContain('Sales Assistant');
+    expect(screen.getByText('Tools to add: 1')).toBeTruthy();
+    expect(screen.getByText('Skills to add: 1')).toBeTruthy();
+    expect(screen.getByText('Validation scenarios: 1')).toBeTruthy();
+    // 生成モード向けの見出し・ペルソナ件数は出さない。
+    expect(screen.queryByText('Plan approval required')).toBeNull();
+    expect(screen.queryByText('Personas: 1')).toBeNull();
+  });
+
+  it('強化モードのレポートは追加Tool/Skillが0件でも「コンテキスト改善のみ」と説明する', async () => {
+    const succeeded = baseRun({
+      status: 'succeeded',
+      stage: 'reporting',
+      input: { ...baseRun().input, dataSourceIds: [], baseAgent: { internalId: 'agent-sales' } },
+      artifacts: { tools: [], skills: [], agentVersions: [{ internalId: 'agent-sales', version: '1.2.0' }], personas: [], pseudoUsers: [], scenarios: [] },
+      report: {
+        bestIteration: 1,
+        candidate: { agentId: 'agent-sales', version: '1.2.0' },
+        summary: 'Enhanced existing agent Sales Assistant@1.2.0.',
+        openFindings: [],
+        metricsByIteration: [
+          { iteration: 1, goalAchievedRate: 1, avgSatisfaction: 5, toolHitRate: 1, errorRate: 0, avgUserTurns: 1, scenarioCount: 1, usage: { totalTokens: 15 }, durationMs: 250 },
+        ],
+      },
+      finishedAt: '2026-07-20T00:00:00.500Z',
+    });
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([succeeded]) });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Enhance: Sales Assistant/ }));
+    await screen.findByText('Report');
+
+    expect(screen.getByText('Added tools / skills (drafts)')).toBeTruthy();
+    expect(screen.queryByText('Generated assets (drafts)')).toBeNull();
+    expect(screen.getByText('No new capabilities were added; the agent context was improved.')).toBeTruthy();
+  });
+
+  it('強化Runの対象Agentが一覧に無ければ internalId をラベルに使う', async () => {
+    const enhanceRun = baseRun({
+      status: 'succeeded',
+      input: { ...baseRun().input, dataSourceIds: [], baseAgent: { internalId: 'agent-removed' } },
+    });
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([enhanceRun]) });
+    render(<FactoryPage client={client} />);
+    expect(await screen.findByRole('button', { name: /Enhance: agent-removed/ })).toBeTruthy();
   });
 });

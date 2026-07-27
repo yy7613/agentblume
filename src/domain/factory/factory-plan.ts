@@ -38,6 +38,36 @@ export interface FactorySkillPlan {
   readonly toolKeys: readonly string[];
 }
 
+/**
+ * 既存Agentへ「Skillを1件追加する」計画（改訂提案 `add-skill`。docs/16-agent-factory.md §5.3）。
+ *
+ * `FactorySkillPlan` を再利用せず別型にする理由:
+ * 1. `FactorySkillPlan.toolKeys` は **Stage 1 の計画内でだけ意味を持つRunローカルなキー空間** で、
+ *    `validateFactoryPlan` が `plan.tools[].key` との参照整合を強制している。改訂提案が指したいのは
+ *    「既に保存済みのTool」であり、同じフィールドへ別の名前空間を混ぜるとStage 1の検証規則が壊れる。
+ *    そこで名前を `toolRefs` に変え、解決規則（下記）を型のドキュメントとして固定する。
+ * 2. Skillの保存には `instructions` / `inputDescription` / `outputDescription` が要る。生成フロー
+ *    （Stage 3）はSkillWriterロールがそれらを書くが、改善ループでは `skill-instructions-revision` と
+ *    同じ流儀でAnalystが本文まで書く（ロール呼び出しとロール依存を増やさない）。
+ */
+export interface FactoryAddSkillPlan {
+  readonly key: string;
+  readonly displayName: string;
+  readonly responsibility: string;
+  readonly activationCondition: string;
+  /** 未指定なら適用側が `responsibility` から決定的に補う（ローカルモデルの出力欠落に耐える）。 */
+  readonly inputDescription?: string;
+  /** 未指定なら適用側が `responsibility` から決定的に補う。 */
+  readonly outputDescription?: string;
+  readonly instructions: string;
+  /**
+   * このSkillが使うToolの参照。適用側（`ApplyImprovementsUseCase`）が次の順で解決する:
+   * 対象Agentが現に持つToolの `internalId` → `publishName` → Tool契約名（`agentTool.name`）→
+   * 同一イテレーションの `add-tool` 提案の `plan.key`。1つでも解決できなければ提案ごと却下する。
+   */
+  readonly toolRefs: readonly string[];
+}
+
 /** Persona種別プリセット（docs/11-scenario-validation.md §2）。 */
 export const FACTORY_PERSONA_ARCHETYPES = ['novice', 'expert', 'busy', 'vague', 'skeptical', 'custom'] as const;
 export type FactoryPersonaArchetype = (typeof FACTORY_PERSONA_ARCHETYPES)[number];

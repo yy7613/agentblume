@@ -624,7 +624,12 @@ export function createApp(options?: AppOptions): App {
   const savePersona = new SavePersonaUseCase(personaAdapter.repo);
   const registerPseudoUserAgent = new RegisterPseudoUserAgentUseCase(personaAdapter.repo, saveAgent);
   const saveScenario = new SaveScenarioUseCase(scenarioAdapter.repo, agentAdapter.repo, personaAdapter.repo);
-  const applyImprovements = new ApplyImprovementsUseCase(agentAdapter.repo, skillAdapter.repo, repo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine);
+  // `add-tool` 提案の適用はStage 2と同じToolSmith修復ループを回すため、生成側と同じ協働者を注入する
+  // （未注入なら add-tool は「未設定」として却下される）。第9引数は既定の now。
+  const applyImprovements = new ApplyImprovementsUseCase(
+    agentAdapter.repo, skillAdapter.repo, repo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine, undefined,
+    { toolSmith: toolSmithRole, resolveDataSources, profiler: profileDataSources },
+  );
   const runFactory = new RunFactoryUseCase(factoryRunAdapter.repo, profileDataSources, plannerRole, generateAgentAssets, runScenario, savePersona, registerPseudoUserAgent, saveScenario, analystRole, applyImprovements, agentAdapter.repo, skillAdapter.repo, repo);
   const factoryWorker = new InProcessFactoryWorker(runFactory);
   const createFactoryRun = new CreateFactoryRunUseCase(factoryRunAdapter.repo, factoryWorker);

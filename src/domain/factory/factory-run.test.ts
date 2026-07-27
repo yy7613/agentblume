@@ -181,6 +181,31 @@ describe('attachAnalysisToLastIteration', () => {
     expect(run.iterations[1]?.analysis).toBeUndefined();
   });
 
+  it('add-skill提案のtoolRefsを深く複製する（保存後の配列変更が漏れない）', () => {
+    const toolRefs = ['tool-1', 'tool-2'];
+    const addSkill = {
+      findings: [],
+      applied: [{
+        proposal: {
+          kind: 'add-skill' as const,
+          plan: { key: 'k', displayName: 'd', responsibility: 'r', activationCondition: 'c', instructions: 'i', toolRefs },
+          rationale: 'r',
+        },
+        resultingVersion: { internalId: 'skill-9', version: '1.0.0' },
+      }],
+      rejected: [],
+    };
+    let run = beginFactoryRun(makeRun());
+    run = recordIteration(run, iteration1);
+    run = attachAnalysisToLastIteration(run, addSkill);
+
+    toolRefs.push('tool-3');
+
+    const stored = run.iterations[0]?.analysis?.applied[0]?.proposal;
+    expect(stored?.kind).toBe('add-skill');
+    expect(stored?.kind === 'add-skill' ? stored.plan.toolRefs : []).toEqual(['tool-1', 'tool-2']);
+  });
+
   it('既存のanalysisを上書きする', () => {
     let run = beginFactoryRun(makeRun());
     run = recordIteration(run, iteration1);

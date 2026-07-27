@@ -116,6 +116,19 @@ export interface FactoryPlanCheckpoint {
   readonly plan: FactoryPlan;
 }
 
+/**
+ * 強化対象の既存Agent（docs/16-agent-factory.md §4.1 既存Agent強化モード）。
+ *
+ * 指定するとRunは「0→1生成」ではなく「既存Agentの強化」として走る: Stage 0でこのAgentをロードして
+ * 現在の能力を把握し、Stage 1のPlannerには不足分だけを計画させ、Stage 4は新しいAgentを作らずこのAgentの
+ * patch新版を作る。未指定なら従来どおりの生成モード。
+ */
+export interface FactoryBaseAgentRef {
+  readonly internalId: string;
+  /** 省略時は最新版を起点にする。指定するとその版を起点にする（過去版からの分岐）。 */
+  readonly version?: string;
+}
+
 export interface FactoryRun {
   readonly id: string;
   readonly scope: TenantScope;
@@ -123,6 +136,8 @@ export interface FactoryRun {
     readonly goal: FactoryGoalInput;
     readonly dataSourceIds: readonly string[];
     readonly options: FactoryOptions;
+    /** 強化対象の既存Agent。未指定は0→1生成モード。 */
+    readonly baseAgent?: FactoryBaseAgentRef;
   };
   readonly status: FactoryRunStatus;
   readonly stage: FactoryStage;
@@ -165,6 +180,7 @@ export function startFactoryRun(
       goal: { ...input.input.goal },
       dataSourceIds: [...input.input.dataSourceIds],
       options: cloneFactoryOptions(input.input.options),
+      ...(input.input.baseAgent === undefined ? {} : { baseAgent: { ...input.input.baseAgent } }),
     },
     status: 'queued',
     stage: 'profiling',
@@ -289,7 +305,9 @@ function cloneProposal(proposal: ImprovementProposal): ImprovementProposal {
     case 'tool-graph-revision':
       return { ...proposal, graph: { nodes: proposal.graph.nodes.map((node) => ({ ...node })), edges: proposal.graph.edges.map((edge) => ({ ...edge })) } };
     case 'add-tool':
-      return { ...proposal, plan: { ...proposal.plan } };
+      return { ...proposal, plan: { ...proposal.plan, ...(proposal.plan.reuse === undefined ? {} : { reuse: { ...proposal.plan.reuse } }) } };
+    case 'add-skill':
+      return { ...proposal, plan: { ...proposal.plan, toolRefs: [...proposal.plan.toolRefs] } };
   }
 }
 

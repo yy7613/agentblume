@@ -29,7 +29,13 @@ function parseWith<S extends z.ZodType>(schema: S, value: unknown, label: string
 export function registerFactoryRoutes(app: FastifyInstance, deps: FactoryRouteDeps): void {
   app.post('/factory-runs', async (request, reply) => {
     const body = parseWith(factoryRunBodySchema, request.body, 'invalid body');
-    const run = await deps.createFactoryRun.execute({ scope: body.scope, goal: body.goal, dataSourceIds: body.dataSourceIds, ...(body.options === undefined ? {} : { options: body.options }) });
+    const run = await deps.createFactoryRun.execute({
+      scope: body.scope,
+      goal: body.goal,
+      dataSourceIds: body.dataSourceIds,
+      ...(body.baseAgent === undefined ? {} : { baseAgent: body.baseAgent }),
+      ...(body.options === undefined ? {} : { options: body.options }),
+    });
     return reply.status(202).send({ run });
   });
 

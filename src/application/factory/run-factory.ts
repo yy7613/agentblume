@@ -8,8 +8,14 @@
  * イテレーション1の検証（`runValidationIteration`）→ 改善ループ・レポート（`finalizeOrImprove`、M4）:
  * Analyst分析 → 改訂提案の検証・適用（`ApplyImprovementsUseCase`）→ 新Agent版の再検証 …を、
  * 目標達成 / 改善停滞 / 予算上限のいずれかに達するまで繰り返し、`FactoryReport` を添えて succeeded で終える。
+ *
+ * `input.baseAgent` があるRunは**既存Agent強化モード**で走る（docs/16 §4.1）。ステージ構成は同じで、
+ * 読み替えだけが変わる: Stage 0 は起点Agentのロード（+ データソースが0件ならプロファイルは空）、
+ * Stage 1 は「不足分だけのギャップ計画」、Stage 4 は新規Agentではなく起点Agentのpatch新版、
+ * Stage 5以降は無改修で流用する。新しい `FactoryStage` / `FactoryEventKind` は増やさない。
  */
 import { randomUUID } from 'node:crypto';
+import type { Agent } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
 import type { TenantScope } from '../../domain/tool/ids';
@@ -43,10 +49,10 @@ import type { ScenarioRun } from '../../domain/validation/scenario-run';
 import { ApplyImprovementsUseCase } from './apply-improvements';
 import { FACTORY_OWNER, GenerateAgentAssetsUseCase, makePublishName, type GenerateAgentAssetsResult } from './generate-agent-assets';
 import { aggregateIterationMetrics } from './metrics';
-import { ProfileDataSourcesUseCase } from './profile-data-sources';
+import { ProfileDataSourcesUseCase, type DataProfile } from './profile-data-sources';
 import { buildExistingToolCatalog } from './tool-catalog';
-import { AnalystRole, type AnalystScenarioSummary } from './roles/analyst-role';
-import { PlannerRole } from './roles/planner-role';
+import { AnalystRole, type AnalystDataSourceSummary, type AnalystScenarioSummary } from './roles/analyst-role';
+import { PlannerRole, type PlannerCurrentAgent } from './roles/planner-role';
 import type { ScenarioRunnerPort } from './scenario-runner-port';
 import type { SavePersonaUseCase } from '../validation/save-persona';
 import type { RegisterPseudoUserAgentUseCase } from '../validation/register-pseudo-user-agent';
@@ -54,6 +60,16 @@ import type { SaveScenarioUseCase } from '../validation/save-scenario';
 
 /** 計画承認checkpointのTTL（Harness checkpointと同じ24時間・docs/16 §6）。 */
 const CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Stage 2以降で使い回す実行コンテキスト。Stage 0で1度だけ解決し、Stage 5・改善ループへ引き回す
+ * （プロファイルの再取得・起点Agentの再ロードを避け、Run内で同じ値を見せるため）。
+ */
+interface FactoryRunContext {
+  readonly profiles: readonly DataProfile[];
+  /** 既存Agent強化モードの起点Agent（生成モードでは未設定）。 */
+  readonly baseAgent?: Agent;
+}
 
 export class RunFactoryUseCase {
   constructor(
@@ -87,7 +103,13 @@ export class RunFactoryUseCase {
         run = advanceStage(run, 'profiling');
         await this.runs.save(run);
 
-        run = await this.event(run, { kind: 'stage_started', at: this.now().toISOString(), stage: 'profiling' });
+        // Stage 0: 強化モードなら起点Agentを先に解決する（存在しなければRunを失敗させる）。
+        // 解決できて初めて「何を強化するRunなのか」をイベントへ残せるため、stage_started より前に行う。
+        const baseAgent = await this.loadBaseAgent(scope, run.input.baseAgent);
+        run = await this.event(run, {
+          kind: 'stage_started', at: this.now().toISOString(), stage: 'profiling',
+          ...(baseAgent === undefined ? {} : { message: `enhancing agent ${describeAgent(baseAgent)}` }),
+        });
         const profiles = await this.profiler.executeAll(scope, run.input.dataSourceIds);
         this.assertNotAborted(signal);
         run = await this.event(run, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'profiling' });
@@ -97,7 +119,12 @@ export class RunFactoryUseCase {
         run = await this.event(run, { kind: 'stage_started', at: this.now().toISOString(), stage: 'planning' });
         // 「作成済みのToolで足りるか」をPlannerに考えさせるための再利用候補（docs/16 §4 Stage 1）。
         const existingTools = await buildExistingToolCatalog(this.tools, scope);
-        const plan = await this.planner.propose({ goal: run.input.goal, profiles, dataSourceIds: run.input.dataSourceIds, options: run.input.options, existingTools }, signal);
+        // 強化モードでは「既にAgentが持っている能力」を渡し、不足分だけを計画させる（ギャップ計画）。
+        const currentAgent = baseAgent === undefined ? undefined : await this.describeCurrentAgent(scope, baseAgent);
+        const plan = await this.planner.propose({
+          goal: run.input.goal, profiles, dataSourceIds: run.input.dataSourceIds, options: run.input.options, existingTools,
+          ...(currentAgent === undefined ? {} : { currentAgent }),
+        }, signal);
         this.assertNotAborted(signal);
 
         run = setPlan(run, plan);
@@ -107,7 +134,7 @@ export class RunFactoryUseCase {
         run = await this.event(run, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'planning' });
 
         if (run.input.options.requirePlanApproval) {
-          const checkpoint = this.buildCheckpoint(plan, run.input.goal);
+          const checkpoint = this.buildCheckpoint(plan, run.input.goal, baseAgent);
           run = waitForPlanApproval(run, checkpoint);
           await this.runs.save(run);
           run = await this.event(run, { kind: 'approval_requested', at: this.now().toISOString(), stage: 'planning', message: checkpoint.prompt });
@@ -137,18 +164,21 @@ export class RunFactoryUseCase {
     let next = run;
     const profiles = await this.profiler.executeAll(next.scope, next.input.dataSourceIds);
     const existingTools = await buildExistingToolCatalog(this.tools, next.scope);
+    const baseAgent = await this.loadBaseAgent(next.scope, next.input.baseAgent);
+    const currentAgent = baseAgent === undefined ? undefined : await this.describeCurrentAgent(next.scope, baseAgent);
     const plan = await this.planner.propose({
       goal: next.input.goal,
       profiles,
       dataSourceIds: next.input.dataSourceIds,
       options: next.input.options,
       existingTools,
+      ...(currentAgent === undefined ? {} : { currentAgent }),
       ...(feedback === undefined ? {} : { feedback }),
     }, signal);
     next = setPlan(next, plan);
     next = updateBudget(next, { ...next.budget.consumed, roleCalls: next.budget.consumed.roleCalls + 1 });
     next = appendFactoryEvent(next, { kind: 'plan_proposed', at: this.now().toISOString(), stage: 'planning', message: 'revised' });
-    const checkpoint = this.buildCheckpoint(plan, next.input.goal);
+    const checkpoint = this.buildCheckpoint(plan, next.input.goal, baseAgent);
     next = waitForPlanApproval(next, checkpoint);
     next = appendFactoryEvent(next, { kind: 'approval_requested', at: this.now().toISOString(), stage: 'planning', message: checkpoint.prompt });
     return next;
@@ -170,6 +200,9 @@ export class RunFactoryUseCase {
     // 計画の `reuse` を解決する集合。Stage 1でPlannerへ提示したのと同じ規則で組み立て直す
     // （承認待ちを挟んだ再開でも、その時点で有効な既存Toolだけを参照する）。
     const existingTools = await buildExistingToolCatalog(this.tools, current.scope);
+    // 承認を挟んだ再開でも起点Agentを解決し直す（承認待ちの間に版が進んでいれば、指定が無い限り最新版を使う）。
+    const baseAgent = await this.loadBaseAgent(current.scope, current.input.baseAgent);
+    const context: FactoryRunContext = { profiles, ...(baseAgent === undefined ? {} : { baseAgent }) };
     this.assertNotAborted(signal);
 
     // `onEvent` は generateAgentAssets 内の逐次awaitの合間に同期的に呼ばれる。永続化(save)は非同期のため、
@@ -190,6 +223,7 @@ export class RunFactoryUseCase {
       profiles,
       maxRepairAttempts: current.input.options.budget.maxRepairAttempts,
       existingTools: existingTools.entries,
+      ...(baseAgent === undefined ? {} : { baseAgent }),
       onEvent,
     });
     await chain;
@@ -204,7 +238,13 @@ export class RunFactoryUseCase {
 
     current = advanceStage(current, 'assembling-agent');
     await this.runs.save(current);
-    current = await this.event(current, { kind: 'stage_started', at: this.now().toISOString(), stage: 'assembling-agent' });
+    current = await this.event(current, {
+      kind: 'stage_started', at: this.now().toISOString(), stage: 'assembling-agent',
+      // 強化モードは「新規Agentを作らない」ことがイベントから読み取れるようにする（新しいkindは足さない）。
+      ...(baseAgent === undefined
+        ? {}
+        : { message: assets.agentChanged ? `enhanced existing agent ${assets.agentRef.internalId}@${assets.agentRef.version}` : `existing agent ${assets.agentRef.internalId}@${assets.agentRef.version} kept as-is (no capability added)` }),
+    });
 
     current = setArtifacts(current, {
       tools: assets.toolRefs,
@@ -218,7 +258,7 @@ export class RunFactoryUseCase {
     await this.runs.save(current);
     current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'assembling-agent' });
 
-    await this.runValidationAndImprove(current, assets, signal);
+    await this.runValidationAndImprove(current, assets, context, signal);
   }
 
   /**
@@ -227,7 +267,7 @@ export class RunFactoryUseCase {
    * （docs/16 §4 Stage 5: 決定的マテリアライズ、新規LLM呼び出しなし）。
    * 完了後は改善ループ・レポート（`finalizeOrImprove`）へ委譲する。
    */
-  private async runValidationAndImprove(run: FactoryRun, assets: GenerateAgentAssetsResult, signal?: AbortSignal): Promise<void> {
+  private async runValidationAndImprove(run: FactoryRun, assets: GenerateAgentAssetsResult, context: FactoryRunContext, signal?: AbortSignal): Promise<void> {
     const plan = run.plan;
     if (plan === undefined) throw new FactoryValidationError('runValidationAndImprove: run has no plan');
 
@@ -316,7 +356,7 @@ export class RunFactoryUseCase {
     current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'generating-validation' });
 
     const { run: afterIteration1, scenarioRuns } = await this.runValidationIteration(current, assets.agentRef, signal);
-    await this.finalizeOrImprove(afterIteration1, scenarioRuns, signal);
+    await this.finalizeOrImprove(afterIteration1, scenarioRuns, context, signal);
   }
 
   /**
@@ -368,10 +408,13 @@ export class RunFactoryUseCase {
    * (c) 予算・上限到達（`maxIterations` またはbudget消費）。(c) では `budget_exceeded` を記録する。
    * 正常系では必ず succeeded で終わる（例外を投げない）。真の異常のみ呼び出し元のcatchでfailedへ落ちる。
    */
-  private async finalizeOrImprove(run: FactoryRun, latestScenarioRuns: readonly ScenarioRun[], signal?: AbortSignal): Promise<void> {
+  private async finalizeOrImprove(run: FactoryRun, latestScenarioRuns: readonly ScenarioRun[], context: FactoryRunContext, signal?: AbortSignal): Promise<void> {
     let current = run;
     let scenarioRuns = latestScenarioRuns;
     let lastSummary: string | undefined;
+    // Analystの `add-tool` 提案はこの一覧に載っているデータソースだけを対象にできる（未指定なら提案させない）。
+    // 生成モード・強化モードとも Stage 0 のプロファイルをそのまま要約して渡す。
+    const availableDataSources = toAnalystDataSources(context.profiles);
 
     for (;;) {
       const latest = current.iterations[current.iterations.length - 1];
@@ -416,6 +459,7 @@ export class RunFactoryUseCase {
         currentAgent: { id: agent.metadata.internalId, systemPrompt: agent.systemPrompt },
         currentSkills,
         currentTools,
+        ...(availableDataSources.length === 0 ? {} : { availableDataSources }),
       }, signal);
       this.assertNotAborted(signal);
       lastSummary = analystResult.summary;
@@ -436,6 +480,8 @@ export class RunFactoryUseCase {
         agentRef,
         proposals: analystResult.proposals,
         maxProposals: budget.maxProposalsPerIteration,
+        // `add-tool` のToolSmith再提案回数はRunの予算に従わせる（適用側の既定値へ落とさない）。
+        maxRepairAttempts: budget.maxRepairAttempts,
       });
 
       current = attachAnalysisToLastIteration(current, { findings: analystResult.findings, applied: applyResult.applied, rejected: applyResult.rejected });
@@ -471,10 +517,12 @@ export class RunFactoryUseCase {
     const agentInternalId = this.resolveAgentInternalId(current);
     const lastIteration = current.iterations[current.iterations.length - 1];
 
+    // 強化モードであることをレポートからも読み取れるようにする（UIはsummaryをそのまま表示する）。
+    const summary = lastSummary ?? defaultSummary(current.iterations);
     const report: FactoryReport = {
       bestIteration: bestIteration.index,
       candidate: { agentId: agentInternalId, version: bestIteration.agentVersion },
-      summary: lastSummary ?? defaultSummary(current.iterations),
+      summary: context.baseAgent === undefined ? summary : `Enhanced existing agent ${describeAgent(context.baseAgent)}. ${summary}`,
       openFindings: lastIteration?.analysis?.findings ?? [],
       metricsByIteration: current.iterations.map((iteration) => iteration.metrics),
     };
@@ -489,6 +537,48 @@ export class RunFactoryUseCase {
     const ref = run.artifacts.agentVersions[0];
     if (ref === undefined) throw new FactoryValidationError('finalizeOrImprove: run has no agent artifact');
     return ref.internalId;
+  }
+
+  /**
+   * 既存Agent強化モードの起点Agentを解決する（`baseAgent` 未指定なら生成モードとして `undefined`）。
+   * `version` 省略時は最新版。存在しない・強化対象にできない種別のAgentは `FactoryValidationError` で
+   * Runを失敗させる（黙って0→1生成へフォールバックしない）。
+   */
+  private async loadBaseAgent(scope: TenantScope, ref: FactoryRun['input']['baseAgent']): Promise<Agent | undefined> {
+    if (ref === undefined) return undefined;
+    const label = `${ref.internalId}${ref.version === undefined ? '' : `@${ref.version}`}`;
+    let agent: Agent | null;
+    try {
+      agent = ref.version === undefined
+        ? await this.agents.findLatest(scope, ref.internalId)
+        : await this.agents.findVersion(scope, ref.internalId, SemVer.parse(ref.version));
+    } catch (error) {
+      throw new FactoryValidationError(`base agent could not be loaded: ${label}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (agent === null) throw new FactoryValidationError(`base agent not found: ${label}`);
+    // 疑似ユーザー/評価者Agentは能力（Tool/Skill）を持てない・持たせる意味がないため強化対象にしない。
+    if (agent.kind !== 'normal') throw new FactoryValidationError(`base agent must be a normal agent, got kind '${agent.kind}': ${label}`);
+    return agent;
+  }
+
+  /** Plannerへ渡す「既存Agentが今できること」。Tool/Skillの実体を読んで契約だけを要約する。 */
+  private async describeCurrentAgent(scope: TenantScope, agent: Agent): Promise<PlannerCurrentAgent> {
+    const tools: { publishName: string; description: string }[] = [];
+    for (const ref of agent.tools) {
+      const tool = await this.tools.findVersion(scope, ref.internalId, ref.version);
+      if (tool !== null) {
+        tools.push({
+          publishName: tool.agentTool?.name ?? tool.metadata.publishName,
+          description: tool.agentTool?.description ?? tool.metadata.displayName,
+        });
+      }
+    }
+    const skills: { displayName: string; responsibility: string }[] = [];
+    for (const ref of agent.skills) {
+      const skill = await this.skills.findVersion(scope, ref.internalId, ref.version);
+      if (skill !== null) skills.push({ displayName: skill.metadata.displayName, responsibility: skill.responsibility });
+    }
+    return { displayName: agent.metadata.displayName, systemPrompt: agent.systemPrompt, tools, skills };
   }
 
   private async loadCurrentSkillContracts(scope: TenantScope, refs: readonly { readonly internalId: string; readonly version: SemVer }[]): Promise<{ id: string; instructions: string }[]> {
@@ -509,8 +599,10 @@ export class RunFactoryUseCase {
     return results;
   }
 
-  private buildCheckpoint(plan: FactoryPlan, goal: FactoryGoalInput): FactoryPlanCheckpoint {
-    const prompt = `Review the proposed plan for "${goal.goal}": agent "${plan.agentBrief.displayName}" with ${plan.tools.length} tool(s), ${plan.skills.length} skill(s), ${plan.personas.length} persona(s), ${plan.scenarios.length} scenario(s).`;
+  private buildCheckpoint(plan: FactoryPlan, goal: FactoryGoalInput, baseAgent?: Agent): FactoryPlanCheckpoint {
+    const prompt = baseAgent === undefined
+      ? `Review the proposed plan for "${goal.goal}": agent "${plan.agentBrief.displayName}" with ${plan.tools.length} tool(s), ${plan.skills.length} skill(s), ${plan.personas.length} persona(s), ${plan.scenarios.length} scenario(s).`
+      : `Review the proposed enhancement for "${goal.goal}": add ${plan.tools.length} tool(s) and ${plan.skills.length} skill(s) to the existing agent "${baseAgent.metadata.displayName}" (${describeAgent(baseAgent)}), then validate it with ${plan.scenarios.length} scenario(s) across ${plan.personas.length} persona(s).`;
     return { kind: 'plan-approval', expiresAt: new Date(this.now().getTime() + CHECKPOINT_TTL_MS).toISOString(), prompt, plan };
   }
 
@@ -523,6 +615,24 @@ export class RunFactoryUseCase {
   private assertNotAborted(signal?: AbortSignal): void {
     if (signal?.aborted === true) throw new FactoryValidationError('Factory run aborted');
   }
+}
+
+/** Runのイベント・レポートで既存Agentを一意に示すラベル。 */
+function describeAgent(agent: Agent): string {
+  return `${agent.metadata.displayName}@${agent.metadata.version.toString()}`;
+}
+
+/**
+ * Stage 0 の `DataProfile[]` を Analyst の `availableDataSources` へ要約する（dataSourceId + 列名程度）。
+ * これを渡さないとAnalystは `add-tool` を一切提案しない（`isValidTarget` でも破棄される）。
+ */
+function toAnalystDataSources(profiles: readonly DataProfile[]): AnalystDataSourceSummary[] {
+  return profiles.map((profile) => ({
+    dataSourceId: profile.dataSourceId,
+    name: profile.name,
+    ...(profile.format === undefined ? {} : { format: profile.format }),
+    columns: profile.columns.map((column) => `${column.name}:${column.type}`),
+  }));
 }
 
 /** Analyst入力用のScenario別サマリを構築する（`q2` = 総合満足度。docs/16 §5.1と同じ規約）。 */

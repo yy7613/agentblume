@@ -34,7 +34,7 @@ const options: FactoryOptions = {
   budget: { maxDurationMs: 60_000, maxRoleCalls: 7, maxScenarioRuns: 8, maxRepairAttempts: 1, maxProposalsPerIteration: 2 },
 };
 
-function seedRun(id: string): FactoryRun {
+function seedRun(id: string, baseAgent?: { readonly internalId: string; readonly version?: string }): FactoryRun {
   return startFactoryRun({
     id,
     scope,
@@ -42,6 +42,7 @@ function seedRun(id: string): FactoryRun {
       goal: { goal: 'Answer sales questions', targetUsers: 'Accounting staff', constraints: 'No SQL', language: 'ja' },
       dataSourceIds: ['ds-1', 'ds-2'],
       options,
+      ...(baseAgent === undefined ? {} : { baseAgent }),
     },
     startedAt: '2026-07-20T00:00:00.000Z',
   });
@@ -83,6 +84,30 @@ describe('RetryFactoryRunUseCase', () => {
     expect(worker.enqueued).toEqual([{ scope, runId: 'retry-run-1' }]);
     // 元のfailed Runは監査証跡としてそのまま残る。
     expect(await repo.find(scope, 'run-1')).toMatchObject({ id: 'run-1', status: 'failed' });
+  });
+
+  it('強化モードのRunをretryすると baseAgent（版指定含む）も引き継ぐ', async () => {
+    const { repo, retryFactoryRun } = await setup();
+    const failed = failFactoryRun(
+      beginFactoryRun(seedRun('run-1', { internalId: 'base-agent', version: '1.2.3' })),
+      { stage: 'assembling-agent', reason: 'model provider error' },
+      '2026-07-20T00:01:00.000Z',
+    );
+    await repo.save(failed);
+
+    const retried = await retryFactoryRun.execute({ scope, runId: 'run-1' });
+
+    // baseAgent を落とすと、強化のつもりのRunが0→1生成として再実行されてしまう。
+    expect(retried.input.baseAgent).toEqual({ internalId: 'base-agent', version: '1.2.3' });
+    expect(retried.status).toBe('queued');
+    expect(await repo.find(scope, 'retry-run-1')).toMatchObject({ input: { baseAgent: { internalId: 'base-agent', version: '1.2.3' } } });
+  });
+
+  it('生成モードのRunをretryしても baseAgent は付かない', async () => {
+    const { repo, retryFactoryRun } = await setup();
+    await repo.save(failFactoryRun(beginFactoryRun(seedRun('run-1')), { stage: 'planning', reason: 'boom' }, '2026-07-20T00:01:00.000Z'));
+    const retried = await retryFactoryRun.execute({ scope, runId: 'run-1' });
+    expect(retried.input.baseAgent).toBeUndefined();
   });
 
   it('存在しないRunはFactoryNotFoundError', async () => {

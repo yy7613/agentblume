@@ -33,6 +33,17 @@ const factorySkillPlanSchema = z.object({
   activationCondition: z.string(),
   toolKeys: z.array(z.string()),
 });
+/** `add-skill` 提案の計画（`FactoryAddSkillPlan`）。toolKeys ではなく toolRefs を持つ別型。 */
+const factoryAddSkillPlanSchema = z.object({
+  key: z.string(),
+  displayName: z.string(),
+  responsibility: z.string(),
+  activationCondition: z.string(),
+  inputDescription: z.string().optional(),
+  outputDescription: z.string().optional(),
+  instructions: z.string(),
+  toolRefs: z.array(z.string()),
+});
 const factoryPersonaPlanSchema = z.object({
   key: z.string(),
   archetype: z.enum(FACTORY_PERSONA_ARCHETYPES),
@@ -73,6 +84,7 @@ const improvementProposalSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('tool-contract-revision'), toolId: z.string(), agentTool: z.object({ name: z.string().optional(), description: z.string().optional() }), rationale: z.string() }),
   z.object({ kind: z.literal('tool-graph-revision'), toolId: z.string(), graph: toolGraphSchema, rationale: z.string() }),
   z.object({ kind: z.literal('add-tool'), plan: factoryToolPlanSchema, rationale: z.string() }),
+  z.object({ kind: z.literal('add-skill'), plan: factoryAddSkillPlanSchema, rationale: z.string() }),
 ]);
 const appliedProposalSchema = z.object({ proposal: improvementProposalSchema, resultingVersion: versionRefSchema });
 const rejectedProposalSchema = z.object({ proposal: improvementProposalSchema, reason: z.string() });
@@ -126,7 +138,13 @@ const factoryPlanCheckpointSchema = z.object({ kind: z.literal('plan-approval'),
 const factoryRunSchema = z.object({
   id: z.string(),
   scope: scopeSchema,
-  input: z.object({ goal: factoryGoalInputSchema, dataSourceIds: z.array(z.string()), options: factoryOptionsSchema }),
+  input: z.object({
+    goal: factoryGoalInputSchema,
+    dataSourceIds: z.array(z.string()),
+    options: factoryOptionsSchema,
+    // 既存Agent強化モードの起点（未指定は0→1生成モード）。
+    baseAgent: z.object({ internalId: z.string(), version: z.string().optional() }).optional(),
+  }),
   status: z.enum(FACTORY_RUN_STATUSES),
   stage: z.enum(FACTORY_STAGES),
   plan: factoryPlanSchema.optional(),

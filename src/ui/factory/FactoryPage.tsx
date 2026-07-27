@@ -1,17 +1,35 @@
 import { useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { CreateFactoryRunDto, DataSourceDto, FactoryEventDto, FactoryRunDto } from '../api/types';
+import type { AgentSummaryDto, CreateFactoryRunDto, DataSourceDto, FactoryEventDto, FactoryRunDto } from '../api/types';
 import { useI18n } from '../i18n';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 const TERMINAL_STATUSES: ReadonlySet<FactoryRunDto['status']> = new Set(['succeeded', 'failed', 'cancelled']);
+/** APIが受け付けるデータソース数の上限（factoryRunBodySchema と同じ値）。 */
+const MAX_DATA_SOURCES = 5;
 
 type Translate = (english: string, japanese: string) => string;
+/** 生成モード（0→1で新Agentを作る）と強化モード（既存Agentへ差分を積む）の切替。 */
+type FactoryMode = 'create' | 'enhance';
 
 function message(cause: unknown): string { return cause instanceof Error ? cause.message : 'Request failed'; }
 function isTerminal(status: FactoryRunDto['status']): boolean { return TERMINAL_STATUSES.has(status); }
-function runLabel(run: FactoryRunDto): string {
+/** 強化モードのRunは `input.baseAgent` が設定されている（バックエンドの唯一の見分け方）。 */
+function isEnhanceRun(run: FactoryRunDto): boolean { return run.input.baseAgent !== undefined; }
+
+/** 強化対象Agentの表示名。一覧に無ければ internalId をそのまま出す（削除済み・別kindでも壊さない）。 */
+function baseAgentLabel(run: FactoryRunDto, agents: readonly AgentSummaryDto[]): string {
+  const internalId = run.input.baseAgent?.internalId ?? '';
+  const found = agents.find((agent) => agent.internalId === internalId);
+  return found === undefined || found.displayName.trim() === '' ? internalId : found.displayName;
+}
+
+function runLabel(run: FactoryRunDto, text: Translate, agents: readonly AgentSummaryDto[]): string {
+  if (isEnhanceRun(run)) {
+    const target = baseAgentLabel(run, agents);
+    return text(`Enhance: ${target}`, `強化: ${target}`);
+  }
   const name = run.plan?.agentBrief.displayName;
   if (name !== undefined && name.trim() !== '') return name;
   const goal = run.input.goal.goal;
@@ -83,9 +101,12 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
   const { text } = useI18n();
 
   const [dataSources, setDataSources] = useState<readonly DataSourceDto[]>([]);
+  const [agents, setAgents] = useState<readonly AgentSummaryDto[]>([]);
   const [runs, setRuns] = useState<readonly FactoryRunDto[]>([]);
   const [loadError, setLoadError] = useState<string>();
 
+  const [mode, setMode] = useState<FactoryMode>('create');
+  const [baseAgentId, setBaseAgentId] = useState('');
   const [goal, setGoal] = useState('');
   const [targetUsers, setTargetUsers] = useState('');
   const [language, setLanguage] = useState<'ja' | 'en'>('ja');
@@ -108,8 +129,13 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([client.listDataSources(scope), client.listFactoryRuns(scope)])
-      .then(([sources, factoryRuns]) => { if (!active) return; setDataSources(sources); setRuns(factoryRuns); })
+    // Agent一覧は強化モードでしか使わない。ここだけが落ちてもデータソース・実行履歴は表示できるよう、
+    // 巻き添えにせず空配列へ倒す（強化モードを選ぶと「強化できるエージェントがありません」の案内が出る）。
+    void Promise.all([client.listDataSources(scope), client.listFactoryRuns(scope), client.listAgents(scope, 'normal').catch(() => [])])
+      .then(([sources, factoryRuns, normalAgents]) => {
+        if (!active) return;
+        setDataSources(sources); setRuns(factoryRuns); setAgents(normalAgents);
+      })
       .catch((cause: unknown) => { if (active) setLoadError(message(cause)); });
     return () => { active = false; };
   }, [client]);
@@ -144,17 +170,27 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
   function toggleSource(id: string): void {
     setSelectedSourceIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   }
+  /** APIは最大5件。上限に達したら未選択のチェックボックスを止め、400で初めて気づく事態を防ぐ。 */
+  const sourceLimitReached = selectedSourceIds.size >= MAX_DATA_SOURCES;
 
   function selectRun(run: FactoryRunDto): void {
     setSelectedRunId(run.id); setSelectedRun(run); setEvents(run.events); setReviseFeedback(''); setActionError(undefined);
   }
 
   const hasActiveRun = runs.some((run) => !isTerminal(run.status));
-  const canStart = goal.trim() !== '' && selectedSourceIds.size > 0;
+  const isEnhanceMode = mode === 'enhance';
+  // 強化モードは対象Agentが必須でデータソースは任意、生成モードは従来どおりデータソースが1件以上必要。
+  const canStart = goal.trim() !== '' && (isEnhanceMode ? baseAgentId !== '' : selectedSourceIds.size > 0);
 
   function startDisabledReason(): string | undefined {
     if (starting) return undefined;
     if (hasActiveRun) return text('A factory run is already in progress. Wait for it to finish before starting another.', '実行中のFactory runがあります。完了してから次を開始してください。');
+    if (isEnhanceMode) {
+      if (goal.trim() === '' && baseAgentId === '') return text('Select the agent to enhance and enter what to improve.', '強化する対象エージェントを選び、どう改善したいかを入力してください。');
+      if (goal.trim() === '') return text('Enter what to improve.', 'どう改善したいかを入力してください。');
+      if (baseAgentId === '') return text('Select the agent to enhance.', '強化する対象エージェントを選択してください。');
+      return undefined;
+    }
     if (goal.trim() === '' && selectedSourceIds.size === 0) return text('Enter a goal and select at least one data source.', 'やりたいことを入力し、データソースを1つ以上選択してください。');
     if (goal.trim() === '') return text('Enter a goal.', 'やりたいことを入力してください。');
     if (selectedSourceIds.size === 0) return text('Select at least one data source.', 'データソースを1つ以上選択してください。');
@@ -168,6 +204,8 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
       const input: CreateFactoryRunDto = {
         scope,
         goal: { goal: goal.trim(), language, ...(targetUsers.trim() === '' ? {} : { targetUsers: targetUsers.trim() }) },
+        // versionは指定しない（サーバーが最新版を起点にする）。
+        ...(isEnhanceMode ? { baseAgent: { internalId: baseAgentId } } : {}),
         dataSourceIds: [...selectedSourceIds],
         options: { maxIterations, personaCount, scenarioCount, requirePlanApproval },
       };
@@ -227,14 +265,41 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
         <section className="workspace-card" aria-label={text('New factory run', '新規Factory実行')}>
           <h2>{text('New factory run', '新規Factory実行')}</h2>
           {startError !== undefined && <div className="api-error" role="alert">{startError}</div>}
-          <label>{text('Goal', 'やりたいこと')}<textarea aria-label={text('Factory goal', 'Factoryのやりたいこと')} rows={4} value={goal} onChange={(event) => setGoal(event.target.value)} placeholder={text('e.g. An assistant that answers questions about monthly sales data and summarizes trends.', '例: 月次の売上データについて質問に答え、傾向を要約できるアシスタントが欲しい')} /></label>
+          <fieldset className="factory-mode-select">
+            <legend>{text('Mode', 'モード')}</legend>
+            <label>
+              <input type="radio" name="factory-mode" aria-label={text('Create a new agent', '新しいエージェントを作る')}
+                checked={!isEnhanceMode} onChange={() => setMode('create')} />
+              {text('Create a new agent', '新しいエージェントを作る')}
+            </label>
+            <label>
+              <input type="radio" name="factory-mode" aria-label={text('Enhance an existing agent', '既存のエージェントを強化する')}
+                checked={isEnhanceMode} onChange={() => setMode('enhance')} />
+              {text('Enhance an existing agent', '既存のエージェントを強化する')}
+            </label>
+          </fieldset>
+          {isEnhanceMode && (agents.length === 0
+            ? <p className="empty-state">{text('No agents to enhance. Create one first.', '強化できるエージェントがありません。先に作成してください。')}</p>
+            : <label>{text('Agent to enhance', '強化する対象エージェント')}
+              <select aria-label={text('Factory base agent', 'Factory強化対象エージェント')} value={baseAgentId} onChange={(event) => setBaseAgentId(event.target.value)}>
+                <option value="">{text('Select an agent', 'エージェントを選択')}</option>
+                {agents.map((agent) => <option key={agent.internalId} value={agent.internalId}>{agent.displayName} ({agent.latestVersion})</option>)}
+              </select>
+            </label>)}
+          <label>{text('Goal', 'やりたいこと')}<textarea aria-label={text('Factory goal', 'Factoryのやりたいこと')} rows={4} value={goal} onChange={(event) => setGoal(event.target.value)} placeholder={isEnhanceMode
+            ? text('e.g. Improve the accuracy of totals, and support filtering by period.', '例: 集計の精度を上げたい、期間指定に対応させたい')
+            : text('e.g. An assistant that answers questions about monthly sales data and summarizes trends.', '例: 月次の売上データについて質問に答え、傾向を要約できるアシスタントが欲しい')} /></label>
+          <p className="factory-field-hint">{isEnhanceMode
+            ? text('Describe how the existing agent should improve.', 'どう改善したいかを書いてください。')
+            : text('Describe what kind of agent you want to create.', 'どんなエージェントを作るかを書いてください。')}</p>
           <label>{text('Target users', '想定利用者')}<input aria-label={text('Factory target users', 'Factory想定利用者')} value={targetUsers} onChange={(event) => setTargetUsers(event.target.value)} placeholder={text('e.g. Accounting staff, cannot write SQL', '例: 経理担当者。SQLは書けない')} /></label>
           <label>{text('Language', '言語')}<select aria-label={text('Factory language', 'Factory言語')} value={language} onChange={(event) => setLanguage(event.target.value as 'ja' | 'en')}><option value="ja">{text('Japanese', '日本語')}</option><option value="en">{text('English', '英語')}</option></select></label>
           <fieldset className="factory-source-select">
             <legend>{text('Data sources', 'データソース')}</legend>
+            {isEnhanceMode && <p className="factory-field-hint">{text('Optional — add data sources only if the agent needs new tools.', '任意 — 新しいツールが必要な場合だけ選んでください。')}</p>}
             {dataSources.length === 0 && <p className="empty-state">{text('No data sources yet. Register one in the Data sources screen.', 'データソースがまだありません。データソース画面で登録してください。')}</p>}
             {dataSources.map((source) => <label className="agent-tool-option" key={source.id}>
-              <input type="checkbox" checked={selectedSourceIds.has(source.id)} onChange={() => toggleSource(source.id)} />
+              <input type="checkbox" checked={selectedSourceIds.has(source.id)} disabled={sourceLimitReached && !selectedSourceIds.has(source.id)} onChange={() => toggleSource(source.id)} />
               <span><strong>{source.name}</strong><code>{source.id}</code></span>
               <small>{source.kind}</small>
             </label>)}
@@ -254,7 +319,7 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
           <div className="validation-list">
             {runs.length === 0 && <p className="empty-state">{text('No factory runs yet.', 'Factory実行はまだありません。')}</p>}
             {runs.map((run) => <button type="button" key={run.id} className={run.id === selectedRunId ? 'selected' : ''} onClick={() => selectRun(run)}>
-              <strong>{runLabel(run)}</strong><span className={`run-status ${run.status}`}>{statusLabel(run.status, text)}</span><span className="run-meta">{run.id}</span>
+              <strong>{runLabel(run, text, agents)}</strong><span className={`run-status ${run.status}`}>{statusLabel(run.status, text)}</span><span className="run-meta">{run.id}</span>
             </button>)}
           </div>
         </section>
@@ -264,8 +329,9 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
         {selectedRun === undefined ? <p className="empty-state">{text('Select a run, or start a new factory run.', '実行を選択するか、新しいFactory実行を開始してください。')}</p> : <>
           {actionError !== undefined && <div className="api-error" role="alert">{actionError}</div>}
           <div className="panel-title">
-            <h2>{runLabel(selectedRun)}</h2>
+            <h2>{runLabel(selectedRun, text, agents)}</h2>
             <div className="save-actions">
+              <span className={`factory-mode-badge ${isEnhanceRun(selectedRun) ? 'enhance' : 'create'}`}>{isEnhanceRun(selectedRun) ? text('Enhance', '強化') : text('Create', '新規作成')}</span>
               <span className={`run-status ${selectedRun.status}`}>{statusLabel(selectedRun.status, text)}</span>
               <span className="run-meta">{text('Stage', 'ステージ')}: {stageLabel(selectedRun.stage, text)}</span>
               {!isTerminal(selectedRun.status) && <span className="run-meta">{text('Elapsed', '経過')}: {formatElapsed(nowMs - new Date(selectedRun.startedAt).getTime(), text)}</span>}
@@ -282,14 +348,22 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
           </ol>}
 
           {selectedRun.status === 'waiting-approval' && selectedRun.checkpoint !== undefined && <div className="notice-card" aria-label={text('Plan approval', '計画承認')}>
-            <strong>{text('Plan approval required', '計画の承認が必要です')}</strong>
+            <strong>{isEnhanceRun(selectedRun) ? text('Change plan approval required', '変更計画の承認が必要です') : text('Plan approval required', '計画の承認が必要です')}</strong>
             <p>{selectedRun.checkpoint.prompt}</p>
-            <p>{text('Agent', 'エージェント')}: <strong>{selectedRun.checkpoint.plan.agentBrief.displayName}</strong> — {selectedRun.checkpoint.plan.agentBrief.role}</p>
+            {isEnhanceRun(selectedRun)
+              ? <p>{text('Change plan for existing agent', '既存エージェントに対する変更計画')}: <strong>{baseAgentLabel(selectedRun, agents)}</strong></p>
+              : <p>{text('Agent', 'エージェント')}: <strong>{selectedRun.checkpoint.plan.agentBrief.displayName}</strong> — {selectedRun.checkpoint.plan.agentBrief.role}</p>}
             <ul className="factory-plan-counts">
-              <li>{text('Tools', 'ツール')}: {selectedRun.checkpoint.plan.tools.length}</li>
-              <li>{text('Skills', 'スキル')}: {selectedRun.checkpoint.plan.skills.length}</li>
-              <li>{text('Personas', 'ペルソナ')}: {selectedRun.checkpoint.plan.personas.length}</li>
-              <li>{text('Scenarios', 'シナリオ')}: {selectedRun.checkpoint.plan.scenarios.length}</li>
+              {isEnhanceRun(selectedRun) ? <>
+                <li>{text('Tools to add', '追加されるTool')}: {selectedRun.checkpoint.plan.tools.length}</li>
+                <li>{text('Skills to add', '追加されるSkill')}: {selectedRun.checkpoint.plan.skills.length}</li>
+                <li>{text('Validation scenarios', '検証シナリオ')}: {selectedRun.checkpoint.plan.scenarios.length}</li>
+              </> : <>
+                <li>{text('Tools', 'ツール')}: {selectedRun.checkpoint.plan.tools.length}</li>
+                <li>{text('Skills', 'スキル')}: {selectedRun.checkpoint.plan.skills.length}</li>
+                <li>{text('Personas', 'ペルソナ')}: {selectedRun.checkpoint.plan.personas.length}</li>
+                <li>{text('Scenarios', 'シナリオ')}: {selectedRun.checkpoint.plan.scenarios.length}</li>
+              </>}
             </ul>
             <div className="save-actions">
               <button type="button" className="primary" disabled={busy} onClick={() => void respond('approve')}>{text('Approve', '承認')}</button>
@@ -312,7 +386,7 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
             {selectedRun.report.openFindings.length === 0 ? <p className="empty-state">{text('No open findings.', '未解決の指摘はありません。')}</p> : <ul className="factory-findings">
               {selectedRun.report.openFindings.map((finding) => <li key={finding.id}><span className={`finding-severity ${finding.severity}`}>{finding.severity}</span> {finding.area}: {finding.detail}</li>)}
             </ul>}
-            <h4>{text('Generated assets (drafts)', '生成資産（draft）')}</h4>
+            <h4>{isEnhanceRun(selectedRun) ? text('Added tools / skills (drafts)', '追加されたTool/Skill（draft）') : text('Generated assets (drafts)', '生成資産（draft）')}</h4>
             <ul className="factory-plan-counts">
               <li>{text('Tools', 'ツール')}: {selectedRun.artifacts.tools.length}</li>
               <li>{text('Skills', 'スキル')}: {selectedRun.artifacts.skills.length}</li>
@@ -320,6 +394,9 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
               <li>{text('Personas', 'ペルソナ')}: {selectedRun.artifacts.personas.length}</li>
               <li>{text('Scenarios', 'シナリオ')}: {selectedRun.artifacts.scenarios.length}</li>
             </ul>
+            {/* プロンプト改善だけのRunでは Tool/Skill が0件になるのが正常系なので、欠落に見えないよう明示する。 */}
+            {isEnhanceRun(selectedRun) && selectedRun.artifacts.tools.length === 0 && selectedRun.artifacts.skills.length === 0
+              && <p className="empty-state">{text('No new capabilities were added; the agent context was improved.', '新しい能力の追加はなく、コンテキストの改善のみ行われました。')}</p>}
             <p className="empty-state">{text(
               'All generated assets are drafts. Open them in the Agent, Tool, Skill, or Validation screen to review or edit, and promote them through the existing Validation / Quality gate screens. There is no promotion action here.',
               'すべての生成資産はdraftです。エージェント・ツール・スキル・検証の各画面から開いて確認・編集し、既存の検証／品質ゲート画面から昇格してください。この画面に昇格操作はありません。',

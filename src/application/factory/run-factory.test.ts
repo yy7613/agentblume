@@ -7,8 +7,10 @@ import { InMemoryPersonaRepository } from '../../adapters/storage/in-memory-pers
 import { InMemoryScenarioRepository } from '../../adapters/storage/in-memory-scenario-repository';
 import { InMemorySkillRepository } from '../../adapters/storage/in-memory-skill-repository';
 import { InMemoryToolRepository } from '../../adapters/storage/in-memory-tool-repository';
+import { createAgent, type AgentRuntimeHarness } from '../../domain/agent/agent';
 import { createDefaultRegistry } from '../../domain/etl/nodes';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
+import { createSkill } from '../../domain/skill/skill';
 import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
 import { createTool } from '../../domain/tool/tool';
@@ -23,7 +25,7 @@ import { SaveToolUseCase } from '../tool/save-tool';
 import { SavePersonaUseCase } from '../validation/save-persona';
 import { RegisterPseudoUserAgentUseCase } from '../validation/register-pseudo-user-agent';
 import { SaveScenarioUseCase } from '../validation/save-scenario';
-import { ApplyImprovementsUseCase } from './apply-improvements';
+import { ApplyImprovementsUseCase, type ApplyImprovementsInput } from './apply-improvements';
 import { CreateFactoryRunUseCase } from './create-factory-run';
 import { GenerateAgentAssetsUseCase } from './generate-agent-assets';
 import { ProfileDataSourcesUseCase } from './profile-data-sources';
@@ -170,6 +172,7 @@ async function setup(options?: { readonly makeScenarioRun?: (input: ScenarioRunn
   createFactoryRun: CreateFactoryRunUseCase; resumeFactoryRun: ResumeFactoryRunUseCase;
   personaRepo: InMemoryPersonaRepository; scenarioRepo: InMemoryScenarioRepository; scenarioRunner: FakeScenarioRunner;
   agentRepo: InMemoryAgentRepository; skillRepo: InMemorySkillRepository; toolRepo: InMemoryToolRepository;
+  applyCalls: ApplyImprovementsInput[];
 }> {
   const dataSources = new InMemoryDataSourceRepository();
   await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Sales', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 30, createdAt: '', updatedAt: '' }, 'id,amount\n1,100\n2,200');
@@ -198,13 +201,120 @@ async function setup(options?: { readonly makeScenarioRun?: (input: ScenarioRunn
   const registerPseudoUser = new RegisterPseudoUserAgentUseCase(personaRepo, saveAgent);
   const saveScenario = new SaveScenarioUseCase(scenarioRepo, agentRepo, personaRepo);
   const scenarioRunner = new FakeScenarioRunner(options?.makeScenarioRun ?? ((input) => cannedScenarioRun(scope, input.scenarioId, input.version ?? SemVer.of(1, 0, 0))));
-  const applyImprovements = new ApplyImprovementsUseCase(agentRepo, skillRepo, toolRepo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine);
+  const realApplyImprovements = new ApplyImprovementsUseCase(agentRepo, skillRepo, toolRepo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine);
+  // `RunFactoryUseCase` が渡す引数（maxRepairAttempts 等）を検証できるよう、実物を薄く包んで記録する。
+  const applyCalls: ApplyImprovementsInput[] = [];
+  const applyImprovements = {
+    execute: async (input: ApplyImprovementsInput) => { applyCalls.push(input); return realApplyImprovements.execute(input); },
+  } as unknown as ApplyImprovementsUseCase;
 
   const repo = new InMemoryFactoryRunRepository();
   const runFactory = new RunFactoryUseCase(repo, profiler, planner, generateAgentAssets, scenarioRunner, savePersona, registerPseudoUser, saveScenario, analyst, applyImprovements, agentRepo, skillRepo, toolRepo);
   const createFactoryRun = new CreateFactoryRunUseCase(repo, noopWorker);
   const resumeFactoryRun = new ResumeFactoryRunUseCase(repo, runFactory, noopWorker);
-  return { repo, model, runFactory, createFactoryRun, resumeFactoryRun, personaRepo, scenarioRepo, scenarioRunner, agentRepo, skillRepo, toolRepo };
+  return { repo, model, runFactory, createFactoryRun, resumeFactoryRun, personaRepo, scenarioRepo, scenarioRunner, agentRepo, skillRepo, toolRepo, applyCalls };
+}
+
+// ─── 既存Agent強化モードのフィクスチャ ───────────────────────────────────────────────
+
+const BASE_AGENT_ID = 'base-agent';
+const BASE_TOOL_ID = 'base-tool';
+const BASE_SKILL_ID = 'base-skill';
+const BASE_AGENT_HARNESS: AgentRuntimeHarness = {
+  fileMemory: true, todoProvider: false, compaction: true, webSearch: false, toolApproval: false, functionInvocation: true,
+};
+
+/**
+ * 利用者がBuilderで作った既存Agent（Factory生成物ではない）を模す。systemPromptは決定的合成の書式に
+ * 利用者が独自セクションを足したもので、強化モードのsystemPrompt再合成がそれを保つことを検証できる。
+ */
+const BASE_AGENT_PROMPT = [
+  '# 役割\nあなたは「Base Assistant」です。経理担当者の売上の質問に、社内の言葉づかいで答えてください。',
+  '# Skillガイド\n- base_skill@1.0.0: 過去の売上を説明する\n  発火条件: 売上の質問\n  instructions: base_tool を使って答える。',
+  '# Tool使用ガイド\n- base_tool@1.0.0（過去の売上を引く）: input [なし] / output [なし] / side-effect read-only',
+  '# 独自メモ\n利用者が手で書いたセクション。Factoryの強化で消えてはならない。',
+  '# 実行規則\n- 数字は必ず出典を添える。',
+].join('\n\n');
+
+/**
+ * 既存Agent一式（Tool + Skill + Agent）を、Factory実行前から存在する資産としてリポジトリへ置く。
+ * `overrides.version` を変えて再度呼ぶと、同じTool/Skillを指すAgentの別版だけを追加できる。
+ */
+async function seedBaseAgent(
+  toolRepo: InMemoryToolRepository, skillRepo: InMemorySkillRepository, agentRepo: InMemoryAgentRepository,
+  overrides?: { readonly version?: SemVer; readonly systemPrompt?: string },
+): Promise<void> {
+  if (await toolRepo.findVersion(scope, BASE_TOOL_ID, SemVer.of(1, 0, 0)) === null) {
+    await seedBaseCapabilities(toolRepo, skillRepo);
+  }
+  await agentRepo.save(createAgent({
+    metadata: {
+      internalId: BASE_AGENT_ID, workingName: 'Base agent draft', displayName: 'Base Assistant', publishName: 'base_assistant',
+      version: overrides?.version ?? SemVer.of(1, 0, 0), owner: 'alice', state: 'draft', tenant: scope,
+    },
+    kind: 'normal',
+    systemPrompt: overrides?.systemPrompt ?? BASE_AGENT_PROMPT,
+    skills: [{ internalId: BASE_SKILL_ID, version: SemVer.of(1, 0, 0) }],
+    tools: [{ internalId: BASE_TOOL_ID, version: SemVer.of(1, 0, 0) }],
+    agents: [],
+    mcpServers: ['sales-mcp'],
+    harness: BASE_AGENT_HARNESS,
+  }));
+}
+
+async function seedBaseCapabilities(toolRepo: InMemoryToolRepository, skillRepo: InMemorySkillRepository): Promise<void> {
+  await toolRepo.save(createTool({
+    metadata: {
+      internalId: BASE_TOOL_ID, workingName: 'Base tool draft', displayName: 'Base Sales Lookup', publishName: 'base_sales_lookup',
+      version: SemVer.of(1, 0, 0), owner: 'alice', state: 'draft', tenant: scope,
+    },
+    sideEffect: 'read-only',
+    graph: {
+      nodes: [
+        { id: 'now', type: 'current-datetime', config: {} },
+        { id: 'agent-result', type: 'agent-output', config: { shape: 'first-row', format: 'json', maxRows: 1, maxBytes: 4096, overflow: 'error' } },
+      ],
+      edges: [{ from: 'now', to: 'agent-result' }],
+    },
+    agentTool: { name: 'base_tool', description: '過去の売上を引く' },
+  }));
+  await skillRepo.save(createSkill({
+    metadata: {
+      internalId: BASE_SKILL_ID, workingName: 'Base skill draft', displayName: 'Base Sales Skill', publishName: 'base_skill',
+      version: SemVer.of(1, 0, 0), owner: 'alice', state: 'draft', tenant: scope,
+    },
+    responsibility: '過去の売上を説明する',
+    activationCondition: '売上の質問',
+    inputDescription: '売上に関する質問',
+    outputDescription: '売上の説明',
+    instructions: 'base_tool を使って答える。',
+    tools: [{ internalId: BASE_TOOL_ID, version: SemVer.of(1, 0, 0) }],
+  }));
+}
+
+/** 強化モードで「追加は0件、検証と改善だけ」を計画する（データソースを1つも使わない計画）。 */
+function noAdditionPlanJson(): string {
+  return JSON.stringify({
+    agentBrief: { displayName: 'Base Assistant', role: 'Existing agent that answers sales questions.' },
+    tools: [],
+    skills: [],
+    personas: [{ key: 'accountant', archetype: 'novice', knowledgeLevel: 'low', patience: 'mid', tone: 'polite', verbosity: 'normal', language: 'ja' }],
+    scenarios: [{ key: 'scenario-1', goal: 'find total sales', personaKey: 'accountant', expectedToolKeys: [], maxUserTurns: 3 }],
+  });
+}
+
+/** 既存Agentのsystem promptを丸ごと置き換える改訂提案（強化モードの「プロンプト改善だけ」ループ用）。 */
+function baseAgentPromptRevisionJson(): string {
+  return JSON.stringify({
+    findings: [{ id: 'f1', severity: 'warning', area: 'prompt', detail: 'the agent did not state which rows it used' }],
+    proposals: [{
+      kind: 'system-prompt-revision',
+      agentId: BASE_AGENT_ID,
+      sections: { role: '# 役割\nあなたは「Base Assistant」です。根拠の行を必ず示してください。', rules: '# 実行規則\n- 使用した行を必ず引用する。' },
+      rationale: 'cite the rows that back the answer',
+    }],
+    summary: 'Revised the existing system prompt to cite source rows.',
+  });
 }
 
 /** Planner → ToolSmith → SkillWriter → Assembler の順にScriptedModelProviderへ積む（M2生成まで通す共通台本）。 */
@@ -475,5 +585,221 @@ describe('RunFactoryUseCase', () => {
     expect(finished?.report?.metricsByIteration).toHaveLength(1);
     expect(finished?.events.map((event) => event.kind)).toContain('budget_exceeded');
     expect(finished?.iterations[0]?.analysis).toBeUndefined();
+  });
+
+  it('Analystへ Stage 0 のデータソース要約（availableDataSources）と Runの maxRepairAttempts が渡る', async () => {
+    const { model, runFactory, createFactoryRun, applyCalls } = await setup({
+      makeScenarioRun: (input) => {
+        const version = input.target?.version ?? input.version ?? SemVer.of(1, 0, 0);
+        return cannedScenarioRun(scope, input.scenarioId, version, version.toString() === '1.0.0' ? { goalAchieved: false, satisfaction: 2 } : { goalAchieved: true, satisfaction: 5 });
+      },
+    });
+    enqueueGenerationScript(model);
+    model.enqueue({ message: { role: 'assistant', content: validAnalystProposalJson() }, finishReason: 'stop' });
+
+    const created = await createFactoryRun.execute({
+      scope, goal: { goal: 'Answer sales questions', language: 'ja' }, dataSourceIds: ['ds-1'],
+      options: { budget: { maxDurationMs: 60_000, maxRoleCalls: 40, maxScenarioRuns: 20, maxRepairAttempts: 3, maxProposalsPerIteration: 4 } },
+    });
+    await runFactory.execute(scope, created.id);
+
+    // Analyst呼び出し（5件目）のuntrusted payloadに、Stage 0でプロファイルしたデータソースの要約が載る。
+    const analystUserMessage = String(model.requests[4]?.messages.find((message) => message.role === 'user')?.content);
+    expect(analystUserMessage).toContain('availableDataSources');
+    expect(analystUserMessage).toContain('ds-1');
+    expect(analystUserMessage).toContain('amount:number');
+
+    // 改訂適用にはRunの予算（maxRepairAttempts）がそのまま伝播する（add-toolの再提案回数）。
+    expect(applyCalls).toHaveLength(1);
+    expect(applyCalls[0]?.maxRepairAttempts).toBe(3);
+    expect(applyCalls[0]?.maxProposals).toBe(4);
+  });
+});
+
+describe('RunFactoryUseCase（既存Agent強化モード: input.baseAgent）', () => {
+  it('baseAgent指定 + データソース0件: 新Agentを作らず、既存Agentのプロンプト改善ループが回る', async () => {
+    const { repo, model, runFactory, createFactoryRun, scenarioRunner, agentRepo, toolRepo, skillRepo } = await setup({
+      makeScenarioRun: (input) => {
+        const version = input.target?.version ?? input.version ?? SemVer.of(1, 0, 0);
+        return cannedScenarioRun(scope, input.scenarioId, version, version.toString() === '1.0.0' ? { goalAchieved: false, satisfaction: 2 } : { goalAchieved: true, satisfaction: 5 });
+      },
+    });
+    await seedBaseAgent(toolRepo, skillRepo, agentRepo);
+    model.enqueue(
+      { message: { role: 'assistant', content: noAdditionPlanJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: baseAgentPromptRevisionJson() }, finishReason: 'stop' },
+    );
+
+    const created = await createFactoryRun.execute({
+      scope, goal: { goal: '売上の質問に、根拠を示して答えられるようにする', language: 'ja' },
+      dataSourceIds: [], baseAgent: { internalId: BASE_AGENT_ID },
+    });
+    expect(created.input.baseAgent).toEqual({ internalId: BASE_AGENT_ID });
+
+    await runFactory.execute(scope, created.id);
+    const finished = await repo.find(scope, created.id);
+    expect(finished?.status).toBe('succeeded');
+    expect(finished?.failure).toBeUndefined();
+
+    // Stage 2-4: 追加が0件なのでTool/Skillは生成されず、Agentの新版も作られない（既存版が起点）。
+    expect(finished?.artifacts.tools).toEqual([]);
+    expect(finished?.artifacts.skills).toEqual([]);
+    expect(finished?.artifacts.agentVersions[0]).toEqual({ internalId: BASE_AGENT_ID, version: '1.0.0' });
+    // Assemblerは呼ばれない（planner + analyst のみ）。
+    expect(finished?.budget.consumed.roleCalls).toBe(2);
+
+    // 検証 → 分析 → 改善ループは通常どおり回り、既存Agentのpatch新版が検証される。
+    expect(finished?.iterations).toHaveLength(2);
+    expect(scenarioRunner.calls.map((call) => `${String(call.target?.agentId)}@${String(call.target?.version.toString())}`))
+      .toEqual([`${BASE_AGENT_ID}@1.0.0`, `${BASE_AGENT_ID}@1.0.1`]);
+    expect(finished?.artifacts.agentVersions).toEqual([
+      { internalId: BASE_AGENT_ID, version: '1.0.0' },
+      { internalId: BASE_AGENT_ID, version: '1.0.1' },
+    ]);
+
+    // 改訂後も既存Agentのメタデータ・設定は保たれる（ownerをFACTORY_OWNERで潰さない）。
+    const revised = await agentRepo.findVersion(scope, BASE_AGENT_ID, SemVer.of(1, 0, 1));
+    expect(revised?.metadata.owner).toBe('alice');
+    expect(revised?.metadata.publishName).toBe('base_assistant');
+    expect(revised?.harness).toEqual(BASE_AGENT_HARNESS);
+    expect(revised?.mcpServers).toEqual(['sales-mcp']);
+    expect(revised?.systemPrompt).toContain('根拠の行を必ず示してください');
+
+    // 強化モードであることがイベント・レポートから分かる（新しいkindは増やさない）。
+    expect(finished?.events[0]).toMatchObject({ kind: 'stage_started', stage: 'profiling', message: 'enhancing agent Base Assistant@1.0.0' });
+    expect(finished?.report?.summary).toContain('Enhanced existing agent Base Assistant@1.0.0.');
+    expect(finished?.report?.candidate).toEqual({ agentId: BASE_AGENT_ID, version: '1.0.1' });
+
+    // Plannerには既存Agentの現状（ギャップ計画の材料）が untrusted payload として渡る。
+    const plannerUserMessage = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
+    expect(plannerUserMessage).toContain('currentAgent');
+    expect(plannerUserMessage).toContain('base_tool');
+    expect(plannerUserMessage).toContain('Base Sales Skill');
+    // データソース0件なので、Analystへは availableDataSources を渡さない（add-toolを提案させない）。
+    const analystUserMessage = String(model.requests[1]?.messages.find((message) => message.role === 'user')?.content);
+    expect(analystUserMessage).not.toContain('availableDataSources');
+  });
+
+  it('追加されたTool/Skillは既存Agentの新版へ統合され、既存の参照・設定・手書きのsystem promptセクションが残る', async () => {
+    const { repo, model, runFactory, createFactoryRun, scenarioRunner, agentRepo, toolRepo, skillRepo } = await setup();
+    await seedBaseAgent(toolRepo, skillRepo, agentRepo);
+    model.enqueue(
+      { message: { role: 'assistant', content: validPlanJson('Base Assistant') }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+    );
+
+    const created = await createFactoryRun.execute({
+      scope, goal: { goal: '今月の売上も引けるようにする', language: 'ja' },
+      dataSourceIds: ['ds-1'], baseAgent: { internalId: BASE_AGENT_ID },
+    });
+    await runFactory.execute(scope, created.id);
+
+    const finished = await repo.find(scope, created.id);
+    expect(finished?.status).toBe('succeeded');
+    // Assemblerは呼ばれない: planner + tool-smith + skill-writer の3回だけ（目標達成済みでAnalystも不要）。
+    expect(finished?.budget.consumed.roleCalls).toBe(3);
+    expect(model.requests).toHaveLength(3);
+
+    // 生成物は既存Agentのpatch新版へ統合される（新しいAgentは作られない）。
+    expect(finished?.artifacts.tools).toEqual([{ internalId: 'asset-1', version: '1.0.0' }]);
+    expect(finished?.artifacts.skills).toEqual([{ internalId: 'asset-2', version: '1.0.0' }]);
+    expect(finished?.artifacts.agentVersions).toEqual([{ internalId: BASE_AGENT_ID, version: '1.0.1' }]);
+    expect(await agentRepo.listVersions(scope, BASE_AGENT_ID)).toHaveLength(2);
+
+    const enhanced = await agentRepo.findVersion(scope, BASE_AGENT_ID, SemVer.of(1, 0, 1));
+    // 既存のTool/Skillは残り、新規分が和集合として足される。
+    expect(enhanced?.tools.map((ref) => ref.internalId)).toEqual([BASE_TOOL_ID, 'asset-1']);
+    expect(enhanced?.skills.map((ref) => ref.internalId)).toEqual([BASE_SKILL_ID, 'asset-2']);
+    // 既存のメタデータ・設定は保たれる。
+    expect(enhanced?.metadata.owner).toBe('alice');
+    expect(enhanced?.metadata.displayName).toBe('Base Assistant');
+    expect(enhanced?.metadata.publishName).toBe('base_assistant');
+    expect(enhanced?.kind).toBe('normal');
+    expect(enhanced?.metadata.state).toBe('draft');
+    expect(enhanced?.harness).toEqual(BASE_AGENT_HARNESS);
+    expect(enhanced?.mcpServers).toEqual(['sales-mcp']);
+
+    // systemPrompt: 役割文・独自セクション・実行規則はそのまま、ガイド2節だけが新しい構成へ差し替わる。
+    const prompt = enhanced?.systemPrompt ?? '';
+    expect(prompt).toContain('# 役割\nあなたは「Base Assistant」です。経理担当者の売上の質問に、社内の言葉づかいで答えてください。');
+    expect(prompt).toContain('# 独自メモ\n利用者が手で書いたセクション。Factoryの強化で消えてはならない。');
+    expect(prompt).toContain('# 実行規則\n- 数字は必ず出典を添える。');
+    expect(prompt).toContain('base_tool@1.0.0');   // 既存Toolのガイドは残る
+    expect(prompt).toContain('lookup_sales@1.0.0'); // 追加Toolのガイドが入る
+    expect(prompt).toContain('base_skill@1.0.0');
+    // 差し替えであって追記ではない（ガイド見出しは1つずつのまま）。
+    expect(prompt.match(/^# Tool使用ガイド$/gm)).toHaveLength(1);
+    expect(prompt.match(/^# Skillガイド$/gm)).toHaveLength(1);
+
+    // Stage 5以降は無改修で流用され、Scenarioのtargetは統合後の新版になる。
+    expect(scenarioRunner.calls[0]?.target).toMatchObject({ agentId: BASE_AGENT_ID });
+    expect(scenarioRunner.calls[0]?.target?.version.toString()).toBe('1.0.1');
+    expect(finished?.events.map((event) => event.message)).toContain(`enhanced existing agent ${BASE_AGENT_ID}@1.0.1`);
+  });
+
+  it('存在しないbaseAgentはRunをfailedにする（0→1生成へ黙ってフォールバックしない）', async () => {
+    const { repo, runFactory, createFactoryRun, model } = await setup();
+    const created = await createFactoryRun.execute({
+      scope, goal: { goal: '強化したい', language: 'ja' }, dataSourceIds: [], baseAgent: { internalId: 'missing-agent' },
+    });
+
+    await runFactory.execute(scope, created.id);
+
+    const failed = await repo.find(scope, created.id);
+    expect(failed?.status).toBe('failed');
+    expect(failed?.failure?.stage).toBe('profiling');
+    expect(failed?.failure?.reason).toContain('base agent not found: missing-agent');
+    expect(failed?.events.at(-1)).toMatchObject({ kind: 'run_failed' });
+    expect(model.requests).toHaveLength(0); // Plannerまで到達しない。
+  });
+
+  it('baseAgent.version 指定でその版を起点にできる（最新版ではなく指定版を検証する）', async () => {
+    const { repo, model, runFactory, createFactoryRun, scenarioRunner, agentRepo, toolRepo, skillRepo } = await setup();
+    await seedBaseAgent(toolRepo, skillRepo, agentRepo);
+    await seedBaseAgent(toolRepo, skillRepo, agentRepo, { version: SemVer.of(1, 0, 1), systemPrompt: `${BASE_AGENT_PROMPT}\n\n# 新しめの版\n最新版だけが持つ節。` });
+    expect(await agentRepo.listVersions(scope, BASE_AGENT_ID)).toHaveLength(2);
+    model.enqueue({ message: { role: 'assistant', content: noAdditionPlanJson() }, finishReason: 'stop' });
+
+    const created = await createFactoryRun.execute({
+      scope, goal: { goal: '1.0.0 を起点に強化する', language: 'ja' },
+      dataSourceIds: [], baseAgent: { internalId: BASE_AGENT_ID, version: '1.0.0' },
+    });
+    await runFactory.execute(scope, created.id);
+
+    const finished = await repo.find(scope, created.id);
+    expect(finished?.status).toBe('succeeded');
+    expect(finished?.artifacts.agentVersions).toEqual([{ internalId: BASE_AGENT_ID, version: '1.0.0' }]);
+    expect(scenarioRunner.calls[0]?.target?.version.toString()).toBe('1.0.0');
+    expect(finished?.events[0]?.message).toBe('enhancing agent Base Assistant@1.0.0');
+    // 起点は指定版なので、最新版(1.0.1)だけが持つ節はPlannerへ渡らない。
+    const plannerUserMessage = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
+    expect(plannerUserMessage).not.toContain('新しめの版');
+  });
+
+  it('requirePlanApproval: 強化モードの承認プロンプトは「既存Agentへ何件足すか」を示す', async () => {
+    const { repo, model, runFactory, createFactoryRun, agentRepo, toolRepo, skillRepo } = await setup();
+    await seedBaseAgent(toolRepo, skillRepo, agentRepo);
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson('Base Assistant') }, finishReason: 'stop' });
+
+    const created = await createFactoryRun.execute({
+      scope, goal: { goal: '今月の売上も引けるようにする', language: 'ja' },
+      dataSourceIds: ['ds-1'], baseAgent: { internalId: BASE_AGENT_ID }, options: { requirePlanApproval: true },
+    });
+    await runFactory.execute(scope, created.id);
+
+    const waiting = await repo.find(scope, created.id);
+    expect(waiting?.status).toBe('waiting-approval');
+    expect(waiting?.checkpoint?.prompt).toContain('add 1 tool(s) and 1 skill(s) to the existing agent "Base Assistant"');
+  });
+
+  it('CreateFactoryRun: 強化モードは dataSourceIds 0件を許し、生成モードは1件必須のまま', async () => {
+    const { createFactoryRun } = await setup();
+    await expect(createFactoryRun.execute({ scope, goal: { goal: 'x', language: 'ja' }, dataSourceIds: [] }))
+      .rejects.toThrow('dataSourceIds must contain 1..5 entries');
+    const enhancing = await createFactoryRun.execute({ scope, goal: { goal: 'x', language: 'ja' }, dataSourceIds: [], baseAgent: { internalId: BASE_AGENT_ID } });
+    expect(enhancing.input.dataSourceIds).toEqual([]);
+    await expect(createFactoryRun.execute({ scope, goal: { goal: 'x', language: 'ja' }, dataSourceIds: ['a', 'b', 'c', 'd', 'e', 'f'], baseAgent: { internalId: BASE_AGENT_ID } }))
+      .rejects.toThrow('dataSourceIds must contain 0..5 entries');
   });
 });

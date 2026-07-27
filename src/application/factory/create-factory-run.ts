@@ -7,6 +7,7 @@ import type { TenantScope } from '../../domain/tool/ids';
 import {
   DEFAULT_FACTORY_OPTIONS,
   startFactoryRun,
+  type FactoryBaseAgentRef,
   type FactoryGoalInput,
   type FactoryOptions,
   type FactoryRun,
@@ -20,6 +21,8 @@ export interface CreateFactoryRunInput {
   readonly goal: FactoryGoalInput;
   readonly dataSourceIds: readonly string[];
   readonly options?: Partial<FactoryOptions>;
+  /** 強化対象の既存Agent。指定すると `dataSourceIds` は0件でもよい（未指定は0→1生成モード）。 */
+  readonly baseAgent?: FactoryBaseAgentRef;
 }
 
 /** `DEFAULT_FACTORY_OPTIONS` に `overrides` を深くマージする（targets/budgetはネストしたオブジェクト）。 */
@@ -42,14 +45,22 @@ export class CreateFactoryRunUseCase {
   ) {}
 
   async execute(input: CreateFactoryRunInput): Promise<FactoryRun> {
-    if (input.dataSourceIds.length < 1 || input.dataSourceIds.length > 5) {
-      throw new FactoryValidationError(`CreateFactoryRun: dataSourceIds must contain 1..5 entries, got ${input.dataSourceIds.length}`);
+    // 強化モード（`baseAgent` 指定）は「既存Agentのプロンプトだけを改善する」Runが成立するため、
+    // 新規データソースを要求しない（0..5）。0→1生成モードは従来どおり最低1件必須（1..5）。
+    const minDataSources = input.baseAgent === undefined ? 1 : 0;
+    if (input.dataSourceIds.length < minDataSources || input.dataSourceIds.length > 5) {
+      throw new FactoryValidationError(`CreateFactoryRun: dataSourceIds must contain ${minDataSources}..5 entries, got ${input.dataSourceIds.length}`);
     }
     const options = mergeOptions(input.options);
     const run = startFactoryRun({
       id: this.makeId(),
       scope: input.scope,
-      input: { goal: input.goal, dataSourceIds: input.dataSourceIds, options },
+      input: {
+        goal: input.goal,
+        dataSourceIds: input.dataSourceIds,
+        options,
+        ...(input.baseAgent === undefined ? {} : { baseAgent: input.baseAgent }),
+      },
       startedAt: this.now().toISOString(),
     });
     await this.runs.save(run);

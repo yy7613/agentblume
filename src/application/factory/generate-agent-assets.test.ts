@@ -16,7 +16,7 @@ import { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-sourc
 import { EtlEngine } from '../etl/engine';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
-import { agentToolArgumentsOf, GenerateAgentAssetsUseCase, makeArgumentsOptional, mergeAgentInputDeclarations, resolveReuseTarget } from './generate-agent-assets';
+import { agentToolArgumentsOf, GenerateAgentAssetsUseCase, makeArgumentsOptional, mergeAgentInputDeclarations, replaceGuideSections, resolveReuseTarget } from './generate-agent-assets';
 import { ProfileDataSourcesUseCase } from './profile-data-sources';
 import { buildExistingToolCatalog, type ExistingToolCatalogEntry } from './tool-catalog';
 import { AssemblerRole } from './roles/assembler-role';
@@ -539,5 +539,56 @@ describe('mergeAgentInputDeclarations', () => {
       { id: 'args2', type: 'agent-input', config: { schema: { columns: [{ name: 'month', type: 'string', nullable: false }] }, sample: { month: '2026-05' } } },
     ], edges: [...base.edges, { from: 'args1', to: 'filter' }] };
     expect(mergeAgentInputDeclarations(connected)).toBe(connected);
+  });
+});
+
+describe('replaceGuideSections（既存Agent強化モードのsystem prompt再合成）', () => {
+  const skillGuide = '# Skillガイド\n- new_skill@1.0.0: 新しい責務\n  発火条件: いつでも\n  instructions: 手順';
+  const toolUsageGuide = '# Tool使用ガイド\n- new_tool@1.0.0（説明）: input [なし] / output [なし] / side-effect read-only';
+
+  it('決定的合成の2セクションだけを差し替え、役割文・独自セクション・実行規則は一字一句残す', () => {
+    const prompt = [
+      '# 役割\nあなたは「Base」です。',
+      '# Skillガイド\n- old_skill@1.0.0: 古い責務',
+      '# Tool使用ガイド\n- old_tool@1.0.0（古い）: input [なし] / output [なし] / side-effect read-only',
+      '# 独自メモ\n利用者が書いた節。',
+      '# 実行規則\n- 独自ルール。',
+    ].join('\n\n');
+
+    const result = replaceGuideSections(prompt, { skillGuide, toolUsageGuide });
+
+    expect(result.strategy).toBe('spliced');
+    expect(result.systemPrompt).toBe([
+      '# 役割\nあなたは「Base」です。',
+      skillGuide,
+      toolUsageGuide,
+      '# 独自メモ\n利用者が書いた節。',
+      '# 実行規則\n- 独自ルール。',
+    ].join('\n\n'));
+    // 差し替えであって追記ではない（見出しが増えない）。
+    expect(result.systemPrompt.match(/^# Skillガイド$/gm)).toHaveLength(1);
+    expect(result.systemPrompt.match(/^# Tool使用ガイド$/gm)).toHaveLength(1);
+    expect(result.systemPrompt).not.toContain('old_skill');
+    expect(result.systemPrompt).not.toContain('old_tool');
+  });
+
+  it('ガイド見出しが無いprompt（自由記述）は、実行規則の手前へ差し込む', () => {
+    const prompt = '# 役割\n自由に書いたプロンプト。\n\n# 実行規則\n- 独自ルール。';
+    const result = replaceGuideSections(prompt, { skillGuide, toolUsageGuide });
+    expect(result.strategy).toBe('appended');
+    expect(result.systemPrompt).toBe(['# 役割\n自由に書いたプロンプト。', skillGuide, toolUsageGuide, '# 実行規則\n- 独自ルール。'].join('\n\n'));
+  });
+
+  it('見出しがまったく無いpromptは末尾へ追記し、本文はそのまま残す', () => {
+    const result = replaceGuideSections('見出しのない自由記述のプロンプト。', { skillGuide, toolUsageGuide });
+    expect(result.strategy).toBe('appended');
+    expect(result.systemPrompt).toBe(['見出しのない自由記述のプロンプト。', skillGuide, toolUsageGuide].join('\n\n'));
+  });
+
+  it('片方だけ存在する場合は、あるほうは差し替え、無いほうだけを差し込む', () => {
+    const prompt = '# 役割\nR\n\n# Tool使用ガイド\n- old_tool@1.0.0（古い）\n\n# 実行規則\n- ルール。';
+    const result = replaceGuideSections(prompt, { skillGuide, toolUsageGuide });
+    expect(result.strategy).toBe('appended');
+    expect(result.systemPrompt).toBe(['# 役割\nR', toolUsageGuide, skillGuide, '# 実行規則\n- ルール。'].join('\n\n'));
   });
 });

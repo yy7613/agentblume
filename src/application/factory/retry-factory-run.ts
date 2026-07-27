@@ -27,13 +27,15 @@ export class RetryFactoryRunUseCase {
     if (stored === null) throw new FactoryNotFoundError(`Factory run not found: ${input.runId}`);
     if (stored.status !== 'failed') throw new FactoryValidationError(`Factory run '${input.runId}' is not failed`);
 
-    // 入力（goal / dataSourceIds / options）はそのまま引き継ぐ。options は解決済みの完全な `FactoryOptions` なので
-    // `CreateFactoryRunUseCase` の既定値マージを通しても同じ値になる。
+    // 入力（goal / dataSourceIds / options / baseAgent）はそのまま引き継ぐ。options は解決済みの完全な
+    // `FactoryOptions` なので `CreateFactoryRunUseCase` の既定値マージを通しても同じ値になる。
+    // `baseAgent` を落とすと強化モードのRunが0→1生成モードで再実行されてしまうため必ず引き継ぐ。
     return this.createFactoryRun.execute({
       scope: input.scope,
       goal: stored.input.goal,
       dataSourceIds: stored.input.dataSourceIds,
       options: stored.input.options,
+      ...(stored.input.baseAgent === undefined ? {} : { baseAgent: stored.input.baseAgent }),
     });
   }
 }

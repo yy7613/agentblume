@@ -14,15 +14,23 @@
  * `preview` で検証し、失敗したらエラーメッセージを添えて再提案させる（`maxRepairAttempts` 回まで）。
  * 修復上限まで失敗したToolは欠落として記録し、計画から除外して続行する（依存するSkillは残る依存Toolだけへ
  * 縮退する。依存Toolを全て失ったSkillはドロップする）。全Toolが欠落した場合はRunを失敗させる。
+ *
+ * その修復ループ本体は `generateToolWithRepair` として切り出してあり、改善ループの `add-tool` 適用
+ * （`ApplyImprovementsUseCase`）からも同じ規律で再利用する。
+ *
+ * 既存Agent強化モード（`input.baseAgent` 指定）では Stage 2-3 は同じだが、Stage 4 で新しいAgentを作らず
+ * `integrateAssetsIntoAgent` で既存Agentのpatch新版を作る（メタデータ・設定・systemPromptの人手記述を保つ）。
  */
 import { randomUUID } from 'node:crypto';
+import type { Agent } from '../../domain/agent/agent';
 import type { Column, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
-import type { FactoryPlan } from '../../domain/factory/factory-plan';
+import type { FactoryPlan, FactoryToolPlan } from '../../domain/factory/factory-plan';
 import type { FactoryEvent, FactoryGoalInput } from '../../domain/factory/factory-run';
 import { FactoryValidationError } from '../../domain/factory/errors';
 import type { VersionRef } from '../../domain/factory/refs';
 import type { TenantScope } from '../../domain/tool/ids';
+import type { SideEffect } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { EtlEngine, PropagationResult } from '../etl/engine';
@@ -52,6 +60,12 @@ export interface GenerateAgentAssetsInput {
    * このカタログ内でだけ解決する（Stage 1でPlannerへ提示した集合と、実際に参照する集合を一致させる）。
    */
   readonly existingTools?: readonly ExistingToolCatalogEntry[];
+  /**
+   * 既存Agent強化モードの起点Agent（`RunFactoryUseCase` がStage 0でロードして渡す）。
+   * 指定すると Stage 4 は新規Agentを作らず、このAgentへ生成物を統合したpatch新版を作る。
+   * 未指定なら従来どおりの0→1生成（挙動は一切変わらない）。
+   */
+  readonly baseAgent?: Agent;
   readonly onEvent?: (event: Omit<FactoryEvent, 'sequence'>) => void;
 }
 
@@ -63,6 +77,12 @@ export interface GenerateAgentAssetsResult {
   /** Tool計画キー → 生成済みToolの公開名（Stage 5でScenario.expectedToolsへ解決するために使う）。 */
   readonly toolKeyToPublishName: ReadonlyMap<string, string>;
   readonly roleCallsUsed: number;
+  /**
+   * 既存Agent強化モードで、実際にAgentの新版を作ったか。`false` は「追加が0件でAgentに変化がない」ため
+   * 既存版のRefをそのまま `agentRef` として返した場合（Stage 5以降は既存版を起点に検証・改善する）。
+   * 生成モードでは常に `true`。
+   */
+  readonly agentChanged: boolean;
 }
 
 export class GenerateAgentAssetsUseCase {
@@ -117,41 +137,27 @@ export class GenerateAgentAssetsUseCase {
       }
       // 保存前に read-only/session-write のみへ強制する（docs/16 §8: write/external-actionは保存前に拒否）。
       const sideEffect = toolPlan.sideEffect === 'read-only' || toolPlan.sideEffect === 'session-write' ? toolPlan.sideEffect : 'read-only';
-      const attempts = 1 + Math.max(0, input.maxRepairAttempts);
-      let priorError: string | undefined;
-      let saved: Tool | undefined;
-
-      for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        roleCallsUsed += 1;
-        try {
-          const proposal = await this.toolSmith.propose({ toolPlan, profile, ...(priorError === undefined ? {} : { priorError }) });
-          const graph = makeArgumentsOptional(mergeAgentInputDeclarations(proposal.graph));
-          const resolvedGraph = await this.resolveDataSources.execute(input.scope, graph);
-          const propagation = this.engine.propagateSchemas(resolvedGraph);
-          if (propagation.hasErrors) throw new FactoryValidationError(describePropagationErrors(propagation));
-          this.engine.preview(resolvedGraph);
-
-          const inputSchema = agentToolArgumentsOf(graph);
-          const internalId = this.makeId();
-          saved = await this.saveTool.execute({
-            scope: input.scope,
-            internalId,
+      const outcome = await generateToolWithRepair(
+        { toolSmith: this.toolSmith, resolveDataSources: this.resolveDataSources, engine: this.engine, saveTool: this.saveTool },
+        {
+          scope: input.scope,
+          toolPlan,
+          profile,
+          sideEffect,
+          maxRepairAttempts: input.maxRepairAttempts,
+          identity: () => ({
+            internalId: this.makeId(),
             workingName: `${toolPlan.displayName} (factory draft)`,
             displayName: `${toolPlan.displayName} (Factory)`,
             publishName: makePublishName('tool', toolPlan.displayName, input.runId, toolPlan.key),
             owner: FACTORY_OWNER,
-            sideEffect,
-            graph,
-            ...(inputSchema === undefined ? {} : { inputSchema }),
-            agentTool: proposal.agentTool,
-          });
-          break;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          priorError = message;
-          emit({ kind: 'tool_repair_attempted', at: this.now().toISOString(), stage: 'generating-tools', message: `${toolPlan.key} attempt ${attempt}/${attempts}: ${message}` });
-        }
-      }
+          }),
+          onAttemptFailed: ({ attempt, attempts, message }) =>
+            emit({ kind: 'tool_repair_attempted', at: this.now().toISOString(), stage: 'generating-tools', message: `${toolPlan.key} attempt ${attempt}/${attempts}: ${message}` }),
+        },
+      );
+      roleCallsUsed += outcome.roleCallsUsed;
+      const saved = outcome.tool;
 
       if (saved === undefined) continue; // 修復上限まで失敗 → 欠落として記録し計画から除外して続行。
 
@@ -164,7 +170,9 @@ export class GenerateAgentAssetsUseCase {
       emit({ kind: 'artifact_saved', at: this.now().toISOString(), stage: 'generating-tools', ref });
     }
 
-    if (toolRefs.length === 0) throw new FactoryValidationError('GenerateAgentAssets: no tools could be generated');
+    // 0→1生成では1件もToolが作れなければAgentが成立しないためRunを失敗させる。既存Agent強化では
+    // 「今あるAgentはそのまま動く」ので失敗させず、追加が0件のまま（プロンプト改善だけのRunとして）続行する。
+    if (toolRefs.length === 0 && input.baseAgent === undefined) throw new FactoryValidationError('GenerateAgentAssets: no tools could be generated');
 
     // Stage 3: Skill生成（SkillWriter）。依存Toolを全て失ったSkillはドロップし、一部生存なら縮退する。
     const skillRefs: VersionRef[] = [];
@@ -205,6 +213,24 @@ export class GenerateAgentAssetsUseCase {
     const skillPromptRefs = skillRefs.map((ref) => ({ internalId: ref.internalId, version: SemVer.parse(ref.version) }));
     const toolPromptRefs = toolRefs.map((ref) => ({ internalId: ref.internalId, version: SemVer.parse(ref.version) }));
 
+    // 既存Agent強化モード: 新規Agentを作らず、既存Agentへ生成物を統合したpatch新版を作る。
+    // Assemblerは呼ばない（既存の役割文・実行規則は利用者の資産であり、LLMで書き直さない）。
+    if (input.baseAgent !== undefined) {
+      // 計画された追加が0件（プロンプト改善だけのRun）: 既存Agentをそのまま起点にし、新版を作らない。
+      if (toolPromptRefs.length === 0 && skillPromptRefs.length === 0) {
+        const baseRef: VersionRef = { internalId: input.baseAgent.metadata.internalId, version: input.baseAgent.metadata.version.toString() };
+        return { toolRefs, skillRefs, agentRef: baseRef, toolKeyToRef, toolKeyToPublishName, roleCallsUsed, agentChanged: false };
+      }
+      const integrated = await integrateAssetsIntoAgent(
+        { saveAgent: this.saveAgent, generateAgentPrompt: this.generateAgentPrompt },
+        { scope: input.scope, baseAgent: input.baseAgent, toolRefs: toolPromptRefs, skillRefs: skillPromptRefs },
+      );
+      if (integrated.changed) {
+        emit({ kind: 'artifact_saved', at: this.now().toISOString(), stage: 'assembling-agent', message: `enhanced ${input.baseAgent.metadata.displayName} (prompt guides ${integrated.promptStrategy})`, ref: integrated.agentRef });
+      }
+      return { toolRefs, skillRefs, agentRef: integrated.agentRef, toolKeyToRef, toolKeyToPublishName, roleCallsUsed, agentChanged: integrated.changed };
+    }
+
     const promptDraft = await this.generateAgentPrompt.execute({
       scope: input.scope,
       displayName: input.plan.agentBrief.displayName,
@@ -239,8 +265,260 @@ export class GenerateAgentAssetsUseCase {
     const agentRef: VersionRef = { internalId: savedAgent.metadata.internalId, version: savedAgent.metadata.version.toString() };
     emit({ kind: 'artifact_saved', at: this.now().toISOString(), stage: 'assembling-agent', ref: agentRef });
 
-    return { toolRefs, skillRefs, agentRef, toolKeyToRef, toolKeyToPublishName, roleCallsUsed };
+    return { toolRefs, skillRefs, agentRef, toolKeyToRef, toolKeyToPublishName, roleCallsUsed, agentChanged: true };
   }
+}
+
+/** `integrateAssetsIntoAgent` が使う協働者（Stage 4の決定的合成と保存）。 */
+export interface IntegrateAgentAssetsDeps {
+  readonly saveAgent: SaveAgentUseCase;
+  readonly generateAgentPrompt: GenerateAgentPromptUseCase;
+}
+
+export interface IntegrateAgentAssetsRequest {
+  readonly scope: TenantScope;
+  /** 統合先の既存Agent（`RunFactoryUseCase` がロードした起点版）。 */
+  readonly baseAgent: Agent;
+  /** このRunで生成・再利用したTool（既存Agentの参照との和集合を取る。同 internalId は新版優先）。 */
+  readonly toolRefs: readonly { readonly internalId: string; readonly version: SemVer }[];
+  readonly skillRefs: readonly { readonly internalId: string; readonly version: SemVer }[];
+}
+
+export interface IntegrateAgentAssetsResult {
+  readonly agentRef: VersionRef;
+  /** 新版を保存したか。`false` は「参照もsystemPromptも変わらないため既存版をそのまま起点にした」。 */
+  readonly changed: boolean;
+  /** systemPromptの合成方法（監査用）。`spliced` = 既存の見出しを差し替え、`appended` = 見出しが無く追記した。 */
+  readonly promptStrategy: 'unchanged' | 'spliced' | 'appended';
+}
+
+/**
+ * 既存Agentへ、このRunで作ったTool/Skillを統合した**patch新版**を作る（Stage 4の強化モード版）。
+ *
+ * 規律:
+ * - Tool/Skill参照は既存との**和集合**（同 internalId は新版優先、既存の並び順を保つ）。既存の参照は落とさない。
+ * - systemPrompt は `GenerateAgentPromptUseCase` が決定的に合成する Skillガイド / Tool使用ガイドの
+ *   **2セクションだけ**を差し替え、役割文・実行規則・利用者が書き足した節はそのまま残す
+ *   （`AssemblerRole` は呼ばない: 既存Agentの役割文をLLMに書き直させない）。
+ * - `displayName` / `publishName` / `owner` / `kind` / `state` / サブエージェント / `mcpServers` /
+ *   `harness` / `output` / `persona` / `wikis` は既存値をそのまま引き継ぐ（`FACTORY_OWNER` で潰さない）。
+ * - 参照もプロンプトも変わらない場合は保存せず既存版のRefを返す（無意味な版を増やさない）。
+ */
+export async function integrateAssetsIntoAgent(deps: IntegrateAgentAssetsDeps, request: IntegrateAgentAssetsRequest): Promise<IntegrateAgentAssetsResult> {
+  const base = request.baseAgent;
+  const tools = mergeVersionRefs(base.tools, request.toolRefs);
+  const skills = mergeVersionRefs(base.skills, request.skillRefs);
+
+  const promptDraft = await deps.generateAgentPrompt.execute({
+    scope: request.scope,
+    displayName: base.metadata.displayName,
+    kind: base.kind,
+    skills,
+    tools,
+    agents: base.agents,
+  });
+  const spliced = replaceGuideSections(base.systemPrompt, {
+    skillGuide: promptDraft.sections.skillGuide,
+    toolUsageGuide: promptDraft.sections.toolUsageGuide,
+  });
+
+  const refsUnchanged = sameVersionRefs(base.tools, tools) && sameVersionRefs(base.skills, skills);
+  if (refsUnchanged && spliced.systemPrompt === base.systemPrompt) {
+    return { agentRef: { internalId: base.metadata.internalId, version: base.metadata.version.toString() }, changed: false, promptStrategy: 'unchanged' };
+  }
+
+  const saved = await deps.saveAgent.execute({
+    scope: request.scope,
+    internalId: base.metadata.internalId,
+    workingName: base.metadata.workingName,
+    displayName: base.metadata.displayName,
+    publishName: base.metadata.publishName,
+    owner: base.metadata.owner,
+    kind: base.kind,
+    systemPrompt: spliced.systemPrompt,
+    skills,
+    tools,
+    agents: base.agents,
+    wikis: base.wikis ?? [],
+    ...(base.mcpServers === undefined ? {} : { mcpServers: base.mcpServers }),
+    ...(base.harness === undefined ? {} : { harness: base.harness }),
+    ...(base.persona === undefined ? {} : { persona: base.persona }),
+    ...(base.output === undefined ? {} : { output: base.output }),
+    state: base.metadata.state,
+    bump: 'patch',
+  });
+  return {
+    agentRef: { internalId: saved.metadata.internalId, version: saved.metadata.version.toString() },
+    changed: true,
+    promptStrategy: spliced.strategy,
+  };
+}
+
+/** 既存参照の並び順を保ったまま、同 internalId は新版で置換し、新規分を末尾へ足す。 */
+function mergeVersionRefs(
+  base: readonly { readonly internalId: string; readonly version: SemVer }[],
+  added: readonly { readonly internalId: string; readonly version: SemVer }[],
+): { internalId: string; version: SemVer }[] {
+  const overrides = new Map(added.map((ref) => [ref.internalId, ref.version] as const));
+  const merged = base.map((ref) => ({ internalId: ref.internalId, version: overrides.get(ref.internalId) ?? ref.version }));
+  const seen = new Set(base.map((ref) => ref.internalId));
+  for (const ref of added) {
+    if (seen.has(ref.internalId)) continue;
+    seen.add(ref.internalId);
+    merged.push({ internalId: ref.internalId, version: ref.version });
+  }
+  return merged;
+}
+
+function sameVersionRefs(
+  left: readonly { readonly internalId: string; readonly version: SemVer }[],
+  right: readonly { readonly internalId: string; readonly version: SemVer }[],
+): boolean {
+  return left.length === right.length
+    && left.every((ref, index) => ref.internalId === right[index]?.internalId && ref.version.equals(right[index]!.version));
+}
+
+/** `GenerateAgentPromptUseCase` が決定的に合成する、差し替え対象のガイド見出し。 */
+const SKILL_GUIDE_HEADING = 'Skillガイド';
+const TOOL_GUIDE_HEADING = 'Tool使用ガイド';
+/** 挿入位置の基準（この見出しがあれば、その手前へ不足ガイドを差し込む）。 */
+const RULES_HEADING = '実行規則';
+
+interface PromptSection { readonly heading: string; readonly lines: string[] }
+
+/**
+ * systemPrompt のうち「Skillガイド」「Tool使用ガイド」セクションだけを新しい合成結果へ差し替える。
+ *
+ * 既存AgentのsystemPromptは利用者が編集しうるため、機械的に再合成できる2セクション以外
+ * （役割文・実行規則・独自に書き足した節）は一字一句そのまま残す。見出しが見つからない
+ * （Builder標準の書式で書かれていない）場合は、`# 実行規則` の手前、無ければ末尾へ追記する。
+ *
+ * セクション境界はトップレベル見出し行（`# ` で始まる行）とする。利用者が書いた節を巻き込んで
+ * 消さないための選択で、逆にSkillのinstructions本文がH1見出しを含む場合は差し替え範囲がそこで
+ * 切れる（生成物の一部が孤立ブロックとして残る）が、利用者の記述を失うよりは安全側とする。
+ */
+export function replaceGuideSections(systemPrompt: string, guides: { readonly skillGuide: string; readonly toolUsageGuide: string }): { systemPrompt: string; strategy: 'spliced' | 'appended' } {
+  const preamble: string[] = [];
+  const sections: PromptSection[] = [];
+  for (const line of systemPrompt.split('\n')) {
+    if (/^# \S/.test(line)) sections.push({ heading: line.slice(2).trim(), lines: [line] });
+    else if (sections.length === 0) preamble.push(line);
+    else sections[sections.length - 1]!.lines.push(line);
+  }
+
+  let appended = false;
+  const replace = (heading: string, replacement: string): void => {
+    const index = sections.findIndex((section) => section.heading === heading);
+    if (index === -1) {
+      appended = true;
+      return;
+    }
+    const body = [...sections[index]!.lines];
+    const trailingBlanks: string[] = [];
+    while (body.length > 0 && body[body.length - 1]!.trim() === '') trailingBlanks.unshift(body.pop()!);
+    sections[index] = { heading, lines: [...replacement.split('\n'), ...trailingBlanks] };
+  };
+  replace(SKILL_GUIDE_HEADING, guides.skillGuide);
+  replace(TOOL_GUIDE_HEADING, guides.toolUsageGuide);
+
+  if (appended) {
+    const missing = [
+      ...(sections.some((section) => section.heading === SKILL_GUIDE_HEADING) ? [] : [guides.skillGuide]),
+      ...(sections.some((section) => section.heading === TOOL_GUIDE_HEADING) ? [] : [guides.toolUsageGuide]),
+    ];
+    const rulesIndex = sections.findIndex((section) => section.heading === RULES_HEADING);
+    const inserted: PromptSection[] = missing.map((guide) => ({ heading: guide.split('\n')[0]?.slice(2).trim() ?? '', lines: [...guide.split('\n'), ''] }));
+    if (rulesIndex === -1) sections.push(...inserted.map((section) => ({ heading: section.heading, lines: ['', ...section.lines.slice(0, -1)] })));
+    else sections.splice(rulesIndex, 0, ...inserted);
+  }
+
+  return { systemPrompt: [...preamble, ...sections.flatMap((section) => section.lines)].join('\n'), strategy: appended ? 'appended' : 'spliced' };
+}
+
+/** `generateToolWithRepair` が使う協働者（Stage 2の修復ループと同じ4点セット）。 */
+export interface ToolRepairLoopDeps {
+  readonly toolSmith: ToolSmithRole;
+  readonly resolveDataSources: ResolveDataSourceGraphUseCase;
+  readonly engine: EtlEngine;
+  readonly saveTool: SaveToolUseCase;
+}
+
+/** 保存するToolの識別情報。試行ごとに払い出す（再試行では新しい internalId を採る）。 */
+export interface ToolSaveIdentity {
+  readonly internalId: string;
+  readonly workingName: string;
+  readonly displayName: string;
+  readonly publishName: string;
+  readonly owner: string;
+}
+
+export interface ToolRepairLoopRequest {
+  readonly scope: TenantScope;
+  readonly toolPlan: FactoryToolPlan;
+  readonly profile: DataProfile;
+  /** 呼び出し側が既に read-only/session-write へ解決済みの副作用（強制/却下の方針は呼び出し側の責務）。 */
+  readonly sideEffect: SideEffect;
+  readonly maxRepairAttempts: number;
+  /** グラフ検証を通過し保存直前になった時点でのみ呼ばれる（idの払い出しを無駄にしない）。 */
+  readonly identity: () => ToolSaveIdentity;
+  readonly onAttemptFailed?: (info: { readonly attempt: number; readonly attempts: number; readonly message: string }) => void;
+}
+
+export interface ToolRepairLoopResult {
+  /** 保存できたTool。修復上限まで失敗した場合は未設定。 */
+  readonly tool?: Tool;
+  /** 消費したToolSmith呼び出し回数（試行回数と同じ）。 */
+  readonly roleCallsUsed: number;
+  /** 最後の試行の失敗理由（`tool` が未設定のときに設定される）。 */
+  readonly lastError?: string;
+}
+
+/**
+ * Tool 1件を「ToolSmith提案 → 正規化 → データソース解決 → スキーマ伝播/プレビュー検証 →
+ * `SaveToolUseCase`」で作る修復ループ（docs/16-agent-factory.md §4 Stage 2）。
+ *
+ * Stage 2の新規生成（`GenerateAgentAssetsUseCase`）と改善ループの `add-tool` 適用
+ * （`ApplyImprovementsUseCase`）の両方から使う。同じ規律を1箇所に閉じ込めるための共有ヘルパで、
+ * イベント発行・欠落時の扱い（続行するか却下するか）は呼び出し側の責務として外に出している。
+ */
+export async function generateToolWithRepair(deps: ToolRepairLoopDeps, request: ToolRepairLoopRequest): Promise<ToolRepairLoopResult> {
+  const attempts = 1 + Math.max(0, request.maxRepairAttempts);
+  let priorError: string | undefined;
+  let roleCallsUsed = 0;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    roleCallsUsed += 1;
+    try {
+      const proposal = await deps.toolSmith.propose({ toolPlan: request.toolPlan, profile: request.profile, ...(priorError === undefined ? {} : { priorError }) });
+      const graph = makeArgumentsOptional(mergeAgentInputDeclarations(proposal.graph));
+      const resolvedGraph = await deps.resolveDataSources.execute(request.scope, graph);
+      const propagation = deps.engine.propagateSchemas(resolvedGraph);
+      if (propagation.hasErrors) throw new FactoryValidationError(describePropagationErrors(propagation));
+      deps.engine.preview(resolvedGraph);
+
+      const inputSchema = agentToolArgumentsOf(graph);
+      const identity = request.identity();
+      const tool = await deps.saveTool.execute({
+        scope: request.scope,
+        internalId: identity.internalId,
+        workingName: identity.workingName,
+        displayName: identity.displayName,
+        publishName: identity.publishName,
+        owner: identity.owner,
+        sideEffect: request.sideEffect,
+        graph,
+        ...(inputSchema === undefined ? {} : { inputSchema }),
+        agentTool: proposal.agentTool,
+      });
+      return { tool, roleCallsUsed };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      priorError = message;
+      request.onAttemptFailed?.({ attempt, attempts, message });
+    }
+  }
+
+  return { roleCallsUsed, ...(priorError === undefined ? {} : { lastError: priorError }) };
 }
 
 /** Tool引数として宣言できる列型（Tool Callingの引数へそのまま写せるものだけ）。 */
