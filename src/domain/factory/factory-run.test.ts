@@ -50,6 +50,16 @@ describe('startFactoryRun', () => {
     expect(run.iterations).toEqual([]);
     expect(run.events).toEqual([]);
     expect(run.budget).toEqual({ consumed: { roleCalls: 0, scenarioRuns: 0, elapsedMs: 0 }, limits: DEFAULT_FACTORY_OPTIONS.budget });
+    // 強化モードのsystemPromptの扱いは既定で「既存プロンプトを保つ」（後方互換）。
+    expect(DEFAULT_FACTORY_OPTIONS.promptStrategy).toBe('preserve');
+    expect(run.input.options.promptStrategy).toBe('preserve');
+  });
+
+  it('promptStrategy を含む options を複製して保持する（呼び出し元と共有しない）', () => {
+    const options = { ...DEFAULT_FACTORY_OPTIONS, promptStrategy: 'rewrite' as const };
+    const run = startFactoryRun({ id: 'run-3', scope, input: { goal: { goal: 'g', language: 'ja' }, dataSourceIds: ['ds-1'], options }, startedAt: '2026-07-20T00:00:00Z' });
+    expect(run.input.options.promptStrategy).toBe('rewrite');
+    expect(run.input.options).not.toBe(options);
   });
 
   it('入力を非mutateに複製する（呼び出し元の変更が反映されない）', () => {

@@ -11,6 +11,7 @@ import type { PublishState, SideEffect } from '../domain/tool/metadata';
 import { AGENT_KINDS, AGENT_MAX_MCP_SERVERS, AGENT_MCP_SERVER_NAME_MAX_LENGTH } from '../domain/agent/agent';
 import { STRUCTURED_OUTPUT_TYPES } from '../domain/agent/structured-output';
 import { HARNESS_PATTERNS } from '../domain/harness/agent-harness';
+import { FACTORY_PROMPT_STRATEGIES } from '../domain/factory/factory-run';
 import { PERSONA_ARCHETYPES, PERSONA_LANGUAGES, PERSONA_LEVELS, PERSONA_VERBOSITIES } from '../domain/validation/persona';
 import { SURVEY_QUESTION_KINDS } from '../domain/validation/survey';
 import { CODE_SCORERS } from '../domain/evaluation/evaluator-profile';
@@ -544,6 +545,8 @@ const factoryOptionsInputSchema = z.object({
   personaCount: z.number().int().min(1).max(5).optional(),
   scenarioCount: z.number().int().min(1).max(10).optional(),
   requirePlanApproval: z.boolean().optional(),
+  // 強化モード（baseAgent指定）でのみ効く。省略時はサーバー既定の 'preserve'（既存プロンプトを保つ）。
+  promptStrategy: z.enum(FACTORY_PROMPT_STRATEGIES).optional(),
   targets: z.object({ minGoalAchievedRate: z.number().min(0).max(1), minAvgSatisfaction: z.number().min(1).max(5) }).optional(),
   budget: z.object({
     maxDurationMs: z.number().int().min(1_000),

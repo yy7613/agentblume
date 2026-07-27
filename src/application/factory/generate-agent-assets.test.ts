@@ -4,6 +4,8 @@ import { InMemoryAgentRepository } from '../../adapters/storage/in-memory-agent-
 import { InMemoryDataSourceRepository } from '../../adapters/storage/in-memory-data-source-repository';
 import { InMemorySkillRepository } from '../../adapters/storage/in-memory-skill-repository';
 import { InMemoryToolRepository } from '../../adapters/storage/in-memory-tool-repository';
+import type { Agent } from '../../domain/agent/agent';
+import { createAgent } from '../../domain/agent/agent';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { createDefaultRegistry } from '../../domain/etl/nodes';
 import type { FactoryPlan } from '../../domain/factory/factory-plan';
@@ -403,6 +405,150 @@ describe('GenerateAgentAssetsUseCase', () => {
     );
 
     await expect(useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 1 })).rejects.toThrow(/no tools could be generated/);
+  });
+});
+
+describe('GenerateAgentAssetsUseCase（強化モードの promptStrategy）', () => {
+  const BASE_AGENT_ID = 'base-agent';
+  /** 決定的ガイド2節（Tool/Skillとも0件の文面）+ 利用者が手で書いた節を持つ、Builder標準書式のプロンプト。 */
+  const BASE_AGENT_PROMPT = [
+    '# 役割\nあなたは「Base Assistant」です。経理担当者へ社内の言葉づかいで答えてください。',
+    '# Skillガイド\n適用するSkillはありません。',
+    '# Tool使用ガイド\n利用可能なToolはありません。',
+    '# 独自メモ\n利用者が手で書いた節。Factoryの強化で消えてはならない。',
+    '# 実行規則\n- 数字には必ず出典を添える。',
+  ].join('\n\n');
+
+  const noAdditionPlan: FactoryPlan = { agentBrief: onePlan.agentBrief, tools: [], skills: [], personas: [], scenarios: [] };
+
+  async function seedBaseAgent(agentRepo: InMemoryAgentRepository, systemPrompt: string = BASE_AGENT_PROMPT): Promise<Agent> {
+    const agent = createAgent({
+      metadata: {
+        internalId: BASE_AGENT_ID, workingName: 'Base agent draft', displayName: 'Base Assistant', publishName: 'base_assistant',
+        version: SemVer.of(1, 0, 0), owner: 'alice', state: 'draft', tenant: scope,
+      },
+      kind: 'normal',
+      systemPrompt,
+      skills: [],
+      tools: [],
+      agents: [],
+    });
+    await agentRepo.save(agent);
+    return agent;
+  }
+
+  it('preserve（既定）: Assemblerを呼ばず、役割文・利用者の節・実行規則をそのまま残す', async () => {
+    const { model, agentRepo, profiles, useCase } = await setup();
+    const baseAgent = await seedBaseAgent(agentRepo);
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+    );
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, baseAgent });
+
+    // tool-smith(1) + skill-writer(1) のみ。Assemblerは呼ばれない。
+    expect(result.roleCallsUsed).toBe(2);
+    expect(model.requests).toHaveLength(2);
+    expect(result.agentChanged).toBe(true);
+    expect(result.agentRef).toEqual({ internalId: BASE_AGENT_ID, version: '1.0.1' });
+
+    const enhanced = await agentRepo.findVersion(scope, BASE_AGENT_ID, SemVer.of(1, 0, 1));
+    expect(enhanced?.systemPrompt).toContain('# 役割\nあなたは「Base Assistant」です。経理担当者へ社内の言葉づかいで答えてください。');
+    expect(enhanced?.systemPrompt).toContain('# 独自メモ\n利用者が手で書いた節。Factoryの強化で消えてはならない。');
+    expect(enhanced?.systemPrompt).toContain('# 実行規則\n- 数字には必ず出典を添える。');
+    expect(enhanced?.systemPrompt).toContain('lookup_sales@1.0.0'); // ガイド2節だけが新しい構成へ差し替わる
+  });
+
+  it('rewrite: Assemblerの role/rules と決定的ガイドで systemPrompt を組み直し、ロール呼び出しが1回増える', async () => {
+    const { model, agentRepo, profiles, useCase } = await setup();
+    const baseAgent = await seedBaseAgent(agentRepo);
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const messages: string[] = [];
+
+    const result = await useCase.execute({
+      scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, baseAgent, promptStrategy: 'rewrite',
+      onEvent: (event) => { if (event.message !== undefined) messages.push(event.message); },
+    });
+
+    // tool-smith(1) + skill-writer(1) + assembler(1)。
+    expect(result.roleCallsUsed).toBe(3);
+    expect(result.agentChanged).toBe(true);
+    expect(messages).toContain('enhanced Base Assistant (prompt rewritten by assembler)');
+
+    const enhanced = await agentRepo.findVersion(scope, BASE_AGENT_ID, SemVer.of(1, 0, 1));
+    // 役割文 → Skillガイド → Tool使用ガイド → 実行規則（生成モードと同じ組み立て）。
+    expect(enhanced?.systemPrompt.startsWith('# Role\nYou are the Sales Assistant')).toBe(true);
+    expect(enhanced?.systemPrompt.endsWith('# Extra rules\nAlways cite the rows returned by the lookup tool.')).toBe(true);
+    expect(enhanced?.systemPrompt).toContain('lookup_sales@1.0.0');
+    // 書き直しなので、既存の役割文・利用者の節は残らない（それが rewrite を選んだ意味）。
+    expect(enhanced?.systemPrompt).not.toContain('独自メモ');
+
+    // Assemblerには既存プロンプトが untrusted data として渡る（改訂であって作り直しではない、と指示する）。
+    const assemblerRequest = model.requests[2];
+    expect(String(assemblerRequest?.messages.find((message) => message.role === 'user')?.content)).toContain('独自メモ');
+    expect(String(assemblerRequest?.messages.find((message) => message.role === 'system')?.content)).toContain('Revise it; do NOT rebuild it from scratch.');
+  });
+
+  it('rewrite でAssemblerが失敗したら preserve へフォールバックし、理由をイベントへ残して続行する', async () => {
+    const { model, agentRepo, profiles, useCase } = await setup();
+    const baseAgent = await seedBaseAgent(agentRepo);
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: '{not json' }, finishReason: 'stop' },
+    );
+    const events: { kind: string; message?: string }[] = [];
+
+    const result = await useCase.execute({
+      scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, baseAgent, promptStrategy: 'rewrite',
+      onEvent: (event) => events.push({ kind: event.kind, ...(event.message === undefined ? {} : { message: event.message }) }),
+    });
+
+    // Runは落とさない。試行した呼び出しは消費として数える（`generateToolWithRepair` と同じ規律）。
+    expect(result.roleCallsUsed).toBe(3);
+    expect(result.agentChanged).toBe(true);
+    expect(events.find((event) => event.kind === 'proposal_rejected')?.message).toMatch(/prompt rewrite failed, kept the existing prompt: AssemblerRole: invalid JSON/);
+    expect(events.some((event) => event.message === 'enhanced Base Assistant (prompt guides spliced)')).toBe(true);
+
+    const enhanced = await agentRepo.findVersion(scope, BASE_AGENT_ID, SemVer.of(1, 0, 1));
+    expect(enhanced?.systemPrompt).toContain('# 独自メモ\n利用者が手で書いた節。Factoryの強化で消えてはならない。');
+  });
+
+  it('追加0件でも rewrite ならプロンプト改訂のために新版を作る（preserve は新版を作らない）', async () => {
+    const { model, agentRepo, profiles, useCase } = await setup();
+    const baseAgent = await seedBaseAgent(agentRepo);
+
+    const preserved = await useCase.execute({ scope, runId: 'run-1', goal, plan: noAdditionPlan, profiles, maxRepairAttempts: 2, baseAgent });
+    expect(preserved.agentChanged).toBe(false);
+    expect(preserved.agentRef).toEqual({ internalId: BASE_AGENT_ID, version: '1.0.0' });
+    expect(model.requests).toHaveLength(0);
+
+    model.enqueue({ message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' });
+    const rewritten = await useCase.execute({ scope, runId: 'run-1', goal, plan: noAdditionPlan, profiles, maxRepairAttempts: 2, baseAgent, promptStrategy: 'rewrite' });
+
+    expect(rewritten.roleCallsUsed).toBe(1);
+    expect(rewritten.agentChanged).toBe(true);
+    expect(rewritten.agentRef).toEqual({ internalId: BASE_AGENT_ID, version: '1.0.1' });
+    expect((await agentRepo.findVersion(scope, BASE_AGENT_ID, SemVer.of(1, 0, 1)))?.systemPrompt).toContain('# Role\nYou are the Sales Assistant');
+  });
+
+  it('rewrite の結果が既存プロンプトと完全一致なら新版を作らない（無意味な版を増やさない）', async () => {
+    const { model, agentRepo, profiles, useCase } = await setup();
+    const role = '# 役割\nあなたは「Base Assistant」です。';
+    const rules = '# 実行規則\n- 数字には必ず出典を添える。';
+    const baseAgent = await seedBaseAgent(agentRepo, [role, '# Skillガイド\n適用するSkillはありません。', '# Tool使用ガイド\n利用可能なToolはありません。', rules].join('\n\n'));
+    model.enqueue({ message: { role: 'assistant', content: JSON.stringify({ role, rules }) }, finishReason: 'stop' });
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: noAdditionPlan, profiles, maxRepairAttempts: 2, baseAgent, promptStrategy: 'rewrite' });
+
+    expect(result.roleCallsUsed).toBe(1); // Assemblerは呼ばれた（消費した）が…
+    expect(result.agentChanged).toBe(false); // …結果が同じなので保存はしない。
+    expect(await agentRepo.listVersions(scope, BASE_AGENT_ID)).toHaveLength(1);
   });
 });
 

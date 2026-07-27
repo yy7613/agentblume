@@ -19,14 +19,16 @@
  * （`ApplyImprovementsUseCase`）からも同じ規律で再利用する。
  *
  * 既存Agent強化モード（`input.baseAgent` 指定）では Stage 2-3 は同じだが、Stage 4 で新しいAgentを作らず
- * `integrateAssetsIntoAgent` で既存Agentのpatch新版を作る（メタデータ・設定・systemPromptの人手記述を保つ）。
+ * `integrateAssetsIntoAgent` で既存Agentのpatch新版を作る（メタデータ・設定は必ず引き継ぐ）。systemPromptの
+ * 扱いは `promptStrategy` で選べる: `preserve`（既定・人手記述を保ちガイド2節だけ差し替え）/ `rewrite`
+ * （Assemblerに既存プロンプトを渡して役割文・実行規則を再起草させる）。
  */
 import { randomUUID } from 'node:crypto';
 import type { Agent } from '../../domain/agent/agent';
 import type { Column, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
-import type { FactoryPlan, FactoryToolPlan } from '../../domain/factory/factory-plan';
-import type { FactoryEvent, FactoryGoalInput } from '../../domain/factory/factory-run';
+import type { FactoryAgentBrief, FactoryPlan, FactoryToolPlan } from '../../domain/factory/factory-plan';
+import type { FactoryEvent, FactoryGoalInput, FactoryPromptStrategy } from '../../domain/factory/factory-run';
 import { FactoryValidationError } from '../../domain/factory/errors';
 import type { VersionRef } from '../../domain/factory/refs';
 import type { TenantScope } from '../../domain/tool/ids';
@@ -66,6 +68,11 @@ export interface GenerateAgentAssetsInput {
    * 未指定なら従来どおりの0→1生成（挙動は一切変わらない）。
    */
   readonly baseAgent?: Agent;
+  /**
+   * 強化モードでの systemPrompt の扱い（`FactoryOptions.promptStrategy`）。省略時は `'preserve'`。
+   * 生成モード（`baseAgent` 未指定）では無視される（0→1は元からAssemblerが役割文・実行規則を起草する）。
+   */
+  readonly promptStrategy?: FactoryPromptStrategy;
   readonly onEvent?: (event: Omit<FactoryEvent, 'sequence'>) => void;
 }
 
@@ -214,19 +221,31 @@ export class GenerateAgentAssetsUseCase {
     const toolPromptRefs = toolRefs.map((ref) => ({ internalId: ref.internalId, version: SemVer.parse(ref.version) }));
 
     // 既存Agent強化モード: 新規Agentを作らず、既存Agentへ生成物を統合したpatch新版を作る。
-    // Assemblerは呼ばない（既存の役割文・実行規則は利用者の資産であり、LLMで書き直さない）。
+    // systemPromptの扱いは `promptStrategy` で選ぶ（既定 `preserve` = Assemblerを呼ばない）。
     if (input.baseAgent !== undefined) {
-      // 計画された追加が0件（プロンプト改善だけのRun）: 既存Agentをそのまま起点にし、新版を作らない。
-      if (toolPromptRefs.length === 0 && skillPromptRefs.length === 0) {
+      const promptStrategy = input.promptStrategy ?? 'preserve';
+      // 計画された追加が0件（プロンプト改善だけのRun）で `preserve` なら、プロンプトも変わらないため
+      // 既存Agentをそのまま起点にし、新版を作らない。`rewrite` はプロンプト自体を改訂するので統合へ進む。
+      if (toolPromptRefs.length === 0 && skillPromptRefs.length === 0 && promptStrategy === 'preserve') {
         const baseRef: VersionRef = { internalId: input.baseAgent.metadata.internalId, version: input.baseAgent.metadata.version.toString() };
         return { toolRefs, skillRefs, agentRef: baseRef, toolKeyToRef, toolKeyToPublishName, roleCallsUsed, agentChanged: false };
       }
       const integrated = await integrateAssetsIntoAgent(
-        { saveAgent: this.saveAgent, generateAgentPrompt: this.generateAgentPrompt },
-        { scope: input.scope, baseAgent: input.baseAgent, toolRefs: toolPromptRefs, skillRefs: skillPromptRefs },
+        { saveAgent: this.saveAgent, generateAgentPrompt: this.generateAgentPrompt, assembler: this.assembler },
+        {
+          scope: input.scope, baseAgent: input.baseAgent, toolRefs: toolPromptRefs, skillRefs: skillPromptRefs, promptStrategy,
+          // 強化モードのbriefは「既存Agentの名前」+「今回の目標に対するPlannerの役割記述」で組む
+          // （displayNameは既存を維持し、Factoryが本番Agentの名前を勝手に変えないため）。
+          rewriteContext: { goal: input.goal, agentBrief: { displayName: input.baseAgent.metadata.displayName, role: input.plan.agentBrief.role } },
+        },
       );
+      roleCallsUsed += integrated.roleCallsUsed;
+      // 書き直しに失敗して preserve へ倒した場合は、Runを落とさず理由をイベントへ残す。
+      if (integrated.fallbackReason !== undefined) {
+        emit({ kind: 'proposal_rejected', at: this.now().toISOString(), stage: 'assembling-agent', message: `prompt rewrite failed, kept the existing prompt: ${integrated.fallbackReason}` });
+      }
       if (integrated.changed) {
-        emit({ kind: 'artifact_saved', at: this.now().toISOString(), stage: 'assembling-agent', message: `enhanced ${input.baseAgent.metadata.displayName} (prompt guides ${integrated.promptStrategy})`, ref: integrated.agentRef });
+        emit({ kind: 'artifact_saved', at: this.now().toISOString(), stage: 'assembling-agent', message: `enhanced ${input.baseAgent.metadata.displayName} (${describePromptStrategy(integrated.promptStrategy)})`, ref: integrated.agentRef });
       }
       return { toolRefs, skillRefs, agentRef: integrated.agentRef, toolKeyToRef, toolKeyToPublishName, roleCallsUsed, agentChanged: integrated.changed };
     }
@@ -273,6 +292,8 @@ export class GenerateAgentAssetsUseCase {
 export interface IntegrateAgentAssetsDeps {
   readonly saveAgent: SaveAgentUseCase;
   readonly generateAgentPrompt: GenerateAgentPromptUseCase;
+  /** `promptStrategy: 'rewrite'` のときだけ使う。未注入なら rewrite 指定でも `preserve` として振る舞う。 */
+  readonly assembler?: AssemblerRole;
 }
 
 export interface IntegrateAgentAssetsRequest {
@@ -282,14 +303,22 @@ export interface IntegrateAgentAssetsRequest {
   /** このRunで生成・再利用したTool（既存Agentの参照との和集合を取る。同 internalId は新版優先）。 */
   readonly toolRefs: readonly { readonly internalId: string; readonly version: SemVer }[];
   readonly skillRefs: readonly { readonly internalId: string; readonly version: SemVer }[];
+  /** systemPromptの扱い。省略時は `'preserve'`（ガイド2節だけを決定的に差し替える従来の挙動）。 */
+  readonly promptStrategy?: FactoryPromptStrategy;
+  /** `'rewrite'` でAssemblerへ渡す材料。無ければ rewrite できないため `preserve` へ倒す。 */
+  readonly rewriteContext?: { readonly goal: FactoryGoalInput; readonly agentBrief: FactoryAgentBrief };
 }
 
 export interface IntegrateAgentAssetsResult {
   readonly agentRef: VersionRef;
   /** 新版を保存したか。`false` は「参照もsystemPromptも変わらないため既存版をそのまま起点にした」。 */
   readonly changed: boolean;
-  /** systemPromptの合成方法（監査用）。`spliced` = 既存の見出しを差し替え、`appended` = 見出しが無く追記した。 */
-  readonly promptStrategy: 'unchanged' | 'spliced' | 'appended';
+  /** systemPromptの合成方法（監査用）。`spliced` = 既存の見出しを差し替え、`appended` = 見出しが無く追記した、`rewritten` = Assemblerが役割文・実行規則を再起草した。 */
+  readonly promptStrategy: 'unchanged' | 'spliced' | 'appended' | 'rewritten';
+  /** 消費したロール呼び出し回数（`rewrite` を試みたら1、失敗した試行も `generateToolWithRepair` と同じく消費として数える）。 */
+  readonly roleCallsUsed: number;
+  /** `rewrite` を試みて失敗し `preserve` へ倒した理由（成功時・`preserve` 時は未設定）。 */
+  readonly fallbackReason?: string;
 }
 
 /**
@@ -297,12 +326,19 @@ export interface IntegrateAgentAssetsResult {
  *
  * 規律:
  * - Tool/Skill参照は既存との**和集合**（同 internalId は新版優先、既存の並び順を保つ）。既存の参照は落とさない。
- * - systemPrompt は `GenerateAgentPromptUseCase` が決定的に合成する Skillガイド / Tool使用ガイドの
- *   **2セクションだけ**を差し替え、役割文・実行規則・利用者が書き足した節はそのまま残す
- *   （`AssemblerRole` は呼ばない: 既存Agentの役割文をLLMに書き直させない）。
+ * - systemPrompt は `promptStrategy` で選ぶ:
+ *   - `preserve`（既定）: `GenerateAgentPromptUseCase` が決定的に合成する Skillガイド / Tool使用ガイドの
+ *     **2セクションだけ**を差し替え、役割文・実行規則・利用者が書き足した節はそのまま残す
+ *     （`AssemblerRole` を呼ばない = 既存Agentの役割文をLLMに書き直させない）。
+ *   - `rewrite`: `AssemblerRole` へ既存プロンプトを渡して役割文・実行規則を再起草させ、生成モードと同じ
+ *     組み立て（役割文 → Skillガイド → Tool使用ガイド →〈協働者ガイド〉→ 実行規則）で作り直す。
+ *     利用者が書き足した独自の節は引き継がれない（Assemblerが本文として読んだうえで取捨する）。
+ *     協働者ガイドは既存Agentがサブエージェントを持つ場合だけ挟む（`preserve` で残る節を落とさないため）。
+ *     Assemblerが失敗した場合は Run を落とさず `preserve` へフォールバックし、理由を `fallbackReason` で返す。
  * - `displayName` / `publishName` / `owner` / `kind` / `state` / サブエージェント / `mcpServers` /
  *   `harness` / `output` / `persona` / `wikis` は既存値をそのまま引き継ぐ（`FACTORY_OWNER` で潰さない）。
- * - 参照もプロンプトも変わらない場合は保存せず既存版のRefを返す（無意味な版を増やさない）。
+ * - 参照もプロンプトも変わらない場合は保存せず既存版のRefを返す（無意味な版を増やさない。`rewrite` で
+ *   Assemblerの結果が既存と完全一致した場合もここで保存をスキップする）。
  */
 export async function integrateAssetsIntoAgent(deps: IntegrateAgentAssetsDeps, request: IntegrateAgentAssetsRequest): Promise<IntegrateAgentAssetsResult> {
   const base = request.baseAgent;
@@ -317,14 +353,45 @@ export async function integrateAssetsIntoAgent(deps: IntegrateAgentAssetsDeps, r
     tools,
     agents: base.agents,
   });
-  const spliced = replaceGuideSections(base.systemPrompt, {
+
+  let roleCallsUsed = 0;
+  let rewritten: string | undefined;
+  let fallbackReason: string | undefined;
+  const assembler = deps.assembler;
+  const rewriteContext = request.rewriteContext;
+  if (request.promptStrategy === 'rewrite' && assembler !== undefined && rewriteContext !== undefined) {
+    roleCallsUsed += 1;
+    try {
+      const assembled = await assembler.propose({
+        goal: rewriteContext.goal,
+        agentBrief: rewriteContext.agentBrief,
+        skillGuide: promptDraft.sections.skillGuide,
+        toolUsageGuide: promptDraft.sections.toolUsageGuide,
+        currentPrompt: base.systemPrompt,
+      });
+      rewritten = [
+        assembled.role,
+        promptDraft.sections.skillGuide,
+        promptDraft.sections.toolUsageGuide,
+        ...(base.agents.length === 0 ? [] : [promptDraft.sections.collaboratorGuide]),
+        assembled.rules,
+      ].join('\n\n');
+    } catch (error) {
+      fallbackReason = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  const preserved = replaceGuideSections(base.systemPrompt, {
     skillGuide: promptDraft.sections.skillGuide,
     toolUsageGuide: promptDraft.sections.toolUsageGuide,
   });
+  const systemPrompt = rewritten ?? preserved.systemPrompt;
+  const strategy: IntegrateAgentAssetsResult['promptStrategy'] = rewritten === undefined ? preserved.strategy : 'rewritten';
+  const fallback = fallbackReason === undefined ? {} : { fallbackReason };
 
   const refsUnchanged = sameVersionRefs(base.tools, tools) && sameVersionRefs(base.skills, skills);
-  if (refsUnchanged && spliced.systemPrompt === base.systemPrompt) {
-    return { agentRef: { internalId: base.metadata.internalId, version: base.metadata.version.toString() }, changed: false, promptStrategy: 'unchanged' };
+  if (refsUnchanged && systemPrompt === base.systemPrompt) {
+    return { agentRef: { internalId: base.metadata.internalId, version: base.metadata.version.toString() }, changed: false, promptStrategy: 'unchanged', roleCallsUsed, ...fallback };
   }
 
   const saved = await deps.saveAgent.execute({
@@ -335,7 +402,7 @@ export async function integrateAssetsIntoAgent(deps: IntegrateAgentAssetsDeps, r
     publishName: base.metadata.publishName,
     owner: base.metadata.owner,
     kind: base.kind,
-    systemPrompt: spliced.systemPrompt,
+    systemPrompt,
     skills,
     tools,
     agents: base.agents,
@@ -350,8 +417,15 @@ export async function integrateAssetsIntoAgent(deps: IntegrateAgentAssetsDeps, r
   return {
     agentRef: { internalId: saved.metadata.internalId, version: saved.metadata.version.toString() },
     changed: true,
-    promptStrategy: spliced.strategy,
+    promptStrategy: strategy,
+    roleCallsUsed,
+    ...fallback,
   };
+}
+
+/** `artifact_saved` イベントで「systemPromptをどう作ったか」を一目で分かる文言にする（監査用）。 */
+function describePromptStrategy(strategy: IntegrateAgentAssetsResult['promptStrategy']): string {
+  return strategy === 'rewritten' ? 'prompt rewritten by assembler' : `prompt guides ${strategy}`;
 }
 
 /** 既存参照の並び順を保ったまま、同 internalId は新版で置換し、新規分を末尾へ足す。 */

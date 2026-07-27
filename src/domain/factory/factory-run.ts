@@ -63,6 +63,16 @@ export interface FactoryBudgetSnapshot {
   readonly elapsedMs: number;
 }
 
+/**
+ * 既存Agent強化モードでの systemPrompt の扱い（docs/16-agent-factory.md §4.1）。
+ *
+ * - `preserve`: 既存の役割文・実行規則・利用者が書き足した節を保ち、Skillガイド / Tool使用ガイドの
+ *   2節だけを決定的に差し替える（LLM呼び出しなし）。
+ * - `rewrite`: Assemblerロールへ既存プロンプトを渡し、役割文・実行規則を書き直させる。
+ */
+export const FACTORY_PROMPT_STRATEGIES = ['preserve', 'rewrite'] as const;
+export type FactoryPromptStrategy = (typeof FACTORY_PROMPT_STRATEGIES)[number];
+
 export interface FactoryOptions {
   readonly maxIterations: number;
   readonly personaCount: number;
@@ -70,6 +80,14 @@ export interface FactoryOptions {
   readonly requirePlanApproval: boolean;
   readonly targets: FactoryTargets;
   readonly budget: FactoryBudgetLimits;
+  /**
+   * 強化モード（`input.baseAgent` 指定）での systemPrompt の扱い。
+   * `'preserve'`（既定）= 既存の役割文・実行規則を保ち、ガイド2節だけ決定的に差し替える（LLM呼び出しなし）。
+   * `'rewrite'` = Assemblerロールに既存プロンプトを渡して役割文・実行規則を書き直させる（ロール呼び出しが1回増える）。
+   *
+   * 生成モード（0→1）では無関係な設定として無視される（元からAssemblerが役割文・実行規則を起草するため）。
+   */
+  readonly promptStrategy: FactoryPromptStrategy;
 }
 
 export interface IterationMetrics {
@@ -164,6 +182,8 @@ export const DEFAULT_FACTORY_OPTIONS: FactoryOptions = {
   requirePlanApproval: false,
   targets: DEFAULT_FACTORY_TARGETS,
   budget: DEFAULT_FACTORY_BUDGET_LIMITS,
+  // 既定は「既存プロンプトを保つ」: 本番Agentのペルソナ・業務ルールがLLMの再起草で黙って変わらない側へ倒す。
+  promptStrategy: 'preserve',
 };
 
 function cloneFactoryOptions(options: FactoryOptions): FactoryOptions {

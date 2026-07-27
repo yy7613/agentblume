@@ -30,6 +30,7 @@ const options: FactoryOptions = {
   personaCount: 3,
   scenarioCount: 5,
   requirePlanApproval: true,
+  promptStrategy: 'rewrite',
   targets: { minGoalAchievedRate: 0.9, minAvgSatisfaction: 4.5 },
   budget: { maxDurationMs: 60_000, maxRoleCalls: 7, maxScenarioRuns: 8, maxRepairAttempts: 1, maxProposalsPerIteration: 2 },
 };

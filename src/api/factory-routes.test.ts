@@ -216,4 +216,26 @@ describe('factory routes', () => {
     });
     expect(tooMany.statusCode).toBe(400);
   });
+
+  it('options.promptStrategy: 未指定なら preserve、rewriteは受け付け、未知の値は400', async () => {
+    const omitted = await server.inject({
+      method: 'POST', url: '/factory-runs',
+      payload: { scope, goal: { goal: 'x', language: 'ja' }, baseAgent: { internalId: 'agent-1' } },
+    });
+    expect(omitted.statusCode).toBe(202);
+    expect(omitted.json().run.input.options.promptStrategy).toBe('preserve');
+
+    const rewrite = await server.inject({
+      method: 'POST', url: '/factory-runs',
+      payload: { scope, goal: { goal: 'x', language: 'ja' }, baseAgent: { internalId: 'agent-1' }, options: { promptStrategy: 'rewrite' } },
+    });
+    expect(rewrite.statusCode).toBe(202);
+    expect(rewrite.json().run.input.options.promptStrategy).toBe('rewrite');
+
+    const invalid = await server.inject({
+      method: 'POST', url: '/factory-runs',
+      payload: { scope, goal: { goal: 'x', language: 'ja' }, baseAgent: { internalId: 'agent-1' }, options: { promptStrategy: 'llm' } },
+    });
+    expect(invalid.statusCode).toBe(400);
+  });
 });

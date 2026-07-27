@@ -224,6 +224,8 @@ export class RunFactoryUseCase {
       maxRepairAttempts: current.input.options.budget.maxRepairAttempts,
       existingTools: existingTools.entries,
       ...(baseAgent === undefined ? {} : { baseAgent }),
+      // 強化モードでのsystemPromptの扱い（生成モードでは無視される）。
+      promptStrategy: current.input.options.promptStrategy,
       onEvent,
     });
     await chain;

@@ -147,14 +147,21 @@ Stage 1 の Planner が既に `FactoryPlan.personas` / `FactoryPlan.scenarios` �
 | Stage 0 Profile | `dataSourceIds`（1..5）をプロファイル | 起点Agentをロードして現有能力を把握 + `dataSourceIds`（**0..5**）をプロファイル。存在しない／`kind` が `normal` でないAgentはRunを失敗させる |
 | Stage 1 Plan | Agent一式を設計 | **ギャップ計画**: Plannerへ `currentAgent`（displayName / systemPrompt / Tool契約 / Skill責務）を渡し、既にある能力は再計画させず不足分だけを計画させる。Tool/Skillとも0件の計画が正当（プロンプト改善だけのRun） |
 | Stage 2-3 Tools/Skills | 計画どおり生成 | 同じ（計画された**追加分のみ**）。1件も作れなくてもRunは失敗させない（既存Agentはそのまま動くため） |
-| Stage 4 Agent | 新しいAgentをdraft保存 | 起点Agentの**patch新版**。Tool/Skill参照は既存との和集合（同 internalId は新版優先）、systemPromptは決定的合成の「Skillガイド」「Tool使用ガイド」節だけを差し替え、役割文・実行規則・利用者が書き足した節はそのまま残す（Assemblerは呼ばない）。追加が0件なら新版を作らず既存版をそのまま起点にする |
+| Stage 4 Agent | 新しいAgentをdraft保存 | 起点Agentの**patch新版**。Tool/Skill参照は既存との和集合（同 internalId は新版優先）、systemPromptの扱いは `options.promptStrategy` で選ぶ（下記）。追加が0件かつ `preserve` なら新版を作らず既存版をそのまま起点にする |
 | Stage 5 検証資産 | 生成Agent版を `target` に | 起点Agent（または統合後の新版）を `target` に。以降は無改修 |
 | 改善ループ | 既存どおり | 既存どおり（`ApplyImprovementsUseCase` が既存Agentの設定を保全して新版を作る） |
 
+**systemPromptの扱い（`options.promptStrategy`、既定 `preserve`）** — 強化モードでのみ効く（生成モードは元からAssemblerが役割文・実行規則を起草するため無視される）:
+
+| 値 | 挙動 | ロール呼び出し |
+|---|---|---|
+| `preserve`（既定） | 起点Agentの `systemPrompt` を利用者が書いた資産として扱い、決定的合成の「Skillガイド」「Tool使用ガイド」節だけを差し替える。役割文・実行規則・利用者が書き足した節はそのまま残す（Assemblerを呼ばない） | 増えない |
+| `rewrite` | Assemblerへ既存プロンプト全文を `currentPrompt`（untrusted data）として渡し、**改訂**として役割文・実行規則を書き直させ、生成モードと同じ組み立て（役割文 → Skillガイド → Tool使用ガイド →〈協働者ガイド〉→ 実行規則）で作り直す。利用者が書き足した独自の節は引き継がれない。Assemblerが失敗した場合はRunを落とさず `preserve` へフォールバックし、`proposal_rejected` イベントへ理由を残す | +1 |
+
 制約:
 
-- **既存Agentのメタデータ・設定を潰さない**: `displayName` / `publishName` / `owner`（`agent-factory` で上書きしない）/ `kind` / `state` / サブエージェント / `mcpServers` / `harness` / `output` / `persona` / `wikis` は起点版の値をそのまま引き継ぐ。
-- 起点Agentの `systemPrompt` は利用者が書いた資産として扱い、LLMに書き直させない（改善ループの `system-prompt-revision` だけが書き換えられる）。Builder標準の見出し（`# Skillガイド` / `# Tool使用ガイド`）が見つからない場合は、`# 実行規則` の手前（無ければ末尾）へガイドを差し込む。
+- **既存Agentのメタデータ・設定を潰さない**: `displayName` / `publishName` / `owner`（`agent-factory` で上書きしない）/ `kind` / `state` / サブエージェント / `mcpServers` / `harness` / `output` / `persona` / `wikis` は起点版の値をそのまま引き継ぐ（`promptStrategy` によらず）。
+- `preserve` で Builder標準の見出し（`# Skillガイド` / `# Tool使用ガイド`）が見つからない場合は、`# 実行規則` の手前（無ければ末尾）へガイドを差し込む。
 - 起点Agentの `systemPrompt` はプロンプト注入の観点で untrusted data として扱い、Plannerへは user message 側（`<untrusted-data>`）で渡す。
 - 強化モードであることは既存のイベント／レポートで表す: `stage_started`(profiling) の `message` が `enhancing agent <displayName>@<version>`、`stage_started`(assembling-agent) の `message` が統合結果、`FactoryReport.summary` の先頭が `Enhanced existing agent <displayName>@<version>.`。
 - 失敗Runの `retry` は `baseAgent` も引き継ぐ（強化のつもりのRunを0→1生成として再実行しない）。
@@ -331,7 +338,9 @@ POST   /factory-runs/:runId/cancel
 }
 ```
 
-`options` 省略時の既定: `maxIterations: 3` / `personaCount: 2` / `scenarioCount: 4` / `targets: { minGoalAchievedRate: 0.75, minAvgSatisfaction: 4 }` / `budget: { maxDurationMs: 30分, maxRoleCalls: 40, maxScenarioRuns: 20, maxRepairAttempts: 2, maxProposalsPerIteration: 4 }`。
+`options` 省略時の既定: `maxIterations: 3` / `personaCount: 2` / `scenarioCount: 4` / `requirePlanApproval: false` / `promptStrategy: 'preserve'` / `targets: { minGoalAchievedRate: 0.75, minAvgSatisfaction: 4 }` / `budget: { maxDurationMs: 30分, maxRoleCalls: 40, maxScenarioRuns: 20, maxRepairAttempts: 2, maxProposalsPerIteration: 4 }`。
+
+`options.promptStrategy`（`'preserve' | 'rewrite'`）は**強化モードでのみ効く**、既存Agentの systemPrompt の扱い（§4「既存Agentの強化モード」）。`'rewrite'` はAssembler呼び出しを1回追加で消費する。生成モードでは無視される。
 
 ## 10. UI（Factory画面）
 
@@ -350,7 +359,7 @@ POST   /factory-runs/:runId/cancel
 └──────────────────────┴──────────────────────────────────┴─────────────────────┘
 ```
 
-1. 入力はgoal必須・データソース1件以上。`requirePlanApproval` 有効時は計画カードに承認・修正・却下ボタンを表示する。
+1. 入力はgoal必須・データソース1件以上（強化モードでは対象Agent必須・データソース任意）。`requirePlanApproval` 有効時は計画カードに承認・修正・却下ボタンを表示する。詳細オプションには、強化モードのときだけ systemPrompt の扱い（`promptStrategy`: 既存プロンプトを保つ / モデルに役割・ルールを書き直させる）を出す。
 2. タイムラインはevents購読（ポーリング）で更新し、各StageからArtifact（Tool / Agent / ScenarioRun）の既存画面へリンクする。
 3. レポートはイテレーション別メトリクスの推移、最良候補版、未解決Findingを表示する。**昇格ボタンは置かない**（既存のQuality画面へ誘導する）。
 

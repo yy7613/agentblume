@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AgentSummaryDto, CreateFactoryRunDto, DataSourceDto, FactoryEventDto, FactoryRunDto } from '../api/types';
+import type { AgentSummaryDto, CreateFactoryRunDto, DataSourceDto, FactoryEventDto, FactoryPromptStrategyDto, FactoryRunDto } from '../api/types';
 import { useI18n } from '../i18n';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 
@@ -113,6 +113,8 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
   const [selectedSourceIds, setSelectedSourceIds] = useState<ReadonlySet<string>>(new Set());
   const [maxIterations, setMaxIterations] = useState(3);
   const [requirePlanApproval, setRequirePlanApproval] = useState(false);
+  // 強化モードでのsystemPromptの扱い。既定は既存プロンプトを保つ側（手書きの文言を勝手に書き換えない）。
+  const [promptStrategy, setPromptStrategy] = useState<FactoryPromptStrategyDto>('preserve');
   const [personaCount, setPersonaCount] = useState(2);
   const [scenarioCount, setScenarioCount] = useState(4);
   const [starting, setStarting] = useState(false);
@@ -207,7 +209,8 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
         // versionは指定しない（サーバーが最新版を起点にする）。
         ...(isEnhanceMode ? { baseAgent: { internalId: baseAgentId } } : {}),
         dataSourceIds: [...selectedSourceIds],
-        options: { maxIterations, personaCount, scenarioCount, requirePlanApproval },
+        // promptStrategy は強化モードでしか効かないので、生成モードでは送らない。
+        options: { maxIterations, personaCount, scenarioCount, requirePlanApproval, ...(isEnhanceMode ? { promptStrategy } : {}) },
       };
       const run = await client.createFactoryRun(input);
       setRuns((current) => [run, ...current]);
@@ -310,6 +313,16 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
             <label>{text('Persona count', 'ペルソナ数')}<input aria-label={text('Factory persona count', 'Factoryペルソナ数')} type="number" min={1} max={5} value={personaCount} onChange={(event) => setPersonaCount(Number(event.target.value))} /></label>
             <label>{text('Scenario count', 'シナリオ数')}<input aria-label={text('Factory scenario count', 'Factoryシナリオ数')} type="number" min={1} max={10} value={scenarioCount} onChange={(event) => setScenarioCount(Number(event.target.value))} /></label>
             <label className="checkbox-label"><input type="checkbox" aria-label={text('Factory require plan approval', 'Factory計画承認を必須にする')} checked={requirePlanApproval} onChange={(event) => setRequirePlanApproval(event.target.checked)} /> {text('Require plan approval before generating', '生成前に計画承認を必須にする')}</label>
+            {/* systemPromptの扱いは強化モードでしか効かない（生成モードは元からモデルが役割・ルールを書く）。 */}
+            {isEnhanceMode && <>
+              <label>{text('System prompt', 'システムプロンプト')}
+                <select aria-label={text('Factory prompt strategy', 'Factoryシステムプロンプトの扱い')} value={promptStrategy} onChange={(event) => setPromptStrategy(event.target.value as FactoryPromptStrategyDto)}>
+                  <option value="preserve">{text('Keep the existing prompt (only update tool/skill guides)', '既存プロンプトを保つ（ツール・スキルのガイドのみ更新）')}</option>
+                  <option value="rewrite">{text('Let the model rewrite the role and rules', 'モデルに役割・ルールを書き直させる')}</option>
+                </select>
+              </label>
+              <p className="factory-field-hint">{text('Rewriting uses one extra model call and may change wording you wrote by hand.', '書き直しはモデル呼び出しを1回追加で消費し、手書きした文言が変わる場合があります。')}</p>
+            </>}
           </details>
           <button type="button" className="primary" disabled={!canStart || starting || hasActiveRun} onClick={() => void startRun()}>{starting ? text('Starting…', '起票中…') : text('Start factory run', '生成を開始')}</button>
           {disabledReason !== undefined && <p className="empty-state">{disabledReason}</p>}

@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { SideEffect } from '../tool/metadata';
 import { SIDE_EFFECTS } from '../tool/metadata';
 import { FactoryValidationError } from './errors';
-import { FACTORY_EVENT_KINDS, FACTORY_RUN_STATUSES, FACTORY_STAGES, type FactoryRun } from './factory-run';
+import { FACTORY_EVENT_KINDS, FACTORY_PROMPT_STRATEGIES, FACTORY_RUN_STATUSES, FACTORY_STAGES, type FactoryRun } from './factory-run';
 import { FACTORY_PERSONA_ARCHETYPES } from './factory-plan';
 
 const scopeSchema = z.object({ tenantId: z.string(), workspaceId: z.string() });
@@ -103,7 +103,9 @@ const factoryGoalInputSchema = z.object({ goal: z.string(), targetUsers: z.strin
 const factoryTargetsSchema = z.object({ minGoalAchievedRate: z.number(), minAvgSatisfaction: z.number() });
 const factoryBudgetLimitsSchema = z.object({ maxDurationMs: z.number(), maxRoleCalls: z.number(), maxScenarioRuns: z.number(), maxRepairAttempts: z.number(), maxProposalsPerIteration: z.number() });
 const factoryBudgetSnapshotSchema = z.object({ roleCalls: z.number(), scenarioRuns: z.number(), elapsedMs: z.number() });
-const factoryOptionsSchema = z.object({ maxIterations: z.number(), personaCount: z.number(), scenarioCount: z.number(), requirePlanApproval: z.boolean(), targets: factoryTargetsSchema, budget: factoryBudgetLimitsSchema });
+// `promptStrategy` は後から足したオプションのため、既存の永続化済みRun（フィールドを持たない）を
+// 読めるよう既定値付きにする（読み出し時に 'preserve' = 従来の挙動へ落ちる）。
+const factoryOptionsSchema = z.object({ maxIterations: z.number(), personaCount: z.number(), scenarioCount: z.number(), requirePlanApproval: z.boolean(), targets: factoryTargetsSchema, budget: factoryBudgetLimitsSchema, promptStrategy: z.enum(FACTORY_PROMPT_STRATEGIES).default('preserve') });
 
 const usageSchema = z.object({ promptTokens: z.number().optional(), completionTokens: z.number().optional(), totalTokens: z.number().optional() });
 const iterationMetricsSchema = z.object({ iteration: z.number(), goalAchievedRate: z.number(), avgSatisfaction: z.number(), toolHitRate: z.number(), errorRate: z.number(), avgUserTurns: z.number(), scenarioCount: z.number(), usage: usageSchema, durationMs: z.number() });

@@ -692,11 +692,17 @@ export interface FactoryGoalInputDto {
   readonly constraints?: string;
   readonly language: 'ja' | 'en';
 }
+/**
+ * 強化モードでの systemPrompt の扱い。`preserve` = 既存の役割文・実行規則を保ち、ガイド2節だけ差し替える。
+ * `rewrite` = モデル（Assembler）に役割文・実行規則を書き直させる。生成モード（0→1）では無関係。
+ */
+export type FactoryPromptStrategyDto = 'preserve' | 'rewrite';
 export interface FactoryOptionsDto {
   readonly maxIterations: number;
   readonly personaCount: number;
   readonly scenarioCount: number;
   readonly requirePlanApproval: boolean;
+  readonly promptStrategy: FactoryPromptStrategyDto;
   readonly targets: { readonly minGoalAchievedRate: number; readonly minAvgSatisfaction: number };
   readonly budget: { readonly maxDurationMs: number; readonly maxRoleCalls: number; readonly maxScenarioRuns: number; readonly maxRepairAttempts: number; readonly maxProposalsPerIteration: number };
 }
@@ -825,6 +831,8 @@ export interface CreateFactoryRunDto {
     readonly personaCount?: number;
     readonly scenarioCount?: number;
     readonly requirePlanApproval?: boolean;
+    /** 強化モード（`baseAgent` 指定）でのみ効く。省略時はサーバー既定の `preserve`。 */
+    readonly promptStrategy?: FactoryPromptStrategyDto;
     readonly targets?: { readonly minGoalAchievedRate: number; readonly minAvgSatisfaction: number };
     readonly budget?: FactoryOptionsDto['budget'];
   };

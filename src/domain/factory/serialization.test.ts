@@ -34,7 +34,7 @@ function makeFullRun(): FactoryRun {
     input: {
       goal: { goal: '売上について答える', targetUsers: '経理担当者', constraints: 'SQL不可', language: 'ja' },
       dataSourceIds: ['ds-1'],
-      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: true, targets: { minGoalAchievedRate: 0.75, minAvgSatisfaction: 4 }, budget: { maxDurationMs: 1_800_000, maxRoleCalls: 40, maxScenarioRuns: 20, maxRepairAttempts: 2, maxProposalsPerIteration: 4 } },
+      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: true, promptStrategy: 'rewrite', targets: { minGoalAchievedRate: 0.75, minAvgSatisfaction: 4 }, budget: { maxDurationMs: 1_800_000, maxRoleCalls: 40, maxScenarioRuns: 20, maxRepairAttempts: 2, maxProposalsPerIteration: 4 } },
     },
     status: 'succeeded',
     stage: 'reporting',
@@ -102,6 +102,12 @@ describe('serializeFactoryRun / deserializeFactoryRun', () => {
     expect(deserializeFactoryRun(serializeFactoryRun(latest)).input.baseAgent).toEqual({ internalId: 'agent-1' });
     // 生成モード（baseAgent未指定）は従来どおりフィールドごと現れない。
     expect(deserializeFactoryRun(serializeFactoryRun(base)).input.baseAgent).toBeUndefined();
+  });
+
+  it('promptStrategy を持たない旧レコードは preserve（従来の挙動）として読み出す', () => {
+    const legacy = JSON.parse(serializeFactoryRun(makeFullRun())) as { input: { options: Record<string, unknown> } };
+    delete legacy.input.options['promptStrategy'];
+    expect(deserializeFactoryRun(JSON.stringify(legacy)).input.options.promptStrategy).toBe('preserve');
   });
 
   it('failureを含むfailed runも往復する', () => {

@@ -174,6 +174,7 @@ const FIELDS: Record<string, Bilingual> = {
   constraints: ['Constraints', '制約'], budget: ['Budget', '予算'], planning: ['Planning', '計画'],
   approvals: ['Approvals', '承認'], memory: ['Memory', '記憶'], survey: ['Survey', 'アンケート'],
   requirePlanApproval: ['Plan approval requirement', '計画承認の要否'], patience: ['Patience', '忍耐度'],
+  promptStrategy: ['Prompt strategy', 'プロンプトの扱い'],
   knowledgeLevel: ['Knowledge level', '知識レベル'], archetype: ['Archetype', 'アーキタイプ'], tone: ['Tone', 'トーン'],
   verbosity: ['Verbosity', '詳細度'], usage: ['Usage', '用途'], assignment: ['Assignment', '割り当て'],
   responsibility: ['Responsibility', '責務'], activationCondition: ['Activation condition', '起動条件'],

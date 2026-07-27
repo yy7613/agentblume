@@ -32,10 +32,17 @@ v33 時点の改善ループは「既存の参照をバージョン差替する�
 | 0 profiling | `baseAgent` をロード（未存在 / `kind !== 'normal'` は Run 失敗）。`loadCurrentSkillContracts` / `loadCurrentToolContracts` で現有能力を把握。データソース0件ならプロファイルは空 |
 | 1 planning | Planner に `currentAgent {displayName, systemPrompt, tools[], skills[]}` を渡し**ギャップだけ**計画させる（既存能力は再計画しない・既存Toolで足りるなら `reuse`）。承認プロンプトも強化モード用の文言 |
 | 2/3 generating | 計画された追加分のみ。**全Tool欠落でもRunを失敗させない**（既存Agentは動くため。生成モードは従来どおり失敗） |
-| 4 assembling | `integrateAssetsIntoAgent` で既存Agentの patch 新版。追加0件なら**新版を作らず**既存版Refを artifacts へ |
+| 4 assembling | `integrateAssetsIntoAgent` で既存Agentの patch 新版。追加0件なら**新版を作らず**既存版Refを artifacts へ（`promptStrategy: 'rewrite'` のときはプロンプト改訂のため新版を作る） |
 | 5+ | 無改修で流用（`runValidationIteration` / `finalizeOrImprove` は元から Agent版を差し替えながら再検証する設計） |
 
-**systemPrompt の再合成**は LLM に書き直させず、`replaceGuideSections` で決定的に行う: トップレベル見出し（`# `）でセクション分割し、Skillガイド / Tool使用ガイドの2節だけを差し替える。役割文・実行規則・利用者が書き足した節は一字一句保持する（既存プロンプトは利用者の資産であり、LLMの再起草で本番Agentのペルソナや業務ルールが黙って変わる方が危険）。見出しの無い自由記述プロンプトは末尾追記へフォールバック。`owner` も既存を継承し `FACTORY_OWNER` で潰さない。
+**systemPrompt の再合成**は `FactoryOptions.promptStrategy`（既定 `'preserve'`）で選べる。`owner` はどちらでも既存を継承し `FACTORY_OWNER` で潰さない。生成モード（0→1）では無関係な設定として無視される（元から Assembler が役割文・実行規則を起草するため）。
+
+| `promptStrategy` | 挙動 |
+|---|---|
+| `preserve`（既定・従来の挙動） | LLM に書き直させず `replaceGuideSections` で決定的に行う: トップレベル見出し（`# `）でセクション分割し、Skillガイド / Tool使用ガイドの2節だけを差し替える。役割文・実行規則・利用者が書き足した節は一字一句保持する（既存プロンプトは利用者の資産であり、LLMの再起草で本番Agentのペルソナや業務ルールが黙って変わる方が危険）。見出しの無い自由記述プロンプトは末尾追記へフォールバック。ロール呼び出しは増えない |
+| `rewrite` | `AssemblerRole` へ既存プロンプト全文を `currentPrompt`（untrusted data）として渡し、**改訂**（作り直しではない）として役割文・実行規則を起草させ、生成モードと同じ組み立て（役割文 → Skillガイド → Tool使用ガイド →〈協働者ガイド〉→ 実行規則）で作り直す。協働者ガイドは既存Agentがサブエージェントを持つ場合だけ挟む。利用者が書き足した独自の節は引き継がれない。ロール呼び出しが**1回増える**（`maxRoleCalls` へ反映）。Assembler が失敗しても Run は落とさず `preserve` へフォールバックし、`proposal_rejected` イベントへ理由を残す |
+
+追加が0件のRunは、`preserve` なら新版を作らない（既存版Refを artifacts へ）が、`rewrite` はプロンプト自体が変わるため新版を作る。ただし合成結果が既存 systemPrompt と完全一致し参照も変わらない場合は、どちらの方針でも保存をスキップする。イベント `message` で方針が分かる（`... (prompt guides spliced|appended)` / `... (prompt rewritten by assembler)`）。
 
 `FactoryStage` / `FactoryEventKind` は**増やさない**。強化モードであることはイベントの `message`（`enhancing agent <name>@<ver>` / `enhanced existing agent ...` / `... kept as-is (no capability added)`）と `report.summary` の先頭で表現する。
 
@@ -50,9 +57,12 @@ Factory画面のRun作成フォームに**モード切替**（新しく作る / 
 - 強化対象は `kind: 'normal'` のAgentのみ（pseudo-user / evaluator は対象外）。
 - `state` は起点版を継承するため、published Agent を強化すると新版も published になる。
 - `add-skill` の `instructions` は Analyst の生成物であり、SkillWriter ロールは通らない。
-- `replaceGuideSections` は任意のH1で区切るため、Skill instructions が H1 を含むと差し替え範囲が早く切れる（利用者記述の消失より安全側に倒した結果）。
+- `replaceGuideSections`（`promptStrategy: 'preserve'`）は任意のH1で区切るため、Skill instructions が H1 を含むと差し替え範囲が早く切れる（利用者記述の消失より安全側に倒した結果）。
+- `promptStrategy: 'rewrite'` は利用者が書き足した独自の節を引き継がない（Assembler が `currentPrompt` として読んだうえで role/rules へ取捨する）。手書きの文言を守りたい場合は既定の `preserve` を使う。
+- `rewrite` の Assembler 呼び出しは、失敗した試行も消費として `roleCalls` に数える（`generateToolWithRepair` と同じ規律）。
+- 改善ループ（Stage 5以降）の `system-prompt-revision` は `promptStrategy` の対象外で、従来どおり Analyst の提案がセクション単位で適用される。
 - モードを往復しても選択済みデータソースは保持される（強化モードでも送信対象）。
 
 ## 6. 検証
 
-`npx vitest run` 228 files / **2187 passed**、`npm run typecheck` 0、`npm run depcruise` 0（690 modules）、`npm run test:cov` 合格（Stmts 91.42 / Branch 82.11 / Funcs 92.21 / Lines 95.68）。vitestは大文字ドライブ（`E:\`）で実行。
+`npx vitest run` 228 files / **2199 passed**、`npm run typecheck` 0、`npm run depcruise` 0（690 modules）、`npm run test:cov` 合格（Stmts 91.44 / Branch 82.20 / Funcs 92.22 / Lines 95.70）。vitestは大文字ドライブ（`E:\`）で実行。

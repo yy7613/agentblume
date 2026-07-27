@@ -26,7 +26,7 @@ function baseRun(overrides: Partial<FactoryRunDto> = {}): FactoryRunDto {
       goal: { goal: 'Answer sales questions', language: 'ja' },
       dataSourceIds: ['ds-sales'],
       options: {
-        maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false,
+        maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false, promptStrategy: 'preserve',
         targets: { minGoalAchievedRate: 0.75, minAvgSatisfaction: 4 },
         budget: { maxDurationMs: 1_800_000, maxRoleCalls: 40, maxScenarioRuns: 20, maxRepairAttempts: 2, maxProposalsPerIteration: 4 },
       },
@@ -404,8 +404,38 @@ describe('FactoryPage', () => {
       goal: { goal: 'Improve totals accuracy', language: 'ja' },
       baseAgent: { internalId: 'agent-sales' },
       dataSourceIds: [],
-      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false },
+      // 強化モードでは systemPrompt の扱いも送る（既定は既存プロンプトを保つ側）。
+      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false, promptStrategy: 'preserve' },
     }));
+  });
+
+  it('systemPromptの扱いは強化モードでのみ選べ、rewriteを選ぶとoptionsに載る', async () => {
+    const created = baseRun({ input: { ...baseRun().input, dataSourceIds: [], baseAgent: { internalId: 'agent-sales' } } });
+    const createFactoryRun = vi.fn().mockResolvedValue(created);
+    const client = stubClient({
+      createFactoryRun,
+      getFactoryRun: vi.fn().mockResolvedValue(created),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+    });
+    render(<FactoryPage client={client} />);
+    await screen.findByText('Sales CSV');
+
+    // 生成モード（0→1）では無関係なので出さない。
+    expect(screen.queryByLabelText('Factory prompt strategy')).toBeNull();
+
+    await userEvent.click(screen.getByRole('radio', { name: 'Enhance an existing agent' }));
+    const strategy = await screen.findByLabelText('Factory prompt strategy');
+    expect((strategy as HTMLSelectElement).value).toBe('preserve');
+    expect(screen.getByText('Rewriting uses one extra model call and may change wording you wrote by hand.')).toBeTruthy();
+
+    await userEvent.type(screen.getByLabelText('Factory goal'), 'Improve totals accuracy');
+    await userEvent.selectOptions(await screen.findByLabelText('Factory base agent'), 'agent-sales');
+    await userEvent.selectOptions(strategy, 'rewrite');
+    await userEvent.click(screen.getByRole('button', { name: 'Start factory run' }));
+
+    await waitFor(() => expect(createFactoryRun).toHaveBeenCalledWith(expect.objectContaining({
+      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false, promptStrategy: 'rewrite' },
+    })));
   });
 
   it('強化モードで対象Agent未選択なら開始できず理由を表示する', async () => {

@@ -738,6 +738,42 @@ describe('RunFactoryUseCase（既存Agent強化モード: input.baseAgent）', (
     expect(finished?.events.map((event) => event.message)).toContain(`enhanced existing agent ${BASE_AGENT_ID}@1.0.1`);
   });
 
+  it('options.promptStrategy=rewrite: Assemblerが既存プロンプトを受け取って役割文・実行規則を書き直す', async () => {
+    const { repo, model, runFactory, createFactoryRun, agentRepo, toolRepo, skillRepo } = await setup();
+    await seedBaseAgent(toolRepo, skillRepo, agentRepo);
+    model.enqueue(
+      { message: { role: 'assistant', content: validPlanJson('Base Assistant') }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+
+    const created = await createFactoryRun.execute({
+      scope, goal: { goal: '今月の売上も引けるようにする', language: 'ja' },
+      dataSourceIds: ['ds-1'], baseAgent: { internalId: BASE_AGENT_ID }, options: { promptStrategy: 'rewrite' },
+    });
+    expect(created.input.options.promptStrategy).toBe('rewrite');
+    await runFactory.execute(scope, created.id);
+
+    const finished = await repo.find(scope, created.id);
+    expect(finished?.status).toBe('succeeded');
+    // planner + tool-smith + skill-writer + assembler。rewriteの1回分が予算へ正しく反映される。
+    expect(finished?.budget.consumed.roleCalls).toBe(4);
+    expect(model.requests).toHaveLength(4);
+
+    const enhanced = await agentRepo.findVersion(scope, BASE_AGENT_ID, SemVer.of(1, 0, 1));
+    expect(enhanced?.systemPrompt.startsWith('# Role\nYou are the Sales Assistant')).toBe(true);
+    expect(enhanced?.systemPrompt).not.toContain('独自メモ'); // 書き直しなので手書きの節は引き継がれない
+    expect(enhanced?.systemPrompt).toContain('lookup_sales@1.0.0');
+    // 既存のメタデータ・設定はrewriteでも保たれる（プロンプトだけが対象）。
+    expect(enhanced?.metadata.owner).toBe('alice');
+    expect(enhanced?.harness).toEqual(BASE_AGENT_HARNESS);
+    expect(finished?.events.map((event) => event.message)).toContain('enhanced Base Assistant (prompt rewritten by assembler)');
+
+    // Assemblerには既存のsystemPromptが untrusted data として渡る。
+    expect(String(model.requests[3]?.messages.find((message) => message.role === 'user')?.content)).toContain('独自メモ');
+  });
+
   it('存在しないbaseAgentはRunをfailedにする（0→1生成へ黙ってフォールバックしない）', async () => {
     const { repo, runFactory, createFactoryRun, model } = await setup();
     const created = await createFactoryRun.execute({
