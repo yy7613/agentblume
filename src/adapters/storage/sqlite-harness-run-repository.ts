@@ -1,17 +1,13 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { HarnessRunRecord } from '../../domain/harness/harness-run';
 import type { HarnessRunRepository } from '../../domain/harness/harness-run-repository';
 import type { TenantScope } from '../../domain/tool/ids';
 
-const CREATE_TABLE = `CREATE TABLE IF NOT EXISTS harness_runs (
-  tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, run_id TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, record_json TEXT NOT NULL,
-  PRIMARY KEY (tenant_id, workspace_id, run_id)
-);`;
 function fromJson(value: unknown): HarnessRunRecord { return JSON.parse(String(value)) as HarnessRunRecord; }
-export class SqliteHarnessRunRepository implements HarnessRunRepository {
-  private readonly db: DatabaseSync;
-  constructor(path = ':memory:') { this.db = new DatabaseSync(path); this.db.exec(CREATE_TABLE); }
-  close(): void { this.db.close(); }
+export class SqliteHarnessRunRepository extends SqliteRepositoryBase implements HarnessRunRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
+  }
   async save(record: HarnessRunRecord): Promise<void> {
     this.db.prepare(`INSERT INTO harness_runs (tenant_id, workspace_id, run_id, status, started_at, record_json) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, workspace_id, run_id) DO UPDATE SET status = excluded.status, record_json = excluded.record_json`).run(record.scope.tenantId, record.scope.workspaceId, record.runId, record.status, record.startedAt, JSON.stringify(record));
   }

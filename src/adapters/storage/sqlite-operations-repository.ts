@@ -1,30 +1,13 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { OperationsRepository } from '../../domain/operations/operations-repository';
 import { utcDayStart, type OperationsDailyMetric, type RetentionPolicy, type RunFeedback, type RunMetricSample } from '../../domain/operations/operations';
 import { deserializeDailyMetric, deserializeFeedback, deserializeRetentionPolicy, serializeDailyMetric, serializeFeedback, serializeRetentionPolicy } from '../../domain/operations/serialization';
 import type { TenantScope } from '../../domain/tool/ids';
 
-const CREATE_TABLES_SQL = `
-  CREATE TABLE IF NOT EXISTS run_feedback (
-    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, run_id TEXT NOT NULL,
-    updated_at TEXT NOT NULL, record_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id, run_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_run_feedback_scope_updated ON run_feedback (tenant_id, workspace_id, updated_at);
-  CREATE TABLE IF NOT EXISTS operations_daily_metrics (
-    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, bucket_start TEXT NOT NULL, record_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id, bucket_start)
-  );
-  CREATE TABLE IF NOT EXISTS retention_policies (
-    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, record_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id)
-  );
-`;
-
-export class SqliteOperationsRepository implements OperationsRepository {
-  private readonly db: DatabaseSync;
-  constructor(path: string = ':memory:') { this.db = new DatabaseSync(path); this.db.exec(CREATE_TABLES_SQL); }
-  close(): void { this.db.close(); }
+export class SqliteOperationsRepository extends SqliteRepositoryBase implements OperationsRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
+  }
 
   async saveFeedback(record: RunFeedback): Promise<void> {
     const serialized = serializeFeedback(record);

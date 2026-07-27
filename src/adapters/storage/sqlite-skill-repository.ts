@@ -1,24 +1,15 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { Skill } from '../../domain/skill/skill';
 import type { SkillRepository, SkillSummary } from '../../domain/skill/skill-repository';
 import { SkillVersionConflictError } from '../../domain/skill/errors';
 import { deserializeSkill, serializeSkill } from '../../domain/skill/serialization';
 import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
-const TABLE = `CREATE TABLE IF NOT EXISTS skills (tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, internal_id TEXT NOT NULL, version TEXT NOT NULL, major INTEGER NOT NULL, minor INTEGER NOT NULL, patch INTEGER NOT NULL, definition_json TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant_id, workspace_id, internal_id, version));`;
 const fromJson = (value: unknown): Skill => deserializeSkill(JSON.parse(String(value)));
-export class SqliteSkillRepository implements SkillRepository {
-  private readonly db: DatabaseSync;
-  constructor(path = ':memory:') {
-    this.db = new DatabaseSync(path);
-    this.db.exec(TABLE);
-    // 既存DB向けmigration: deleted列が無ければ追加する（論理削除）。
-    const columns = this.db.prepare(`PRAGMA table_info(skills)`).all();
-    if (!columns.some((column) => String(column['name']) === 'deleted')) {
-      this.db.exec(`ALTER TABLE skills ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0`);
-    }
+export class SqliteSkillRepository extends SqliteRepositoryBase implements SkillRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
   }
-  close(): void { this.db.close(); }
   async save(skill: Skill): Promise<void> { const { tenant, internalId, version } = skill.metadata; try { this.db.prepare(`INSERT INTO skills (tenant_id, workspace_id, internal_id, version, major, minor, patch, definition_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(tenant.tenantId, tenant.workspaceId, internalId, version.toString(), version.major, version.minor, version.patch, JSON.stringify(serializeSkill(skill))); } catch (error) { if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) throw new SkillVersionConflictError(`Skill version already exists: ${internalId}@${version.toString()}`); throw error; } }
   async findVersion(scope: TenantScope, id: string, version: SemVer): Promise<Skill | null> { const row = this.db.prepare(`SELECT definition_json FROM skills WHERE tenant_id=? AND workspace_id=? AND internal_id=? AND version=?`).get(scope.tenantId, scope.workspaceId, id, version.toString()); return row === undefined ? null : fromJson(row['definition_json']); }
   async findLatest(scope: TenantScope, id: string): Promise<Skill | null> { const row = this.db.prepare(`SELECT definition_json FROM skills WHERE tenant_id=? AND workspace_id=? AND internal_id=? AND deleted=0 ORDER BY major DESC, minor DESC, patch DESC LIMIT 1`).get(scope.tenantId, scope.workspaceId, id); return row === undefined ? null : fromJson(row['definition_json']); }

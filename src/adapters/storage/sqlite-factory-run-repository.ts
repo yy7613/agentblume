@@ -1,17 +1,13 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { FactoryRun, FactoryRunStatus } from '../../domain/factory/factory-run';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
 import { deserializeFactoryRun, serializeFactoryRun } from '../../domain/factory/serialization';
 import type { TenantScope } from '../../domain/tool/ids';
 
-const CREATE_TABLE = `CREATE TABLE IF NOT EXISTS factory_runs (
-  tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, run_id TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, record_json TEXT NOT NULL,
-  PRIMARY KEY (tenant_id, workspace_id, run_id)
-);`;
-export class SqliteFactoryRunRepository implements FactoryRunRepository {
-  private readonly db: DatabaseSync;
-  constructor(path = ':memory:') { this.db = new DatabaseSync(path); this.db.exec(CREATE_TABLE); }
-  close(): void { this.db.close(); }
+export class SqliteFactoryRunRepository extends SqliteRepositoryBase implements FactoryRunRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
+  }
   async save(run: FactoryRun): Promise<void> {
     this.db.prepare(`INSERT INTO factory_runs (tenant_id, workspace_id, run_id, status, started_at, record_json) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, workspace_id, run_id) DO UPDATE SET status = excluded.status, record_json = excluded.record_json`).run(run.scope.tenantId, run.scope.workspaceId, run.id, run.status, run.startedAt, serializeFactoryRun(run));
   }

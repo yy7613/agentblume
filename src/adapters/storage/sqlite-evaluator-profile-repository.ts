@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import { deserializeEvaluatorProfile, serializeEvaluatorProfile } from '../../domain/evaluation/assets-serialization';
 import type { EvaluatorProfileRepository, EvaluatorProfileSummary } from '../../domain/evaluation/evaluation-asset-repositories';
 import { EvaluationAssetVersionConflictError } from '../../domain/evaluation/errors';
@@ -6,20 +6,12 @@ import type { EvaluatorProfile } from '../../domain/evaluation/evaluator-profile
 import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
 
-const TABLE = `CREATE TABLE IF NOT EXISTS evaluator_profiles (tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, internal_id TEXT NOT NULL, version TEXT NOT NULL, major INTEGER NOT NULL, minor INTEGER NOT NULL, patch INTEGER NOT NULL, definition_json TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant_id, workspace_id, internal_id, version));`;
 const fromJson = (value: unknown): EvaluatorProfile => deserializeEvaluatorProfile(JSON.parse(String(value)));
 
-export class SqliteEvaluatorProfileRepository implements EvaluatorProfileRepository {
-  private readonly db: DatabaseSync;
-  constructor(path = ':memory:') {
-    this.db = new DatabaseSync(path);
-    this.db.exec(TABLE);
-    const columns = this.db.prepare(`PRAGMA table_info(evaluator_profiles)`).all();
-    if (!columns.some((column) => String(column['name']) === 'deleted')) {
-      this.db.exec(`ALTER TABLE evaluator_profiles ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0`);
-    }
+export class SqliteEvaluatorProfileRepository extends SqliteRepositoryBase implements EvaluatorProfileRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
   }
-  close(): void { this.db.close(); }
   async save(profile: EvaluatorProfile): Promise<void> { const { tenant, internalId, version } = profile.metadata; try { this.db.prepare(`INSERT INTO evaluator_profiles (tenant_id, workspace_id, internal_id, version, major, minor, patch, definition_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(tenant.tenantId, tenant.workspaceId, internalId, version.toString(), version.major, version.minor, version.patch, JSON.stringify(serializeEvaluatorProfile(profile))); } catch (error) { if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) throw new EvaluationAssetVersionConflictError(`Evaluator profile version already exists: ${internalId}@${version.toString()}`); throw error; } }
   async findVersion(scope: TenantScope, id: string, version: SemVer): Promise<EvaluatorProfile | null> { const row = this.db.prepare(`SELECT definition_json FROM evaluator_profiles WHERE tenant_id=? AND workspace_id=? AND internal_id=? AND version=?`).get(scope.tenantId, scope.workspaceId, id, version.toString()); return row === undefined ? null : fromJson(row['definition_json']); }
   async findLatest(scope: TenantScope, id: string): Promise<EvaluatorProfile | null> { const row = this.db.prepare(`SELECT definition_json FROM evaluator_profiles WHERE tenant_id=? AND workspace_id=? AND internal_id=? AND deleted=0 ORDER BY major DESC,minor DESC,patch DESC LIMIT 1`).get(scope.tenantId, scope.workspaceId, id); return row === undefined ? null : fromJson(row['definition_json']); }

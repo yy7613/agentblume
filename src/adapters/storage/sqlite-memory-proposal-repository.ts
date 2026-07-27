@@ -1,34 +1,17 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { MemoryProposalRepository } from '../../domain/memory/memory-proposal-repository';
 import type { MemoryProposal, MemoryProposalState } from '../../domain/memory/memory-proposal';
 import { deserializeMemoryProposal, serializeMemoryProposal, type SerializedMemoryProposal } from '../../domain/memory/serialization';
 
-const CREATE_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS memory_proposals (
-    tenant_id TEXT NOT NULL,
-    workspace_id TEXT NOT NULL,
-    id TEXT NOT NULL,
-    state TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    definition_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id, id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_memory_proposals_scope_created
-    ON memory_proposals (tenant_id, workspace_id, created_at DESC);
-`;
-
 const fromJson = (value: unknown): MemoryProposal => deserializeMemoryProposal(JSON.parse(String(value)) as SerializedMemoryProposal);
 
-export class SqliteMemoryProposalRepository implements MemoryProposalRepository {
-  private readonly db: DatabaseSync;
+export class SqliteMemoryProposalRepository extends SqliteRepositoryBase implements MemoryProposalRepository {
 
-  constructor(path = ':memory:') {
-    this.db = new DatabaseSync(path);
-    this.db.exec(CREATE_TABLE_SQL);
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
   }
 
-  close(): void { this.db.close(); }
 
   async save(proposal: MemoryProposal): Promise<void> {
     this.db.prepare(

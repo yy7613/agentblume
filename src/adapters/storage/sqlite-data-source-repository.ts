@@ -1,23 +1,13 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { DataSource } from '../../domain/data-source/data-source';
 import type { DataSourceRepository } from '../../domain/data-source/data-source-repository';
 
-const SQL = `
-CREATE TABLE IF NOT EXISTS data_sources (
-  tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, id TEXT NOT NULL,
-  updated_at TEXT NOT NULL, record_json TEXT NOT NULL, file_content TEXT,
-  PRIMARY KEY (tenant_id, workspace_id, id)
-);
-CREATE INDEX IF NOT EXISTS idx_data_sources_scope_updated
-  ON data_sources (tenant_id, workspace_id, updated_at DESC);
-`;
-
 /** SQLiteはカタログとCSV/JSON本文をbackend側に保持する。DB資格情報は保存しない。 */
-export class SqliteDataSourceRepository implements DataSourceRepository {
-  private readonly db: DatabaseSync;
-  constructor(path = ':memory:') { this.db = new DatabaseSync(path); this.db.exec(SQL); }
-  close(): void { this.db.close(); }
+export class SqliteDataSourceRepository extends SqliteRepositoryBase implements DataSourceRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
+  }
 
   async save(source: DataSource, fileContent?: string): Promise<void> {
     this.db.prepare(

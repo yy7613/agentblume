@@ -1,22 +1,17 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import { deserializeExperiment, deserializeExperimentCaseResult, serializeExperiment, serializeExperimentCaseResult } from '../../domain/evaluation/experiment-serialization';
 import type { ExperimentFilter, ExperimentRepository } from '../../domain/evaluation/experiment-repository';
 import { interruptExperiment, type Experiment, type ExperimentCaseResult } from '../../domain/evaluation/experiment';
 import { ExperimentConflictError, ExperimentNotFoundError } from '../../domain/evaluation/errors';
 import type { TenantScope } from '../../domain/tool/ids';
 
-const TABLES = `
-CREATE TABLE IF NOT EXISTS experiments (tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, experiment_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY (tenant_id, workspace_id, experiment_id));
-CREATE INDEX IF NOT EXISTS idx_experiments_scope_created ON experiments (tenant_id, workspace_id, created_at DESC);
-CREATE TABLE IF NOT EXISTS experiment_case_results (tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, experiment_id TEXT NOT NULL, case_id TEXT NOT NULL, repetition INTEGER NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY (tenant_id, workspace_id, experiment_id, case_id, repetition));
-`;
 const experimentFromJson = (value: unknown): Experiment => deserializeExperiment(JSON.parse(String(value)));
 const resultFromJson = (value: unknown): ExperimentCaseResult => deserializeExperimentCaseResult(JSON.parse(String(value)));
 
-export class SqliteExperimentRepository implements ExperimentRepository {
-  private readonly db: DatabaseSync;
-  constructor(path = ':memory:') { this.db = new DatabaseSync(path); this.db.exec(TABLES); }
-  close(): void { this.db.close(); }
+export class SqliteExperimentRepository extends SqliteRepositoryBase implements ExperimentRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
+  }
   async create(experiment: Experiment): Promise<void> { try { this.db.prepare(`INSERT INTO experiments (tenant_id, workspace_id, experiment_id, status, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?)`).run(experiment.scope.tenantId, experiment.scope.workspaceId, experiment.id, experiment.status, experiment.createdAt, JSON.stringify(serializeExperiment(experiment))); } catch (error) { if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) throw new ExperimentConflictError(`Experiment already exists: ${experiment.id}`); throw error; } }
   async update(experiment: Experiment): Promise<void> { const result = this.db.prepare(`UPDATE experiments SET status=?, record_json=? WHERE tenant_id=? AND workspace_id=? AND experiment_id=?`).run(experiment.status, JSON.stringify(serializeExperiment(experiment)), experiment.scope.tenantId, experiment.scope.workspaceId, experiment.id); if (Number(result.changes) === 0) throw new ExperimentNotFoundError(`Experiment not found: ${experiment.id}`); }
   async find(scope: TenantScope, id: string): Promise<Experiment | null> { const row = this.db.prepare(`SELECT record_json FROM experiments WHERE tenant_id=? AND workspace_id=? AND experiment_id=?`).get(scope.tenantId, scope.workspaceId, id); return row === undefined ? null : experimentFromJson(row['record_json']); }

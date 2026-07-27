@@ -1,31 +1,9 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';
 import { effectiveWikiId, summarizeWikiPage, type WikiPage, type WikiPageSummary } from '../../domain/memory/wiki-page';
 import { deserializeWikiPage, deserializeWikiSpace, serializeWikiPage, serializeWikiSpace, type SerializedWikiPage, type SerializedWikiSpace } from '../../domain/memory/serialization';
 import { createWikiSpace, DEFAULT_WIKI_ID, summarizeWikiSpace, type WikiSpace, type WikiSpaceSummary } from '../../domain/memory/wiki-space';
-
-const CREATE_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS wiki_pages (
-    tenant_id TEXT NOT NULL,
-    workspace_id TEXT NOT NULL,
-    id TEXT NOT NULL,
-    wiki_id TEXT NOT NULL DEFAULT 'default',
-    updated_at TEXT NOT NULL,
-    definition_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id, id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_wiki_pages_scope_updated
-    ON wiki_pages (tenant_id, workspace_id, updated_at DESC);
-  CREATE TABLE IF NOT EXISTS wiki_spaces (
-    tenant_id TEXT NOT NULL,
-    workspace_id TEXT NOT NULL,
-    id TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    definition_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id, id)
-  );
-`;
 
 const fromJson = (value: unknown): WikiPage => deserializeWikiPage(JSON.parse(String(value)) as SerializedWikiPage);
 
@@ -35,20 +13,10 @@ function matches(page: WikiPage, terms: readonly string[]): boolean {
   return terms.every((term) => haystack.includes(term));
 }
 
-export class SqliteWikiRepository implements WikiRepository {
-  private readonly db: DatabaseSync;
-
-  constructor(path = ':memory:') {
-    this.db = new DatabaseSync(path);
-    this.db.exec(CREATE_TABLE_SQL);
-    const columns = this.db.prepare(`PRAGMA table_info(wiki_pages)`).all();
-    if (!columns.some((column) => String(column['name']) === 'wiki_id')) {
-      this.db.exec(`ALTER TABLE wiki_pages ADD COLUMN wiki_id TEXT NOT NULL DEFAULT 'default'`);
-    }
-    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_wiki_pages_scope_wiki_updated ON wiki_pages (tenant_id, workspace_id, wiki_id, updated_at DESC)`);
+export class SqliteWikiRepository extends SqliteRepositoryBase implements WikiRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
   }
-
-  close(): void { this.db.close(); }
 
   async saveSpace(space: WikiSpace): Promise<void> {
     this.db.prepare(

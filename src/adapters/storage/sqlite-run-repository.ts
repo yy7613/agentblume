@@ -1,35 +1,16 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import { redactRun, type RunRecord } from '../../domain/run/run';
 import type { ListRunsOptions, RunRepository, RunRetentionOptions, RunRetentionResult } from '../../domain/run/run-repository';
 import { deserializeRun, serializeRun } from '../../domain/run/serialization';
 import type { TenantScope } from '../../domain/tool/ids';
 
-const CREATE_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS runs (
-    tenant_id TEXT NOT NULL,
-    workspace_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    status TEXT NOT NULL,
-    record_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id, run_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_runs_scope_started
-    ON runs (tenant_id, workspace_id, started_at DESC);
-`;
-
 function fromJson(value: unknown): RunRecord {
   return deserializeRun(JSON.parse(String(value)));
 }
-export class SqliteRunRepository implements RunRepository {
-  private readonly db: DatabaseSync;
-
-  constructor(path: string = ':memory:') {
-    this.db = new DatabaseSync(path);
-    this.db.exec(CREATE_TABLE_SQL);
+export class SqliteRunRepository extends SqliteRepositoryBase implements RunRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
   }
-
-  close(): void { this.db.close(); }
 
   async save(record: RunRecord): Promise<void> {
     const data = serializeRun(record);
@@ -59,8 +40,8 @@ export class SqliteRunRepository implements RunRepository {
   async applyRetention(scope: TenantScope, options: RunRetentionOptions): Promise<RunRetentionResult> {
     const rows = this.db.prepare(`SELECT run_id, record_json FROM runs WHERE tenant_id = ? AND workspace_id = ?`).all(scope.tenantId, scope.workspaceId);
     let payloadRedacted = 0; let traceRedacted = 0; let deleted = 0;
-    this.db.exec('BEGIN');
-    try {
+    // 接続は共有なので、外側にトランザクションがあればSAVEPOINTとして合流する（BEGINの入れ子を避ける）。
+    this.database.transaction(() => {
       for (const row of rows) {
         const record = fromJson(row['record_json']);
         if (record.startedAt <= options.deleteBefore) {
@@ -75,10 +56,7 @@ export class SqliteRunRepository implements RunRepository {
         if (payload) payloadRedacted += 1;
         if (trace) traceRedacted += 1;
       }
-      this.db.exec('COMMIT');
-    } catch (error) {
-      this.db.exec('ROLLBACK'); throw error;
-    }
+    });
     return { payloadRedacted, traceRedacted, deleted };
   }
 }

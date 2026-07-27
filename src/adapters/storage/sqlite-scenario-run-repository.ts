@@ -1,35 +1,18 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { TenantScope } from '../../domain/tool/ids';
 import { ValidationDomainError } from '../../domain/validation/errors';
 import type { ScenarioRun } from '../../domain/validation/scenario-run';
 import type { ScenarioRunFilter, ScenarioRunRepository } from '../../domain/validation/scenario-run-repository';
 import { deserializeScenarioRun, serializeScenarioRun } from '../../domain/validation/serialization';
 
-const CREATE_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS scenario_runs (
-    tenant_id TEXT NOT NULL,
-    workspace_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    scenario_id TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    record_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id, run_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_scenario_runs_scope_started
-    ON scenario_runs (tenant_id, workspace_id, started_at DESC);
-`;
-
 const fromJson = (value: unknown): ScenarioRun => deserializeScenarioRun(JSON.parse(String(value)));
 
-export class SqliteScenarioRunRepository implements ScenarioRunRepository {
-  private readonly db: DatabaseSync;
+export class SqliteScenarioRunRepository extends SqliteRepositoryBase implements ScenarioRunRepository {
 
-  constructor(path = ':memory:') {
-    this.db = new DatabaseSync(path);
-    this.db.exec(CREATE_TABLE_SQL);
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
   }
 
-  close(): void { this.db.close(); }
 
   async save(run: ScenarioRun): Promise<void> {
     try {

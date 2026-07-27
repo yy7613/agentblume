@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { Agent } from '../../domain/agent/agent';
 import type { AgentRepository, AgentSummary } from '../../domain/agent/agent-repository';
 import { AgentVersionConflictError } from '../../domain/agent/errors';
@@ -8,29 +8,12 @@ import { SemVer } from '../../domain/tool/semver';
 import type { PublishState } from '../../domain/tool/metadata';
 import { AgentNotFoundError } from '../../domain/agent/errors';
 
-const CREATE_TABLE = `
-  CREATE TABLE IF NOT EXISTS agents (
-    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, internal_id TEXT NOT NULL,
-    version TEXT NOT NULL, major INTEGER NOT NULL, minor INTEGER NOT NULL, patch INTEGER NOT NULL,
-    definition_json TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (tenant_id, workspace_id, internal_id, version)
-  );
-`;
-
 function fromJson(value: unknown): Agent { return deserializeAgent(JSON.parse(String(value))); }
 
-export class SqliteAgentRepository implements AgentRepository {
-  private readonly db: DatabaseSync;
-  constructor(path = ':memory:') {
-    this.db = new DatabaseSync(path);
-    this.db.exec(CREATE_TABLE);
-    // 既存DB向けmigration: deleted列が無ければ追加する（論理削除）。
-    const columns = this.db.prepare(`PRAGMA table_info(agents)`).all();
-    if (!columns.some((column) => String(column['name']) === 'deleted')) {
-      this.db.exec(`ALTER TABLE agents ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0`);
-    }
+export class SqliteAgentRepository extends SqliteRepositoryBase implements AgentRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
   }
-  close(): void { this.db.close(); }
 
   async save(agent: Agent): Promise<void> {
     const { tenant, internalId, version } = agent.metadata;

@@ -4,10 +4,18 @@
  * プロファイルに応じてアダプタ実装を選択し、ユースケース群を配線して App を返す。
  * composition だけが adapters 実装を import してよい（depcruise ルール）。
  *
- * - profile 'local' → SqliteToolRepository（dbPath 既定 ':memory:'）
- * - profile 'test'  → InMemoryToolRepository
+ * - profile 'local' → SQLiteリポジトリ群。**共有接続を1本だけ開いて全リポジトリへ渡す**
+ *   （接続が分裂しているとリポジトリをまたぐトランザクションが張れない）。
+ * - profile 'test'  → InMemory リポジトリ群。
  * - 既定値は env AGENTCONTEXT_PROFILE / AGENTCONTEXT_DB_PATH。options が env より優先。
  * - 不正な profile 値 → ToolValidationError（メッセージに値を含める）。
+ *
+ * ## 保存先の既定（重要）
+ *
+ * `local` の既定は **`~/.agentblume/agentblume.db`（永続ファイル）**。
+ * 以前の既定は `:memory:` で、readme の標準手順（`start-dev.ps1`）には
+ * `AGENTCONTEXT_DB_PATH` の設定が無かったため、**普通に起動すると全データがプロセス終了で消えていた**。
+ * 明示的に `:memory:` を指定したときだけ揮発する。解決したパスは起動時にログへ出す。
  */
 import { InMemoryToolRepository } from '../adapters/storage/in-memory-tool-repository';
 import { SqliteToolRepository } from '../adapters/storage/sqlite-tool-repository';
@@ -181,6 +189,9 @@ import { TestModelSettingsUseCase } from '../application/model-settings/test-mod
 import { QueryModelCatalogUseCase } from '../application/model-settings/query-model-catalog';
 import type { ModelSlotName } from '../domain/model-settings/model-settings';
 import type { TenantScope } from '../domain/tool/ids';
+import { defaultDatabasePath, MEMORY_DB_PATH, openSqliteDatabase, type SqliteDatabase } from '../adapters/storage/sqlite-database';
+import { SqliteUnitOfWork } from '../adapters/storage/sqlite-unit-of-work';
+import { NoopUnitOfWork, type UnitOfWorkPort } from '../application/persistence/unit-of-work';
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
@@ -189,8 +200,10 @@ export type Profile = 'local' | 'test';
 export interface AppOptions {
   /** 既定: env AGENTCONTEXT_PROFILE（'local'|'test'）→ 無ければ 'local'。 */
   readonly profile?: Profile;
-  /** local のみ有効。既定: env AGENTCONTEXT_DB_PATH → 無ければ ':memory:'。 */
+  /** local のみ有効。既定: env AGENTCONTEXT_DB_PATH → 無ければ `~/.agentblume/agentblume.db`。 */
   readonly dbPath?: string;
+  /** 起動時の保存先ログの出力先。既定は console.info（テストで差し替え・抑止できる）。 */
+  readonly logger?: (message: string) => void;
   /** テスト・埋め込み用の明示provider。省略時はprofileに従う。 */
   readonly modelProvider?: ModelProviderPort;
   readonly runRepository?: RunRepository;
@@ -225,6 +238,10 @@ export interface AppOptions {
 /** 配線済みアプリケーション。 */
 export interface App {
   readonly profile: Profile;
+  /** 実際に使っている保存先（'local' のみ）。`:memory:` は揮発を意味する。 */
+  readonly dbPath?: string;
+  /** 複数リポジトリにまたがる書き込みを1トランザクションで括る（test配線では no-op）。 */
+  readonly unitOfWork: UnitOfWorkPort;
   readonly repo: ToolRepository;
   readonly engine: EtlEngine;
   readonly modelProvider: ModelProviderPort;
@@ -369,17 +386,28 @@ function resolveProfile(optionProfile: Profile | undefined): Profile {
   return raw;
 }
 
-/** プロファイルに応じてリポジトリを構築し、close を確定する。 */
-function createRepository(
-  profile: Profile,
-  dbPath: string | undefined,
-): { repo: ToolRepository; close: () => void; path?: string } {
-  if (profile === 'local') {
-    const path = dbPath ?? process.env['AGENTCONTEXT_DB_PATH'] ?? ':memory:';
-    const sqlite = new SqliteToolRepository(path);
-    return { repo: sqlite, close: () => sqlite.close(), path };
-  }
-  return { repo: new InMemoryToolRepository(), close: () => {} };
+/**
+ * local プロファイルの保存先を決める。
+ *
+ * 優先順: options.dbPath → env `AGENTCONTEXT_DB_PATH` → `~/.agentblume/agentblume.db`。
+ * 空文字の env は「未設定」と同じ扱いにする（`AGENTCONTEXT_DB_PATH=` だけ書かれた .env で
+ * 黙って揮発するのを防ぐ）。`:memory:` を明示したときだけ揮発する。
+ */
+export function resolveDatabasePath(dbPath: string | undefined): string {
+  if (dbPath !== undefined) return dbPath;
+  const fromEnv = process.env['AGENTCONTEXT_DB_PATH']?.trim();
+  return fromEnv === undefined || fromEnv === '' ? defaultDatabasePath() : fromEnv;
+}
+
+/** 明示注入 → SQLite（共有ハンドル）→ InMemory の順で実装を選ぶ。 */
+function pickRepository<T>(
+  explicit: T | undefined,
+  database: SqliteDatabase | undefined,
+  sqlite: (db: SqliteDatabase) => T,
+  memory: () => T,
+): T {
+  if (explicit !== undefined) return explicit;
+  return database === undefined ? memory() : sqlite(database);
 }
 
 /** 正のミリ秒 env を読む。未設定は既定値、不正値は ToolValidationError。 */
@@ -433,93 +461,43 @@ function resolvePricingCatalog(profile: Profile): ModelPriceSnapshot[] {
 /** プロファイルに従いアダプタとユースケースを配線した App を生成する。 */
 export function createApp(options?: AppOptions): App {
   const profile = resolveProfile(options?.profile);
-  const { repo, close: closeTools, path } = createRepository(profile, options?.dbPath);
-  const runAdapter = options?.runRepository !== undefined
-    ? { repo: options.runRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteRunRepository(path ?? ':memory:'); return { repo: sqlite as RunRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemoryRunRepository() as RunRepository, close: () => {} };
-  const agentAdapter = options?.agentRepository !== undefined
-    ? { repo: options.agentRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteAgentRepository(path ?? ':memory:'); return { repo: sqlite as AgentRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemoryAgentRepository() as AgentRepository, close: () => {} };
-  const harnessAdapter = options?.harnessRepository !== undefined
-    ? { repo: options.harnessRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteAgentHarnessRepository(path ?? ':memory:'); return { repo: sqlite as AgentHarnessRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemoryAgentHarnessRepository() as AgentHarnessRepository, close: () => {} };
-  const harnessRunAdapter = options?.harnessRunRepository !== undefined
-    ? { repo: options.harnessRunRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteHarnessRunRepository(path ?? ':memory:'); return { repo: sqlite as HarnessRunRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemoryHarnessRunRepository() as HarnessRunRepository, close: () => {} };
-  const factoryRunAdapter = options?.factoryRunRepository !== undefined
-    ? { repo: options.factoryRunRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteFactoryRunRepository(path ?? ':memory:'); return { repo: sqlite as FactoryRunRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemoryFactoryRunRepository() as FactoryRunRepository, close: () => {} };
-  const sessionAdapter = profile === 'local'
-    ? (() => { const sqlite = new SqliteAgentSessionRepository(path ?? ':memory:'); return { repo: sqlite as AgentSessionRepository, close: () => sqlite.close() }; })()
-    : { repo: new InMemoryAgentSessionRepository() as AgentSessionRepository, close: () => {} };
-  const sessionArtifactAdapter = profile === 'local'
-    ? (() => { const sqlite = new SqliteSessionArtifactRepository(path ?? ':memory:'); return { repo: sqlite as SessionArtifactRepository, close: () => sqlite.close() }; })()
-    : { repo: new InMemorySessionArtifactRepository() as SessionArtifactRepository, close: () => {} };
-  const dataSourceAdapter = profile === 'local'
-    ? (() => { const sqlite = new SqliteDataSourceRepository(path ?? ':memory:'); return { repo: sqlite as DataSourceRepository, close: () => sqlite.close() }; })()
-    : { repo: new InMemoryDataSourceRepository() as DataSourceRepository, close: () => {} };
-  const mcpServerAdapter = options?.mcpServerRepository !== undefined
-    ? { repo: options.mcpServerRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteMcpServerRepository(path ?? ':memory:'); return { repo: sqlite as McpServerRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemoryMcpServerRepository() as McpServerRepository, close: () => {} };
-  const skillAdapter = options?.skillRepository !== undefined
-    ? { repo: options.skillRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteSkillRepository(path ?? ':memory:'); return { repo: sqlite as SkillRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemorySkillRepository() as SkillRepository, close: () => {} };
+  // local は共有接続を1本だけ開く（PRAGMA適用とマイグレーションもここで1回だけ走る）。
+  const path = profile === 'local' ? resolveDatabasePath(options?.dbPath) : undefined;
+  const database = path === undefined ? undefined : openSqliteDatabase(path);
+  // 保存先は起動時に必ず伝える。既定が揮発だった頃、利用者は「消えた」ことに気づけなかった。
+  if (path !== undefined && options?.dbPath === undefined) {
+    (options?.logger ?? ((message: string) => { console.info(message); }))(
+      path === MEMORY_DB_PATH
+        ? 'agentblume: database is EPHEMERAL (:memory:) — all data is lost when the process exits. Set AGENTCONTEXT_DB_PATH to persist.'
+        : `agentblume: database file = ${path}`,
+    );
+  }
+  const unitOfWork: UnitOfWorkPort = database === undefined ? new NoopUnitOfWork() : new SqliteUnitOfWork(database);
 
-  const personaAdapter = profile === 'local'
-    ? (() => { const sqlite = new SqlitePersonaRepository(path ?? ':memory:'); return { repo: sqlite as PersonaRepository, close: () => sqlite.close() }; })()
-    : { repo: new InMemoryPersonaRepository() as PersonaRepository, close: () => {} };
-  const scenarioAdapter = profile === 'local'
-    ? (() => { const sqlite = new SqliteScenarioRepository(path ?? ':memory:'); return { repo: sqlite as ScenarioRepository, close: () => sqlite.close() }; })()
-    : { repo: new InMemoryScenarioRepository() as ScenarioRepository, close: () => {} };
-  const scenarioRunAdapter = profile === 'local'
-    ? (() => { const sqlite = new SqliteScenarioRunRepository(path ?? ':memory:'); return { repo: sqlite as ScenarioRunRepository, close: () => sqlite.close() }; })()
-    : { repo: new InMemoryScenarioRunRepository() as ScenarioRunRepository, close: () => {} };
-  const wikiAdapter = profile === 'local'
-    ? (() => { const sqlite = new SqliteWikiRepository(path ?? ':memory:'); return { repo: sqlite as WikiRepository, close: () => sqlite.close() }; })()
-    : { repo: new InMemoryWikiRepository() as WikiRepository, close: () => {} };
-  const memoryProposalAdapter = profile === 'local'
-    ? (() => { const sqlite = new SqliteMemoryProposalRepository(path ?? ':memory:'); return { repo: sqlite as MemoryProposalRepository, close: () => sqlite.close() }; })()
-    : { repo: new InMemoryMemoryProposalRepository() as MemoryProposalRepository, close: () => {} };
-  const evaluationDatasetAdapter = profile === 'local'
-    ? (() => { const sqlite = new SqliteEvaluationDatasetRepository(path ?? ':memory:'); return { repo: sqlite as EvaluationDatasetRepository, close: () => sqlite.close() }; })()
-    : { repo: new InMemoryEvaluationDatasetRepository() as EvaluationDatasetRepository, close: () => {} };
-  const evaluatorProfileAdapter = profile === 'local'
-    ? (() => { const sqlite = new SqliteEvaluatorProfileRepository(path ?? ':memory:'); return { repo: sqlite as EvaluatorProfileRepository, close: () => sqlite.close() }; })()
-    : { repo: new InMemoryEvaluatorProfileRepository() as EvaluatorProfileRepository, close: () => {} };
-  const experimentAdapter = options?.experimentRepository !== undefined
-    ? { repo: options.experimentRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteExperimentRepository(path ?? ':memory:'); return { repo: sqlite as ExperimentRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemoryExperimentRepository() as ExperimentRepository, close: () => {} };
-  const qualityGateAdapter = options?.qualityGateRepository !== undefined
-    ? { repo: options.qualityGateRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteQualityGateRepository(path ?? ':memory:'); return { repo: sqlite as QualityGateRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemoryQualityGateRepository() as QualityGateRepository, close: () => {} };
-  const judgeRubricAdapter = options?.judgeRubricRepository !== undefined
-    ? { repo: options.judgeRubricRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteJudgeRubricRepository(path ?? ':memory:'); return { repo: sqlite as JudgeRubricRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemoryJudgeRubricRepository() as JudgeRubricRepository, close: () => {} };
-  const operationsAdapter = options?.operationsRepository !== undefined
-    ? { repo: options.operationsRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteOperationsRepository(path ?? ':memory:'); return { repo: sqlite as OperationsRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemoryOperationsRepository() as OperationsRepository, close: () => {} };
+  const repo = pickRepository<ToolRepository>(undefined, database, (db) => new SqliteToolRepository(db), () => new InMemoryToolRepository());
+  const runAdapter = { repo: pickRepository<RunRepository>(options?.runRepository, database, (db) => new SqliteRunRepository(db), () => new InMemoryRunRepository()) };
+  const agentAdapter = { repo: pickRepository<AgentRepository>(options?.agentRepository, database, (db) => new SqliteAgentRepository(db), () => new InMemoryAgentRepository()) };
+  const harnessAdapter = { repo: pickRepository<AgentHarnessRepository>(options?.harnessRepository, database, (db) => new SqliteAgentHarnessRepository(db), () => new InMemoryAgentHarnessRepository()) };
+  const harnessRunAdapter = { repo: pickRepository<HarnessRunRepository>(options?.harnessRunRepository, database, (db) => new SqliteHarnessRunRepository(db), () => new InMemoryHarnessRunRepository()) };
+  const factoryRunAdapter = { repo: pickRepository<FactoryRunRepository>(options?.factoryRunRepository, database, (db) => new SqliteFactoryRunRepository(db), () => new InMemoryFactoryRunRepository()) };
+  const sessionAdapter = { repo: pickRepository<AgentSessionRepository>(undefined, database, (db) => new SqliteAgentSessionRepository(db), () => new InMemoryAgentSessionRepository()) };
+  // payloadはDBの外（ディレクトリ）に置くため、close で一時ディレクトリの後始末が要る唯一のアダプタ。
+  const sessionArtifactSqlite = database === undefined ? undefined : new SqliteSessionArtifactRepository(database);
+  const sessionArtifactAdapter = { repo: (sessionArtifactSqlite ?? new InMemorySessionArtifactRepository()) as SessionArtifactRepository, close: () => sessionArtifactSqlite?.close() };
+  const dataSourceAdapter = { repo: pickRepository<DataSourceRepository>(undefined, database, (db) => new SqliteDataSourceRepository(db), () => new InMemoryDataSourceRepository()) };
+  const mcpServerAdapter = { repo: pickRepository<McpServerRepository>(options?.mcpServerRepository, database, (db) => new SqliteMcpServerRepository(db), () => new InMemoryMcpServerRepository()) };
+  const skillAdapter = { repo: pickRepository<SkillRepository>(options?.skillRepository, database, (db) => new SqliteSkillRepository(db), () => new InMemorySkillRepository()) };
+  const personaAdapter = { repo: pickRepository<PersonaRepository>(undefined, database, (db) => new SqlitePersonaRepository(db), () => new InMemoryPersonaRepository()) };
+  const scenarioAdapter = { repo: pickRepository<ScenarioRepository>(undefined, database, (db) => new SqliteScenarioRepository(db), () => new InMemoryScenarioRepository()) };
+  const scenarioRunAdapter = { repo: pickRepository<ScenarioRunRepository>(undefined, database, (db) => new SqliteScenarioRunRepository(db), () => new InMemoryScenarioRunRepository()) };
+  const wikiAdapter = { repo: pickRepository<WikiRepository>(undefined, database, (db) => new SqliteWikiRepository(db), () => new InMemoryWikiRepository()) };
+  const memoryProposalAdapter = { repo: pickRepository<MemoryProposalRepository>(undefined, database, (db) => new SqliteMemoryProposalRepository(db), () => new InMemoryMemoryProposalRepository()) };
+  const evaluationDatasetAdapter = { repo: pickRepository<EvaluationDatasetRepository>(undefined, database, (db) => new SqliteEvaluationDatasetRepository(db), () => new InMemoryEvaluationDatasetRepository()) };
+  const evaluatorProfileAdapter = { repo: pickRepository<EvaluatorProfileRepository>(undefined, database, (db) => new SqliteEvaluatorProfileRepository(db), () => new InMemoryEvaluatorProfileRepository()) };
+  const experimentAdapter = { repo: pickRepository<ExperimentRepository>(options?.experimentRepository, database, (db) => new SqliteExperimentRepository(db), () => new InMemoryExperimentRepository()) };
+  const qualityGateAdapter = { repo: pickRepository<QualityGateRepository>(options?.qualityGateRepository, database, (db) => new SqliteQualityGateRepository(db), () => new InMemoryQualityGateRepository()) };
+  const judgeRubricAdapter = { repo: pickRepository<JudgeRubricRepository>(options?.judgeRubricRepository, database, (db) => new SqliteJudgeRubricRepository(db), () => new InMemoryJudgeRubricRepository()) };
+  const operationsAdapter = { repo: pickRepository<OperationsRepository>(options?.operationsRepository, database, (db) => new SqliteOperationsRepository(db), () => new InMemoryOperationsRepository()) };
   experimentAdapter.repo.interruptRunning(new Date().toISOString());
 
   const engine = new EtlEngine(createDefaultRegistry());
@@ -527,11 +505,7 @@ export function createApp(options?: AppOptions): App {
 
   // モデル設定（v34）: 設定は暗号化してDBへ、鍵はDBの外（鍵ファイル）へ置く。
   // testプロファイルは揮発鍵（ファイルを作らない）にして、テスト実行が利用者のホームを汚さないようにする。
-  const modelSettingsAdapter = options?.modelSettingsRepository !== undefined
-    ? { repo: options.modelSettingsRepository, close: () => {} }
-    : profile === 'local'
-      ? (() => { const sqlite = new SqliteModelSettingsRepository(path ?? ':memory:'); return { repo: sqlite as ModelSettingsRepository, close: () => sqlite.close() }; })()
-      : { repo: new InMemoryModelSettingsRepository() as ModelSettingsRepository, close: () => {} };
+  const modelSettingsAdapter = { repo: pickRepository<ModelSettingsRepository>(options?.modelSettingsRepository, database, (db) => new SqliteModelSettingsRepository(db), () => new InMemoryModelSettingsRepository()) };
   const secretCipher = options?.secretCipher ?? (profile === 'local' ? new AesGcmSecretCipher() : AesGcmSecretCipher.ephemeral());
   const modelProviderFactory = options?.modelProviderFactory ?? new MastraModelProviderFactory({
     timeoutMs: resolveModelTimeoutMs(),
@@ -628,7 +602,7 @@ export function createApp(options?: AppOptions): App {
   // （未注入なら add-tool は「未設定」として却下される）。第9引数は既定の now。
   const applyImprovements = new ApplyImprovementsUseCase(
     agentAdapter.repo, skillAdapter.repo, repo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine, undefined,
-    { toolSmith: toolSmithRole, resolveDataSources, profiler: profileDataSources },
+    { toolSmith: toolSmithRole, resolveDataSources, profiler: profileDataSources }, undefined, unitOfWork,
   );
   const runFactory = new RunFactoryUseCase(factoryRunAdapter.repo, profileDataSources, plannerRole, generateAgentAssets, runScenario, savePersona, registerPseudoUserAgent, saveScenario, analystRole, applyImprovements, agentAdapter.repo, skillAdapter.repo, repo);
   const factoryWorker = new InProcessFactoryWorker(runFactory);
@@ -641,6 +615,8 @@ export function createApp(options?: AppOptions): App {
 
   return {
     profile,
+    ...(path === undefined ? {} : { dbPath: path }),
+    unitOfWork,
     repo,
     engine,
     modelProvider,
@@ -760,7 +736,7 @@ export function createApp(options?: AppOptions): App {
     deleteWikiPage: new DeleteWikiPageUseCase(wikiAdapter.repo),
     reflectRun: new ReflectRunUseCase(modelProvider, memoryProposalAdapter.repo, wikiAdapter.repo, skillAdapter.repo),
     listProposals: new ListProposalsUseCase(memoryProposalAdapter.repo),
-    reviewProposal: new ReviewProposalUseCase(memoryProposalAdapter.repo, saveWikiPage, skillAdapter.repo, saveSkill),
+    reviewProposal: new ReviewProposalUseCase(memoryProposalAdapter.repo, saveWikiPage, skillAdapter.repo, saveSkill, unitOfWork),
     saveWikiSpace: new SaveWikiSpaceUseCase(wikiAdapter.repo),
     queryWikiSpaces: new QueryWikiSpacesUseCase(wikiAdapter.repo),
     deleteWikiSpace: new DeleteWikiSpaceUseCase(wikiAdapter.repo),
@@ -778,77 +754,23 @@ export function createApp(options?: AppOptions): App {
     listTools: new ListToolsUseCase(repo),
     deleteTool: new DeleteToolUseCase(repo),
     previewTool: new PreviewToolUseCase(repo, engine, resolveDataSources),
+    // 接続は1本しかないので解放も1回だけ。前段が失敗しても後段は必ず走らせ、最初の失敗を投げ直す。
     close: () => {
-      experimentWorker.shutdown();
-      factoryWorker.shutdown();
-      // App.close は同期契約のため待てない。確実に待ちたいエントリポイントは
-      // app.close() の前に await app.mcpClient.close() を呼ぶ（src/server.ts のshutdown参照）。
-      void mcpClient.close();
-      try { modelSettingsAdapter.close(); }
-      finally {
-      try { mcpServerAdapter.close(); }
-      finally {
-      try { factoryRunAdapter.close(); }
-      finally {
-      try { harnessRunAdapter.close(); }
-      finally {
-        try { harnessAdapter.close(); }
-        finally {
-          try { closeTools(); }
-          finally {
-            try { runAdapter.close(); }
-            finally {
-              try { agentAdapter.close(); }
-              finally {
-                try { sessionAdapter.close(); }
-                finally {
-                  try { sessionArtifactAdapter.close(); }
-                  finally {
-                    try { dataSourceAdapter.close(); }
-                    finally {
-                      try { skillAdapter.close(); }
-                      finally {
-                        try { personaAdapter.close(); }
-                        finally {
-                          try { scenarioAdapter.close(); }
-                          finally {
-                            try { scenarioRunAdapter.close(); }
-                            finally {
-                              try { wikiAdapter.close(); }
-                              finally {
-                                try { memoryProposalAdapter.close(); }
-                                finally {
-                                  try { evaluationDatasetAdapter.close(); }
-                                  finally {
-                                    try { evaluatorProfileAdapter.close(); }
-                                    finally {
-                                      try { experimentAdapter.close(); }
-                                      finally {
-                                        try { qualityGateAdapter.close(); }
-                                        finally {
-                                          try { judgeRubricAdapter.close(); }
-                                          finally { operationsAdapter.close(); }
-                                        }
-                                      }
-                                    }
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
+      const steps: Array<() => void> = [
+        () => experimentWorker.shutdown(),
+        () => factoryWorker.shutdown(),
+        // App.close は同期契約のため待てない。確実に待ちたいエントリポイントは
+        // app.close() の前に await app.mcpClient.close() を呼ぶ（src/server.ts のshutdown参照）。
+        () => { void mcpClient.close(); },
+        // payload置き場の一時ディレクトリを片付ける（共有ハンドルは閉じない）。
+        () => sessionArtifactAdapter.close(),
+        () => database?.close(),
+      ];
+      let failure: unknown;
+      for (const step of steps) {
+        try { step(); } catch (error) { failure ??= error; }
       }
-      }
-      }
-      }
+      if (failure !== undefined) throw failure;
     },
   };
 }

@@ -1,21 +1,12 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { AgentSession } from '../../domain/session/agent-session';
 import type { AgentSessionRepository } from '../../domain/session/session-repository';
 
-const SQL = `
-CREATE TABLE IF NOT EXISTS agent_sessions (
-  tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, session_id TEXT NOT NULL,
-  status TEXT NOT NULL, expires_at TEXT NOT NULL, record_json TEXT NOT NULL,
-  PRIMARY KEY (tenant_id, workspace_id, session_id)
-);
-CREATE INDEX IF NOT EXISTS idx_agent_sessions_expiry ON agent_sessions (status, expires_at);
-`;
-
-export class SqliteAgentSessionRepository implements AgentSessionRepository {
-  private readonly db: DatabaseSync;
-  constructor(path = ':memory:') { this.db = new DatabaseSync(path); this.db.exec(SQL); }
-  close(): void { this.db.close(); }
+export class SqliteAgentSessionRepository extends SqliteRepositoryBase implements AgentSessionRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
+  }
   async save(session: AgentSession): Promise<void> {
     this.db.prepare(`INSERT INTO agent_sessions (tenant_id, workspace_id, session_id, status, expires_at, record_json) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, workspace_id, session_id) DO UPDATE SET status=excluded.status, expires_at=excluded.expires_at, record_json=excluded.record_json`).run(session.scope.tenantId, session.scope.workspaceId, session.id, session.status, session.expiresAt, JSON.stringify(session));
   }

@@ -5,7 +5,7 @@
  * vitest.config.ts の poolOptions.forks.execArgv で付与済み）。
  * definition_json に serializeTool の JSON を保存し、取得時に deserializeTool で復元する。
  */
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import { VersionConflictError } from '../../domain/tool/errors';
 import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { ToolSummary } from '../../domain/tool/metadata';
@@ -14,37 +14,15 @@ import { deserializeTool, serializeTool } from '../../domain/tool/serialization'
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 
-const CREATE_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS tools (
-    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, internal_id TEXT NOT NULL,
-    version TEXT NOT NULL, major INTEGER NOT NULL, minor INTEGER NOT NULL, patch INTEGER NOT NULL,
-    definition_json TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (tenant_id, workspace_id, internal_id, version)
-  );
-`;
-
 /** definition_json 列（TEXT NOT NULL）から Tool を復元する。 */
 function rowToTool(json: unknown): Tool {
   return deserializeTool(JSON.parse(String(json)));
 }
 
 /** SQLite（node:sqlite）による ToolRepository 実装。 */
-export class SqliteToolRepository implements ToolRepository {
-  private readonly db: DatabaseSync;
-
-  constructor(path: string = ':memory:') {
-    this.db = new DatabaseSync(path);
-    this.db.exec(CREATE_TABLE_SQL);
-    // 既存DB向けmigration: deleted列が無ければ追加する（論理削除）。
-    const columns = this.db.prepare(`PRAGMA table_info(tools)`).all();
-    if (!columns.some((column) => String(column['name']) === 'deleted')) {
-      this.db.exec(`ALTER TABLE tools ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0`);
-    }
-  }
-
-  /** DatabaseSync.close をラップする。 */
-  close(): void {
-    this.db.close();
+export class SqliteToolRepository extends SqliteRepositoryBase implements ToolRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
   }
 
   async save(tool: Tool): Promise<void> {

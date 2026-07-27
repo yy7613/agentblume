@@ -1,16 +1,8 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { ModelSettings } from '../../domain/model-settings/model-settings';
 import type { ModelSettingsRepository } from '../../domain/model-settings/model-settings-repository';
 import { deserializeModelSettings, serializeModelSettings } from '../../domain/model-settings/serialization';
 import type { TenantScope } from '../../domain/tool/ids';
-
-const SQL = `
-CREATE TABLE IF NOT EXISTS model_settings (
-  tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
-  updated_at TEXT NOT NULL, settings_json TEXT NOT NULL,
-  PRIMARY KEY (tenant_id, workspace_id)
-);
-`;
 
 /**
  * モデル設定のSQLite永続化。設定は版を持たず (tenant_id, workspace_id) で upsert する。
@@ -18,10 +10,10 @@ CREATE TABLE IF NOT EXISTS model_settings (
  * settings_json に入るAPIキーは封緘済み（SealedSecret）だけである。
  * 鍵はDBの外（鍵ファイル）にあるため、このファイル単体からは平文を復元できない。
  */
-export class SqliteModelSettingsRepository implements ModelSettingsRepository {
-  private readonly db: DatabaseSync;
-  constructor(path = ':memory:') { this.db = new DatabaseSync(path); this.db.exec(SQL); }
-  close(): void { this.db.close(); }
+export class SqliteModelSettingsRepository extends SqliteRepositoryBase implements ModelSettingsRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
+  }
 
   async find(scope: TenantScope): Promise<ModelSettings | null> {
     const row = this.db.prepare(`SELECT settings_json FROM model_settings WHERE tenant_id=? AND workspace_id=?`).get(scope.tenantId, scope.workspaceId);

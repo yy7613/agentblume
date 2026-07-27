@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { AgentHarness } from '../../domain/harness/agent-harness';
 import type { AgentHarnessRepository, HarnessSummary } from '../../domain/harness/harness-repository';
 import { HarnessVersionConflictError } from '../../domain/harness/errors';
@@ -6,27 +6,12 @@ import { deserializeAgentHarness, serializeAgentHarness } from '../../domain/har
 import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
 
-const CREATE_TABLE = `
-  CREATE TABLE IF NOT EXISTS agent_harnesses (
-    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, internal_id TEXT NOT NULL,
-    version TEXT NOT NULL, major INTEGER NOT NULL, minor INTEGER NOT NULL, patch INTEGER NOT NULL,
-    definition_json TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (tenant_id, workspace_id, internal_id, version)
-  );`;
 function fromJson(value: unknown): AgentHarness { return deserializeAgentHarness(JSON.parse(String(value))); }
 
-export class SqliteAgentHarnessRepository implements AgentHarnessRepository {
-  private readonly db: DatabaseSync;
-  constructor(path = ':memory:') {
-    this.db = new DatabaseSync(path);
-    this.db.exec(CREATE_TABLE);
-    // 既存DB向けmigration: deleted列が無ければ追加する（論理削除, docs §10）。
-    const columns = this.db.prepare(`PRAGMA table_info(agent_harnesses)`).all();
-    if (!columns.some((column) => String(column['name']) === 'deleted')) {
-      this.db.exec(`ALTER TABLE agent_harnesses ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0`);
-    }
+export class SqliteAgentHarnessRepository extends SqliteRepositoryBase implements AgentHarnessRepository {
+  constructor(source: SqliteDatabaseSource = ':memory:') {
+    super(source);
   }
-  close(): void { this.db.close(); }
   async save(harness: AgentHarness): Promise<void> {
     const { tenant, internalId, version } = harness.metadata;
     try { this.db.prepare(`INSERT INTO agent_harnesses (tenant_id, workspace_id, internal_id, version, major, minor, patch, definition_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(tenant.tenantId, tenant.workspaceId, internalId, version.toString(), version.major, version.minor, version.patch, JSON.stringify(serializeAgentHarness(harness))); }

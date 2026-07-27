@@ -5,21 +5,10 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { DatabaseSync } from 'node:sqlite';
+import { SqliteRepositoryBase, MEMORY_DB_PATH, type SqliteDatabaseSource } from './sqlite-database';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { SessionArtifact } from '../../domain/session/session-artifact';
 import type { SessionArtifactReadOptions, SessionArtifactRepository } from '../../domain/session/session-repository';
-
-const SQL = `
-CREATE TABLE IF NOT EXISTS session_artifacts (
-  tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, session_id TEXT NOT NULL,
-  artifact_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, created_at TEXT NOT NULL,
-  size_bytes INTEGER NOT NULL, record_json TEXT NOT NULL, payload_path TEXT,
-  PRIMARY KEY (tenant_id, workspace_id, session_id, artifact_id),
-  UNIQUE (tenant_id, workspace_id, session_id, idempotency_key)
-);
-CREATE INDEX IF NOT EXISTS idx_session_artifacts_list ON session_artifacts (tenant_id, workspace_id, session_id, created_at DESC);
-`;
 
 interface ArtifactRow { readonly record_json: string; readonly payload_path?: string | null; readonly payload_json?: string | null }
 interface PathRow { readonly payload_path?: string | null }
@@ -27,25 +16,27 @@ interface PathRow { readonly payload_path?: string | null }
 /**
  * SQLite はCatalogだけを保持し、payloadはSessionスコープをハッシュ化した専用ディレクトリへ保存する。
  * 旧v28試作の payload_json 列がある既存DBは読み取り互換を維持し、新規書き込みでは空文字列だけを残す。
+ *
+ * `payload_json` の分岐がマイグレーションで消せない理由:
+ * 旧列は `NOT NULL` で作られており、既定値も持たない。列を落とす／NULL許容へ変えるには
+ * テーブル再構築が必要で、そのとき `payload_path` が空で `payload_json` にしか本文が無い行を
+ * ファイルへ書き出す**非同期のデータ移行**が要る。同期のマイグレーションランナーでは扱えないため、
+ * 「旧列があれば読み書きの両方で面倒を見る」という現状の互換経路を残す（テストで固定してある）。
  */
-export class SqliteSessionArtifactRepository implements SessionArtifactRepository {
-  private readonly db: DatabaseSync;
+export class SqliteSessionArtifactRepository extends SqliteRepositoryBase implements SessionArtifactRepository {
   private readonly dataDirectory: string;
   private readonly temporaryDirectory: boolean;
   private readonly hasLegacyPayloadJson: boolean;
 
-  constructor(path = ':memory:', dataDirectory?: string) {
-    this.db = new DatabaseSync(path);
-    this.db.exec(SQL);
-    const beforeMigration = this.columns();
-    if (!beforeMigration.has('payload_path')) this.db.exec('ALTER TABLE session_artifacts ADD COLUMN payload_path TEXT');
-    this.hasLegacyPayloadJson = beforeMigration.has('payload_json');
-    this.temporaryDirectory = dataDirectory === undefined && path === ':memory:';
-    this.dataDirectory = dataDirectory ?? defaultDataDirectory(path, this.temporaryDirectory);
+  constructor(source: SqliteDatabaseSource = MEMORY_DB_PATH, dataDirectory?: string) {
+    super(source);
+    this.hasLegacyPayloadJson = this.columns().has('payload_json');
+    this.temporaryDirectory = dataDirectory === undefined && this.database.ephemeral;
+    this.dataDirectory = dataDirectory ?? defaultDataDirectory(this.database.path, this.temporaryDirectory);
   }
 
-  close(): void {
-    this.db.close();
+  override close(): void {
+    super.close();
     if (this.temporaryDirectory) rmSync(this.dataDirectory, { recursive: true, force: true });
   }
 

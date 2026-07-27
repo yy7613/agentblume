@@ -5,9 +5,16 @@
  * env の検証は vi.stubEnv を使う（afterEach で全て解除）。
  */
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { defaultDatabasePath } from '../adapters/storage/sqlite-database';
+import { DatabaseSync } from 'node:sqlite';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SqliteUnitOfWork } from '../adapters/storage/sqlite-unit-of-work';
+import { NoopUnitOfWork } from '../application/persistence/unit-of-work';
+import { ReviewProposalUseCase } from '../application/memory/review-proposal';
+import { createMemoryProposal } from '../domain/memory/memory-proposal';
+import type { MemoryProposalRepository } from '../domain/memory/memory-proposal-repository';
 import { InMemoryToolRepository } from '../adapters/storage/in-memory-tool-repository';
 import { SqliteToolRepository } from '../adapters/storage/sqlite-tool-repository';
 import { MastraModelProvider } from '../adapters/model/mastra-model-provider';
@@ -21,7 +28,7 @@ import { SqliteRunRepository } from '../adapters/storage/sqlite-run-repository';
 import type { ToolGraph } from '../domain/etl/graph';
 import { ToolValidationError } from '../domain/tool/errors';
 import type { TenantScope } from '../domain/tool/ids';
-import { createApp } from './root';
+import { createApp, resolveDatabasePath } from './root';
 import type { App } from './root';
 
 const scope: TenantScope = { tenantId: 'tenant-a', workspaceId: 'ws-1' };
@@ -96,12 +103,43 @@ describe('createApp', () => {
     app.close();
   });
 
-  it('local の dbPath 既定は :memory:（dbPath 省略でも例外なく往復できる）', async () => {
-    const app = createApp({ profile: 'local' });
+  it('local の dbPath 既定は ~/.agentblume/agentblume.db（揮発しない）', () => {
+    // 実際にホームへ書かないよう、解決だけを検証する（起動すると本物のDBが作られるため）。
+    expect(resolveDatabasePath(undefined)).toBe(join(homedir(), '.agentblume', 'agentblume.db'));
+    expect(defaultDatabasePath('/home/example')).toBe(join('/home/example', '.agentblume', 'agentblume.db'));
+  });
 
-    expect(app.repo).toBeInstanceOf(SqliteToolRepository);
-    await roundTrip(app);
-    app.close();
+  it('空文字の AGENTCONTEXT_DB_PATH は未設定として扱う（黙って揮発させない）', () => {
+    vi.stubEnv('AGENTCONTEXT_DB_PATH', '   ');
+    expect(resolveDatabasePath(undefined)).toBe(defaultDatabasePath());
+  });
+
+  it('env AGENTCONTEXT_DB_PATH / options.dbPath が既定より優先される', () => {
+    vi.stubEnv('AGENTCONTEXT_DB_PATH', '/tmp/from-env.db');
+    expect(resolveDatabasePath(undefined)).toBe('/tmp/from-env.db');
+    expect(resolveDatabasePath(':memory:')).toBe(':memory:');
+  });
+
+  it('保存先を起動時にログへ出す（既定解決時のみ・揮発は警告文言）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentcontext-root-log-'));
+    try {
+      const messages: string[] = [];
+      vi.stubEnv('AGENTCONTEXT_DB_PATH', join(dir, 'logged.db'));
+      createApp({ profile: 'local', logger: (message) => messages.push(message) }).close();
+      expect(messages).toEqual([`agentblume: database file = ${join(dir, 'logged.db')}`]);
+
+      messages.length = 0;
+      vi.stubEnv('AGENTCONTEXT_DB_PATH', ':memory:');
+      createApp({ profile: 'local', logger: (message) => messages.push(message) }).close();
+      expect(messages[0]).toMatch(/EPHEMERAL/);
+
+      // options.dbPath を明示した埋め込み・テスト利用ではログを出さない。
+      messages.length = 0;
+      createApp({ profile: 'local', dbPath: ':memory:', logger: (message) => messages.push(message) }).close();
+      expect(messages).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('close() は往復後も例外なく完了する', async () => {
@@ -272,12 +310,12 @@ describe('createApp', () => {
       vi.stubEnv('AGENTCONTEXT_DB_PATH', dbPath);
 
       try {
-        const first = createApp({ profile: 'local' });
+        const first = createApp({ profile: 'local', logger: () => {} });
         await roundTrip(first);
         first.close();
 
         // 同じ env パスで開き直すと保存済み Tool が見える = env パスが使われた証明。
-        const second = createApp({ profile: 'local' });
+        const second = createApp({ profile: 'local', logger: () => {} });
         const tool = await second.getTool.latest(scope, 'tool-1');
         expect(tool.metadata.version.toString()).toBe('1.0.0');
         second.close();
@@ -308,6 +346,89 @@ describe('createApp', () => {
         fromEnv.close();
       } finally {
         rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('永続化基盤（共有接続 / マイグレーション / トランザクション）', () => {
+    let dir: string;
+    let dbPath: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'agentcontext-persistence-'));
+      dbPath = join(dir, 'agentblume.db');
+    });
+    afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+    it('local は全リポジトリで1本の接続を共有する（接続分裂を作り直さない）', () => {
+      const app = createApp({ profile: 'local', dbPath });
+      try {
+        const handle = (repository: unknown): unknown => (repository as { database: { handle: unknown } }).database.handle;
+        const shared = handle(app.repo);
+        for (const repository of [app.runRepo, app.agentRepo, app.skillRepo, app.wikiRepo, app.sessionRepo, app.modelSettingsRepo, app.operationsRepo]) {
+          expect(handle(repository)).toBe(shared);
+        }
+        expect(app.dbPath).toBe(dbPath);
+        expect(app.unitOfWork).toBeInstanceOf(SqliteUnitOfWork);
+      } finally {
+        app.close();
+      }
+    });
+
+    it('test プロファイルはトランザクション非対応の恒等実装を配線する', () => {
+      const app = createApp({ profile: 'test' });
+      expect(app.unitOfWork).toBeInstanceOf(NoopUnitOfWork);
+      expect(app.dbPath).toBeUndefined();
+      app.close();
+    });
+
+    it('旧スキーマのDBファイルでも起動でき、保存済みデータを読み続けられる', async () => {
+      const first = createApp({ profile: 'local', dbPath });
+      await roundTrip(first);
+      first.close();
+
+      // 旧DB（deleted列が無い）を再現する。この状態のままでは findLatest / list が動かない。
+      const legacy = new DatabaseSync(dbPath);
+      legacy.exec('ALTER TABLE tools DROP COLUMN deleted');
+      legacy.exec('PRAGMA user_version = 0');
+      legacy.close();
+
+      const second = createApp({ profile: 'local', dbPath });
+      try {
+        const tool = await second.getTool.latest(scope, 'tool-1');
+        expect(tool.metadata.version.toString()).toBe('1.0.0');
+        expect((await second.listTools.execute(scope)).map((summary) => summary.internalId)).toEqual(['tool-1']);
+      } finally {
+        second.close();
+      }
+    });
+
+    it('ReviewProposal の承認は「実体の適用」と「提案の承認済み化」を一括でコミットする', async () => {
+      const app = createApp({ profile: 'local', dbPath });
+      try {
+        const proposal = createMemoryProposal({
+          id: 'proposal-1', tenant: scope, summary: 'add a page', createdAt: '2026-07-01T00:00:00.000Z',
+          target: { kind: 'wiki', pageId: 'page-1', isNewPage: true, title: 'Cohort', tags: ['sql'], body: 'Filter adults.' },
+        });
+        await app.memoryProposalRepo.save(proposal);
+
+        // 提案の状態遷移だけを失敗させる（Wikiページの保存はすでに終わっている状況）。
+        const failingProposals: MemoryProposalRepository = {
+          find: (s, id) => app.memoryProposalRepo.find(s, id),
+          list: (s, state) => app.memoryProposalRepo.list(s, state),
+          save: async () => { throw new Error('proposal store crashed'); },
+        };
+        const review = new ReviewProposalUseCase(failingProposals, app.saveWikiPage, app.skillRepo, app.saveSkill, app.unitOfWork);
+        await expect(review.approve(scope, 'proposal-1')).rejects.toThrow('proposal store crashed');
+        // トランザクションで括られているので、承認されていないページは残らない。
+        expect(await app.wikiRepo.find(scope, 'page-1')).toBeNull();
+
+        // 境界が無ければ（従来の挙動）ページだけが残り、再承認で二重に書かれる。
+        const unguarded = new ReviewProposalUseCase(failingProposals, app.saveWikiPage, app.skillRepo, app.saveSkill, new NoopUnitOfWork());
+        await expect(unguarded.approve(scope, 'proposal-1')).rejects.toThrow('proposal store crashed');
+        expect(await app.wikiRepo.find(scope, 'page-1')).not.toBeNull();
+      } finally {
+        app.close();
       }
     });
   });
