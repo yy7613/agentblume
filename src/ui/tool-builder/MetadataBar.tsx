@@ -5,7 +5,8 @@ import { InlineFeedback } from '../components/InlineFeedback';
 import { currentGraph, missingRequiredMetadata, useToolBuilderStore, type RequiredMetadataKey } from './store';
 import { useI18n } from '../i18n';
 
-export function MetadataBar({ client }: { readonly client: ToolApiClient }) {
+/** onSaved: 保存が成功した直後に呼ぶ（ToolBuilder側で退避中の下書きを消すために使う）。 */
+export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClient; readonly onSaved?: () => void }) {
   const metadata = useToolBuilderStore((state) => state.metadata);
   const setMetadata = useToolBuilderStore((state) => state.setMetadata);
   const currentVersion = useToolBuilderStore((state) => state.currentVersion);
@@ -56,6 +57,7 @@ export function MetadataBar({ client }: { readonly client: ToolApiClient }) {
       const nextVersions = await client.listVersions(metadata.internalId, scope);
       setSavedVersion(tool.metadata.version, nextVersions);
       setSavedNotice(tool.metadata.version);
+      onSaved?.();
     } catch (cause) {
       setSaveError(cause instanceof Error ? cause.message : 'Save failed');
     } finally { setSaving(false); }

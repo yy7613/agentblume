@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react';
+import { useModalBehavior } from '../hooks/useModalBehavior';
 
 /**
  * 破壊的操作(削除・取消・承認/却下)の共通確認ダイアログ。
  * 文言は呼び出し側が text() で解決して渡す(このコンポーネントはi18n非依存)。
+ * Escape・フォーカストラップ・初期フォーカス・フォーカス復帰は useModalBehavior が担う。
  */
 export function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel, danger = false, busy = false, onConfirm, onCancel }: {
   readonly open: boolean;
@@ -15,9 +17,10 @@ export function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel,
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
 }) {
+  const dialogRef = useModalBehavior<HTMLDivElement>({ open, onClose: onCancel });
   if (!open) return null;
   return <div className="confirm-backdrop" role="presentation" onClick={onCancel}>
-    <div className="confirm-dialog" role="alertdialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}>
+    <div ref={dialogRef} tabIndex={-1} className="confirm-dialog" role="alertdialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}>
       <h3>{title}</h3>
       <div className="confirm-message">{message}</div>
       <div className="confirm-actions">

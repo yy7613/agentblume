@@ -2,7 +2,10 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentSummaryDto, HarnessPatternDto, HarnessPoliciesDto, HarnessRunDto, HarnessSlotDto, HarnessSummaryDto, HarnessTopologyDto, HarnessValidationDto, SaveHarnessDto, SerializedAgentHarnessDto } from '../api/types';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { DraftRestoreBanner } from '../components/DraftRestoreBanner';
 import { InlineFeedback } from '../components/InlineFeedback';
+import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
+import { useReportUnsavedChanges } from '../unsaved-changes';
 import { useI18n } from '../i18n';
 
 type Translate = (english: string, japanese: string) => string;
@@ -254,6 +257,17 @@ function topologySummaryRows(current: HarnessTopologyDto, text: Translate, aggre
 }
 function message(cause: unknown, text: Translate): string { return cause instanceof Error ? cause.message : text('Request failed', 'リクエストが失敗しました'); }
 
+/** 下書きへ退避する編集内容（キャンバスの構成と識別子だけ。実行結果・検証結果は含めない）。 */
+interface HarnessDraft {
+  readonly pattern: HarnessPatternDto;
+  readonly slotStates: readonly SlotState[];
+  readonly internalId: string;
+  readonly displayName: string;
+  readonly owner: string;
+  readonly aggregation: AggregationMode;
+  readonly aggregatorAssignment: HarnessSlotDto['assignment'];
+}
+
 export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
   const { text, language } = useI18n();
   // Layer 1: 保存済みHarness一覧。'list'が既定viewで、new/openでLayer 2（editor）へ遷移する。
@@ -272,6 +286,17 @@ export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
   // 保存成功フィードバックと削除確認の対象（削除文言に表示名を入れるためsummaryごと保持する）。
   const [saveNotice, setSaveNotice] = useState<string>(); const [pendingDelete, setPendingDelete] = useState<HarnessSummaryDto>();
   const dismissSaveNotice = useCallback(() => setSaveNotice(undefined), []);
+  // 下書きの自動保存。キーは「編集中の既存Harness」または新規（internalIdは編集途中で変わるためキーにしない）。
+  const draftValue = useMemo<HarnessDraft>(() => ({ pattern, slotStates, internalId, displayName, owner, aggregation, aggregatorAssignment }),
+    [pattern, slotStates, internalId, displayName, owner, aggregation, aggregatorAssignment]);
+  const draft = useDraftPersistence<HarnessDraft>({ key: draftKey('harness-builder', scope, editing ? internalId : undefined), value: draftValue, enabled: view === 'editor' });
+  useReportUnsavedChanges('harness-builder', draft.dirty);
+  function applyDraft(value: HarnessDraft): void {
+    setPattern(value.pattern); setSlotStates([...value.slotStates]);
+    setInternalId(value.internalId); setDisplayName(value.displayName); setOwner(value.owner);
+    setAggregation(value.aggregation); setAggregatorAssignment(value.aggregatorAssignment);
+    setValidation(undefined); setSavedVersion(undefined); setRun(undefined);
+  }
   useEffect(() => { let active = true; setBusy('load'); void client.listAgents(scope).then((items) => { if (active) setAgents(items); }).catch((cause: unknown) => { if (active) setError(message(cause, text)); }).finally(() => { if (active) setBusy(undefined); }); return () => { active = false; }; }, [client, text]);
   useEffect(() => { let active = true; void client.listHarnesses(scope).then((items) => { if (active) setHarnesses(items); }).catch((cause: unknown) => { if (active) setError(message(cause, text)); }); return () => { active = false; }; }, [client, text]);
   async function refreshHarnesses(): Promise<void> {
@@ -401,7 +426,7 @@ export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
     setValidation(undefined); setSavedVersion(undefined);
   }
   async function validate(): Promise<void> { if (!ready) { setValidation({ valid: false, issues: [{ path: '(definition)', message: text('Fill names and assign every slot to a saved Agent version.', '名前を入力し、全slotへ保存済みAgent versionを割り当ててください。') }] }); return; } setBusy('validate'); setError(undefined); try { setValidation(await client.validateHarness(input)); } catch (cause) { setError(message(cause, text)); } finally { setBusy(undefined); } }
-  async function save(): Promise<void> { if (!ready) return; setBusy('save'); setError(undefined); setSaveNotice(undefined); try { const harness = await client.saveHarness(input); setSavedVersion(harness.metadata.version); setValidation({ valid: true, issues: [] }); setSaveNotice(text(`Saved · version ${harness.metadata.version}`, `保存しました バージョン ${harness.metadata.version}`)); } catch (cause) { setError(message(cause, text)); } finally { setBusy(undefined); } }
+  async function save(): Promise<void> { if (!ready) return; setBusy('save'); setError(undefined); setSaveNotice(undefined); try { const harness = await client.saveHarness(input); setSavedVersion(harness.metadata.version); setValidation({ valid: true, issues: [] }); setSaveNotice(text(`Saved · version ${harness.metadata.version}`, `保存しました バージョン ${harness.metadata.version}`)); draft.clear(); } catch (cause) { setError(message(cause, text)); } finally { setBusy(undefined); } }
   async function preview(): Promise<void> { if (savedVersion === undefined || runMessage.trim() === '') return; setBusy('run'); setError(undefined); try { setRun(await client.runHarness({ scope, harness: { internalId, version: savedVersion }, message: runMessage, mode: 'preview' })); } catch (cause) { setError(message(cause, text)); } finally { setBusy(undefined); } }
   const badge = roleBadge(pattern, text);
   if (view === 'list') {
@@ -425,6 +450,9 @@ export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
   }
   return <main className="harness-builder">
     <header className="harness-builder-header"><div><button type="button" className="secondary harness-back-button" onClick={() => void backToList()}>{text('Back to list', '一覧へ戻る')}</button><span className="eyebrow">{text('Multi-Agent Builder', 'マルチエージェントビルダー')}</span><h1>{displayName || text('New Multi-Agent', '新しいマルチエージェント')}</h1><p>{text('Assign saved Agent versions to a typed orchestration pattern.', '保存済みAgentのversionを、型付きオーケストレーションのslotへ割り当てます。')}</p></div><div className="save-actions"><button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void validate()}>{busy === 'validate' ? text('Validating…', '検証中…') : text('Validate', '検証')}</button><button type="button" className="primary" disabled={!ready || busy !== undefined} title={blockingReasons.length > 0 ? blockingReasons.join(' ') : undefined} onClick={() => void save()}>{busy === 'save' ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button></div></header>
+    {draft.pending !== undefined && <DraftRestoreBanner savedAt={draft.pending.savedAt}
+      onRestore={() => { const value = draft.restore(); if (value !== undefined) applyDraft(value); }}
+      onDiscard={draft.discard} />}
     {/* 保存ボタン近傍のフィードバック: 未充足理由（検証を押さなくても見える）と保存成功。 */}
     <div className="harness-save-feedback">
       {blockingReasons.map((reason) => <InlineFeedback kind="info" key={reason}>{reason}</InlineFeedback>)}

@@ -2,12 +2,26 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { SerializedSkillDto, SkillSummaryDto } from '../api/types';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { DraftRestoreBanner } from '../components/DraftRestoreBanner';
 import { InlineFeedback } from '../components/InlineFeedback';
+import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
+import { useReportUnsavedChanges } from '../unsaved-changes';
 import { useI18n } from '../i18n';
 
 type Translate = (english: string, japanese: string) => string;
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
+
+/** 下書きへ退避する編集内容（保存対象の定義だけ。秘密情報は持たない）。 */
+interface SkillDraft {
+  readonly internalId: string;
+  readonly workingName: string;
+  readonly displayName: string;
+  readonly publishName: string;
+  readonly owner: string;
+  readonly description: string;
+  readonly instructions: string;
+}
 
 function message(cause: unknown, text: Translate): string { return cause instanceof Error ? cause.message : text('Request failed', 'リクエストが失敗しました'); }
 
@@ -29,6 +43,16 @@ export function SkillBuilder({ client }: { readonly client: ToolApiClient }) {
   // 保存成功フィードバックと削除確認の対象（削除文言に表示名を入れるためsummaryごと保持する）。
   const [saveNotice, setSaveNotice] = useState<string>(); const [pendingDelete, setPendingDelete] = useState<SkillSummaryDto>();
   const dismissSaveNotice = useCallback(() => setSaveNotice(undefined), []);
+
+  // 下書きの自動保存。キーは「編集中の既存Skill」または新規（internalIdは編集途中で変わるためキーにしない）。
+  const draftValue = useMemo<SkillDraft>(() => ({ internalId, workingName, displayName, publishName, owner, description, instructions }),
+    [internalId, workingName, displayName, publishName, owner, description, instructions]);
+  const draft = useDraftPersistence<SkillDraft>({ key: draftKey('skill-builder', scope, editing ? internalId : undefined), value: draftValue, enabled: view === 'editor' });
+  useReportUnsavedChanges('skill-builder', draft.dirty);
+  function applyDraft(value: SkillDraft): void {
+    setInternalId(value.internalId); setWorkingName(value.workingName); setDisplayName(value.displayName);
+    setPublishName(value.publishName); setOwner(value.owner); setDescription(value.description); setInstructions(value.instructions);
+  }
 
   useEffect(() => {
     let active = true;
@@ -102,6 +126,7 @@ export function SkillBuilder({ client }: { readonly client: ToolApiClient }) {
       });
       setSavedVersion(skill.metadata.version);
       setSaveNotice(text(`Saved · version ${skill.metadata.version}`, `保存しました バージョン ${skill.metadata.version}`));
+      draft.clear();
     } catch (cause) { setError(message(cause, text)); }
     finally { setBusy(false); }
   }
@@ -137,6 +162,9 @@ export function SkillBuilder({ client }: { readonly client: ToolApiClient }) {
         <button className="primary" type="button" disabled={busy || missingRequired.length > 0} title={missingRequired.length > 0 ? text(`Required fields are empty: ${missingRequiredLabel}.`, `${missingRequiredLabel}が未入力です。`) : undefined} onClick={() => void save()}>{text('Save version', 'バージョンを保存')}</button>
       </div>
     </header>
+    {draft.pending !== undefined && <DraftRestoreBanner savedAt={draft.pending.savedAt}
+      onRestore={() => { const value = draft.restore(); if (value !== undefined) applyDraft(value); }}
+      onDiscard={draft.discard} />}
     {/* 保存ボタン近傍のフィードバック: 未充足の必須項目と保存成功。 */}
     <div className="skill-save-feedback">
       {missingRequired.length > 0 && <InlineFeedback kind="info">{text(`Required fields are empty: ${missingRequiredLabel}.`, `${missingRequiredLabel}が未入力です。`)}</InlineFeedback>}

@@ -4,6 +4,7 @@ import type { AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, EvaluationRe
 import { useI18n } from '../i18n';
 import { useElapsedSeconds } from '../chat/useElapsedSeconds';
 import { buildHistory } from '../chat/agent-history';
+import { appendTurn, emptyThread, type TurnThread } from '../chat/turn-limit';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
@@ -37,7 +38,10 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   const [selectedId, setSelectedId] = useState('');
   const [definition, setDefinition] = useState<SerializedAgentDto>();
   const [message, setMessage] = useState('');
-  const [turns, setTurns] = useState<readonly Turn[]>([]);
+  // 会話は上限付きで保持する。評価・蒸留は「落とした件数 + 配列index」の通し番号で紐づけ、トリム後もずれない。
+  const [thread, setThread] = useState<TurnThread<Turn>>(emptyThread);
+  const turns = thread.turns;
+  const pushTurn = (turn: Turn) => setThread((prev) => appendTurn(prev, turn));
   const [evaluations, setEvaluations] = useState<ReadonlyMap<number, EvaluationResultDto | 'loading' | 'error'>>(new Map());
   const [distillations, setDistillations] = useState<ReadonlyMap<number, DistillState>>(new Map());
   const [wikiPages, setWikiPages] = useState<readonly WikiPageSummaryDto[]>([]);
@@ -87,17 +91,17 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
     const content = retry === undefined ? message.trim() : retry.content;
     if (agent === undefined || content === '' || busy) return;
     setBusy(true); setLoadError(undefined);
-    setTurns((prev) => [...prev, { role: 'user', text: content }]);
+    pushTurn({ role: 'user', text: content });
     if (retry === undefined) setMessage('');
     const startedAt = performance.now();
     try {
       const memoryPageIds = [...attached];
       const history = buildHistory(turns, content);
       const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview', ...(history.length > 0 ? { history } : {}), ...(memoryPageIds.length > 0 ? { memoryPageIds } : {}) });
-      setTurns((prev) => [...prev, { role: 'assistant', run, elapsedMs: performance.now() - startedAt }]);
+      pushTurn({ role: 'assistant', run, elapsedMs: performance.now() - startedAt });
       setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
     } catch (cause) {
-      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt, onRetry: () => void send({ content }) }]);
+      pushTurn({ role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt, onRetry: () => void send({ content }) });
     } finally {
       setBusy(false);
     }
@@ -110,10 +114,10 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
     const startedAt = performance.now();
     try {
       const run = await client.resumeRun(runId, scope, decision);
-      setTurns((prev) => [...prev, { role: 'assistant', run, elapsedMs: performance.now() - startedAt }]);
+      pushTurn({ role: 'assistant', run, elapsedMs: performance.now() - startedAt });
       setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
     } catch (cause) {
-      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt, onRetry: () => void resolveToolApproval(runId, decision) }]);
+      pushTurn({ role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt, onRetry: () => void resolveToolApproval(runId, decision) });
     } finally {
       setBusy(false);
     }
@@ -161,7 +165,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
             <p>{text('Run an agent and watch tools, tokens, and timing.', 'エージェントを実行し、ツール・トークン・所要時間を観測します。')}</p>
           </div>
         </div>
-        <button type="button" className="cc-new" onClick={() => { setTurns([]); setEvaluations(new Map()); setDistillations(new Map()); setApprovalRunId(undefined); }} disabled={turns.length === 0}>
+        <button type="button" className="cc-new" onClick={() => { setThread(emptyThread()); setEvaluations(new Map()); setDistillations(new Map()); setApprovalRunId(undefined); }} disabled={turns.length === 0}>
           {text('New chat', '新しいチャット')}
         </button>
       </header>
@@ -178,6 +182,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
       <div className="cc-thread" ref={threadRef}>
         <div className="cc-thread-inner">
           {loadError !== undefined && <div className="cc-alert" role="alert">{loadError}</div>}
+          {thread.dropped > 0 && <p className="cc-trimmed">{text(`${thread.dropped} older message(s) were removed from this view.`, `古いメッセージ${thread.dropped}件は表示から削除されました。`)}</p>}
           {turns.length === 0 ? (
             <div className="cc-welcome">
               <span className="cc-mark lg" aria-hidden="true">{sparkIcon}</span>
@@ -194,14 +199,16 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
           ) : (
             turns.map((turn, index) => {
               const inputText = turn.role === 'assistant' ? lastUserBefore(turns, index) : '';
-              return <TurnView key={index} turn={turn} agentName={agentName} text={text} busy={busy}
+              // 表示から落とした件数を足した通し番号。トリムしても評価・蒸留の紐づけがずれない。
+              const turnId = thread.dropped + index;
+              return <TurnView key={turnId} turn={turn} agentName={agentName} text={text} busy={busy}
                 inputText={inputText}
                 approvalRunId={approvalRunId}
                 onResolveApproval={(runId, decision) => void resolveToolApproval(runId, decision)}
-                evaluation={evaluations.get(index)}
-                onEvaluate={() => { if (turn.role === 'assistant') void evaluate(index, inputText, turn.run.response); }}
-                distillation={distillations.get(index)}
-                onDistill={() => { if (turn.role === 'assistant') void distill(index, inputText, turn.run.response, turn.run.runId); }} />;
+                evaluation={evaluations.get(turnId)}
+                onEvaluate={() => { if (turn.role === 'assistant') void evaluate(turnId, inputText, turn.run.response); }}
+                distillation={distillations.get(turnId)}
+                onDistill={() => { if (turn.role === 'assistant') void distill(turnId, inputText, turn.run.response, turn.run.runId); }} />;
             })
           )}
           {busy && turns.length > 0 && (

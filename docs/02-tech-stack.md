@@ -131,6 +131,35 @@ flowchart LR
 | `LM_STUDIO_MODEL` | 必須（Agent実行時） | ロード済みモデル識別子。未設定時は暗黙選択せず実行を拒否 |
 | `LM_STUDIO_API_KEY` | 未設定 | Bearer tokenが必要な場合のみ設定 |
 | `LM_STUDIO_TIMEOUT_MS` | `600000` | local推論の総時間timeout（正のミリ秒）。ハング検知は `LM_STUDIO_IDLE_TIMEOUT_MS`（既定60000）が担うため長めに取る |
+| `LM_STUDIO_MAX_TOKENS` | 未設定 | 正の整数。未設定なら `max_tokens` を送らずモデル既定に委ねる |
+
+judgeスロットは同じ4つを `JUDGE_` 接頭辞つきで持つ（`JUDGE_LM_STUDIO_BASE_URL` / `_MODEL` / `_API_KEY`）。
+読まれているenvの全量は [.env.example](../.env.example) を参照。
+
+### 永続化（local）
+
+| env | 既定 | 内容 |
+|---|---|---|
+| `AGENTCONTEXT_DB_PATH` | `~/.agentblume/agentblume.db` | SQLiteの保存先。**未設定なら永続ファイル**を使う（親ディレクトリは自動作成）。`:memory:` を明示したときだけ揮発する。空文字は未設定と同じ扱い。起動時に実際の保存先をログへ出す |
+| `AGENTCONTEXT_TENANT_ID` / `AGENTCONTEXT_WORKSPACE_ID` | `local` / `default` | 保存・参照するテナントスコープ |
+
+SQLite接続は **プロセスにつき1本**（`src/adapters/storage/sqlite-database.ts`）。全リポジトリがこのハンドルを共有し、
+起動時に以下を適用する。
+
+| PRAGMA | 値 | 理由 |
+|---|---|---|
+| `journal_mode` | `WAL`（ファイルDBのみ） | 読み取りが書き込みでブロックされない。`:memory:` では意味がないので設定しない |
+| `busy_timeout` | `5000` | ロック競合を即時エラーにせず待つ |
+| `foreign_keys` | `ON` | SQLiteの既定はOFFのため明示する |
+
+スキーマは `PRAGMA user_version` ベースの番号付きマイグレーション（`src/adapters/storage/migrations.ts`）で管理する。
+version 1 は「全テーブル + 旧DBに欠けうる列の補完 + 全インデックス」を**冪等に**適用する定義であり、
+空DBも旧スキーマのDBも同じ経路で version 1 へ収束する。DBの `user_version` がコードの最新版より新しい場合は
+**起動を拒否**する（古いコードに新しいデータを触らせない）。
+
+複数リポジトリにまたがる書き込みは `UnitOfWorkPort`（`src/application/persistence/unit-of-work.ts`）で括る。
+SQLite配線では共有接続に `BEGIN` / `COMMIT` を張り、入れ子は `SAVEPOINT` で同じ単位へ合流する。
+InMemory配線では `NoopUnitOfWork` がそのまま実行する。
 
 ### 秘密値の保管（local）
 

@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
 import type { HarnessPoliciesDto, HarnessSummaryDto, SerializedAgentHarnessDto } from '../api/types';
+import { draftKey, readDraft } from '../hooks/useDraftPersistence';
 import { I18nProvider } from '../i18n';
 import { HarnessBuilder } from './HarnessBuilder';
 
 afterEach(cleanup);
+// 下書きは localStorage に残るため、テスト間で持ち越さない。
+beforeEach(() => { localStorage.clear(); });
 
 const testPolicies: HarnessPoliciesDto = {
   budget: { maxDurationMs: 120000, maxParticipantRuns: 20, maxModelRounds: 40, maxToolCalls: 100, maxParallelism: 4 },
@@ -414,6 +417,47 @@ describe('HarnessBuilder', () => {
       expect(await screen.findByRole('heading', { name: 'Multi-Agents' })).toBeTruthy();
       expect(screen.getByRole('button', { name: 'New multi-agent' })).toBeTruthy();
       expect(client.listHarnesses).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('下書きの自動保存と復元', () => {
+    const newHarnessKey = draftKey('harness-builder', { tenantId: 'local', workspaceId: 'default' });
+
+    it('キャンバスの編集を退避し、画面を離れても失わない', async () => {
+      const client = stubClient();
+      const { unmount } = await openNewHarnessEditor(client);
+      await userEvent.type(screen.getByLabelText('Display name'), 'Draft flow');
+      await userEvent.selectOptions(screen.getByLabelText('Assign agent to Author'), 'agent-a');
+      unmount();
+      const saved = readDraft<{ displayName: string; slotStates: readonly { assignment: { internalId: string } }[] }>(newHarnessKey);
+      expect(saved?.value.displayName).toBe('Draft flow');
+      expect(saved?.value.slotStates[0]?.assignment.internalId).toBe('agent-a');
+    });
+
+    it('復元バナーからpattern・slot割当ごと戻せる', async () => {
+      const client = stubClient();
+      const { unmount } = await openNewHarnessEditor(client);
+      await userEvent.click(screen.getByRole('button', { name: /^Concurrent/ }));
+      await userEvent.type(screen.getByLabelText('Display name'), 'Fan out');
+      unmount();
+
+      await openNewHarnessEditor(client);
+      await userEvent.click(await screen.findByRole('button', { name: 'Restore' }));
+      expect((screen.getByLabelText('Display name') as HTMLInputElement).value).toBe('Fan out');
+      expect(screen.getByLabelText('Multi-agent canvas').className).toContain('harness-canvas--concurrent');
+    });
+
+    it('保存に成功すると下書きを消す', async () => {
+      const client = stubClientWithSave();
+      await openNewHarnessEditor(client);
+      await userEvent.type(screen.getByLabelText('Internal ID'), 'flow');
+      await userEvent.type(screen.getByLabelText('Display name'), 'Flow');
+      await userEvent.type(screen.getByLabelText('Owner'), 'owner');
+      for (const slot of ['Author', 'Reviewer', 'Publisher']) await userEvent.selectOptions(screen.getByLabelText(`Assign agent to ${slot}`), 'agent-a');
+
+      await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+      await screen.findByText('Saved · version 1.0.0');
+      await waitFor(() => expect(localStorage.getItem(newHarnessKey)).toBeNull());
     });
   });
 });

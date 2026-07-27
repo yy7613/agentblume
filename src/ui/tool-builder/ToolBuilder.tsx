@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { ToolSummaryDto } from '../api/types';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { DraftRestoreBanner } from '../components/DraftRestoreBanner';
+import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
+import { useReportUnsavedChanges } from '../unsaved-changes';
 import { useI18n } from '../i18n';
 import { FlowCanvas } from './FlowCanvas';
 import { MetadataBar } from './MetadataBar';
@@ -10,7 +13,7 @@ import { NodePalette } from './NodePalette';
 import { PreviewPanel } from './PreviewPanel';
 import { useDraftPreview } from './use-draft-preview';
 import { AgentToolContextPanel } from './AgentToolContextPanel';
-import { useToolBuilderStore } from './store';
+import { useToolBuilderStore, type ToolBuilderDraft } from './store';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
@@ -26,6 +29,21 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
   const [listError, setListError] = useState<string>();
   // 削除は確認してから実行する（取り消せない操作を1クリックで走らせない）。
   const [pendingDelete, setPendingDelete] = useState<ToolSummaryDto>();
+
+  // 下書きの自動保存。グラフとメタデータだけを退避し、推論結果やプレビューは復元時に再計算させる。
+  const metadata = useToolBuilderStore((state) => state.metadata);
+  const nodes = useToolBuilderStore((state) => state.nodes);
+  const edges = useToolBuilderStore((state) => state.edges);
+  const currentVersion = useToolBuilderStore((state) => state.currentVersion);
+  const draftValue = useMemo<ToolBuilderDraft>(() => ({ metadata, nodes, edges }), [metadata, nodes, edges]);
+  // 保存済みTool（currentVersionあり）はinternalIdで、未保存の新規は '__new__' でキーを分ける。
+  // 新規編集中のinternalIdは入力途中で変わるためキーに使わない（下書きが散らばるのを避ける）。
+  const draft = useDraftPersistence<ToolBuilderDraft>({
+    key: draftKey('tool-builder', { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId }, currentVersion === undefined ? undefined : metadata.internalId),
+    value: draftValue,
+    enabled: view === 'editor',
+  });
+  useReportUnsavedChanges('tool-builder', draft.dirty);
 
   useEffect(() => {
     let active = true;
@@ -85,8 +103,11 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
   }
   return <div className="tool-builder-shell">
     <button type="button" className="secondary agent-back-button" onClick={() => void backToList()}>{text('Back to list', '一覧へ戻る')}</button>
+    {draft.pending !== undefined && <DraftRestoreBanner savedAt={draft.pending.savedAt}
+      onRestore={() => { const value = draft.restore(); if (value !== undefined) useToolBuilderStore.getState().applyDraft(value); }}
+      onDiscard={draft.discard} />}
     <div className="tool-builder">
-      <MetadataBar client={client} />
+      <MetadataBar client={client} onSaved={draft.clear} />
       <div className="builder-workspace"><NodePalette client={client} /><FlowCanvas /><NodeInspector client={client} /></div>
       <div className="result-workspace"><PreviewPanel /><AgentToolContextPanel /></div>
     </div>

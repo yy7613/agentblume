@@ -71,7 +71,20 @@ interface ToolBuilderState {
   setSavedVersion(version: string, versions: readonly string[]): void;
   setVersions(versions: readonly string[]): void;
   loadTool(tool: SerializedToolDto): void;
+  applyDraft(draft: ToolBuilderDraft): void;
   reset(): void;
+}
+
+/** localStorageへ退避する編集内容（保存対象のメタデータとグラフだけ）。 */
+export interface ToolBuilderDraft {
+  readonly metadata: ToolMetadataState;
+  readonly nodes: readonly ToolFlowNode[];
+  readonly edges: readonly Edge[];
+}
+
+/** 現在の編集内容を下書き用に切り出す。 */
+export function toolBuilderDraft(state: Pick<ToolBuilderState, 'metadata' | 'nodes' | 'edges'>): ToolBuilderDraft {
+  return { metadata: state.metadata, nodes: state.nodes, edges: state.edges };
 }
 
 /** 保存APIが非空を要求するメタデータ（api層 saveToolBodySchema の min(1) と対応）。 */
@@ -313,6 +326,17 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
       saveError: undefined,
       versions: state.versions,
     };
+  }),
+  // 復元した下書きを丸ごと反映する。派生状態（推論結果・プレビュー・エラー）は破棄して自動プレビューに再計算させる。
+  applyDraft: (draft) => set({
+    metadata: { ...draft.metadata },
+    nodes: draft.nodes.map((node) => ({ ...node, data: { ...node.data } })),
+    edges: draft.edges.map((edge) => ({ ...edge })),
+    selectedNodeId: draft.nodes[0]?.id,
+    propagation: undefined,
+    preview: undefined,
+    draftIssue: undefined,
+    saveError: undefined,
   }),
   reset: () => set(initialState()),
 }));

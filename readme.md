@@ -30,7 +30,7 @@ npm run dev:sample
 # または .\scripts\start-dev.ps1 -SampleData
 ```
 
-`AGENTCONTEXT_DB_PATH` を指定しなければサンプルデータはメモリ上だけに作成される。永続DBを指定した場合も、サンプルの既存データは上書きしない。
+サンプルデータは既定の永続DBへ投入される（既存データは上書きしない）。使い捨てにしたい場合は `AGENTCONTEXT_DB_PATH=:memory:` を指定する。
 
 画面付きの起動・操作・ライブAgent実行手順は[デモデータ操作マニュアル](docs/13-demo-operation-manual.md)を参照。
 
@@ -57,6 +57,19 @@ npm run test:e2e
 npm run typecheck
 npm run build
 ```
+
+## データの保存先
+
+作成したTool・Skill・Agent・Wiki・実行履歴・モデル設定は SQLite に保存する。
+
+- 既定の保存先は **`~/.agentblume/agentblume.db`**（親ディレクトリは自動作成）。起動時にログへ実際のパスを出す。
+- 別の場所に置く場合は `AGENTCONTEXT_DB_PATH` を設定する。
+- `AGENTCONTEXT_DB_PATH=:memory:` を指定したときだけ、プロセス終了で全データが消える（使い捨て検証用）。
+- スキーマは起動時に自動でマイグレーションする。DBがこのビルドより新しい場合は、データを壊さないよう起動を中止する。
+- UIから保存したAPIキーは暗号化して保存し、鍵は `~/.agentblume/secret.key`（`AGENTCONTEXT_SECRET_KEY_PATH` で変更可）に置く。**DBファイルをバックアップ・共有するときは鍵ファイルを一緒に運ばない**こと。
+- DBファイル・鍵ファイルは `.gitignore` 済み。
+
+読まれている環境変数の全量は [.env.example](.env.example) を参照。
 
 ## データソースとDB接続
 

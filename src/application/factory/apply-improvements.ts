@@ -49,6 +49,7 @@ import {
 } from './generate-agent-assets';
 import type { ProfileDataSourcesUseCase } from './profile-data-sources';
 import type { ToolSmithRole } from './roles/tool-smith-role';
+import { NoopUnitOfWork, type UnitOfWorkPort } from '../persistence/unit-of-work';
 
 /**
  * `add-tool` 適用に必要な追加依存（Stage 2の修復ループと同じ顔ぶれ）。
@@ -102,6 +103,11 @@ export class ApplyImprovementsUseCase {
     /** `add-tool` 適用に必要な追加依存。未注入なら `add-tool` は却下する（既存配線を壊さない）。 */
     private readonly toolCreation?: ApplyImprovementsToolCreation,
     private readonly makeId: () => string = randomUUID,
+    /**
+     * 「整合性のためのSkill引き上げ + Agent新版」をまとめてコミットするための境界。
+     * 未注入（InMemory配線・単体テスト）ではそのまま実行する。
+     */
+    private readonly unitOfWork: UnitOfWorkPort = new NoopUnitOfWork(),
   ) {}
 
   async execute(input: ApplyImprovementsInput): Promise<ApplyImprovementsResult> {
@@ -158,70 +164,75 @@ export class ApplyImprovementsUseCase {
     const skillIds = uniqueIds([...currentAgent.skills.map((ref) => ref.internalId), ...addedSkillIds]);
     const toolIds = uniqueIds([...currentAgent.tools.map((ref) => ref.internalId), ...addedToolIds]);
 
-    // 整合性の確保: `resolveAgentCapabilities`（SaveAgentUseCase内部）はAgentの直接tools参照と、参照する
-    // 各Skillが持つtools参照とで、同じToolのバージョンが食い違うと「ambiguous tool versions」で拒否する。
-    // tool-contract-revision/tool-graph-revisionで対象Toolを改訂した場合、そのToolを使う現行Skillも
-    // 新Tool版を指す新Skill版へ引き上げてから、Agentの新版を組み立てる（Analystの提案には現れない、
-    // 適用の副次的な整合性維持であり `applied` へは記録しない）。追加したばかりのSkillも同じ対象に含める
-    // （add-skill より後の tool-graph-revision が同じToolを改訂しうるため）。
-    if (newToolVersions.size > 0) {
-      for (const skillId of skillIds) {
-        const skillVersion = newSkillVersions.get(skillId) ?? baseSkillVersions.get(skillId);
-        if (skillVersion === undefined) continue;
-        const skill = await this.skills.findVersion(input.scope, skillId, skillVersion);
-        if (skill === null) continue;
-        const needsRetarget = skill.tools.some((toolRef) => {
-          const override = newToolVersions.get(toolRef.internalId);
-          return override !== undefined && !override.equals(toolRef.version);
-        });
-        if (!needsRetarget) continue;
-        const retargetedTools = skill.tools.map((toolRef) => ({ internalId: toolRef.internalId, version: newToolVersions.get(toolRef.internalId) ?? toolRef.version }));
-        const saved = await this.saveSkill.execute({
-          scope: input.scope,
-          internalId: skill.metadata.internalId,
-          workingName: skill.metadata.workingName,
-          displayName: skill.metadata.displayName,
-          publishName: skill.metadata.publishName,
-          owner: skill.metadata.owner,
-          responsibility: skill.responsibility,
-          activationCondition: skill.activationCondition,
-          inputDescription: skill.inputDescription,
-          outputDescription: skill.outputDescription,
-          instructions: skill.instructions,
-          tools: retargetedTools,
-        });
-        newSkillVersions.set(skillId, saved.metadata.version);
+    // ここから先は「Skillの引き上げ」と「Agent新版」が**セットで初めて意味を持つ**書き込みになる。
+    // 途中で落ちると、どのAgentからも参照されない新Skill版だけがDBに残り（孤児）、Agentは旧Tool版を
+    // 指したままになる。モデル呼び出しを含まない純粋な永続化区間なので、1トランザクションで括る。
+    const savedAgent = await this.unitOfWork.withTransaction(async () => {
+      // 整合性の確保: `resolveAgentCapabilities`（SaveAgentUseCase内部）はAgentの直接tools参照と、参照する
+      // 各Skillが持つtools参照とで、同じToolのバージョンが食い違うと「ambiguous tool versions」で拒否する。
+      // tool-contract-revision/tool-graph-revisionで対象Toolを改訂した場合、そのToolを使う現行Skillも
+      // 新Tool版を指す新Skill版へ引き上げてから、Agentの新版を組み立てる（Analystの提案には現れない、
+      // 適用の副次的な整合性維持であり `applied` へは記録しない）。追加したばかりのSkillも同じ対象に含める
+      // （add-skill より後の tool-graph-revision が同じToolを改訂しうるため）。
+      if (newToolVersions.size > 0) {
+        for (const skillId of skillIds) {
+          const skillVersion = newSkillVersions.get(skillId) ?? baseSkillVersions.get(skillId);
+          if (skillVersion === undefined) continue;
+          const skill = await this.skills.findVersion(input.scope, skillId, skillVersion);
+          if (skill === null) continue;
+          const needsRetarget = skill.tools.some((toolRef) => {
+            const override = newToolVersions.get(toolRef.internalId);
+            return override !== undefined && !override.equals(toolRef.version);
+          });
+          if (!needsRetarget) continue;
+          const retargetedTools = skill.tools.map((toolRef) => ({ internalId: toolRef.internalId, version: newToolVersions.get(toolRef.internalId) ?? toolRef.version }));
+          const saved = await this.saveSkill.execute({
+            scope: input.scope,
+            internalId: skill.metadata.internalId,
+            workingName: skill.metadata.workingName,
+            displayName: skill.metadata.displayName,
+            publishName: skill.metadata.publishName,
+            owner: skill.metadata.owner,
+            responsibility: skill.responsibility,
+            activationCondition: skill.activationCondition,
+            inputDescription: skill.inputDescription,
+            outputDescription: skill.outputDescription,
+            instructions: skill.instructions,
+            tools: retargetedTools,
+          });
+          newSkillVersions.set(skillId, saved.metadata.version);
+        }
       }
-    }
 
-    const newSkills: AgentSkillRef[] = resolveRefs(skillIds, newSkillVersions, baseSkillVersions);
-    const newTools: AgentToolRef[] = resolveRefs(toolIds, newToolVersions, baseToolVersions);
+      const newSkills: AgentSkillRef[] = resolveRefs(skillIds, newSkillVersions, baseSkillVersions);
+      const newTools: AgentToolRef[] = resolveRefs(toolIds, newToolVersions, baseToolVersions);
 
-    let systemPrompt = currentAgent.systemPrompt;
-    if (promptRevision !== undefined) {
-      const promptDraft = await this.generateAgentPrompt.execute({ scope: input.scope, displayName: currentAgent.metadata.displayName, kind: currentAgent.kind, skills: newSkills, tools: newTools });
-      systemPrompt = [promptRevision.role, promptDraft.sections.skillGuide, promptDraft.sections.toolUsageGuide, promptRevision.rules].join('\n\n');
-    }
+      let systemPrompt = currentAgent.systemPrompt;
+      if (promptRevision !== undefined) {
+        const promptDraft = await this.generateAgentPrompt.execute({ scope: input.scope, displayName: currentAgent.metadata.displayName, kind: currentAgent.kind, skills: newSkills, tools: newTools });
+        systemPrompt = [promptRevision.role, promptDraft.sections.skillGuide, promptDraft.sections.toolUsageGuide, promptRevision.rules].join('\n\n');
+      }
 
-    // 既存Agentの設定はすべて引き継ぐ（Factory生成Agentは持たないが、既存Agentの強化では持ちうる）。
-    const savedAgent = await this.saveAgent.execute({
-      scope: input.scope,
-      internalId: currentAgent.metadata.internalId,
-      workingName: currentAgent.metadata.workingName,
-      displayName: currentAgent.metadata.displayName,
-      publishName: currentAgent.metadata.publishName,
-      owner: currentAgent.metadata.owner,
-      kind: currentAgent.kind,
-      systemPrompt,
-      skills: newSkills,
-      tools: newTools,
-      agents: currentAgent.agents,
-      wikis: currentAgent.wikis ?? [],
-      ...(currentAgent.mcpServers === undefined ? {} : { mcpServers: currentAgent.mcpServers }),
-      ...(currentAgent.harness === undefined ? {} : { harness: currentAgent.harness }),
-      ...(currentAgent.persona === undefined ? {} : { persona: currentAgent.persona }),
-      ...(currentAgent.output === undefined ? {} : { output: currentAgent.output }),
-      state: currentAgent.metadata.state,
+      // 既存Agentの設定はすべて引き継ぐ（Factory生成Agentは持たないが、既存Agentの強化では持ちうる）。
+      return this.saveAgent.execute({
+        scope: input.scope,
+        internalId: currentAgent.metadata.internalId,
+        workingName: currentAgent.metadata.workingName,
+        displayName: currentAgent.metadata.displayName,
+        publishName: currentAgent.metadata.publishName,
+        owner: currentAgent.metadata.owner,
+        kind: currentAgent.kind,
+        systemPrompt,
+        skills: newSkills,
+        tools: newTools,
+        agents: currentAgent.agents,
+        wikis: currentAgent.wikis ?? [],
+        ...(currentAgent.mcpServers === undefined ? {} : { mcpServers: currentAgent.mcpServers }),
+        ...(currentAgent.harness === undefined ? {} : { harness: currentAgent.harness }),
+        ...(currentAgent.persona === undefined ? {} : { persona: currentAgent.persona }),
+        ...(currentAgent.output === undefined ? {} : { output: currentAgent.output }),
+        state: currentAgent.metadata.state,
+      });
     });
     const newAgentRef: VersionRef = { internalId: savedAgent.metadata.internalId, version: savedAgent.metadata.version.toString() };
     if (promptRevision !== undefined) applied.push({ proposal: promptRevision.proposal, resultingVersion: newAgentRef });

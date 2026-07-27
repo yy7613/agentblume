@@ -2,13 +2,38 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentKindDto, AgentPreviewRunDto, AgentSummaryDto, McpServerDto, RunTraceEventDto, SerializedAgentDto, SideEffectDto, SkillSummaryDto, StructuredOutputFieldDto, StructuredOutputTypeDto, ToolSummaryDto, WikiSpaceSummaryDto } from '../api/types';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { DraftRestoreBanner } from '../components/DraftRestoreBanner';
 import { InlineFeedback } from '../components/InlineFeedback';
+import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
+import { useReportUnsavedChanges } from '../unsaved-changes';
 import { useI18n } from '../i18n';
 import { DEFAULT_HARNESS, HarnessSettingsDialog, countEnabledHarness, type AgentHarnessValue } from './HarnessSettingsDialog';
 
 type Translate = (english: string, japanese: string) => string;
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
+
+/**
+ * 下書きへ退避する編集内容。保存対象の定義だけを持ち、実行結果やプレビュー入力のような
+ * 一時状態は含めない（秘密情報を持つ項目もこの画面には無い）。
+ */
+interface AgentDraft {
+  readonly internalId: string;
+  readonly workingName: string;
+  readonly displayName: string;
+  readonly publishName: string;
+  readonly owner: string;
+  readonly kind: AgentKindDto;
+  readonly systemPrompt: string;
+  readonly structuredOutput: boolean;
+  readonly outputFields: readonly StructuredOutputFieldDto[];
+  readonly tools: readonly string[];
+  readonly skills: readonly string[];
+  readonly wikis: readonly string[];
+  readonly mcpServers: readonly string[];
+  readonly subAgents: readonly (readonly [string, string])[];
+  readonly harness?: AgentHarnessValue;
+}
 /** サーバー側 createAgent と同じ上限（超えると保存が400になるためUIで止める）。 */
 const MAX_MCP_SERVERS = 8;
 
@@ -52,6 +77,24 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   const [pendingDelete, setPendingDelete] = useState<AgentSummaryDto>();
   const { text, language } = useI18n();
   const dismissSaveNotice = useCallback(() => setSaveNotice(undefined), []);
+
+  // 下書きの自動保存。キーは「編集中の既存Agent」または新規（internalIdは編集途中で変わるためキーにしない）。
+  const draftValue = useMemo<AgentDraft>(() => ({
+    internalId, workingName, displayName, publishName, owner, kind, systemPrompt, structuredOutput, outputFields,
+    tools: [...selectedTools], skills: [...selectedSkills], wikis: [...selectedWikis], mcpServers: [...selectedMcpServers],
+    subAgents: [...subAgents].map(([id, usage]) => [id, usage] as const), harness,
+  }), [internalId, workingName, displayName, publishName, owner, kind, systemPrompt, structuredOutput, outputFields, selectedTools, selectedSkills, selectedWikis, selectedMcpServers, subAgents, harness]);
+  const draft = useDraftPersistence<AgentDraft>({ key: draftKey('agent-builder', scope, editing ? internalId : undefined), value: draftValue, enabled: view === 'editor' });
+  useReportUnsavedChanges('agent-builder', draft.dirty);
+  function applyDraft(value: AgentDraft): void {
+    setInternalId(value.internalId); setWorkingName(value.workingName); setDisplayName(value.displayName);
+    setPublishName(value.publishName); setOwner(value.owner); setKind(value.kind); setSystemPrompt(value.systemPrompt);
+    setStructuredOutput(value.structuredOutput); setOutputFields([...value.outputFields]);
+    setSelectedTools(new Set(value.tools)); setSelectedSkills(new Set(value.skills));
+    setSelectedWikis(new Set(value.wikis)); setSelectedMcpServers(new Set(value.mcpServers));
+    setSubAgents(new Map(value.subAgents));
+    setHarness(value.harness === undefined ? undefined : { ...value.harness });
+  }
 
   useEffect(() => {
     let active = true;
@@ -203,6 +246,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
       const agent = await client.saveAgent({ scope, internalId, workingName, displayName, publishName, owner, kind, systemPrompt, skills: skillRefs, tools: refs, agents: subAgentRefs, wikis: kind === 'pseudo-user' ? [] : [...selectedWikis].map((wikiId) => ({ wikiId })), ...(selectedMcpServers.size > 0 ? { mcpServers: [...selectedMcpServers] } : {}), ...(harness !== undefined ? { harness } : {}), ...(output !== undefined ? { output } : {}) });
       setSavedVersion(agent.metadata.version);
       setSaveNotice(text(`Saved · version ${agent.metadata.version}`, `保存しました バージョン ${agent.metadata.version}`));
+      draft.clear();
     } catch (cause) { setError(message(cause, text)); }
     finally { setBusy(undefined); }
   }
@@ -308,6 +352,9 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
         <button type="button" className="primary" disabled={busy !== undefined || saveBlocked} title={missingRequired.length > 0 ? text(`Required fields are empty: ${missingRequiredLabel}.`, `${missingRequiredLabel}が未入力です。`) : undefined} onClick={() => void save()}>{busy === 'save' ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
       </div>
     </header>
+    {draft.pending !== undefined && <DraftRestoreBanner savedAt={draft.pending.savedAt}
+      onRestore={() => { const value = draft.restore(); if (value !== undefined) applyDraft(value); }}
+      onDiscard={draft.discard} />}
     {/* 保存ボタン近傍のフィードバック: 未充足の必須項目・Tool未選択の注意・保存成功。 */}
     <div className="agent-save-feedback">
       {missingRequired.length > 0 && <InlineFeedback kind="info">{text(`Required fields are empty: ${missingRequiredLabel}.`, `${missingRequiredLabel}が未入力です。`)}</InlineFeedback>}

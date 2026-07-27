@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
 import type { SerializedSkillDto, SkillSummaryDto } from '../api/types';
+import { draftKey, readDraft, writeDraft } from '../hooks/useDraftPersistence';
 import { SkillBuilder } from './SkillBuilder';
 
 afterEach(cleanup);
+// 下書きは localStorage に残るため、テスト間で持ち越さない。
+beforeEach(() => { localStorage.clear(); });
 
 // 一覧からOpenした時に返す保存済みSkill。
 const existingSkillSummary: SkillSummaryDto = { internalId: 'existing-skill', displayName: 'Existing Skill', publishName: 'existing_skill', latestVersion: '2.0.0', state: 'draft' };
@@ -162,6 +165,44 @@ describe('SkillBuilder', () => {
       expect(await screen.findByRole('heading', { name: 'Skills' })).toBeTruthy();
       expect(screen.getByRole('button', { name: 'New skill' })).toBeTruthy();
       expect(client.listSkills).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('下書きの自動保存と復元', () => {
+    const newSkillKey = draftKey('skill-builder', { tenantId: 'local', workspaceId: 'default' });
+
+    it('長文の内容を退避し、画面を離れても失わない', async () => {
+      const client = stubClient();
+      const { unmount } = await openNewSkillEditor(client);
+      await userEvent.type(screen.getByRole('textbox', { name: 'Skill content' }), 'Long skill body.');
+      unmount();
+      expect(readDraft<{ instructions: string }>(newSkillKey)?.value.instructions).toBe('Long skill body.');
+    });
+
+    it('復元バナーから内容を戻せる', async () => {
+      writeDraft(newSkillKey, { internalId: 'i', workingName: 'w', displayName: 'Restored Skill', publishName: 'p', owner: 'o', description: 'Restored description.', instructions: 'Restored content.' }, '2026-07-27T09:30:00.000Z');
+      const client = stubClient();
+      await openNewSkillEditor(client);
+      await userEvent.click(await screen.findByRole('button', { name: 'Restore' }));
+      expect((screen.getByRole('textbox', { name: 'Skill content' }) as HTMLTextAreaElement).value).toBe('Restored content.');
+      expect((screen.getByRole('textbox', { name: 'Skill description' }) as HTMLTextAreaElement).value).toBe('Restored description.');
+    });
+
+    it('保存に成功すると下書きを消す', async () => {
+      const client = stubClient();
+      (client.saveSkill as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.0.0' } });
+      await openNewSkillEditor(client);
+      await userEvent.type(screen.getByLabelText('Skill internal ID'), 'saved-skill');
+      await userEvent.type(screen.getByLabelText('Skill working name'), 'draft');
+      await userEvent.type(screen.getByLabelText('Skill display name'), 'Saved Skill');
+      await userEvent.type(screen.getByLabelText('Skill publish name'), 'saved_skill');
+      await userEvent.type(screen.getByLabelText('Skill owner'), 'owner');
+      await userEvent.type(screen.getByRole('textbox', { name: 'Skill description' }), 'desc');
+      await userEvent.type(screen.getByRole('textbox', { name: 'Skill content' }), 'body');
+
+      await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+      await screen.findByText('Saved · version 1.0.0');
+      await waitFor(() => expect(localStorage.getItem(newSkillKey)).toBeNull());
     });
   });
 });

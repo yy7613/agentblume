@@ -13,6 +13,7 @@ import type { MemoryProposalRepository } from '../../domain/memory/memory-propos
 import type { SkillRepository } from '../../domain/skill/skill-repository';
 import type { SaveWikiPageUseCase } from './save-wiki-page';
 import type { SaveSkillUseCase } from '../skill/save-skill';
+import { NoopUnitOfWork, type UnitOfWorkPort } from '../persistence/unit-of-work';
 
 export class ReviewProposalUseCase {
   constructor(
@@ -20,15 +21,24 @@ export class ReviewProposalUseCase {
     private readonly saveWikiPage: SaveWikiPageUseCase,
     private readonly skills: SkillRepository,
     private readonly saveSkill: SaveSkillUseCase,
+    /** 「実体の適用」と「提案の承認済み化」をまとめてコミットする境界。未注入ならそのまま実行する。 */
+    private readonly unitOfWork: UnitOfWorkPort = new NoopUnitOfWork(),
   ) {}
 
+  /**
+   * Wiki/Skill への適用と提案の状態遷移は**必ず一緒に確定させる**。
+   * 片方だけ残ると、提案は draft のままなのにページ・Skill新版だけが存在する状態になり、
+   * 再承認で同じ内容がもう一度作られる（重複した蒸留Skill版・上書きされたWikiページ）。
+   */
   async approve(scope: TenantScope, id: string): Promise<MemoryProposal> {
     const proposal = await this.load(scope, id);
     if (proposal.state !== 'draft') throw new MemoryDomainError(`ReviewProposal: cannot approve a proposal already ${proposal.state}: ${id}`);
-    await this.apply(scope, proposal);
-    const approved = decideProposal(proposal, 'approved');
-    await this.proposals.save(approved);
-    return approved;
+    return this.unitOfWork.withTransaction(async () => {
+      await this.apply(scope, proposal);
+      const approved = decideProposal(proposal, 'approved');
+      await this.proposals.save(approved);
+      return approved;
+    });
   }
 
   async reject(scope: TenantScope, id: string): Promise<MemoryProposal> {

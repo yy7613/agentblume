@@ -3,6 +3,7 @@ import type { ToolApiClient } from '../api/tool-api';
 import type { AnalysisConfigProposalDto, ColumnDto, DataSourceDto, DataType, SchemaDto, SearchProviderDto, TenantScopeDto, ToolGraphDto } from '../api/types';
 import { catalogItem, toInputOf, type ToolNodeType } from './node-catalog';
 import { useToolBuilderStore } from './store';
+import { useModalBehavior } from '../hooks/useModalBehavior';
 import { useI18n } from '../i18n';
 import { DATA_TYPES, cellText, coerceCell, coerceScalar, columnsText, parseColumns, parsePairs, parseReplaceRules, parseSortKeys, splitList, type FillRuleDraft, type JoinKeyDraft, type ReplaceRuleDraft, type SortKeyDraft } from './node-config-utils';
 
@@ -205,8 +206,9 @@ function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvail
   const { text } = useI18n();
   const patch = (next: Record<string, unknown>) => setDraft((current) => ({ ...current, ...next }));
   const suggest = async () => { if (client === undefined || intent.trim() === '') return; setSuggesting(true); setAssistantError(undefined); try { const result = await client.suggestAnalysisConfig({ graph: { ...graph, nodes: graph.nodes.map((item) => item.id === nodeId ? { ...item, config: draft } : item) }, nodeId, intent, scope }); setProposal(result); } catch (error) { setAssistantError(error instanceof Error ? error.message : text('Suggestion failed.', '設定案の取得に失敗しました。')); } finally { setSuggesting(false); } };
+  const dialogRef = useModalBehavior<HTMLElement>({ onClose: onCancel });
   return <div className="node-config-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
-    <section className="node-config-dialog" role="dialog" aria-modal="true" aria-label={text('Node configuration', 'ノード設定')}>
+    <section ref={dialogRef} tabIndex={-1} className="node-config-dialog" role="dialog" aria-modal="true" aria-label={text('Node configuration', 'ノード設定')}>
       <header><div><span className="eyebrow">{text('Configuration', '設定')}</span><h2>{text(catalogItem(type).label, catalogItem(type).labelJa)}</h2></div><button type="button" className="ghost" aria-label={text('Close settings', '設定を閉じる')} onClick={onCancel}>×</button></header>
       <div className="node-config-dialog-body">
         {type === 'agent-output' && <AgentOutputFields config={draft} setConfig={patch} columns={columns} />}

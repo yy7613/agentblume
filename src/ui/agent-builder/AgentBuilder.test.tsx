@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentSummaryDto, SerializedAgentDto } from '../api/types';
+import { draftKey, readDraft, writeDraft } from '../hooks/useDraftPersistence';
 import { I18nProvider } from '../i18n';
 import { AgentBuilder } from './AgentBuilder';
 
 afterEach(cleanup);
+// 下書きは localStorage に残るため、テスト間で持ち越さない。
+beforeEach(() => { localStorage.clear(); });
 
 // 一覧からOpenした時に返す保存済みAgent。
 const existingAgentSummary: AgentSummaryDto = { internalId: 'existing-agent', displayName: 'Existing Agent', publishName: 'existing_agent', latestVersion: '2.0.0', kind: 'normal', state: 'draft' };
@@ -429,6 +432,69 @@ describe('AgentBuilder', () => {
       expect(await screen.findByRole('heading', { name: 'Agents' })).toBeTruthy();
       expect(screen.getByRole('button', { name: 'New agent' })).toBeTruthy();
       expect(client.listAgents).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('下書きの自動保存と復元', () => {
+    const scope = { tenantId: 'local', workspaceId: 'default' } as const;
+    const newAgentKey = draftKey('agent-builder', scope);
+
+    it('編集内容をlocalStorageへ退避し、画面を離れても失わない', async () => {
+      const client = stubClient();
+      const { unmount } = await openNewAgentEditor(client);
+      await userEvent.type(screen.getByRole('textbox', { name: 'System prompt' }), 'Draft prompt.');
+      // アンマウント（左ナビでの画面切替相当）でデバウンス待ちの内容も書き出す。
+      unmount();
+      expect(readDraft<{ systemPrompt: string }>(newAgentKey)?.value.systemPrompt).toBe('Draft prompt.');
+    });
+
+    it('下書きがあると復元バナーを出し、自動では適用しない', async () => {
+      writeDraft(newAgentKey, { internalId: 'restored', workingName: 'w', displayName: 'Restored Agent', publishName: 'p', owner: 'o', kind: 'normal', systemPrompt: 'Restored prompt.', structuredOutput: false, outputFields: [{ name: '', type: 'string', required: true }], tools: [], skills: [], wikis: [], mcpServers: [], subAgents: [] }, '2026-07-27T09:30:00.000Z');
+      const client = stubClient();
+      await openNewAgentEditor(client);
+
+      expect(await screen.findByText(/Unsaved edits from .* were found/)).toBeTruthy();
+      // 自動適用はしない（バナーを出すだけ）。
+      expect((screen.getByRole('textbox', { name: 'System prompt' }) as HTMLTextAreaElement).value).toBe('');
+
+      await userEvent.click(screen.getByRole('button', { name: 'Restore' }));
+      expect((screen.getByRole('textbox', { name: 'System prompt' }) as HTMLTextAreaElement).value).toBe('Restored prompt.');
+      expect((screen.getByLabelText('Agent display name') as HTMLInputElement).value).toBe('Restored Agent');
+      expect(screen.queryByText(/Unsaved edits from/)).toBeNull();
+    });
+
+    it('破棄を選ぶと下書きを消し、編集中の内容は触らない', async () => {
+      writeDraft(newAgentKey, { internalId: 'x', workingName: 'w', displayName: 'Old', publishName: 'p', owner: 'o', kind: 'normal', systemPrompt: 'Old prompt.', structuredOutput: false, outputFields: [], tools: [], skills: [], wikis: [], mcpServers: [], subAgents: [] }, '2026-07-27T09:30:00.000Z');
+      const client = stubClient();
+      await openNewAgentEditor(client);
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Discard' }));
+      expect(screen.queryByText(/Unsaved edits from/)).toBeNull();
+      expect(localStorage.getItem(newAgentKey)).toBeNull();
+      expect((screen.getByRole('textbox', { name: 'System prompt' }) as HTMLTextAreaElement).value).toBe('');
+    });
+
+    it('保存に成功すると下書きを消す', async () => {
+      const client = stubClient();
+      (client.saveAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.0.0' } });
+      await openNewAgentEditor(client);
+      await userEvent.type(screen.getByLabelText('Agent internal ID'), 'saved-agent');
+      await userEvent.type(screen.getByLabelText('Working name'), 'draft');
+      await userEvent.type(screen.getByLabelText('Agent display name'), 'Saved Agent');
+      await userEvent.type(screen.getByLabelText('Publish name'), 'saved_agent');
+      await userEvent.type(screen.getByLabelText('Owner'), 'owner');
+      await userEvent.type(screen.getByRole('textbox', { name: 'System prompt' }), 'Prompt.');
+
+      await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+      await screen.findByText('Saved · version 1.0.0');
+      await waitFor(() => expect(localStorage.getItem(newAgentKey)).toBeNull());
+    });
+
+    it('別Agentの下書きは混ざらない（キーがinternalIdで分かれる）', async () => {
+      writeDraft(draftKey('agent-builder', scope, 'other-agent'), { systemPrompt: 'Other draft.' }, '2026-07-27T09:30:00.000Z');
+      const client = stubClient();
+      await openNewAgentEditor(client);
+      expect(screen.queryByText(/Unsaved edits from/)).toBeNull();
     });
   });
 });

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { AgentRuntimeHarnessDto } from '../api/types';
+import { useModalBehavior } from '../hooks/useModalBehavior';
 import { useI18n } from '../i18n';
 
 /** Agent単位のランタイムハーネス設定。undefined は「未設定（サーバー既定の従来動作）」を意味する。 */
@@ -30,6 +31,7 @@ export function HarnessSettingsDialog({ initial, onCancel, onClear, onApply }: {
 }) {
   // ダイアログ内だけで編集し、Applyで初めて親へ反映する（Cancelで破棄）。
   const [draft, setDraft] = useState<AgentHarnessValue>(initial);
+  const dialogRef = useModalBehavior<HTMLElement>({ onClose: onCancel });
   const { text } = useI18n();
   const toggle = (key: HarnessKey) => setDraft((current) => ({ ...current, [key]: !current[key] }));
   // aria-labelは英語固定（テスト安定化）。表示ラベル・説明だけを日英で切り替える。
@@ -42,7 +44,7 @@ export function HarnessSettingsDialog({ initial, onCancel, onClear, onApply }: {
     { key: 'functionInvocation', ariaLabel: 'Function invocation', label: text('Function invocation', 'ツール自動実行'), description: text('automatic tool-calling loop (off = single reply, no tools)', 'ツール呼び出しの自動ループ（オフで1回応答のみ）') },
   ];
   return <div className="node-config-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
-    <section className="node-config-dialog harness-settings-dialog" role="dialog" aria-modal="true" aria-label={text('Runtime harness', 'ランタイムハーネス')}>
+    <section ref={dialogRef} tabIndex={-1} className="node-config-dialog harness-settings-dialog" role="dialog" aria-modal="true" aria-label={text('Runtime harness', 'ランタイムハーネス')}>
       <header>
         <div><span className="eyebrow">{text('Agent runtime', 'エージェント実行')}</span><h2>{text('Harness', 'ハーネス')}</h2></div>
         <button type="button" className="ghost" aria-label={text('Close harness settings', 'ハーネス設定を閉じる')} onClick={onCancel}>×</button>

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, AgentSummaryDto, HarnessRunDto, HarnessSummaryDto, RunImageAttachmentDto, RunTraceEventDto, SessionArtifactDto } from '../api/types';
+import { useModalBehavior } from '../hooks/useModalBehavior';
 import { useI18n } from '../i18n';
 import { useElapsedSeconds } from './useElapsedSeconds';
 import { buildHistory } from './agent-history';
+import { appendTurn, emptyThread, type TurnThread } from './turn-limit';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
@@ -44,7 +46,10 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const [selectedId, setSelectedId] = useState('');
   const [message, setMessage] = useState('');
   const [images, setImages] = useState<readonly RunImageAttachmentDto[]>([]);
-  const [turns, setTurns] = useState<readonly ChatTurn[]>([]);
+  // 会話は上限付きで保持する（超過分は古い順に落とし、落とした件数を画面へ出す）。
+  const [thread, setThread] = useState<TurnThread<ChatTurn>>(emptyThread);
+  const turns = thread.turns;
+  const pushTurn = (turn: ChatTurn) => setThread((prev) => appendTurn(prev, turn));
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
@@ -93,7 +98,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
     if (target === undefined || content === '' || busy) return;
     setBusy(true);
     const attachedImages = retry === undefined ? images : retry.images;
-    setTurns((prev) => [...prev, { role: 'user', text: content, images: attachedImages }]);
+    pushTurn({ role: 'user', text: content, images: attachedImages });
     if (retry === undefined) { setMessage(''); setImages([]); }
     try {
       let activeSessionId = target.kind === 'agent' ? sessionId : undefined;
@@ -112,12 +117,12 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
           : activeHarnessRun?.status === 'waiting-approval'
             ? await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'approval', decision: 'revise', feedback: content } })
             : await client.runHarness({ scope, harness: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview' });
-      setTurns((prev) => [...prev, { role: 'assistant', run }]);
+      pushTurn({ role: 'assistant', run });
       if (isHarnessRun(run)) setActiveHarnessRun(run.status === 'waiting-input' || run.status === 'waiting-approval' ? run : undefined);
       else setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
       if (activeSessionId !== undefined && typeof sessions.listSessionArtifacts === 'function') void sessions.listSessionArtifacts(activeSessionId, scope).then(setArtifacts).catch(() => {});
     } catch (cause) {
-      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), onRetry: () => void send({ content, images: attachedImages }) }]);
+      pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void send({ content, images: attachedImages }) });
     } finally {
       setBusy(false);
     }
@@ -125,13 +130,13 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
 
   function newChat(): void {
     const closing = sessionId;
-    setTurns([]); setSessionId(undefined); setArtifacts([]); setImages([]); setActiveHarnessRun(undefined); setApprovalRunId(undefined);
+    setThread(emptyThread()); setSessionId(undefined); setArtifacts([]); setImages([]); setActiveHarnessRun(undefined); setApprovalRunId(undefined);
     if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
   }
 
   function selectAgent(next: string): void {
     const closing = sessionId;
-    setSelectedId(next); setSessionId(undefined); setArtifacts([]); setTurns([]); setImages([]); setActiveHarnessRun(undefined); setApprovalRunId(undefined);
+    setSelectedId(next); setSessionId(undefined); setArtifacts([]); setThread(emptyThread()); setImages([]); setActiveHarnessRun(undefined); setApprovalRunId(undefined);
     if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
   }
 
@@ -170,10 +175,10 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
     setBusy(true);
     try {
       const run = await client.resumeRun(runId, scope, decision);
-      setTurns((prev) => [...prev, { role: 'assistant', run }]);
+      pushTurn({ role: 'assistant', run });
       setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
     } catch (cause) {
-      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), onRetry: () => void resolveToolApproval(runId, decision) }]);
+      pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void resolveToolApproval(runId, decision) });
     } finally {
       setBusy(false);
     }
@@ -182,13 +187,13 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   async function respondToApproval(decision: 'approve' | 'reject'): Promise<void> {
     if (activeHarnessRun?.status !== 'waiting-approval' || busy) return;
     setBusy(true);
-    setTurns((prev) => [...prev, { role: 'user', text: decision === 'approve' ? text('Approve the plan.', '計画を承認します。') : text('Reject and cancel the plan.', '計画を却下して中止します。'), images: [] }]);
+    pushTurn({ role: 'user', text: decision === 'approve' ? text('Approve the plan.', '計画を承認します。') : text('Reject and cancel the plan.', '計画を却下して中止します。'), images: [] });
     try {
       const run = await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'approval', decision } });
-      setTurns((prev) => [...prev, { role: 'assistant', run }]);
+      pushTurn({ role: 'assistant', run });
       setActiveHarnessRun(run.status === 'waiting-input' || run.status === 'waiting-approval' ? run : undefined);
     } catch (cause) {
-      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), onRetry: () => void respondToApproval(decision) }]);
+      pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void respondToApproval(decision) });
     } finally {
       setBusy(false);
     }
@@ -199,10 +204,10 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
     setBusy(true);
     try {
       const run = await client.cancelHarnessRun(activeHarnessRun.runId, scope);
-      setTurns((prev) => [...prev, { role: 'assistant', run }]);
+      pushTurn({ role: 'assistant', run });
       setActiveHarnessRun(undefined);
     } catch (cause) {
-      setTurns((prev) => [...prev, { role: 'error', text: messageOf(cause), onRetry: () => void cancelInteractiveHarness() }]);
+      pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void cancelInteractiveHarness() });
     } finally {
       setBusy(false);
     }
@@ -232,6 +237,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       <div className="cc-thread" ref={threadRef}>
         <div className="cc-thread-inner">
           {loadError !== undefined && <div className="cc-alert" role="alert">{loadError}</div>}
+          {thread.dropped > 0 && <p className="cc-trimmed">{text(`${thread.dropped} older message(s) were removed from this view.`, `古いメッセージ${thread.dropped}件は表示から削除されました。`)}</p>}
           {turns.length === 0 ? (
             <div className="cc-welcome">
               <span className="cc-mark lg" aria-hidden="true">{sparkIcon}</span>
@@ -246,7 +252,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
               )}
             </div>
           ) : (
-            turns.map((turn, index) => <Turn key={index} turn={turn} agentName={agentName} text={text} busy={busy}
+            turns.map((turn, index) => <Turn key={thread.dropped + index} turn={turn} agentName={agentName} text={text} busy={busy}
               approvalRunId={approvalRunId}
               onResolveApproval={(runId, decision) => void resolveToolApproval(runId, decision)} />)
           )}
@@ -457,11 +463,12 @@ type ChartPayload = { readonly specVersion: 1; readonly chartType: string; reado
 function isChartPayload(value: unknown): value is ChartPayload { return value !== null && typeof value === 'object' && (value as { chartType?: unknown }).chartType !== undefined && Array.isArray((value as { rows?: unknown }).rows); }
 
 function ChartDialog({ artifact, payload, text, onClose }: { readonly artifact: SessionArtifactDto; readonly payload: ChartPayload; readonly text: Translate; readonly onClose: () => void }) {
+  const dialogRef = useModalBehavior<HTMLElement>({ onClose });
   const valueColumn = stringMapping(payload.mapping, 'valueColumn', 'coefficientColumn', 'yColumn');
   const labelColumn = stringMapping(payload.mapping, 'timeColumn', 'xColumn', 'categoryColumn');
   const points = payload.rows.map((row, index) => ({ x: labelColumn === undefined ? String(index + 1) : String(row[labelColumn] ?? ''), y: valueColumn === undefined ? undefined : number(row[valueColumn]) })).filter((point): point is { x: string; y: number } => point.y !== undefined);
   const numericValues = valueColumn === undefined ? [] : payload.rows.map((row) => number(row[valueColumn])).filter((value): value is number => value !== undefined);
-  return <div className="chart-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="chart-dialog" role="dialog" aria-modal="true" aria-label={text('Chart preview', 'チャートプレビュー')}><header><div><span className="eyebrow">{payload.chartType}</span><h2>{payload.title ?? artifact.name}</h2></div><button type="button" className="ghost" aria-label={text('Close chart', 'チャートを閉じる')} onClick={onClose}>×</button></header>{payload.chartType === 'histogram' ? <HistogramSvg values={numericValues} text={text} /> : payload.chartType === 'box-plot' ? <BoxPlotSvg values={numericValues} text={text} /> : payload.chartType === 'correlation-heatmap' ? <HeatmapSvg rows={payload.rows} mapping={payload.mapping} text={text} /> : <ChartSvg points={points} type={payload.chartType} text={text} />}<p>{text(`${payload.sourceRowCount} source rows · ${payload.rows.length} rendered points`, `元データ ${payload.sourceRowCount}行 · 描画 ${payload.rows.length}ポイント`)}{payload.sampled ? text(' · sampled', ' · 間引き済み') : ''}</p><details><summary>{text('Chart mapping', 'チャート対応')}</summary><pre>{JSON.stringify(payload.mapping, null, 2)}</pre></details></section></div>;
+  return <div className="chart-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} tabIndex={-1} className="chart-dialog" role="dialog" aria-modal="true" aria-label={text('Chart preview', 'チャートプレビュー')}><header><div><span className="eyebrow">{payload.chartType}</span><h2>{payload.title ?? artifact.name}</h2></div><button type="button" className="ghost" aria-label={text('Close chart', 'チャートを閉じる')} onClick={onClose}>×</button></header>{payload.chartType === 'histogram' ? <HistogramSvg values={numericValues} text={text} /> : payload.chartType === 'box-plot' ? <BoxPlotSvg values={numericValues} text={text} /> : payload.chartType === 'correlation-heatmap' ? <HeatmapSvg rows={payload.rows} mapping={payload.mapping} text={text} /> : <ChartSvg points={points} type={payload.chartType} text={text} />}<p>{text(`${payload.sourceRowCount} source rows · ${payload.rows.length} rendered points`, `元データ ${payload.sourceRowCount}行 · 描画 ${payload.rows.length}ポイント`)}{payload.sampled ? text(' · sampled', ' · 間引き済み') : ''}</p><details><summary>{text('Chart mapping', 'チャート対応')}</summary><pre>{JSON.stringify(payload.mapping, null, 2)}</pre></details></section></div>;
 }
 function stringMapping(mapping: ChartPayload['mapping'], ...keys: readonly string[]): string | undefined { for (const key of keys) { const value = mapping[key]; if (typeof value === 'string') return value; } return undefined; }
 function number(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined; }

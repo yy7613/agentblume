@@ -16,6 +16,7 @@ import { EtlEngine } from '../etl/engine';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
 import { ApplyImprovementsUseCase } from './apply-improvements';
+import type { UnitOfWorkPort } from '../persistence/unit-of-work';
 import { ProfileDataSourcesUseCase } from './profile-data-sources';
 import { ToolSmithRole } from './roles/tool-smith-role';
 
@@ -74,7 +75,7 @@ function makeSequentialId(prefix: string): () => string {
   return () => { next += 1; return `${prefix}-${next}`; };
 }
 
-async function setup(options?: { readonly withToolCreation?: boolean }) {
+async function setup(options?: { readonly withToolCreation?: boolean; readonly unitOfWork?: UnitOfWorkPort }) {
   const dataSources = new InMemoryDataSourceRepository();
   await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Sales', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 30, createdAt: '', updatedAt: '' }, 'id,amount\n1,100\n2,200');
   const engine = new EtlEngine(createDefaultRegistry());
@@ -93,6 +94,7 @@ async function setup(options?: { readonly withToolCreation?: boolean }) {
     : undefined;
   const useCase = new ApplyImprovementsUseCase(
     agentRepo, skillRepo, toolRepo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine, undefined, toolCreation, makeSequentialId('new'),
+    options?.unitOfWork,
   );
 
   const tool = await saveTool.execute({
@@ -166,6 +168,29 @@ describe('ApplyImprovementsUseCase', () => {
     expect(result.applied).toHaveLength(1);
     const newTool = await toolRepo.findVersion(scope, toolId, SemVer.parse(result.applied[0]!.resultingVersion.version));
     expect(newTool?.graph.nodes).toHaveLength(3);
+  });
+
+  it('整合性のためのSkill引き上げとAgent新版は同じトランザクション境界の内側にある', async () => {
+    // 境界の内側を一切実行しない UnitOfWork を入れると、境界内の書き込みだけが消える。
+    const aborting: UnitOfWorkPort = { withTransaction: async () => { throw new Error('transaction aborted'); } };
+    const { toolRepo, skillRepo, agentRepo, useCase, agentRef, toolId, skillId } = await setup({ unitOfWork: aborting });
+    const revisedGraph: ToolGraph = {
+      nodes: [
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+        { id: 'sel', type: 'select', config: { columns: ['id', 'amount'] } },
+        { id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
+      ],
+      edges: [{ from: 'src', to: 'sel' }, { from: 'sel', to: 'out' }],
+    };
+    const proposal: ImprovementProposal = { kind: 'tool-graph-revision', toolId, graph: revisedGraph, rationale: 'narrow columns' };
+
+    await expect(useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4 })).rejects.toThrow('transaction aborted');
+
+    // 境界の外（提案の適用ループ）で作られたTool新版は残る。
+    expect(await toolRepo.findVersion(scope, toolId, SemVer.of(1, 0, 1))).not.toBeNull();
+    // 境界の内側にある「Skillの引き上げ」と「Agent新版」は作られていない＝孤児が残らない。
+    expect(await skillRepo.findVersion(scope, skillId, SemVer.of(1, 0, 1))).toBeNull();
+    expect(await agentRepo.listVersions(scope, agentRef.internalId)).toHaveLength(1);
   });
 
   it('tool-graph-revision: agent-input付き改訂グラフはinputSchemaを再導出して保存する', async () => {

@@ -696,6 +696,13 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 .inline-feedback.info { background: #e9eefc; color: #33499c; }
 .inline-feedback.error { background: #fce8ea; color: #a62f3e; }
 .required-mark { color: #b43a46; margin-left: 3px; font-weight: 700; }
+/* 未保存の下書きが見つかったときの復元バナー（自動復元はせずユーザーに選ばせる）。 */
+.draft-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 8px 0; padding: 9px 12px; border: 1px solid #d7c48f; border-radius: 8px; background: #fdf6e3; color: #7a5c12; font-size: 12px; }
+.draft-banner-actions { display: flex; gap: 8px; }
+.draft-banner-actions button { height: 28px; padding: 0 12px; border-radius: 7px; border: 1px solid #d9deea; background: white; font-size: 12px; }
+.draft-banner-actions button.primary { background: #4d5ef2; border-color: #4d5ef2; color: white; font-weight: 700; }
+/* 会話turnの上限で古いメッセージを落としたことを伝える1行。 */
+.cc-trimmed { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; background: #eef1f6; color: #62708c; font-size: 11px; text-align: center; }
 .api-error { font-size: 12px; font-weight: 600; }
 .cc-alert.notice { background: #e9eefc; color: #33499c; }
 /* 単一Agent実行のツール承認バナー（吹き出し直下・チャットと動作確認で共用）。 */
