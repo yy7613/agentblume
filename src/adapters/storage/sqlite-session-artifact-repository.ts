@@ -189,3 +189,13 @@ function defaultDataDirectory(dbPath: string, temporary: boolean): string {
     ? join(tmpdir(), 'agentblume-session-artifacts', randomUUID())
     : join(dirname(resolve(dbPath)), `${basename(dbPath)}.session-artifacts`);
 }
+
+/**
+ * 永続DBに対応するpayload置き場（`<db>.session-artifacts`）。
+ *
+ * バックアップは「DBファイル + この実体ディレクトリ」を1組として扱う必要があるため、
+ * 置き場の規則をここ1箇所から公開する（composition が同じ規則を二重定義しないように）。
+ */
+export function sessionArtifactDirectory(dbPath: string): string {
+  return defaultDataDirectory(dbPath, false);
+}

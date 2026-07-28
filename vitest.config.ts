@@ -10,7 +10,9 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.ts'],
       // *.contract.ts / *.fixtures.ts は共有テストスイート・フィクスチャ（テストコード）なので計測対象外
-      exclude: ['src/**/*.test.ts', 'src/**/*.contract.ts', 'src/**/*.fixtures.ts', 'src/demo.ts', 'src/server.ts', 'src/llmops-gate.ts', 'src/**/index.ts'],
+      // エントリポイント（import した時点で実行され、process.argv / exitCode を触る）は計測対象外。
+      // 中身のロジックは application / adapters 側のテストが持つ。
+      exclude: ['src/**/*.test.ts', 'src/**/*.contract.ts', 'src/**/*.fixtures.ts', 'src/demo.ts', 'src/server.ts', 'src/llmops-gate.ts', 'src/backup-cli.ts', 'src/**/index.ts'],
       thresholds: {
         lines: 90,
         functions: 90,

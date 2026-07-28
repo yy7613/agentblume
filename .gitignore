@@ -32,6 +32,10 @@ secret.key
 *.sqlite
 *.sqlite3
 
+# バックアップ（DBのスナップショット・セッションアーティファクト・場合により暗号鍵を含む）
+*.backups/
+backup-[0-9]*/
+
 # Editor & OS
 .DS_Store
 Thumbs.db

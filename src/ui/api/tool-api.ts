@@ -68,6 +68,8 @@ import type {
   OperationsStatusDto,
   RetentionPolicyDto,
   RetentionApplyResultDto,
+  BackupListDto,
+  CreatedBackupDto,
   DataSourceDto,
   DatabaseConnectionDto,
   DatabaseConnectionStatusDto,
@@ -658,6 +660,18 @@ export class ToolApiClient {
 
   async applyRetention(scope: TenantScopeDto): Promise<RetentionApplyResultDto> {
     return (await this.request<{ result: RetentionApplyResultDto }>('/operations/retention/apply', { method: 'POST', body: JSON.stringify({ scope }) })).result;
+  }
+
+  /**
+   * バックアップを作る。**サーバー側のファイルシステムへ書く**ので、応答はダウンロードではなく保存先パス。
+   * スコープを取らないのは、単位が保存先ファイル全体（＝全テナント）だから。
+   */
+  async createBackup(includeSecretKey = false): Promise<CreatedBackupDto> {
+    return (await this.request<{ backup: CreatedBackupDto }>('/operations/backups', { method: 'POST', body: JSON.stringify({ includeSecretKey }) })).backup;
+  }
+
+  async listBackups(signal?: AbortSignal): Promise<BackupListDto> {
+    return await this.request<BackupListDto>('/operations/backups', { signal });
   }
 
   // 長期記憶（v21）

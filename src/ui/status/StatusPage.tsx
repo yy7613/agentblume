@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { OperationsStatusDto, RunFeedbackDto, RunRecordDto, RunSummaryDto, RunTraceEventDto } from '../api/types';
+import type { BackupSummaryDto, OperationsStatusDto, RunFeedbackDto, RunRecordDto, RunSummaryDto, RunTraceEventDto, TenantScopeDto } from '../api/types';
 import { useToolBuilderStore } from '../tool-builder/store';
 import { useI18n } from '../i18n';
 import { InlineFeedback } from '../components/InlineFeedback';
@@ -61,6 +61,8 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
     <header className="status-header"><div><span className="eyebrow">{text('Observability', 'オブザーバビリティ')}</span><h1>{text('Run status', '実行ステータス')}</h1><p>{scope.tenantId} / {scope.workspaceId}</p></div><button type="button" className="secondary" onClick={() => void refresh()}>{loading ? text('Loading…', '読み込み中…') : text('Refresh', '更新')}</button></header>
     {error !== undefined && <div className="api-error" role="alert">{error}</div>}
     {status !== undefined && <OperationsSummary status={status} text={text} />}
+    <MaintenancePanel client={client} scope={scope} />
+
     <div className="status-workspace">
       <section className="run-list" aria-label={text('Run history', '実行履歴')}>
         {runs.length === 0 && !loading ? <p className="empty-state">{text('No saved runs.', '保存済みの実行はありません。')}</p> : runs.map((run) => <button type="button" key={run.runId} className={selected?.runId === run.runId ? 'selected' : ''} onClick={() => void select(run.runId)}>
@@ -79,6 +81,122 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
       </section>
     </div>
   </main>;
+}
+
+/** バイト数を人が読める単位へ（バックアップの規模感が分かればよいので小数1桁）。 */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+  return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
+}
+
+/**
+ * バックアップの失敗は原因ごとに**利用者がやることが違う**ので、原因を推定して次の一手を添える。
+ * 例外メッセージだけ出すと `ENOSPC: no space left on device, write` のままで、
+ * 「どこの空きが足りないのか」「何をすればよいのか」が伝わらない。
+ */
+export function backupFailureHint(message: string, text: (en: string, ja: string) => string): string | undefined {
+  if (/ENOSPC|no space left/i.test(message)) return text('The disk holding the backup directory is full. Free up space or point AGENTCONTEXT_BACKUP_DIR at another drive.', 'バックアップ先のディスクに空きがありません。空き容量を作るか、AGENTCONTEXT_BACKUP_DIR で別のドライブを指定してください。');
+  if (/EACCES|EPERM|permission denied/i.test(message)) return text('The server process cannot write to the backup directory. Check its permissions, or set AGENTCONTEXT_BACKUP_DIR to a writable path.', 'サーバープロセスがバックアップ先へ書き込めません。権限を確認するか、AGENTCONTEXT_BACKUP_DIR に書き込み可能なパスを指定してください。');
+  if (/EROFS|read-only file system/i.test(message)) return text('The backup directory is on a read-only filesystem. Set AGENTCONTEXT_BACKUP_DIR to a writable path.', 'バックアップ先が読み取り専用です。AGENTCONTEXT_BACKUP_DIR に書き込み可能なパスを指定してください。');
+  if (/in-memory|:memory:/i.test(message)) return text('This server runs on an in-memory database, so there is nothing to back up. Set AGENTCONTEXT_DB_PATH to a file and restart.', 'このサーバーは揮発DB（:memory:）で動いているためバックアップできません。AGENTCONTEXT_DB_PATH にファイルを指定して再起動してください。');
+  return undefined;
+}
+
+interface MaintenanceNotice { readonly kind: 'ok' | 'error'; readonly message: string; readonly details: readonly string[] }
+
+/**
+ * 運用操作（バックアップ・保持期限の手動適用）。
+ *
+ * バックアップは**サーバーのファイルシステムへ書く**ためブラウザのダウンロードにはならない。
+ * ローカル実行のIDEではサーバー＝利用者のPCなので、保存先パスを見せるほうが実態に合う
+ * （別マシンへ持ち出すときはそのディレクトリをコピーする）。
+ */
+function MaintenancePanel({ client, scope }: { readonly client: ToolApiClient; readonly scope: TenantScopeDto }) {
+  const { text } = useI18n();
+  const [root, setRoot] = useState<string>();
+  const [backups, setBackups] = useState<readonly BackupSummaryDto[]>([]);
+  const [includeSecretKey, setIncludeSecretKey] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<MaintenanceNotice>();
+
+  const supported = typeof client.listBackups === 'function' && typeof client.createBackup === 'function';
+
+  const refresh = useCallback(async () => {
+    if (typeof client.listBackups !== 'function') return;
+    try {
+      const list = await client.listBackups();
+      setRoot(list.root); setBackups(list.backups);
+    } catch (cause) {
+      setNotice({ kind: 'error', message: cause instanceof Error ? cause.message : 'Backup lookup failed', details: [] });
+    }
+  }, [client]);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  function fail(cause: unknown): void {
+    const message = cause instanceof Error ? cause.message : 'Operation failed';
+    const hint = backupFailureHint(message, text);
+    setNotice({ kind: 'error', message, details: hint === undefined ? [] : [hint] });
+  }
+
+  async function createBackup(): Promise<void> {
+    if (typeof client.createBackup !== 'function') return;
+    setBusy(true); setNotice(undefined);
+    try {
+      const created = await client.createBackup(includeSecretKey);
+      setNotice({ kind: 'ok', message: text(`Backup created at ${created.path}`, `バックアップを作成しました: ${created.path}`), details: created.warnings });
+      await refresh();
+    } catch (cause) { fail(cause); }
+    finally { setBusy(false); }
+  }
+
+  async function applyRetention(): Promise<void> {
+    if (typeof client.applyRetention !== 'function') return;
+    setBusy(true); setNotice(undefined);
+    try {
+      const result = await client.applyRetention(scope);
+      setNotice({
+        kind: 'ok',
+        message: text(
+          `Retention applied: ${result.deleted} run(s) deleted, ${result.payloadRedacted} payload(s) redacted, ${result.traceRedacted} trace(s) redacted, ${result.feedbackDeleted} feedback deleted, ${result.aggregateBucketsDeleted} daily bucket(s) deleted.`,
+          `保持期限を適用しました: Run削除 ${result.deleted} 件 / payload伏せ字 ${result.payloadRedacted} 件 / trace伏せ字 ${result.traceRedacted} 件 / feedback削除 ${result.feedbackDeleted} 件 / 日次集計削除 ${result.aggregateBucketsDeleted} 件。`,
+        ),
+        details: [],
+      });
+    } catch (cause) { fail(cause); }
+    finally { setBusy(false); }
+  }
+
+  if (!supported) return null;
+  return <section className="workspace-card maintenance-panel" aria-label={text('Maintenance', 'メンテナンス')}>
+    <h2>{text('Backup and cleanup', 'バックアップと掃除')}</h2>
+    <p className="empty-state">{text('A backup copies the database and the session artifact files into a folder on the machine running the server. Copy that folder to another drive to keep it safe. Restoring is done from the command line while the server is stopped.', 'バックアップはDBとセッションアーティファクトの実ファイルを、サーバーが動いているマシン上のフォルダへコピーします。安全のため別ドライブへコピーしてください。復元はサーバーを停止した状態でコマンドラインから行います。')}</p>
+    {root !== undefined && <dl className="settings-list"><div><dt>{text('Backup folder', 'バックアップ先')}</dt><dd><code>{root}</code></dd></div></dl>}
+    <label className="structured-output-toggle">
+      <input type="checkbox" checked={includeSecretKey} onChange={(event) => setIncludeSecretKey(event.target.checked)} />
+      {text('Include the secret key file', '暗号鍵ファイルも含める')}
+    </label>
+    {includeSecretKey && <p className="field-error" role="status">{text('The backup will then be able to decrypt every stored API key. Store it exactly as carefully as the keys themselves.', 'このバックアップは保存済みAPIキーをすべて復号できるようになります。APIキーそのものと同じ厳重さで保管してください。')}</p>}
+    <div className="save-actions">
+      <button type="button" className="primary" disabled={busy} onClick={() => void createBackup()}>{busy ? text('Working…', '実行中…') : text('Create backup', 'バックアップを作成')}</button>
+      <button type="button" className="secondary" disabled={busy || typeof client.applyRetention !== 'function'} onClick={() => void applyRetention()}>{text('Apply retention now', '保持期限をいま適用')}</button>
+    </div>
+    {notice !== undefined && <div className={notice.kind === 'error' ? 'api-error' : 'model-slot-ok'} role={notice.kind === 'error' ? 'alert' : 'status'}>
+      <p>{notice.message}</p>
+      {notice.details.map((detail) => <p key={detail} className="model-slot-note">{detail}</p>)}
+    </div>}
+    {backups.length === 0
+      ? <p className="empty-state">{text('No backups yet.', 'バックアップはまだありません。')}</p>
+      : <ul className="backup-list">{backups.slice(0, 10).map((backup) => <li key={backup.name}>
+        <code>{backup.name}</code>
+        {backup.manifest === undefined
+          ? <span className="field-error">{text('Incomplete backup (no manifest) — safe to delete.', '未完成のバックアップ（manifestなし）。削除して構いません。')}</span>
+          : <span>{new Date(backup.manifest.createdAt).toLocaleString()} · {formatBytes(backup.manifest.database.bytes + backup.manifest.artifacts.bytes)} · schema v{backup.manifest.schemaVersion} · {backup.manifest.secretKey.included ? text('key included', '鍵あり') : text('no key', '鍵なし')}</span>}
+      </li>)}</ul>}
+  </section>;
 }
 
 function OperationsSummary({ status, text }: { readonly status: OperationsStatusDto; readonly text: (en: string, ja: string) => string }) {

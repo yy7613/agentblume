@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import type { CreateBackupUseCase, ListBackupsUseCase } from '../application/operations/backup';
 import type { SubmitRunFeedbackUseCase, QueryRunFeedbackUseCase } from '../application/operations/feedback';
 import type { QueryOperationsStatusUseCase } from '../application/operations/query-operations-status';
 import type { RetentionUseCase } from '../application/operations/retention';
@@ -10,6 +11,8 @@ export interface OperationsRouteDeps {
   readonly queryRunFeedback: QueryRunFeedbackUseCase;
   readonly queryOperationsStatus: QueryOperationsStatusUseCase;
   readonly retention: RetentionUseCase;
+  readonly createBackup: CreateBackupUseCase;
+  readonly listBackups: ListBackupsUseCase;
 }
 
 const scopeSchema = z.object({ tenantId: z.string().min(1), workspaceId: z.string().min(1) });
@@ -49,5 +52,24 @@ export function registerOperationsRoutes(app: FastifyInstance, deps: OperationsR
     const body = parse(z.object({ scope: scopeSchema }), request.body);
     return { result: await deps.retention.apply(body.scope) };
   });
+
+  /**
+   * バックアップの作成。**サーバーのファイルシステムへ書き、そのパスを返す**。
+   *
+   * ブラウザへのダウンロードにしなかった理由:
+   * バックアップの実体は「DBファイル + アーティファクトのディレクトリ」の2つで、
+   * 1本のレスポンスにするには zip/tar が要る（Nodeの標準ライブラリにアーカイバは無い）。
+   * agentblume はローカル実行が前提で、サーバーのファイルシステム＝利用者のPCなので、
+   * 保存先パスを返すほうが素直で、数GBのアーティファクトをメモリへ載せずに済む。
+   * 別マシンへ持ち出すのは利用者がそのディレクトリをコピーする（docs/17-operations-runbook.md）。
+   *
+   * テナントスコープを取らないのは、バックアップの単位が**プロセスの保存先ファイル全体**であり、
+   * 特定テナントのデータだけを切り出すものではないため（切り出しは evaluation dataset の export が担う）。
+   */
+  app.post('/operations/backups', async (request) => {
+    const body = parse(z.object({ includeSecretKey: z.boolean().default(false) }), request.body ?? {});
+    return { backup: await deps.createBackup.execute({ includeSecretKey: body.includeSecretKey }) };
+  });
+  app.get('/operations/backups', async () => ({ root: deps.listBackups.root(), backups: await deps.listBackups.execute() }));
 }
 

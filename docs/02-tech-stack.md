@@ -141,7 +141,12 @@ judgeスロットは同じ4つを `JUDGE_` 接頭辞つきで持つ（`JUDGE_LM_
 | env | 既定 | 内容 |
 |---|---|---|
 | `AGENTCONTEXT_DB_PATH` | `~/.agentblume/agentblume.db` | SQLiteの保存先。**未設定なら永続ファイル**を使う（親ディレクトリは自動作成）。`:memory:` を明示したときだけ揮発する。空文字は未設定と同じ扱い。起動時に実際の保存先をログへ出す |
+| `AGENTCONTEXT_BACKUP_DIR` | `<DBファイル>.backups` | バックアップの出力先（§5.1） |
 | `AGENTCONTEXT_TENANT_ID` / `AGENTCONTEXT_WORKSPACE_ID` | `local` / `default` | 保存・参照するテナントスコープ |
+
+永続化される状態は**DBファイル1つに閉じていない**。セッションアーティファクト（表・グラフのpayload）の実体は
+`<DBファイル>.session-artifacts/` に置き、DBはカタログ（`session_artifacts` テーブル）だけを持つ
+（`SqliteSessionArtifactRepository`）。バックアップ・引っ越しではこの2つを常に1組として扱う。
 
 SQLite接続は **プロセスにつき1本**（`src/adapters/storage/sqlite-database.ts`）。全リポジトリがこのハンドルを共有し、
 起動時に以下を適用する。
@@ -169,6 +174,20 @@ InMemory配線では `NoopUnitOfWork` がそのまま実行する。
 
 > 鍵ファイルとDBファイルは `.gitignore` 済み。鍵を失うと保存済みAPIキーは復号できない（UIから再入力すれば復旧する）。
 > Windows（NTFS）では鍵ファイルへの `chmod 0o600` が実効性を持たないため、保護はOSのACL・ディスク暗号化に依存する。
+
+### バックアップ（local）
+
+運用手順は [17-operations-runbook.md](./17-operations-runbook.md)。ここには設計上の判断だけを置く。
+
+| 判断 | 内容 | 理由 |
+|---|---|---|
+| 取得方式 | `node:sqlite` の `backup()`（SQLite Online Backup API）。無いNodeでは `VACUUM INTO` へフォールバック | WALでは直近のコミットが `-wal` 側にしか無く、**ファイルコピーは整合しない**。オンラインバックアップなら稼働中のまま一貫したスナップショットを1ファイルへ書ける。`backup()` は Node 22.15 以降にしか無いため、`engines` の下限（22.9.0）向けに `VACUUM INTO`（SQLite 3.27+）の退避経路を持つ |
+| 出力形式 | **ディレクトリ**（`backup-YYYYMMDD-HHMMSSmmm/` に DB + `session-artifacts/` + `manifest.json`） | Nodeの標準ライブラリにアーカイバが無い（`node:zlib` は圧縮ストリームのみ）。1ファイル化には依存追加か zip/tar の自前実装が要るが、**復旧経路の依存は少ないほどよい**。ディレクトリなら標準APIだけで完結し、最悪コピーで復元できる。1ファイルが要る場合はOS標準のZIPで固める |
+| 単位 | DBファイル + アーティファクト置き場。テナントで切り出さない | 両者はカタログと実体の関係にあり、片方だけ戻すと壊れる。テナント単位の切り出しは評価データセットの export が担う |
+| 暗号鍵 | **既定で含めない**。`--include-secret-key` で明示したときだけ同梱し、マニフェストに記録して警告する | 鍵と暗号文を同じフォルダで運ぶと「DBだけが流出しても平文キーは守られる」という前提が消える。引っ越しのときだけ含める |
+| マニフェスト | `formatVersion` / `createdAt` / `schemaVersion`（`PRAGMA user_version`）/ `revision` / `node` / 各コピーの実測値 / 鍵の有無。**最後に書く** | 途中で落ちたバックアップにはマニフェストが無く、「未完成」と判定できる。復元時は `schemaVersion` がこのビルドの最新より新しければ拒否する（起動時マイグレーションと同じ規律） |
+| 復元の公開範囲 | HTTP APIには**公開しない**。CLI（`npm run backup -- --restore`）専用 | 稼働中のプロセスはDBファイルを開いたまま握っており、その足元での差し替えは破壊的。CLIは復元前に自身の接続を閉じ、復元先が使用中でないかを確認し、現用データを `*.pre-restore-*` へ**退避**してから置く |
+| API | `POST /operations/backups`（作成・保存先パスを返す）/ `GET /operations/backups`（一覧） | ローカル実行ではサーバーのファイルシステム＝利用者のPC。ブラウザダウンロードにすると数GBのアーティファクトをメモリへ載せることになり、zip化の依存も要る |
 
 > プレビュー・テスト・本番実行を明確に表示し、使用データと権限を分離する（`ideas-v2.md §8`）。
 >

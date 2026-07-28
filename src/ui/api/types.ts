@@ -539,6 +539,25 @@ export interface OperationsStatusDto { readonly from: string; readonly to: strin
 export interface RetentionPolicyDto { readonly scope: TenantScopeDto; readonly payloadDays: number; readonly traceDays: number; readonly aggregateDays: number; readonly updatedAt: string }
 export interface RetentionApplyResultDto { readonly payloadRedacted: number; readonly traceRedacted: number; readonly deleted: number; readonly feedbackDeleted: number; readonly aggregateBucketsDeleted: number }
 
+/** バックアップ1件の自己記述メタデータ（`manifest.json` の中身）。 */
+export interface BackupManifestDto {
+  readonly formatVersion: number;
+  readonly createdAt: string;
+  readonly schemaVersion: number;
+  readonly revision?: string;
+  readonly node: string;
+  readonly sourceDatabasePath: string;
+  readonly database: { readonly file: string; readonly files: number; readonly bytes: number };
+  readonly artifacts: { readonly directory: string; readonly files: number; readonly bytes: number };
+  readonly secretKey: { readonly included: boolean; readonly file?: string };
+}
+/** 作成直後のバックアップ。`warnings` は失敗ではなく「気をつけること」。 */
+export interface CreatedBackupDto { readonly name: string; readonly path: string; readonly manifest: BackupManifestDto; readonly warnings: readonly string[] }
+/** 一覧の1件。マニフェストを読めなかった（＝作成途中で落ちた）ディレクトリは `problem` を持つ。 */
+export interface BackupSummaryDto { readonly name: string; readonly path: string; readonly manifest?: BackupManifestDto; readonly problem?: string }
+/** `GET /operations/backups` の応答。`root` はバックアップ置き場そのもの。 */
+export interface BackupListDto { readonly root: string; readonly backups: readonly BackupSummaryDto[] }
+
 export type EvaluationCaseSourceDto = 'manual' | 'import' | 'run-feedback';
 export type EvaluationCaseDto =
   | { readonly id: string; readonly kind: 'turn'; readonly input: string; readonly reference?: string; readonly expectedTools?: readonly string[]; readonly tags: readonly string[]; readonly source: EvaluationCaseSourceDto }

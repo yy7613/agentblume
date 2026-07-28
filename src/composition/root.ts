@@ -192,9 +192,12 @@ import { TestModelSettingsUseCase } from '../application/model-settings/test-mod
 import { QueryModelCatalogUseCase } from '../application/model-settings/query-model-catalog';
 import type { ModelSlotName } from '../domain/model-settings/model-settings';
 import type { TenantScope } from '../domain/tool/ids';
-import { defaultDatabasePath, MEMORY_DB_PATH, openSqliteDatabase, type SqliteDatabase } from '../adapters/storage/sqlite-database';
+import { defaultDatabasePath, LATEST_SCHEMA_VERSION, MEMORY_DB_PATH, openSqliteDatabase, type SqliteDatabase } from '../adapters/storage/sqlite-database';
 import { SqliteUnitOfWork } from '../adapters/storage/sqlite-unit-of-work';
 import { NoopUnitOfWork, type UnitOfWorkPort } from '../application/persistence/unit-of-work';
+import { defaultBackupRoot, FilesystemBackupStore } from '../adapters/storage/filesystem-backup-store';
+import { sessionArtifactDirectory } from '../adapters/storage/sqlite-session-artifact-repository';
+import { CreateBackupUseCase, ListBackupsUseCase, RestoreBackupUseCase, type BackupLocations } from '../application/operations/backup';
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
@@ -243,6 +246,11 @@ export interface AppOptions {
    * `logger`（起動時の保存先メッセージ1行だけを受け取る関数）とは別物である点に注意。
    */
   readonly errorLogger?: LoggerPort;
+  /**
+   * バックアップの出力先ディレクトリ。既定は env `AGENTCONTEXT_BACKUP_DIR` →
+   * 無ければDBの隣（`<db>.backups`）。テストは一時ディレクトリを渡す。
+   */
+  readonly backupRoot?: string;
 }
 
 /** 配線済みアプリケーション。 */
@@ -364,6 +372,15 @@ export interface App {
   readonly queryRunFeedback: QueryRunFeedbackUseCase;
   readonly queryOperationsStatus: QueryOperationsStatusUseCase;
   readonly retention: RetentionUseCase;
+  /** DB + セッションアーティファクトのスナップショットを作る（鍵は既定で含めない）。 */
+  readonly createBackup: CreateBackupUseCase;
+  /** バックアップ置き場の一覧。 */
+  readonly listBackups: ListBackupsUseCase;
+  /**
+   * バックアップから復元する。**HTTP APIへは公開しない**（稼働中のプロセスの足元で
+   * DBファイルを差し替えることになるため）。CLI（`npm run backup -- --restore`）専用。
+   */
+  readonly restoreBackup: RestoreBackupUseCase;
   /**
    * 起動時に1回だけ呼ぶ孤児Run回収。`running` のまま固まったRunを終端させ、`queued` をワーカーへ戻す。
    * `createApp` は**呼ばない**（回収はプロセス起動という事象に紐づくもので、App生成の副作用ではない）。
@@ -420,6 +437,20 @@ export function resolveDatabasePath(dbPath: string | undefined): string {
   if (dbPath !== undefined) return dbPath;
   const fromEnv = process.env['AGENTCONTEXT_DB_PATH']?.trim();
   return fromEnv === undefined || fromEnv === '' ? defaultDatabasePath() : fromEnv;
+}
+
+/**
+ * バックアップ置き場を決める。
+ *
+ * 優先順: options → env `AGENTCONTEXT_BACKUP_DIR` → DBの隣（`<db>.backups`）。
+ * 揮発DB（`:memory:`）ではバックアップを取れないが、UIへ「どこに出る設定なのか」は見せたいので、
+ * 既定DBパスから求めた表示用のパスを返す（実際に書かれることはない）。
+ */
+function resolveBackupRoot(explicit: string | undefined, dbPath: string | undefined): string {
+  if (explicit !== undefined) return explicit;
+  const fromEnv = process.env['AGENTCONTEXT_BACKUP_DIR']?.trim();
+  if (fromEnv !== undefined && fromEnv !== '') return fromEnv;
+  return defaultBackupRoot(dbPath === undefined || dbPath === MEMORY_DB_PATH ? defaultDatabasePath() : dbPath);
 }
 
 /** 明示注入 → SQLite（共有ハンドル）→ InMemory の順で実装を選ぶ。 */
@@ -645,6 +676,24 @@ export function createApp(options?: AppOptions): App {
   const cancelFactoryRun = new CancelFactoryRunUseCase(factoryRunAdapter.repo, factoryWorker);
   const queryFactoryRuns = new QueryFactoryRunsUseCase(factoryRunAdapter.repo);
 
+  /**
+   * バックアップ（DBファイル + セッションアーティファクトの実体 + 任意で暗号鍵）。
+   *
+   * 3つの場所は「規則を知っている側」から引く。DBパスは composition が解決済み、
+   * アーティファクト置き場は `sessionArtifactDirectory`（リポジトリと同じ規則）、
+   * 鍵ファイルは `AesGcmSecretCipher.keyPath()`（揮発鍵なら undefined）。
+   * ここで同じ規則を書き写すと、片方だけ変わったときに**バックアップだけが静かに古い場所を見る**。
+   */
+  const secretKeyPath = secretCipher instanceof AesGcmSecretCipher ? secretCipher.keyPath() : undefined;
+  const backupLocations: BackupLocations = {
+    databasePath: path ?? MEMORY_DB_PATH,
+    artifactsDirectory: path === undefined || path === MEMORY_DB_PATH ? '' : sessionArtifactDirectory(path),
+    ...(secretKeyPath === undefined ? {} : { secretKeyPath }),
+    backupRoot: resolveBackupRoot(options?.backupRoot, path),
+  };
+  const backupStore = new FilesystemBackupStore();
+  const backupSchemaVersion = database?.schemaVersion ?? LATEST_SCHEMA_VERSION;
+
   return {
     profile,
     ...(path === undefined ? {} : { dbPath: path }),
@@ -762,6 +811,13 @@ export function createApp(options?: AppOptions): App {
     queryRunFeedback: new QueryRunFeedbackUseCase(operationsAdapter.repo),
     queryOperationsStatus: new QueryOperationsStatusUseCase(operationsAdapter.repo),
     retention: new RetentionUseCase(runAdapter.repo, operationsAdapter.repo, undefined, errorLogger),
+    createBackup: new CreateBackupUseCase(backupStore, backupLocations, backupSchemaVersion, {
+      ...(sourceRevision === undefined ? {} : { revision: sourceRevision }),
+      logger: errorLogger,
+    }),
+    listBackups: new ListBackupsUseCase(backupStore, backupLocations),
+    // 復元先の互換判定は「このビルドが理解できる最新スキーマ」で行う（DBの現在値ではない）。
+    restoreBackup: new RestoreBackupUseCase(backupStore, backupLocations, LATEST_SCHEMA_VERSION, { logger: errorLogger }),
     recoverInterruptedRuns: new RecoverInterruptedRunsUseCase({
       factoryRuns: factoryRunAdapter.repo, factoryWorker,
       experiments: experimentAdapter.repo, experimentWorker,

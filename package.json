@@ -14,6 +14,7 @@
     "serve": "node --experimental-sqlite --disable-warning=ExperimentalWarning --env-file-if-exists=.env --import tsx src/server.ts",
     "start": "node --experimental-sqlite --disable-warning=ExperimentalWarning --env-file-if-exists=.env dist/server/server.js",
     "llmops:gate": "node --experimental-sqlite --disable-warning=ExperimentalWarning --env-file-if-exists=.env --import tsx src/llmops-gate.ts",
+    "backup": "node --experimental-sqlite --disable-warning=ExperimentalWarning --env-file-if-exists=.env --import tsx src/backup-cli.ts",
     "dev:ui": "vite",
     "dev:sample": "pwsh -ExecutionPolicy Bypass -File scripts/start-dev.ps1 -SampleData",
     "build": "npm run build:ui && npm run build:server",

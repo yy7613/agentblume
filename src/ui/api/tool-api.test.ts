@@ -263,6 +263,21 @@ describe('ToolApiClient', () => {
     expect(fetcher.mock.calls[5]?.[1]).toEqual(expect.objectContaining({ method: 'POST', body: JSON.stringify({ scope }) }));
   });
 
+  it('バックアップのwire contractを扱う（スコープを送らず、鍵の同梱は明示する）', async () => {
+    const backup = { name: 'backup-20260728-093012345', path: '/backups/backup-20260728-093012345', manifest: { formatVersion: 1 }, warnings: [] };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ root: '/backups', backups: [] }))
+      .mockResolvedValueOnce(jsonResponse({ backup }))
+      .mockResolvedValueOnce(jsonResponse({ backup }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    expect(await client.listBackups()).toEqual({ root: '/backups', backups: [] });
+    expect((await client.createBackup()).name).toBe('backup-20260728-093012345');
+    await client.createBackup(true);
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/api/operations/backups');
+    expect(fetcher.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ method: 'POST', body: JSON.stringify({ includeSecretKey: false }) }));
+    expect(fetcher.mock.calls[2]?.[1]).toEqual(expect.objectContaining({ method: 'POST', body: JSON.stringify({ includeSecretKey: true }) }));
+  });
+
   it('複数WikiとWiki内ページのwire contractを扱う', async () => {
     const wiki = { id: 'customer-a', name: 'Customer A' }; const page = { id: 'page-1', wikiId: 'customer-a' };
     const fetcher = vi.fn()

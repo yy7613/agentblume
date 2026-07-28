@@ -21,7 +21,7 @@ import { SkillNotFoundError, SkillValidationError, SkillVersionConflictError } f
 import { PersonaNotFoundError, ScenarioNotFoundError, ScenarioRunNotFoundError, ValidationDomainError } from '../domain/validation/errors';
 import { EvaluationAssetVersionConflictError, EvaluationDatasetNotFoundError, EvaluationDomainError, EvaluatorProfileNotFoundError, ExperimentConflictError, ExperimentNotFoundError, JudgeEvaluationError, JudgeRubricNotFoundError, QualityGateConflictError, QualityGateNotFoundError } from '../domain/evaluation/errors';
 import { MemoryDomainError, MemoryProposalNotFoundError, WikiPageNotFoundError, WikiSpaceNotFoundError } from '../domain/memory/errors';
-import { FeedbackValidationError } from '../domain/operations/errors';
+import { BackupNotFoundError, BackupValidationError, FeedbackValidationError } from '../domain/operations/errors';
 import { AgentSessionClosedError, AgentSessionExpiredError, AgentSessionNotFoundError, SessionArtifactNotFoundError, SessionDomainError, SessionQuotaExceededError } from '../domain/session/errors';
 import { DataSourceValidationError } from '../application/data-source/manage-data-sources';
 import { InvalidFileContentError } from '../domain/data-source/errors';
@@ -127,6 +127,10 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof MemoryProposalNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof MemoryDomainError) return httpError(400, err.code, err.message);
   if (err instanceof FeedbackValidationError) return httpError(422, err.code, err.message);
+  // バックアップ: 前提が満たされていない（揮発DB・壊れたバックアップ・スキーマが新しすぎる）は
+  // すべて利用者の操作で直せるので400。存在しないバックアップ名は404。
+  if (err instanceof BackupNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof BackupValidationError) return httpError(400, err.code, err.message);
   if (err instanceof AgentSessionNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof SessionArtifactNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof AgentSessionClosedError) return httpError(409, err.code, err.message);
