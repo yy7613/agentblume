@@ -227,29 +227,20 @@ describe('ToolApiClient model settings contract', () => {
     expect(JSON.parse(String((fetcher.mock.calls[1]?.[1] as RequestInit).body))).toEqual({ scope, slot: 'judge' });
   });
 
-  it('登録簿の見出しとプロバイダ別モデル一覧を2段で取得する', async () => {
-    // /model-catalog は modelCount だけを返す（138プロバイダ分のモデルを載せない）。
-    const providers = [{ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', modelCount: 2 }];
-    const fetcher = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ providers }))
-      .mockResolvedValueOnce(jsonResponse({ models: ['gpt-4o', 'gpt-4o-mini'] }));
+  it('カタログは接続先の見出しだけを取得する（モデル名は含まない）', async () => {
+    const providers = [
+      { id: 'openai', name: 'OpenAI', source: 'registry', envVar: 'OPENAI_API_KEY', docUrl: 'https://platform.openai.com/docs/models' },
+      { id: 'openai-compatible', name: 'OpenAI-compatible endpoint', source: 'openai-compatible', baseUrlTemplate: 'http://127.0.0.1:1234/v1' },
+    ];
+    const fetcher = vi.fn().mockResolvedValueOnce(jsonResponse({ providers }));
     const client = new ToolApiClient('/api', fetcher as typeof fetch);
     const controller = new AbortController();
 
     await expect(client.getModelCatalog(controller.signal)).resolves.toEqual(providers);
-    await expect(client.getProviderModels('openai', controller.signal)).resolves.toEqual(['gpt-4o', 'gpt-4o-mini']);
 
     expect(fetcher.mock.calls[0]?.[0]).toBe('/api/model-catalog');
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ signal: controller.signal });
-    expect(fetcher.mock.calls[1]?.[0]).toBe('/api/model-catalog/openai/models');
-    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({ signal: controller.signal });
-  });
-
-  it('プロバイダIDはパスへエンコードして渡す', async () => {
-    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ models: [] }));
-    const client = new ToolApiClient('/api', fetcher as typeof fetch);
-    await expect(client.getProviderModels('vendor/x')).resolves.toEqual([]);
-    expect(fetcher.mock.calls[0]?.[0]).toBe('/api/model-catalog/vendor%2Fx/models');
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it('OpenAI互換モデル一覧はPOST + JSON本文で送る（GETは廃止・キーは本文にも載せない）', async () => {

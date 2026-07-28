@@ -4,10 +4,10 @@ import type { AuthSessionDto, ModelCatalogProviderDto, ModelSettingsDto, ModelSl
 import { clearAuthToken, writeAuthToken } from '../api/auth-token';
 import { useI18n } from '../i18n';
 import {
-  EMPTY_MODEL_SLOT_FORM, MANUAL_MODEL_OPTION, apiKeyPlaceholder, applyFetchedModels, applyRegistryModels,
-  modelChoiceSelectValue, modelSettingsErrorText, modelSlotSaveBlocked, modelSlotSummary, modelTestMode,
-  modelTestModeNote, modelTestSummary, providerOptionLabel, selectModelChoice, shouldWarnStoredKeyUnused,
-  storageWarning, storedKeyUnusedNote, toModelSlotForm, toModelSlotInput, withProvider,
+  EMPTY_MODEL_SLOT_FORM, apiKeyPlaceholder, applyFetchedModels, baseUrlPlaceholderNote, modelDocLinkLabel,
+  modelFieldNote, modelSettingsErrorText, modelSlotSaveBlocked, modelSlotSummary, modelTestMode,
+  modelTestModeNote, modelTestSummary, providerFor, providerOptionLabel, providerOptionsFor,
+  shouldWarnStoredKeyUnused, storageWarning, storedKeyUnusedNote, toModelSlotForm, toModelSlotInput, withProvider,
   type ModelSlotFormValue,
 } from './model-settings-form';
 import { scope } from '../scope';
@@ -21,12 +21,14 @@ type SlotForms = Readonly<Record<ModelSlotNameDto, ModelSlotFormValue>>;
  * **平文APIキーをこの画面が持つのは入力欄の state だけ**である。保存に成功したら入力欄を捨てて
  * マスク済みサマリを再取得し、以後は `…abcd` のヒントしか画面に残らない。
  *
- * カタログは2段構成（`/model-catalog` は見出しのみ、モデル一覧はプロバイダ単位で別取得）なので、
- * プロバイダを選んだ時点で一覧を遅延fetchし、同じ providerId の再取得はキャッシュで省く。
+ * 選ぶのは**接続先（プロバイダ）だけ**で、モデル名は常に手入力である。提供元のモデルは
+ * 頻繁に入れ替わり、Azure / Bedrock / Vertex では利用者がデプロイしたものしか使えないため、
+ * 固定の候補一覧を出さない。OpenAI互換エンドポイントのときだけ、実際に `/models` を叩いて
+ * 得た候補を補完（datalist）として添える。
  *
  * 非同期処理中もテキスト入力は止めない（打鍵を邪魔しない）。そのぶん**古い応答で入力を巻き戻さない**
  * ことが要になるため、(1) 反映は必ず関数型setStateで最新stateへマージし、(2) リクエスト時の
- * providerId / baseUrl と現在値が違う応答は捨てる。
+ * baseUrl と現在値が違う応答は捨てる。
  */
 function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
   const { text } = useI18n();
@@ -35,17 +37,12 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
   const [forms, setForms] = useState<SlotForms>({ main: EMPTY_MODEL_SLOT_FORM, judge: EMPTY_MODEL_SLOT_FORM });
   const [feedback, setFeedback] = useState<Readonly<Partial<Record<ModelSlotNameDto, SlotFeedback>>>>({});
   const [busy, setBusy] = useState(false);
-  const [loadingModels, setLoadingModels] = useState<Readonly<Partial<Record<ModelSlotNameDto, boolean>>>>({});
   // 読み込み失敗は原因のまま持ち、表示時にローカライズする（言語切替で再取得しないため）。
   const [loadFailure, setLoadFailure] = useState<unknown>();
 
   // 非同期ハンドラは「クリック時のstate」ではなく常に最新のフォーム値を読む（stale closure対策）。
   const formsRef = useRef(forms);
   formsRef.current = forms;
-  /** providerId → モデル一覧。同じプロバイダへ戻ったときに再取得しない。 */
-  const modelCache = useRef(new Map<string, readonly string[]>());
-  /** 取得中の providerId → 進行中リクエスト。main / judge が同じプロバイダでも1回で済ませる。 */
-  const pendingModels = useRef(new Map<string, Promise<readonly string[]>>());
   /** 実行中リクエスト。アンマウント時に全部abortしてsetStateを防ぐ。 */
   const inFlight = useRef(new Set<AbortController>());
   const mounted = useRef(true);
@@ -66,12 +63,9 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
     return controller;
   }
 
-  /** 保存済みDTO → フォーム。取得済みの一覧があれば即座に当てて選択欄が空になる瞬間を作らない。 */
-  const formFrom = useCallback((slot: ModelSlotSettingsDto | undefined, catalog: readonly ModelCatalogProviderDto[]): ModelSlotFormValue => {
-    const form = toModelSlotForm(slot, catalog);
-    const cached = modelCache.current.get(form.providerId);
-    return cached === undefined ? form : applyRegistryModels(form, cached);
-  }, []);
+  /** 保存済みDTO → フォーム。カタログに無い保存済みプロバイダも選択肢に残す（設定を化けさせない）。 */
+  const formFrom = useCallback((slot: ModelSlotSettingsDto | undefined, catalog: readonly ModelCatalogProviderDto[]): ModelSlotFormValue =>
+    toModelSlotForm(slot, providerOptionsFor(catalog, slot)), []);
 
   const load = useCallback(async () => {
     const controller = begin();
@@ -96,45 +90,6 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
   function mergeSettings(saved: ModelSettingsDto): void {
     setSettings((current) => (saved.storage === undefined && current?.storage !== undefined ? { ...saved, storage: current.storage } : saved));
   }
-
-  /** 選択中プロバイダのモデル一覧を（キャッシュ経由で）フォームへ反映する。 */
-  async function ensureProviderModels(slot: ModelSlotNameDto, providerId: string): Promise<void> {
-    if (providerId === '') return;
-    const apply = (models: readonly string[]): void => {
-      // 取得中にプロバイダを変えていたら捨てる（古い一覧で選択を巻き戻さない）。
-      setForms((current) => (current[slot].providerId !== providerId ? current : { ...current, [slot]: applyRegistryModels(current[slot], models) }));
-    };
-    const cached = modelCache.current.get(providerId);
-    if (cached !== undefined) { apply(cached); return; }
-    let request = pendingModels.current.get(providerId);
-    if (request === undefined) {
-      const controller = begin();
-      request = client.getProviderModels(providerId, controller.signal)
-        .then((models) => { modelCache.current.set(providerId, models); return models; })
-        .finally(() => { inFlight.current.delete(controller); pendingModels.current.delete(providerId); });
-      pendingModels.current.set(providerId, request);
-    }
-    setLoadingModels((current) => ({ ...current, [slot]: true }));
-    try {
-      const models = await request;
-      if (mounted.current) apply(models);
-    } catch (cause) {
-      // アンマウント（=abort）由来の失敗は表示しない。
-      if (!mounted.current) return;
-      // 一覧が引けなくてもモデル名は手入力で指定できる。
-      apply([]);
-      note(slot, { kind: 'error', message: text('Could not load this provider’s model list. Enter the model name manually.', 'このプロバイダのモデル一覧を取得できませんでした。モデル名は手入力できます。'), note: modelSettingsErrorText(cause, text) });
-    } finally {
-      if (mounted.current) setLoadingModels((current) => ({ ...current, [slot]: false }));
-    }
-  }
-
-  // プロバイダ選択（と registry への切り替え）でモデル一覧を遅延取得する。
-  // 依存はプロバイダIDだけ（ensureProviderModels は ref と関数型setStateしか触らないので毎レンダー作り直してよい）。
-  const mainProvider = forms.main.source === 'registry' ? forms.main.providerId : '';
-  const judgeProvider = forms.judge.source === 'registry' ? forms.judge.providerId : '';
-  useEffect(() => { void ensureProviderModels('main', mainProvider); }, [mainProvider]);
-  useEffect(() => { void ensureProviderModels('judge', judgeProvider); }, [judgeProvider]);
 
   /** テスト・保存中は全スロットを busy にする（同じ設定を並行更新させない）。 */
   async function runAction(slot: ModelSlotNameDto, action: (signal: AbortSignal) => Promise<SlotFeedback>): Promise<void> {
@@ -215,66 +170,46 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
   function renderSlot(slot: ModelSlotNameDto, title: string) {
     const form = forms[slot];
     const saved = settings?.[slot];
-    const provider = providers.find((candidate) => candidate.id === form.providerId);
+    // 保存済みだけカタログに無いプロバイダ（絞り込み前に保存した設定）も選択肢に残す。
+    const options = providerOptionsFor(providers, saved);
+    const provider = providerFor(options, form.providerId);
     const result = feedback[slot];
     const testMode = modelTestMode(form, saved);
     const testNote = modelTestModeNote(testMode, saved, text);
+    const baseUrlNote = baseUrlPlaceholderNote(form, text);
     const label = (field: string): string => `${title} · ${field}`;
+    const modelListId = `model-options-${slot}`;
     return <article className="model-slot" key={slot}>
       <header><h3>{title}</h3><code>{slot}</code></header>
       <p className="model-slot-summary">{modelSlotSummary(saved, text)}</p>
-      <fieldset className="model-source-kind">
-        <legend>{text('Source', 'ソース')}</legend>
-        <label>
-          <input type="radio" name={`model-source-${slot}`} aria-label={label(text('Provider registry', 'プロバイダレジストリ'))}
-            checked={form.source === 'registry'} onChange={() => updateForm(slot, { source: 'registry' })} />
-          {text('Provider registry', 'プロバイダレジストリ')}
-        </label>
-        <label>
-          <input type="radio" name={`model-source-${slot}`} aria-label={label(text('OpenAI-compatible endpoint', 'OpenAI互換エンドポイント'))}
-            checked={form.source === 'openai-compatible'} onChange={() => updateForm(slot, { source: 'openai-compatible' })} />
-          {text('OpenAI-compatible endpoint', 'OpenAI互換エンドポイント')}
-        </label>
-      </fieldset>
-      {form.source === 'registry' ? <>
-        <label>{text('Provider', 'プロバイダ')}
-          <select aria-label={label(text('Provider', 'プロバイダ'))} value={form.providerId}
-            onChange={(event) => setForms((current) => ({ ...current, [slot]: withProvider(current[slot], event.target.value) }))}>
-            {providers.map((entry) => <option key={entry.id} value={entry.id}>{providerOptionLabel(entry)}</option>)}
-          </select>
-        </label>
-        <label>{text('Model', 'モデル')}
-          <select aria-label={label(text('Model', 'モデル'))} value={modelChoiceSelectValue(form.registryModel)}
-            onChange={(event) => updateForm(slot, { registryModel: selectModelChoice(form.registryModel, event.target.value) })}>
-            <option value="">{text('Select a model', 'モデルを選択')}</option>
-            {form.registryModels.map((model) => <option key={model} value={model}>{model}</option>)}
-            <option value={MANUAL_MODEL_OPTION}>{text('Enter manually', '手入力')}</option>
-          </select>
-        </label>
-        {loadingModels[slot] === true && <p className="model-slot-note" role="status">{text('Loading the model list…', 'モデル一覧を取得中…')}</p>}
-        {form.registryModel.manual && <label>{text('Model name', 'モデル名')}
-          <input aria-label={label(text('Model name', 'モデル名'))} value={form.registryModel.value} placeholder="gpt-4o"
-            onChange={(event) => updateForm(slot, { registryModel: { value: event.target.value, manual: true } })} />
-        </label>}
-      </> : <>
+      <label>{text('Provider', 'プロバイダ')}
+        <select aria-label={label(text('Provider', 'プロバイダ'))} value={form.providerId}
+          onChange={(event) => setForms((current) => ({ ...current, [slot]: withProvider(current[slot], event.target.value, options) }))}>
+          {options.map((entry) => <option key={entry.id} value={entry.id}>{providerOptionLabel(entry, text)}</option>)}
+        </select>
+      </label>
+      {form.source === 'openai-compatible' && <>
         <label>{text('Base URL', 'ベースURL')}
-          <input aria-label={label(text('Base URL', 'ベースURL'))} value={form.baseUrl} placeholder="http://127.0.0.1:1234/v1"
+          <input aria-label={label(text('Base URL', 'ベースURL'))} value={form.baseUrl} placeholder={provider?.baseUrlTemplate ?? 'http://127.0.0.1:1234/v1'}
             onChange={(event) => updateForm(slot, { baseUrl: event.target.value })} />
         </label>
+        {baseUrlNote !== undefined && <p className="model-slot-note">{baseUrlNote}</p>}
         <button type="button" className="secondary" aria-label={label(text('Fetch model list', 'モデル一覧を取得'))}
-          disabled={busy || form.baseUrl.trim() === ''} onClick={() => void fetchModels(slot)}>{text('Fetch model list', 'モデル一覧を取得')}</button>
-        {form.compatModels.length > 0 && <label>{text('Model', 'モデル')}
-          <select aria-label={label(text('Model', 'モデル'))} value={modelChoiceSelectValue(form.compatModel)}
-            onChange={(event) => updateForm(slot, { compatModel: selectModelChoice(form.compatModel, event.target.value) })}>
-            {form.compatModels.map((model) => <option key={model} value={model}>{model}</option>)}
-            <option value={MANUAL_MODEL_OPTION}>{text('Enter manually', '手入力')}</option>
-          </select>
-        </label>}
-        {(form.compatModels.length === 0 || form.compatModel.manual) && <label>{text('Model name', 'モデル名')}
-          <input aria-label={label(text('Model name', 'モデル名'))} value={form.compatModel.value} placeholder="qwen/qwen3-4b"
-            onChange={(event) => updateForm(slot, { compatModel: { value: event.target.value, manual: form.compatModels.length > 0 } })} />
-        </label>}
+          disabled={busy || form.baseUrl.trim() === '' || baseUrlNote !== undefined} onClick={() => void fetchModels(slot)}>{text('Fetch model list', 'モデル一覧を取得')}</button>
       </>}
+      {/* モデルは常に手入力。候補があってもそれは「このエンドポイントに実在するもの」だけで、固定の一覧は出さない。 */}
+      <label>{text('Model ID / deployment name', 'モデルID / デプロイ名')}
+        <input aria-label={label(text('Model ID / deployment name', 'モデルID / デプロイ名'))} value={form.model}
+          {...(form.fetchedModels.length > 0 ? { list: modelListId } : {})}
+          onChange={(event) => updateForm(slot, { model: event.target.value })} />
+      </label>
+      {form.fetchedModels.length > 0 && <datalist id={modelListId}>
+        {form.fetchedModels.map((model) => <option key={model} value={model} />)}
+      </datalist>}
+      <p className="model-slot-note">
+        {modelFieldNote(text)}
+        {provider?.docUrl !== undefined && <> <a href={provider.docUrl} target="_blank" rel="noreferrer">{modelDocLinkLabel(provider, text)}</a></>}
+      </p>
       <label>{text('API key', 'APIキー')}
         {/* 保存失敗時も入力を捨てない（再入力の手間を避ける）ぶん、パスワードマネージャの誤保存を防ぐ。 */}
         <input type="password" autoComplete="new-password" aria-label={label(text('API key', 'APIキー'))} value={form.apiKey} disabled={form.clearKey}

@@ -1,7 +1,7 @@
 /**
  * application層: モデル選択肢の照会。
  *
- * providers() / providerModels() はオフラインの登録簿から即答する。
+ * providers() は接続先の見出しだけをオフラインで即答する（モデル名は配らない）。
  * OpenAI互換エンドポイントのモデル一覧だけは実際に問い合わせる必要があるため、
  * **キーはAPIのクエリで受け取らず**（URLに秘密値を残さない）、保存済みスロットのキーを開封して使う。
  *
@@ -38,11 +38,6 @@ export class QueryModelCatalogUseCase {
 
   providers(): readonly ModelCatalogProvider[] {
     return this.catalog.providers();
-  }
-
-  /** 未知のプロバイダは undefined（api で 400 に写す）。 */
-  providerModels(providerId: string): readonly string[] | undefined {
-    return this.catalog.providerModels(providerId);
   }
 
   async openAiCompatibleModels(input: ListOpenAiCompatibleModelsInput, signal?: AbortSignal): Promise<OpenAiCompatibleModelsResult> {

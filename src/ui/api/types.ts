@@ -984,22 +984,26 @@ export type ModelSettingsTestResultDto =
   | { readonly ok: true; readonly latencyMs: number; readonly reply: string; readonly usedStoredKey: boolean }
   | { readonly ok: false; readonly error: string; readonly usedStoredKey: boolean };
 /**
- * GET /model-catalog は**見出しだけ**を返す（モデル一覧は含まない）。
- * モデル一覧は `GET /model-catalog/:providerId/models` で個別に取る（全件・クリップなし）。
+ * GET /model-catalog は**接続先の見出しだけ**を返す（モデル名は含まない）。
+ * モデルは提供元で頻繁に入れ替わり、Azure / Bedrock / Vertex ではデプロイ済みのものしか
+ * 使えないため、選べるモデルは手入力か実エンドポイントへの問い合わせでしか決まらない。
  */
 export interface ModelCatalogProviderDto {
   readonly id: string;
   readonly name: string;
+  /** この見出しを選んだときに保存される設定の形式。 */
+  readonly source: ModelSettingsSourceDto;
+  /** APIキーを与える環境変数名（registry のみ）。 */
   readonly envVar?: string;
-  /** 選択可能なチャットモデル数。 */
-  readonly modelCount: number;
+  /** 利用可能なモデルの一次情報（提供元のドキュメント）。 */
+  readonly docUrl?: string;
+  /** openai-compatible の baseUrl 雛形。`<resource>` のような穴は利用者が埋める。 */
+  readonly baseUrlTemplate?: string;
+  /** 保存済み baseUrl からこの見出しを引き当てるためのホスト接尾辞。 */
+  readonly baseUrlHosts?: readonly string[];
 }
 export interface ModelCatalogDto {
   readonly providers: readonly ModelCatalogProviderDto[];
-}
-/** GET /model-catalog/:providerId/models。models は provider を除いたモデルID（設定値は `${id}/${model}`）。 */
-export interface ModelCatalogProviderModelsDto {
-  readonly models: readonly string[];
 }
 /** POST /model-catalog/openai-compatible-models の body（GETは廃止・CSRF緩和）。 */
 export interface ListOpenAiCompatibleModelsDto {

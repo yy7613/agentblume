@@ -9,9 +9,13 @@
  * - 保存入力の apiKey は write-only の平文で、**入力欄に文字が入っているときだけ**送る。
  *   空のまま保存 = フィールドごと省略 = 既存キーを維持。明示的な削除は clearKey（空文字送信）。
  *
- * **モデル一覧は静的参照では作れない**（v36でカタログが2段構成になり、`/model-catalog` は
- * `modelCount` だけを返す）。よってこのモジュールは一覧を「引く」責務を持たず、
- * 画面が遅延fetchした配列を受け取ってフォームへ適用する（applyRegistryModels / applyFetchedModels）。
+ * **モデル名の候補は持たない**。カタログが返すのは接続先の見出しだけで、モデルは常に手入力である
+ * （OpenAI互換エンドポイントに限り、実際に問い合わせた `/models` の結果を補完候補として添える）。
+ * 提供元のモデルは頻繁に入れ替わり、Azure / Bedrock / Vertex ではデプロイ済みのものしか
+ * 使えないため、こちらが固定の一覧を見せると必ず嘘になる。
+ *
+ * 「ソース（registry / openai-compatible）」は利用者に選ばせず、**選んだプロバイダに従属**させる。
+ * form.source はプロバイダ選択（withProvider / toModelSlotForm）だけが更新する派生値である。
  */
 import { ApiError } from '../api/tool-api';
 import type {
@@ -26,28 +30,20 @@ import type {
 
 export type Translate = (english: string, japanese: string) => string;
 
-/** モデル選択 `<select>` の「手入力」オプション値（カタログに無い新モデル用）。 */
-export const MANUAL_MODEL_OPTION = '__manual__';
-
-/** モデル名の入力状態。manual のときはフリーテキスト入力へ切り替える。 */
-export interface ModelChoiceValue {
-  readonly value: string;
-  readonly manual: boolean;
-}
+/** どのプリセットにも当てはまらないOpenAI互換エンドポイント（ローカル含む）の受け皿。 */
+export const GENERIC_OPENAI_COMPATIBLE_PROVIDER = 'openai-compatible';
 
 export interface ModelSlotFormValue {
+  /** 選択中プロバイダの接続方式（プロバイダ選択から導出する派生値）。 */
   readonly source: ModelSettingsSourceDto;
-  /** registry のときのプロバイダID（設定値は `${providerId}/${model}`）。 */
+  /** カタログの見出しID。registry のときは設定値の provider 部になる。 */
   readonly providerId: string;
-  /** registry のモデル（provider接頭辞なし）。 */
-  readonly registryModel: ModelChoiceValue;
-  /** 選択中プロバイダのモデル候補（遅延fetch結果）。未取得なら空。 */
-  readonly registryModels: readonly string[];
+  /** モデルID / デプロイ名。常に手入力（候補があっても上書きしない）。 */
+  readonly model: string;
   /** openai-compatible のエンドポイント。 */
   readonly baseUrl: string;
-  readonly compatModel: ModelChoiceValue;
-  /** 「モデル一覧を取得」で得た候補。空なら手入力のみ。 */
-  readonly compatModels: readonly string[];
+  /** 「モデル一覧を取得」で**実際に問い合わせて**得た候補。空なら補完なし。 */
+  readonly fetchedModels: readonly string[];
   /** write-only の平文。空文字 = 既存キーを維持。 */
   readonly apiKey: string;
   /** 明示的にキーを消す（空文字を送る）。 */
@@ -57,26 +53,24 @@ export interface ModelSlotFormValue {
 export const EMPTY_MODEL_SLOT_FORM: ModelSlotFormValue = {
   source: 'registry',
   providerId: '',
-  registryModel: { value: '', manual: false },
-  registryModels: [],
+  model: '',
   baseUrl: '',
-  compatModel: { value: '', manual: false },
-  compatModels: [],
+  fetchedModels: [],
   apiKey: '',
   clearKey: false,
 };
 
-/**
- * 未設定スロットの既定プロバイダ。
- * カタログは name 昇順なので先頭は `302ai` のような無名プロバイダになりがちで、
- * 「何も選んでいないのに 302ai が選択済み」に見える。最も一般的な `openai` を優先する。
- */
+/** 未設定スロットの既定プロバイダ。最も一般的な `openai` を優先する。 */
 export const PREFERRED_DEFAULT_PROVIDER = 'openai';
 
 export function defaultProviderId(providers: readonly ModelCatalogProviderDto[]): string {
   return providers.some((provider) => provider.id === PREFERRED_DEFAULT_PROVIDER)
     ? PREFERRED_DEFAULT_PROVIDER
     : (providers[0]?.id ?? '');
+}
+
+export function providerFor(providers: readonly ModelCatalogProviderDto[], providerId: string): ModelCatalogProviderDto | undefined {
+  return providers.find((provider) => provider.id === providerId);
 }
 
 /** `'openai/gpt-4o'` → `['openai', 'gpt-4o']`。最初の `/` で分ける（モデル名側の `/` は残す）。 */
@@ -86,86 +80,112 @@ export function splitRegistryModel(model: string): readonly [provider: string, n
 }
 
 /**
- * 保存済み設定（マスク済み）→ フォーム値。未設定（env既定）のスロットは
- * 既定プロバイダを選んだ空フォームにする。APIキー入力欄は常に空で始める（平文は保持しない）。
+ * 選択肢に、保存済みだがカタログに無いプロバイダを足す。
  *
- * モデル候補は非同期に取るため、ここでは `manual` を立てない。
- * 一覧が届いた時点で applyRegistryModels が「カタログに無いモデル = 手入力」を確定させる。
+ * カタログは主要プロバイダだけに絞ってあるので、以前に保存した `openrouter/...` のような
+ * 設定はそのままでは選択肢に現れない。黙って別プロバイダへ付け替えると**保存時に設定が化ける**ため、
+ * 保存済みの値だけは選択肢として残す（見出しは登録簿を引けないのでIDをそのまま名前にする）。
+ */
+export function providerOptionsFor(
+  providers: readonly ModelCatalogProviderDto[],
+  saved: ModelSlotSettingsDto | undefined,
+): readonly ModelCatalogProviderDto[] {
+  if (saved?.source !== 'registry') return providers;
+  const [providerId] = splitRegistryModel(saved.model);
+  if (providerId === '' || providers.some((provider) => provider.id === providerId)) return providers;
+  return [...providers, { id: providerId, name: providerId, source: 'registry' }];
+}
+
+/** 保存済み baseUrl のホストからプリセットを引き当てる（見つからなければ undefined）。 */
+export function matchOpenAiCompatibleProvider(providers: readonly ModelCatalogProviderDto[], baseUrl: string): ModelCatalogProviderDto | undefined {
+  let host: string;
+  try { host = new URL(baseUrl.trim()).hostname.toLowerCase(); } catch { return undefined; }
+  return providers.find((provider) => provider.baseUrlHosts?.some((suffix) => host.endsWith(suffix.toLowerCase())) === true);
+}
+
+/** OpenAI互換の受け皿（プリセットに当てはまらない宛先の行き先）。 */
+function genericCompatProvider(providers: readonly ModelCatalogProviderDto[]): ModelCatalogProviderDto | undefined {
+  return providers.find((provider) => provider.id === GENERIC_OPENAI_COMPATIBLE_PROVIDER)
+    ?? providers.find((provider) => provider.source === 'openai-compatible' && provider.baseUrlHosts === undefined);
+}
+
+/**
+ * 保存済み設定（マスク済み）→ フォーム値。未設定（env既定）のスロットは既定プロバイダを選んだ空フォームにする。
+ * APIキー入力欄は常に空で始める（平文は保持しない）。
  */
 export function toModelSlotForm(slot: ModelSlotSettingsDto | undefined, providers: readonly ModelCatalogProviderDto[]): ModelSlotFormValue {
-  const fallback = defaultProviderId(providers);
-  if (slot === undefined) return { ...EMPTY_MODEL_SLOT_FORM, providerId: fallback };
+  if (slot === undefined) return withProvider(EMPTY_MODEL_SLOT_FORM, defaultProviderId(providers), providers);
   if (slot.source === 'registry') {
     const [providerId, name] = splitRegistryModel(slot.model);
     return {
       ...EMPTY_MODEL_SLOT_FORM,
       source: 'registry',
-      providerId: providerId === '' ? fallback : providerId,
-      registryModel: { value: name, manual: false },
+      providerId: providerId === '' ? defaultProviderId(providers) : providerId,
+      model: name,
     };
   }
+  const preset = matchOpenAiCompatibleProvider(providers, slot.baseUrl) ?? genericCompatProvider(providers);
   return {
     ...EMPTY_MODEL_SLOT_FORM,
     source: 'openai-compatible',
-    providerId: fallback,
+    providerId: preset?.id ?? GENERIC_OPENAI_COMPATIBLE_PROVIDER,
+    model: slot.model,
     baseUrl: slot.baseUrl,
-    compatModel: { value: slot.model, manual: false },
   };
 }
 
 /**
- * プロバイダを変えたらモデル選択と候補はリセットする（別プロバイダの候補は無効なため）。
- * 同じプロバイダを選び直したときは何もしない（一覧の再取得は走らないので、消すと復旧できない）。
+ * プロバイダを変えたらモデル・取得済み候補・ベースURLを引き継がない（別の宛先の値は無効なため）。
+ * OpenAI互換のプロバイダでは baseUrl に雛形を入れておく（`<resource>` は利用者が埋める）。
+ * 同じプロバイダを選び直したときは何もしない（入力を消さない）。
  */
-export function withProvider(form: ModelSlotFormValue, providerId: string): ModelSlotFormValue {
+export function withProvider(form: ModelSlotFormValue, providerId: string, providers: readonly ModelCatalogProviderDto[]): ModelSlotFormValue {
   if (form.providerId === providerId) return form;
-  return { ...form, providerId, registryModel: { value: '', manual: false }, registryModels: [] };
-}
-
-/** `<select>` の選択 → モデル入力状態。「手入力」を選んだら値を保ったままテキスト入力へ切り替える。 */
-export function selectModelChoice(current: ModelChoiceValue, selected: string): ModelChoiceValue {
-  return selected === MANUAL_MODEL_OPTION ? { value: current.value, manual: true } : { value: selected, manual: false };
-}
-
-/** `<select>` に表示すべき値（手入力中は番兵値）。 */
-export function modelChoiceSelectValue(choice: ModelChoiceValue): string {
-  return choice.manual ? MANUAL_MODEL_OPTION : choice.value;
+  const provider = providerFor(providers, providerId);
+  const source = provider?.source ?? 'registry';
+  return {
+    ...form,
+    providerId,
+    source,
+    model: '',
+    fetchedModels: [],
+    baseUrl: source === 'openai-compatible' ? (provider?.baseUrlTemplate ?? '') : '',
+  };
 }
 
 /**
- * 取得したプロバイダのモデル一覧を反映する（registry 側）。
- * 現在値は消さない（保存済みモデルを勝手に付け替えない）。一覧に無ければ手入力状態へ倒し、
- * 既に手入力中なら手入力のまま保つ（fetch中に打った文字を巻き戻さない）。
+ * 雛形の穴（`<resource>` など）が残っているか。
+ * 残ったまま送ると `new URL()` が弾いて 400 になるだけなので、保存前に画面側で止める。
  */
-export function applyRegistryModels(form: ModelSlotFormValue, models: readonly string[]): ModelSlotFormValue {
-  const value = form.registryModel.value;
-  const manual = form.registryModel.manual || (value !== '' && !models.includes(value));
-  return { ...form, registryModels: models, registryModel: { value, manual } };
+export function baseUrlHasPlaceholder(baseUrl: string): boolean {
+  return /[<>]/.test(baseUrl);
 }
 
-/** 取得したモデル一覧を反映する（openai-compatible 側）。現在の入力が一覧にあれば維持し、無ければ先頭を選ぶ。 */
+/**
+ * 取得したモデル一覧を補完候補として反映する。
+ * **入力済みのモデル名は上書きしない**（打鍵を巻き戻さない）。空のときだけ先頭を入れて一手減らす。
+ */
 export function applyFetchedModels(form: ModelSlotFormValue, models: readonly string[]): ModelSlotFormValue {
-  const keep = models.includes(form.compatModel.value);
   return {
     ...form,
-    compatModels: models,
-    compatModel: { value: keep ? form.compatModel.value : (models[0] ?? form.compatModel.value), manual: false },
+    fetchedModels: models,
+    model: form.model.trim() === '' ? (models[0] ?? form.model) : form.model,
   };
 }
 
 /** 保存・テストに使うモデル文字列。registry は `${providerId}/${model}` へ組み立てる。 */
 export function modelSlotModelValue(form: ModelSlotFormValue): string {
-  if (form.source === 'registry') {
-    const name = form.registryModel.value.trim();
-    return form.providerId === '' || name === '' ? '' : `${form.providerId}/${name}`;
-  }
-  return form.compatModel.value.trim();
+  const model = form.model.trim();
+  if (form.source !== 'registry') return model;
+  return form.providerId === '' || model === '' ? '' : `${form.providerId}/${model}`;
 }
 
-/** 保存できない状態（モデル未指定、OpenAI互換でベースURL未入力）。 */
+/** 保存できない状態（モデル未入力、OpenAI互換でベースURL未入力・雛形のまま）。 */
 export function modelSlotSaveBlocked(form: ModelSlotFormValue): boolean {
   if (modelSlotModelValue(form) === '') return true;
-  return form.source === 'openai-compatible' && form.baseUrl.trim() === '';
+  if (form.source !== 'openai-compatible') return false;
+  const baseUrl = form.baseUrl.trim();
+  return baseUrl === '' || baseUrlHasPlaceholder(baseUrl);
 }
 
 /**
@@ -185,10 +205,10 @@ export function modelSlotFormEdited(form: ModelSlotFormValue, saved: ModelSlotSe
  * テストボタンの意味。
  * - `candidate` … 画面の入力値をそのまま試す。
  * - `saved` … 入力が保存済み設定と同じ（=未編集）なので、保存済み/env既定を試す。
- * - `blocked` … 編集済みだが候補として送れない（モデル未選択など）。**押させない**。
+ * - `blocked` … 編集済みだが候補として送れない（モデル未入力など）。**押させない**。
  *
  * blocked を押せてしまうと candidate が省かれ、サーバーは保存済み/env既定（ローカルLM Studio）を
- * テストして ok を返す。「Anthropicを選んだつもりが成功した」という嘘の成功になるため塞ぐ。
+ * テストして ok を返す。「Azureを選んだつもりが成功した」という嘘の成功になるため塞ぐ。
  */
 export type ModelTestMode = 'candidate' | 'saved' | 'blocked';
 
@@ -201,8 +221,8 @@ export function modelTestMode(form: ModelSlotFormValue, saved: ModelSlotSettings
 export function modelTestModeNote(mode: ModelTestMode, saved: ModelSlotSettingsDto | undefined, text: Translate): string | undefined {
   if (mode === 'blocked') {
     return text(
-      'Finish the model selection to test it. The edited values cannot be sent yet, and testing now would only check the saved settings.',
-      'モデルの選択を完了するとテストできます。編集中の値はまだ送れないため、いま実行しても保存済み設定を試すことになります。',
+      'Fill in the model (and the base URL) to test it. The edited values cannot be sent yet, and testing now would only check the saved settings.',
+      'モデル（とベースURL）の入力を終えるとテストできます。編集中の値はまだ送れないため、いま実行しても保存済み設定を試すことになります。',
     );
   }
   if (mode === 'saved') {
@@ -244,8 +264,8 @@ export function modelSlotSummary(slot: ModelSlotSettingsDto | undefined, text: T
  * APIキー入力欄のプレースホルダ。
  * - 保存済み: 「空のままで維持」。**4文字以下のキーは hint が付かない**ので、その場合はヒント欄を出さない。
  * - 未設定 + registry: そのプロバイダの環境変数名を案内する。
- * - 未設定 + openai-compatible: プロバイダ登録簿とは無関係な宛先なので、**選択中プロバイダの
- *   envVar は案内しない**（OpenAI互換のローカル宛に OPENAI_API_KEY を促すのは誤誘導）。
+ * - 未設定 + openai-compatible: 宛先はローカルにも各社クラウドにもなり得るので、
+ *   **特定の環境変数名は案内しない**（LM Studio 決め打ちの案内は Azure 等では誤誘導になる）。
  */
 export function apiKeyPlaceholder(
   slot: ModelSlotSettingsDto | undefined,
@@ -258,7 +278,7 @@ export function apiKeyPlaceholder(
       ? text('Saved (leave blank to keep)', '保存済み（空のままで維持）')
       : text(`Saved: …${slot.apiKey.hint} (leave blank to keep)`, `保存済み: …${slot.apiKey.hint}（空のままで維持）`);
   }
-  if (source === 'openai-compatible') return text('Not set (env LM_STUDIO_API_KEY also works)', '未設定（環境変数 LM_STUDIO_API_KEY でも可）');
+  if (source === 'openai-compatible') return text('Not set (leave blank if the endpoint needs no key)', '未設定（キー不要のエンドポイントは空のままでよい）');
   if (provider?.envVar === undefined) return text('Not set', '未設定');
   return text(`Not set (env ${provider.envVar} also works)`, `未設定（環境変数 ${provider.envVar} でも可）`);
 }
@@ -339,7 +359,35 @@ export function modelSettingsErrorText(cause: unknown, text: Translate): string 
   return cause instanceof Error ? cause.message : text('Request failed', 'リクエストに失敗しました');
 }
 
-/** プロバイダ `<option>` のラベル（id + 必要な環境変数名）。 */
-export function providerOptionLabel(provider: ModelCatalogProviderDto): string {
-  return provider.envVar === undefined ? provider.id : `${provider.id} · ${provider.envVar}`;
+/** プロバイダ `<option>` のラベル（表示名 + registry が読む環境変数名）。 */
+export function providerOptionLabel(provider: ModelCatalogProviderDto, text: Translate): string {
+  const name = provider.id === GENERIC_OPENAI_COMPATIBLE_PROVIDER
+    ? text('OpenAI-compatible endpoint (LM Studio, vLLM, …)', 'OpenAI互換エンドポイント（LM Studio・vLLM など）')
+    : provider.name;
+  return provider.envVar === undefined ? name : `${name} · ${provider.envVar}`;
+}
+
+/**
+ * モデル欄の説明。**固定のモデル名を出さない代わりに、どこを見ればよいかを言う。**
+ * 提供元でデプロイ・有効化したモデルしか使えないため、正解を知っているのは提供元だけである。
+ */
+export function modelFieldNote(text: Translate): string {
+  return text(
+    'Model names change often, and only models you have deployed or enabled at the provider can be used. Enter the ID shown by your provider.',
+    'モデル名は頻繁に変わり、提供元でデプロイ・有効化したモデルしか使えません。提供元に表示されているIDを入力してください。',
+  );
+}
+
+/** モデル一覧ドキュメントへのリンク文言（docUrl を持つプロバイダのみ）。 */
+export function modelDocLinkLabel(provider: ModelCatalogProviderDto, text: Translate): string {
+  return text(`${provider.name} model list`, `${provider.name} のモデル一覧`);
+}
+
+/** 雛形の穴が残っているときの案内（保存を塞ぐ理由を言う）。 */
+export function baseUrlPlaceholderNote(form: ModelSlotFormValue, text: Translate): string | undefined {
+  if (form.source !== 'openai-compatible' || !baseUrlHasPlaceholder(form.baseUrl)) return undefined;
+  return text(
+    'Replace the <…> parts of the base URL with your own resource, region, or project.',
+    'ベースURLの <…> の部分を、自分のリソース名・リージョン・プロジェクトに置き換えてください。',
+  );
 }

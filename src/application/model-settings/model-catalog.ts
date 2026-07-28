@@ -1,29 +1,33 @@
 /**
  * application層(Port): モデル選択肢の提示。
  *
- * providers() はオフラインで即答できる登録簿（バンドル済み）から作る。
- * listOpenAiCompatibleModels() だけが実ネットワーク（ローカルの LM Studio 等）へ問い合わせる。
+ * providers() が返すのは**接続先の見出しだけ**である。モデル名は含めない。
+ * モデルは提供元で頻繁に増減・改名され、Azure / Bedrock / Vertex では利用者が
+ * デプロイ・有効化したものしか使えないため、こちらが固定値の一覧を持つと必ず嘘になる。
+ * 実際に選べるモデルは (1) 利用者の手入力、(2) listOpenAiCompatibleModels() による
+ * 実エンドポイントへの問い合わせ、のどちらかでしか決まらない。
  */
+import type { ModelSettingsSource } from '../../domain/model-settings/model-settings';
 
-/**
- * プロバイダの見出し。**モデル一覧は含めない**（一覧は providerModels で個別に取る）。
- * 全プロバイダ×全モデルを1応答に詰めると数十KiBになり、件数で切ると主要モデルが落ちるため、
- * 「見出し（軽量・全件）→ 選ばれた1プロバイダのモデル（全件）」の2段構成にしている。
- */
+/** プロバイダの見出し。**モデル一覧は持たない**（固定値のモデル名を配らない）。 */
 export interface ModelCatalogProvider {
-  /** `'provider/model'` の provider 部。 */
+  /** registry のときは `'provider/model'` の provider 部。openai-compatible のときは画面上の識別子。 */
   readonly id: string;
   readonly name: string;
-  /** APIキーを与える環境変数名（複数ある場合は代表1つ）。 */
+  /** この見出しを選んだときに保存される設定の形式。 */
+  readonly source: ModelSettingsSource;
+  /** APIキーを与える環境変数名（複数ある場合は代表1つ・registry のみ）。 */
   readonly envVar?: string;
-  /** 選択可能なチャットモデル数（0件のプロバイダをUIが見分けるため）。 */
-  readonly modelCount: number;
+  /** 利用可能なモデルの一次情報（提供元のドキュメント）。固定のモデル名を配らない代わりの導線。 */
+  readonly docUrl?: string;
+  /** openai-compatible の baseUrl 雛形。`<resource>` のような穴は利用者が埋める。 */
+  readonly baseUrlTemplate?: string;
+  /** 保存済み baseUrl からこの見出しを引き当てるためのホスト接尾辞。 */
+  readonly baseUrlHosts?: readonly string[];
 }
 
 export interface ModelCatalogPort {
   providers(): readonly ModelCatalogProvider[];
-  /** 1プロバイダのチャットモデル全件（昇順）。未知のプロバイダは undefined。 */
-  providerModels(providerId: string): readonly string[] | undefined;
   listOpenAiCompatibleModels(baseUrl: string, apiKey?: string, signal?: AbortSignal): Promise<readonly string[]>;
 }
 

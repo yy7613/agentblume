@@ -32,10 +32,7 @@ class FakeCatalog implements ModelCatalogPort {
   calls = 0;
   failure: Error | undefined;
   providers(): readonly ModelCatalogProvider[] {
-    return [{ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', modelCount: 2 }];
-  }
-  providerModels(providerId: string): readonly string[] | undefined {
-    return providerId === 'openai' ? ['gpt-4o', 'o4-mini'] : undefined;
+    return [{ id: 'openai', name: 'OpenAI', source: 'registry', envVar: 'OPENAI_API_KEY', docUrl: 'https://example.test/models' }];
   }
   async listOpenAiCompatibleModels(baseUrl: string, apiKey?: string): Promise<readonly string[]> {
     this.calls += 1;
@@ -172,20 +169,14 @@ describe('model settings routes', () => {
     expect(noop.json().settings.updatedAt).toBe(saved.updatedAt);
   });
 
-  it('登録簿カタログは見出しだけを返し、モデル一覧は別ルートで取る', async () => {
+  it('カタログは接続先の見出しだけを返す（モデル一覧のルートは持たない）', async () => {
     const response = await server.inject({ method: 'GET', url: '/model-catalog' });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ providers: [{ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', modelCount: 2 }] });
+    expect(response.json()).toEqual({ providers: [{ id: 'openai', name: 'OpenAI', source: 'registry', envVar: 'OPENAI_API_KEY', docUrl: 'https://example.test/models' }] });
 
+    // 固定のモデル一覧を配るルートは廃止した（陳腐化する上、デプロイ済みモデルしか使えない）。
     const models = await server.inject({ method: 'GET', url: '/model-catalog/openai/models' });
-    expect(models.statusCode).toBe(200);
-    expect(models.json()).toEqual({ models: ['gpt-4o', 'o4-mini'] });
-  });
-
-  it('未知のプロバイダのモデル一覧は400', async () => {
-    const response = await server.inject({ method: 'GET', url: '/model-catalog/no-such/models' });
-    expect(response.statusCode).toBe(400);
-    expect(response.json().error.code).toBe('BAD_REQUEST');
+    expect(models.statusCode).toBe(404);
   });
 
   it('OpenAI互換のモデル一覧はPOSTのみ（GETは廃止・単純リクエストで発火させない）', async () => {

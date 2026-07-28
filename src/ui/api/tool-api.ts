@@ -94,7 +94,6 @@ import type {
   McpServerTestResultDto,
   ModelSettingsDto,
   ModelCatalogProviderDto,
-  ModelCatalogProviderModelsDto,
   ModelSlotNameDto,
   ModelSlotSettingsInputDto,
   ModelSettingsTestResultDto,
@@ -850,16 +849,11 @@ export class ToolApiClient {
   }
 
   /**
-   * 登録簿の見出し（オフラインの静的データ）。**モデル一覧は含まない**（`modelCount` のみ）。
-   * 選んだプロバイダのモデルは getProviderModels で個別に取る2段構成。
+   * 接続先の見出し（オフラインの静的データ）。**モデル名は含まない**。
+   * モデルは手入力するか、OpenAI互換エンドポイントなら listOpenAiCompatibleModels で実際に問い合わせる。
    */
   async getModelCatalog(signal?: AbortSignal): Promise<readonly ModelCatalogProviderDto[]> {
     return (await this.request<{ providers: ModelCatalogProviderDto[] }>('/model-catalog', { signal })).providers;
-  }
-
-  /** 1プロバイダぶんのチャットモデル全件（provider 接頭辞なし。設定値は `${providerId}/${model}`）。 */
-  async getProviderModels(providerId: string, signal?: AbortSignal): Promise<readonly string[]> {
-    return (await this.request<ModelCatalogProviderModelsDto>(`/model-catalog/${encodeURIComponent(providerId)}/models`, { signal })).models;
   }
 
   /**

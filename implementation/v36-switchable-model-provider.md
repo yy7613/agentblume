@@ -62,6 +62,15 @@ strict / Zod v4 / Vitest / 非mutate / depcruise 0違反 / カバレッジゲー
 - 揮発ストレージ警告、`usedStoredKey:false` の注記、モデル一覧取得の race（古い応答の破棄）、AbortSignal、`role="alert"/"status"`、テスト失敗文言の日本語化、`autoComplete="new-password"`。
 - 分析アシスタントの有効判定を `LM_STUDIO_MODEL` env 固定から「env または保存済み main スロット」の動的判定へ（UIで設定しても永久に無効だった）。
 
+## 4.6 カタログの簡素化（後続改訂）
+
+初版のカタログは登録簿の全138プロバイダを並べ、プロバイダごとのモデル一覧（バンドル済みの静的データ）まで返していた。選択肢が過剰である上、**モデル名の固定値は必ず陳腐化し**、Azure / Bedrock / Vertex では利用者がデプロイしたモデルしか使えないため誤誘導になる。次のとおり改めた。
+
+- `/model-catalog` は**主要プロバイダの見出しだけ**を返す（`openai` / `anthropic` / `google` は登録簿由来、`azure-ai-foundry` / `aws-bedrock` / `google-vertex` / `openai-compatible` はOpenAI互換の接続先プリセット）。**Azure / Bedrock / Vertex は Mastra の `PROVIDER_REGISTRY` に無い**ため、`baseUrlTemplate`（`<resource>` 等の穴あき）と `baseUrlHosts`（保存済み設定からの逆引き）を持つプリセットとして表現する。
+- `GET /model-catalog/:providerId/models`（静的モデル一覧）は**廃止**。モデルは常に手入力で、候補が出るのは `POST /model-catalog/openai-compatible-models` で**実際に問い合わせた**ときだけ。見出しは代わりに `docUrl`（提供元のモデル一覧）を持つ。
+- UIの「ソース」ラジオは廃止し、接続方式はプロバイダ選択から導出する（`ModelSlotFormValue.source` は派生値）。雛形の穴が残る baseUrl は保存・取得を塞ぐ（そのまま送ると 400 になるだけなので手前で止める）。
+- 絞り込みで一覧から外れたプロバイダも、**保存済みであれば選択肢に残す**（`providerOptionsFor`）。黙って別プロバイダへ付け替えると保存時に設定が化けるため。
+
 ## 5. 挙動差分・既知の制約
 
 - localプロファイルの実行経路が `LmStudioModelProvider` → `SwitchableModelProvider`（中身 `MastraModelProvider`）へ。snapshot.provider ラベルが `lm-studio` → `openai-compatible` に変わり **modelConfigHash も変化**（`AGENTCONTEXT_MODEL_PRICING_JSON` を provider=lm-studio で書いている場合は要更新）。

@@ -695,5 +695,3 @@ export const openAiCompatibleModelsBodySchema = z.object({
   baseUrl: modelBaseUrlSchema,
   slot: z.enum(MODEL_SLOT_NAMES).optional(),
 });
-/** GET /model-catalog/:providerId/models のパスパラメータ。 */
-export const modelCatalogProviderParamsSchema = z.object({ providerId: z.string().min(1).max(128) });

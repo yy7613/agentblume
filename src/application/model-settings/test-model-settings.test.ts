@@ -191,8 +191,7 @@ describe('QueryModelCatalogUseCase', () => {
   class FakeCatalog implements ModelCatalogPort {
     lastKey: string | undefined;
     lastBaseUrl = '';
-    providers(): readonly ModelCatalogProvider[] { return [{ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', modelCount: 1 }]; }
-    providerModels(providerId: string): readonly string[] | undefined { return providerId === 'openai' ? ['gpt-4o'] : undefined; }
+    providers(): readonly ModelCatalogProvider[] { return [{ id: 'openai', name: 'OpenAI', source: 'registry', envVar: 'OPENAI_API_KEY' }]; }
     async listOpenAiCompatibleModels(baseUrl: string, apiKey?: string): Promise<readonly string[]> {
       this.lastBaseUrl = baseUrl; this.lastKey = apiKey;
       return ['local-a', 'local-b'];
@@ -214,11 +213,9 @@ describe('QueryModelCatalogUseCase', () => {
     }));
   };
 
-  it('登録簿の見出しとモデル一覧はそのまま返す', () => {
+  it('接続先の見出しはそのまま返す（モデル名は含まない）', () => {
     const { useCase } = makeCatalog();
-    expect(useCase.providers()).toEqual([{ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', modelCount: 1 }]);
-    expect(useCase.providerModels('openai')).toEqual(['gpt-4o']);
-    expect(useCase.providerModels('nope')).toBeUndefined();
+    expect(useCase.providers()).toEqual([{ id: 'openai', name: 'OpenAI', source: 'registry', envVar: 'OPENAI_API_KEY' }]);
   });
 
   it('slot 指定かつ宛先一致のときだけ保存済みキーを開封して使う', async () => {

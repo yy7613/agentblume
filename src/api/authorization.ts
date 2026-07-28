@@ -298,7 +298,6 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   // 接続テストは**保存済みAPIキーを利用者指定の宛先へ送出する**。誰がどこへ試したかを残す。
   rule('POST', '/model-settings/test', 'operate', 'model-settings', true),
   rule('GET', '/model-catalog', 'read', 'model-settings'),
-  rule('GET', '/model-catalog/:providerId/models', 'read', 'model-settings'),
   rule('POST', '/model-catalog/openai-compatible-models', 'operate', 'model-settings'),
 
   // --- 運用 ---

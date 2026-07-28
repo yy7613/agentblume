@@ -19,7 +19,7 @@ import type { TestModelSettingsUseCase } from '../application/model-settings/tes
 import { clientAbortSignal } from './client-abort';
 import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
-import { modelCatalogProviderParamsSchema, modelSettingsQuerySchema, openAiCompatibleModelsBodySchema, saveModelSettingsBodySchema, testModelSettingsBodySchema } from './schemas';
+import { modelSettingsQuerySchema, openAiCompatibleModelsBodySchema, saveModelSettingsBodySchema, testModelSettingsBodySchema } from './schemas';
 
 export interface ModelSettingsRouteDeps {
   readonly getModelSettings: GetModelSettingsUseCase;
@@ -61,16 +61,9 @@ export function registerModelSettingsRoutes(app: FastifyInstance, deps: ModelSet
     }, clientAbortSignal(request, reply));
   });
 
-  // 登録簿はオフラインの静的データなのでスコープ非依存で返す。
-  // 見出しだけを返し（軽量）、モデル一覧は選ばれたプロバイダぶんを個別に取る2段構成。
+  // 接続先の見出しはオフラインの静的データなのでスコープ非依存で返す。
+  // モデル名は含めない（固定値は陳腐化し、デプロイ済みモデルしか使えない環境では嘘になる）。
   app.get('/model-catalog', async () => ({ providers: deps.queryModelCatalog.providers() }));
-
-  app.get('/model-catalog/:providerId/models', async (request) => {
-    const params = parseWith(modelCatalogProviderParamsSchema, request.params, 'invalid params');
-    const models = deps.queryModelCatalog.providerModels(params.providerId);
-    if (models === undefined) throw new BadRequestError(`unknown model catalog provider: ${params.providerId}`);
-    return { models };
-  });
 
   // GET ではなく POST。保存済みキーを使い得る操作を単純リクエストにしない（CSRF緩和）。
   app.post('/model-catalog/openai-compatible-models', async (request, reply) => {

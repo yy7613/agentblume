@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ModelCatalogError } from '../../application/model-settings/model-catalog';
-import { RegistryModelCatalog, isChatModelId } from './registry-model-catalog';
+import { RegistryModelCatalog } from './registry-model-catalog';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -12,69 +12,48 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
-describe('isChatModelId', () => {
-  it('チャット以外の慣用パターンを除外する', () => {
-    for (const id of ['text-embedding-3-small', 'nomic-embed-text', 'whisper-large-v3', 'gpt-image-1', 'dall-e-3', 'veo-3-video', 'tts-1-hd', 'gpt-4o-audio-preview', 'rerank-v3.5', 'omni-moderation-latest', '   ']) {
-      expect(isChatModelId(id)).toBe(false);
-    }
-  });
-
-  it('チャットモデルは通す（大文字小文字を問わない）', () => {
-    for (const id of ['gpt-4o', 'GPT-4O-MINI', 'openai/gpt-4o', 'qwen/qwen3-4b', 'claude-sonnet-4-5', 'gemini-2.5-pro']) {
-      expect(isChatModelId(id)).toBe(true);
-    }
-  });
-});
-
 describe('RegistryModelCatalog#providers', () => {
-  it('バンドル済み登録簿からプロバイダの見出しを組み立てる（ネットワーク不要・モデル一覧は含めない）', () => {
+  it('主要プロバイダの見出しだけを、宣言順で返す（ネットワーク不要）', () => {
     stubFetch(() => { throw new Error('network must not be used'); });
     const providers = new RegistryModelCatalog().providers();
 
-    expect(providers.length).toBeGreaterThan(10);
-    const openai = providers.find((provider) => provider.id === 'openai');
-    expect(openai).toMatchObject({ id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY' });
-    expect(openai?.modelCount).toBeGreaterThan(0);
-    // 応答を軽くするため一覧は入れない（`GET /model-catalog/:providerId/models` で取る）。
-    expect(openai).not.toHaveProperty('models');
+    // 登録簿の138プロバイダを並べない（選択肢は主要どころに絞る）。
+    expect(providers.map((provider) => provider.id)).toEqual([
+      'openai', 'anthropic', 'google', 'azure-ai-foundry', 'aws-bedrock', 'google-vertex', 'openai-compatible',
+    ]);
+    // registry の表示名・環境変数名・docUrl は登録簿由来（手書きの固定値を増やさない）。
+    expect(providers[0]).toMatchObject({ id: 'openai', name: 'OpenAI', source: 'registry', envVar: 'OPENAI_API_KEY' });
+    expect(providers[0]?.docUrl).toMatch(/^https:\/\//);
   });
 
-  it('モデル一覧は件数で切らない（辞書順クリップで主要モデルを落とさない）', () => {
-    const catalog = new RegistryModelCatalog();
-    const openai = catalog.providerModels('openai') ?? [];
-
-    expect(openai).toContain('gpt-4o');
-    // モデルIDは provider を除いた形（設定値は `${id}/${model}`）。
-    expect(openai.every((model) => !model.startsWith('openai/'))).toBe(true);
-    // 昇順で、件数は modelCount と一致する。
-    expect([...openai].sort((left, right) => left.localeCompare(right))).toEqual([...openai]);
-    expect(catalog.providers().find((provider) => provider.id === 'openai')?.modelCount).toBe(openai.length);
-
-    // かつて50件の辞書順クリップで全滅していた openrouter の主要ベンダーが残る。
-    const openrouter = catalog.providerModels('openrouter');
-    if (openrouter !== undefined && openrouter.length > 50) {
-      for (const vendor of ['openai/', 'google/', 'qwen/']) {
-        expect(openrouter.some((model) => model.startsWith(vendor))).toBe(true);
-      }
+  it('モデル名は一切配らない（陳腐化する固定値を持たない）', () => {
+    const serialized = JSON.stringify(new RegistryModelCatalog().providers());
+    for (const provider of new RegistryModelCatalog().providers()) {
+      expect(provider).not.toHaveProperty('models');
+      expect(provider).not.toHaveProperty('modelCount');
     }
+    // 具体的なモデル名が紛れ込んでいないことを、代表的な名前で押さえる（docUrl は一次情報への導線なので別）。
+    for (const model of ['gpt-4', 'gpt-5', 'claude-sonnet', 'claude-opus', 'gemini-2']) expect(serialized).not.toContain(model);
   });
 
-  it('非チャットモデルは一覧にも件数にも含めない', () => {
-    const catalog = new RegistryModelCatalog();
-    for (const provider of catalog.providers()) {
-      expect((catalog.providerModels(provider.id) ?? []).every(isChatModelId)).toBe(true);
-    }
-    expect(catalog.providerModels('openai')).not.toContain('text-embedding-3-small');
-  });
+  it('主要クラウドは登録簿に無いのでOpenAI互換の接続先プリセットとして持つ', () => {
+    const providers = new RegistryModelCatalog().providers();
+    const azure = providers.find((provider) => provider.id === 'azure-ai-foundry');
 
-  it('未知のプロバイダは undefined', () => {
-    expect(new RegistryModelCatalog().providerModels('no-such-provider')).toBeUndefined();
+    expect(azure).toMatchObject({ source: 'openai-compatible', name: 'Microsoft Azure AI Foundry' });
+    // 雛形の穴は利用者が埋める（そのままでは保存できない形にしてある）。
+    expect(azure?.baseUrlTemplate).toContain('<resource>');
+    expect(azure?.baseUrlHosts).toContain('.services.ai.azure.com');
+    // 受け皿だけは雛形がそのまま使える（ローカルの既定）。
+    expect(providers.find((provider) => provider.id === 'openai-compatible')).toMatchObject({
+      source: 'openai-compatible', baseUrlTemplate: 'http://127.0.0.1:1234/v1',
+    });
+    expect(providers.every((provider) => provider.source === 'registry' || provider.baseUrlTemplate !== undefined)).toBe(true);
   });
 
   it('二度目以降は同じ配列を返す（静的データのキャッシュ）', () => {
     const catalog = new RegistryModelCatalog();
     expect(catalog.providers()).toBe(catalog.providers());
-    expect(catalog.providerModels('openai')).toBe(catalog.providerModels('openai'));
   });
 });
 

@@ -205,7 +205,9 @@ Web検索sourceは、Tavily、TinyFish、Google Custom Searchのキーをbackend
 - **メインモデル** (`main`) … エージェントの実行に使う。**これを設定しないとエージェントは応答できない。**
 - **評価モデル** (`judge`) … 検証画面のLLM採点に使う。
 
-「ソース」で **プロバイダレジストリ**（OpenAI等。モデル一覧はカタログから取得）か **OpenAI互換エンドポイント**（LM Studio等。「モデル一覧を取得」で列挙）を選ぶ。どちらもモデル名の手入力に切り替えられる。「テスト」で接続を確認できる。
+「プロバイダ」で接続先を選ぶ。**OpenAI / Anthropic / Google**（直接API）、**Microsoft Azure AI Foundry / AWS Bedrock / Google Cloud Vertex AI**（OpenAI互換エンドポイント。ベースURLの雛形が入る）、**OpenAI互換エンドポイント**（LM Studio・vLLM ほか任意のOpenAI互換サービス）から選べる。
+
+モデルは**プルダウンではなく入力欄**である。提供元のモデルは頻繁に入れ替わり、Azure・Bedrock・Vertex では自分でデプロイ・有効化したものしか使えないため、固定の一覧は持たない（提供元のモデル一覧へのリンクだけを添える）。OpenAI互換エンドポイントでは「モデル一覧を取得」で**実際にそのエンドポイントへ問い合わせて**候補を出せる。「テスト」で接続を確認できる。
 
 未設定のスロットは環境変数の既定（`LM_STUDIO_BASE_URL` / `LM_STUDIO_MODEL` / `LM_STUDIO_TIMEOUT_MS`）を使う。**サーバー側の環境変数はブラウザから変更できない。**
 

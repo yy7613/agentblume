@@ -9,22 +9,20 @@ import { I18nProvider } from '../i18n';
 afterEach(() => { cleanup(); localStorage.clear(); });
 
 const scope = { tenantId: 'local', workspaceId: 'default' };
-// v36のカタログ見出しはモデル一覧を持たない（modelCountのみ）。name昇順なので先頭は 302ai。
+// カタログは主要プロバイダの見出しだけを返す（モデル名は含まない）。
 const providers = [
-  { id: '302ai', name: '302.AI', envVar: 'AI302_API_KEY', modelCount: 3 },
-  { id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', modelCount: 2 },
-  { id: 'lmstudio', name: 'LM Studio', modelCount: 1 },
+  { id: 'openai', name: 'OpenAI', source: 'registry', envVar: 'OPENAI_API_KEY', docUrl: 'https://platform.openai.com/docs/models' },
+  { id: 'anthropic', name: 'Anthropic', source: 'registry', envVar: 'ANTHROPIC_API_KEY' },
+  {
+    id: 'azure-ai-foundry', name: 'Microsoft Azure AI Foundry', source: 'openai-compatible',
+    baseUrlTemplate: 'https://<resource>.services.ai.azure.com/openai/v1', baseUrlHosts: ['.services.ai.azure.com'],
+  },
+  { id: 'openai-compatible', name: 'OpenAI-compatible endpoint', source: 'openai-compatible', baseUrlTemplate: 'http://127.0.0.1:1234/v1' },
 ];
-const modelsByProvider: Readonly<Record<string, readonly string[]>> = {
-  '302ai': ['gpt-4o-302', 'llama-302'],
-  openai: ['gpt-4o', 'gpt-4o-mini'],
-  lmstudio: ['local-model'],
-};
 
 interface ModelApiMock {
   health: Mock;
   getModelCatalog: Mock;
-  getProviderModels: Mock;
   getModelSettings: Mock;
   saveModelSettings: Mock;
   testModelSettings: Mock;
@@ -36,7 +34,6 @@ function createApi(overrides: Partial<ModelApiMock> = {}): ModelApiMock {
   return {
     health: vi.fn().mockResolvedValue({ status: 'ok' }),
     getModelCatalog: vi.fn().mockResolvedValue(providers),
-    getProviderModels: vi.fn().mockImplementation((providerId: string) => Promise.resolve(modelsByProvider[providerId] ?? [])),
     getModelSettings: vi.fn().mockResolvedValue({ scope }),
     saveModelSettings: vi.fn().mockResolvedValue({ scope }),
     testModelSettings: vi.fn().mockResolvedValue({ ok: true, latencyMs: 12, reply: 'pong', usedStoredKey: false }),
@@ -49,12 +46,11 @@ function renderPage(api: ModelApiMock): void {
   render(<SettingsPage client={api as unknown as ToolApiClient} />);
 }
 
-/** モデル一覧はプロバイダ選択後に非同期で届くので、選択肢が生えるまで待ってから選ぶ。 */
-async function selectModel(slot: string, model: string): Promise<HTMLElement> {
-  const select = await screen.findByRole('combobox', { name: `${slot} · Model` });
-  await waitFor(() => expect(within(select).getByRole('option', { name: model })).toBeTruthy());
-  await userEvent.selectOptions(select, model);
-  return select;
+/** モデルは常に手入力（候補一覧は出さない）。 */
+async function typeModel(slot: string, model: string): Promise<HTMLElement> {
+  const input = await screen.findByLabelText(`${slot} · Model ID / deployment name`);
+  await userEvent.type(input, model);
+  return input;
 }
 
 describe('SettingsPage', () => {
@@ -112,71 +108,57 @@ describe('SettingsPage モデル設定', () => {
     expect(screen.getByLabelText('Main model · API key')).toHaveProperty('autocomplete', 'new-password');
   });
 
-  it('既定プロバイダは name昇順の先頭(302ai)ではなく openai を選ぶ', async () => {
-    const api = createApi();
-    renderPage(api);
-    expect(await screen.findByRole('combobox', { name: 'Main model · Provider' })).toHaveProperty('value', 'openai');
-    // モデル一覧はプロバイダを選んだ時点で個別に取得する（カタログ見出しには含まれない）。
-    await waitFor(() => expect(api.getProviderModels).toHaveBeenCalledWith('openai', expect.anything()));
-    // main / judge の両方に候補が並ぶが、同じプロバイダなので取得は1回だけ。
-    expect(await screen.findAllByRole('option', { name: 'gpt-4o-mini' })).toHaveLength(2);
-    expect(api.getProviderModels.mock.calls.filter((call) => call[0] === 'openai')).toHaveLength(1);
-  });
-
-  it('プロバイダを切り替えるとその一覧を取得し、同じプロバイダへ戻ると再取得しない', async () => {
+  it('プロバイダは主要どころだけを出し、既定は openai を選ぶ', async () => {
     const api = createApi();
     renderPage(api);
     const provider = await screen.findByRole('combobox', { name: 'Main model · Provider' });
-    await waitFor(() => expect(api.getProviderModels).toHaveBeenCalledWith('openai', expect.anything()));
-    const main = screen.getByRole('combobox', { name: 'Main model · Model' });
-
-    await userEvent.selectOptions(provider, '302ai');
-    await waitFor(() => expect(within(main).getByRole('option', { name: 'llama-302' })).toBeTruthy());
-
-    const callsBefore = api.getProviderModels.mock.calls.length;
-    await userEvent.selectOptions(provider, 'openai');
-    await waitFor(() => expect(within(main).getByRole('option', { name: 'gpt-4o-mini' })).toBeTruthy());
-    // キャッシュ済みなので再取得は起きない。
-    expect(api.getProviderModels.mock.calls.length).toBe(callsBefore);
+    expect(provider).toHaveProperty('value', 'openai');
+    expect(within(provider).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'OpenAI · OPENAI_API_KEY', 'Anthropic · ANTHROPIC_API_KEY', 'Microsoft Azure AI Foundry', 'OpenAI-compatible endpoint (LM Studio, vLLM, …)',
+    ]);
+    // モデル名の候補は一切出さない（固定値は陳腐化し、デプロイ済みのものしか使えないため）。
+    expect(screen.queryByRole('combobox', { name: 'Main model · Model ID / deployment name' })).toBeNull();
+    expect(screen.getAllByText(/only models you have deployed or enabled/)).toHaveLength(2);
+    // 一次情報への導線だけ出す。
+    expect(screen.getAllByRole('link', { name: 'OpenAI model list' })[0]?.getAttribute('href')).toBe('https://platform.openai.com/docs/models');
   });
 
-  it('モデル一覧の取得に失敗しても手入力でモデルを指定できる', async () => {
-    const api = createApi({ getProviderModels: vi.fn().mockRejectedValue(new Error('catalog offline')) });
-    renderPage(api);
-    // main / judge それぞれのスロットに出る。
-    expect(await screen.findAllByText(/Could not load this provider/)).toHaveLength(2);
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Main model · Model' }), '__manual__');
-    await userEvent.type(screen.getByRole('textbox', { name: 'Main model · Model name' }), 'gpt-4o');
-    expect(screen.getByRole('button', { name: 'Main model · Save' })).toHaveProperty('disabled', false);
-  });
-
-  it('プロバイダとモデルを選んで保存するとapiKey省略（既存維持）のPUTになる', async () => {
+  it('モデルIDを手入力して保存するとapiKey省略（既存維持）のPUTになる', async () => {
     const saved = { scope, main: { source: 'registry', model: 'openai/gpt-4o', apiKey: { configured: false } }, updatedAt: 'now' };
     const api = createApi({ saveModelSettings: vi.fn().mockResolvedValue(saved) });
     renderPage(api);
 
     await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Main model · Provider' }), 'openai');
-    await selectModel('Main model', 'gpt-4o');
+    await typeModel('Main model', 'gpt-4o');
     await userEvent.click(screen.getByRole('button', { name: 'Main model · Save' }));
 
     await waitFor(() => expect(api.saveModelSettings).toHaveBeenCalledWith({ scope, main: { source: 'registry', model: 'openai/gpt-4o' } }));
     expect(await screen.findByText('Saved: openai/gpt-4o (key: not set)')).toBeTruthy();
-    // 保存後もキャッシュ済みの一覧が復元される（選択肢が消えない）。
-    expect(screen.getByRole('combobox', { name: 'Main model · Model' })).toHaveProperty('value', 'gpt-4o');
+    // 保存後は応答の値がそのまま入力欄へ戻る。
+    expect(screen.getByLabelText('Main model · Model ID / deployment name')).toHaveProperty('value', 'gpt-4o');
   });
 
-  it('カタログに無いモデルは「手入力」に切り替えて指定できる', async () => {
-    const saved = { scope, main: { source: 'registry', model: 'openai/gpt-5-preview', apiKey: { configured: false } }, updatedAt: 'now' };
-    const api = createApi({ saveModelSettings: vi.fn().mockResolvedValue(saved) });
+  it('プロバイダを変えるとモデル入力を引き継がない（別プロバイダのモデル名を保存させない）', async () => {
+    const api = createApi();
     renderPage(api);
 
-    await selectModel('Main model', 'Enter manually');
-    await userEvent.type(screen.getByRole('textbox', { name: 'Main model · Model name' }), 'gpt-5-preview');
-    await userEvent.click(screen.getByRole('button', { name: 'Main model · Save' }));
+    await typeModel('Main model', 'gpt-4o');
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Main model · Provider' }), 'anthropic');
 
-    await waitFor(() => expect(api.saveModelSettings).toHaveBeenCalledWith({ scope, main: { source: 'registry', model: 'openai/gpt-5-preview' } }));
-    // 保存済みモデルがカタログに無いので、再読込後も手入力欄のまま復元される。
-    expect(await screen.findByRole('textbox', { name: 'Main model · Model name' })).toHaveProperty('value', 'gpt-5-preview');
+    expect(screen.getByLabelText('Main model · Model ID / deployment name')).toHaveProperty('value', '');
+    expect(screen.getByRole('button', { name: 'Main model · Save' })).toHaveProperty('disabled', true);
+  });
+
+  it('カタログを絞る前に保存したプロバイダは選択肢に残す', async () => {
+    const stored = { scope, main: { source: 'registry', model: 'openrouter/qwen3', apiKey: { configured: false } }, updatedAt: 'now' };
+    const api = createApi({ getModelSettings: vi.fn().mockResolvedValue(stored) });
+    renderPage(api);
+
+    const provider = await screen.findByRole('combobox', { name: 'Main model · Provider' });
+    await waitFor(() => expect(provider).toHaveProperty('value', 'openrouter'));
+    expect(screen.getByLabelText('Main model · Model ID / deployment name')).toHaveProperty('value', 'qwen3');
+    // judge 側（未設定）には足さない。
+    expect(within(screen.getByRole('combobox', { name: 'Judge model · Provider' })).queryByRole('option', { name: 'openrouter' })).toBeNull();
   });
 
   it('APIキーは平文で送られ、保存後に入力欄をクリアしてマスクサマリへ置き換える', async () => {
@@ -184,7 +166,7 @@ describe('SettingsPage モデル設定', () => {
     const api = createApi({ saveModelSettings: vi.fn().mockResolvedValue(saved) });
     renderPage(api);
 
-    await selectModel('Main model', 'gpt-4o');
+    await typeModel('Main model', 'gpt-4o');
     const key = screen.getByLabelText('Main model · API key');
     await userEvent.type(key, 'sk-secret-cdef');
     await userEvent.click(screen.getByRole('button', { name: 'Main model · Save' }));
@@ -219,7 +201,7 @@ describe('SettingsPage モデル設定', () => {
     const api = createApi({ testModelSettings: vi.fn().mockResolvedValue({ ok: true, latencyMs: 1234, reply: 'pong', usedStoredKey: true }) });
     renderPage(api);
 
-    await selectModel('Main model', 'gpt-4o-mini');
+    await typeModel('Main model', 'gpt-4o-mini');
     await userEvent.click(screen.getByRole('button', { name: 'Main model · Test' }));
     await waitFor(() => expect(api.testModelSettings).toHaveBeenCalledWith(scope, 'main', { source: 'registry', model: 'openai/gpt-4o-mini' }, expect.anything()));
     expect(await screen.findByText('ok (1234ms): pong')).toBeTruthy();
@@ -239,18 +221,18 @@ describe('SettingsPage モデル設定', () => {
     const test = await screen.findByRole('button', { name: 'Main model · Test' });
     await waitFor(() => expect(test).toHaveProperty('disabled', false));
 
-    // プロバイダだけ変えるとモデルが未選択になり、候補として送れない = 保存済みLM Studioが ok を返す状態。
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Main model · Provider' }), 'lmstudio');
+    // プロバイダだけ変えるとモデルが未入力になり、候補として送れない = 保存済みLM Studioが ok を返す状態。
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Main model · Provider' }), 'anthropic');
     expect(screen.getByRole('button', { name: 'Main model · Test' })).toHaveProperty('disabled', true);
-    expect(screen.getByText(/Finish the model selection to test it/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Main model · Test' }).getAttribute('title')).toContain('Finish the model selection');
+    expect(screen.getByText(/Fill in the model \(and the base URL\) to test it/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Main model · Test' }).getAttribute('title')).toContain('Fill in the model');
     expect(api.testModelSettings).not.toHaveBeenCalled();
 
-    // モデルを選べば候補として送れる。
-    await selectModel('Main model', 'local-model');
+    // モデルを入れれば候補として送れる。
+    await typeModel('Main model', 'claude-sonnet');
     expect(screen.getByRole('button', { name: 'Main model · Test' })).toHaveProperty('disabled', false);
     await userEvent.click(screen.getByRole('button', { name: 'Main model · Test' }));
-    await waitFor(() => expect(api.testModelSettings).toHaveBeenCalledWith(scope, 'main', { source: 'registry', model: 'lmstudio/local-model' }, expect.anything()));
+    await waitFor(() => expect(api.testModelSettings).toHaveBeenCalledWith(scope, 'main', { source: 'registry', model: 'anthropic/claude-sonnet' }, expect.anything()));
   });
 
   it('保存済みキーが宛先違いで使われなかったことを注記する', async () => {
@@ -261,8 +243,8 @@ describe('SettingsPage モデル設定', () => {
     });
     renderPage(api);
 
-    await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Main model · Provider' }), 'lmstudio');
-    await selectModel('Main model', 'local-model');
+    await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Main model · Provider' }), 'anthropic');
+    await typeModel('Main model', 'claude-sonnet');
     await userEvent.click(screen.getByRole('button', { name: 'Main model · Test' }));
 
     expect(await screen.findByText(/The saved API key was not used/)).toBeTruthy();
@@ -280,30 +262,54 @@ describe('SettingsPage モデル設定', () => {
     expect(await screen.findAllByText('Using the environment default (LM Studio).')).toHaveLength(2);
   });
 
-  it('OpenAI互換はモデル一覧をPOSTで取得してselectから選べる', async () => {
+  it('OpenAI互換は実エンドポイントへ問い合わせた候補だけを補完に出す', async () => {
     const api = createApi({
       listOpenAiCompatibleModels: vi.fn().mockResolvedValue({ models: ['gemma-3', 'qwen/qwen3-4b'], usedStoredKey: false }),
-      saveModelSettings: vi.fn().mockResolvedValue({ scope, judge: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'qwen/qwen3-4b', apiKey: { configured: false } }, updatedAt: 'now' }),
+      saveModelSettings: vi.fn().mockResolvedValue({ scope, judge: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'gemma-3', apiKey: { configured: false } }, updatedAt: 'now' }),
     });
     renderPage(api);
 
-    await userEvent.click(await screen.findByRole('radio', { name: 'Judge model · OpenAI-compatible endpoint' }));
-    // OpenAI互換では登録簿の envVar を案内しない（宛先が別サーバーなので誤誘導になる）。
-    expect(screen.getByLabelText('Judge model · API key')).toHaveProperty('placeholder', 'Not set (env LM_STUDIO_API_KEY also works)');
-    // 一覧取得前はベースURLが空なので取得ボタンは押せない。
-    expect(screen.getByRole('button', { name: 'Judge model · Fetch model list' })).toHaveProperty('disabled', true);
-    await userEvent.type(screen.getByRole('textbox', { name: 'Judge model · Base URL' }), 'http://127.0.0.1:1234/v1');
+    await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Judge model · Provider' }), 'openai-compatible');
+    // OpenAI互換では特定の環境変数を案内しない（宛先がローカルにもクラウドにもなり得る）。
+    expect(screen.getByLabelText('Judge model · API key')).toHaveProperty('placeholder', 'Not set (leave blank if the endpoint needs no key)');
+    // ベースURLは雛形が入った状態で始まる（ローカルの既定値はそのまま使える）。
+    expect(screen.getByLabelText('Judge model · Base URL')).toHaveProperty('value', 'http://127.0.0.1:1234/v1');
     await userEvent.click(screen.getByRole('button', { name: 'Judge model · Fetch model list' }));
 
     await waitFor(() => expect(api.listOpenAiCompatibleModels).toHaveBeenCalledWith(scope, 'http://127.0.0.1:1234/v1', 'judge', expect.anything()));
     expect(await screen.findByText('Fetched 2 model(s).')).toBeTruthy();
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Judge model · Model' }), 'qwen/qwen3-4b');
+    // 空欄だったので先頭が入り、候補は datalist として添えられる。
+    const model = screen.getByLabelText('Judge model · Model ID / deployment name');
+    expect(model).toHaveProperty('value', 'gemma-3');
+    expect(document.querySelectorAll('#model-options-judge option')).toHaveLength(2);
     await userEvent.click(screen.getByRole('button', { name: 'Judge model · Save' }));
 
     await waitFor(() => expect(api.saveModelSettings).toHaveBeenCalledWith({
-      scope, judge: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'qwen/qwen3-4b' },
+      scope, judge: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'gemma-3' },
     }));
-    expect(await screen.findByText('Saved: qwen/qwen3-4b @ http://127.0.0.1:1234/v1 (key: not set)')).toBeTruthy();
+    expect(await screen.findByText('Saved: gemma-3 @ http://127.0.0.1:1234/v1 (key: not set)')).toBeTruthy();
+  });
+
+  it('クラウドのプリセットはベースURLの雛形を入れ、穴が残る間は保存・取得を塞ぐ', async () => {
+    const api = createApi();
+    renderPage(api);
+
+    await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Main model · Provider' }), 'azure-ai-foundry');
+    const baseUrl = screen.getByLabelText('Main model · Base URL');
+    expect(baseUrl).toHaveProperty('value', 'https://<resource>.services.ai.azure.com/openai/v1');
+    await userEvent.type(screen.getByLabelText('Main model · Model ID / deployment name'), 'my-deployment');
+    // 雛形のまま送ると 400 になるだけなので、ここで止めて置き換えを促す。
+    expect(screen.getByText(/Replace the <…> parts/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Main model · Save' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Main model · Fetch model list' })).toHaveProperty('disabled', true);
+
+    await userEvent.clear(baseUrl);
+    await userEvent.type(baseUrl, 'https://contoso.services.ai.azure.com/openai/v1');
+    expect(screen.getByRole('button', { name: 'Main model · Save' })).toHaveProperty('disabled', false);
+    await userEvent.click(screen.getByRole('button', { name: 'Main model · Save' }));
+    await waitFor(() => expect(api.saveModelSettings).toHaveBeenCalledWith({
+      scope, main: { source: 'openai-compatible', baseUrl: 'https://contoso.services.ai.azure.com/openai/v1', model: 'my-deployment' },
+    }));
   });
 
   it('取得中にベースURLを変えたら古い応答を捨てる', async () => {
@@ -312,9 +318,8 @@ describe('SettingsPage モデル設定', () => {
     const api = createApi({ listOpenAiCompatibleModels: vi.fn().mockReturnValue(pending) });
     renderPage(api);
 
-    await userEvent.click(await screen.findByRole('radio', { name: 'Main model · OpenAI-compatible endpoint' }));
-    const baseUrl = screen.getByRole('textbox', { name: 'Main model · Base URL' });
-    await userEvent.type(baseUrl, 'http://127.0.0.1:1234/v1');
+    await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Main model · Provider' }), 'openai-compatible');
+    const baseUrl = screen.getByLabelText('Main model · Base URL');
     await userEvent.click(screen.getByRole('button', { name: 'Main model · Fetch model list' }));
 
     // 応答を待つ間に宛先を変更する（入力は非同期処理中も止めない）。
@@ -322,7 +327,7 @@ describe('SettingsPage モデル設定', () => {
     release({ models: ['stale-model'], usedStoredKey: false });
 
     expect(await screen.findByText(/the fetched list was discarded/)).toBeTruthy();
-    expect(screen.queryByRole('option', { name: 'stale-model' })).toBeNull();
+    expect(document.querySelector('#model-options-main')).toBeNull();
     // 打鍵は巻き戻らない。
     expect(baseUrl).toHaveProperty('value', 'http://127.0.0.1:1234/v12');
   });
@@ -335,21 +340,20 @@ describe('SettingsPage モデル設定', () => {
     });
     renderPage(api);
 
-    await userEvent.click(await screen.findByRole('radio', { name: 'Main model · OpenAI-compatible endpoint' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Main model · Base URL' }), 'http://127.0.0.1:1234/v1');
+    await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Main model · Provider' }), 'openai-compatible');
     await userEvent.click(screen.getByRole('button', { name: 'Main model · Fetch model list' }));
     expect(await screen.findByText('The endpoint returned no models.')).toBeTruthy();
 
     await userEvent.click(screen.getByRole('button', { name: 'Main model · Fetch model list' }));
     expect(await screen.findByText('connect ECONNREFUSED')).toBeTruthy();
     // 一覧が取れなくてもモデル名は手入力できる。
-    await userEvent.type(screen.getByRole('textbox', { name: 'Main model · Model name' }), 'qwen');
+    await userEvent.type(screen.getByLabelText('Main model · Model ID / deployment name'), 'qwen');
     expect(screen.getByRole('button', { name: 'Main model · Save' })).toHaveProperty('disabled', false);
 
-    // レジストリへ戻すと入力欄もレジストリ用に切り替わる。
-    await userEvent.click(screen.getByRole('radio', { name: 'Main model · Provider registry' }));
-    expect(screen.getByRole('combobox', { name: 'Main model · Provider' })).toBeTruthy();
-    expect(screen.queryByRole('textbox', { name: 'Main model · Base URL' })).toBeNull();
+    // レジストリのプロバイダへ戻すとベースURL欄は消える。
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Main model · Provider' }), 'openai');
+    expect(screen.queryByLabelText('Main model · Base URL')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Main model · Fetch model list' })).toBeNull();
   });
 
   it('疎通テストの失敗と409（鍵の変更）をインラインで表示する', async () => {
@@ -359,7 +363,7 @@ describe('SettingsPage モデル設定', () => {
     });
     renderPage(api);
 
-    await selectModel('Main model', 'gpt-4o');
+    await typeModel('Main model', 'gpt-4o');
     await userEvent.click(screen.getByRole('button', { name: 'Main model · Test' }));
     const failure = await screen.findByText('HTTP 401 from provider');
     expect(failure.getAttribute('role')).toBe('alert');
@@ -374,7 +378,7 @@ describe('SettingsPage モデル設定', () => {
     });
     renderPage(api);
 
-    await selectModel('Main model', 'gpt-4o');
+    await typeModel('Main model', 'gpt-4o');
     await userEvent.click(screen.getByRole('button', { name: 'Main model · Save' }));
     expect(await screen.findByText(/AGENTCONTEXT_SECRET_KEY_PATH/)).toBeTruthy();
   });
@@ -389,7 +393,7 @@ describe('SettingsPage モデル設定', () => {
     expect(await screen.findByText(/ephemeral storage/)).toBeTruthy();
 
     // PUT の応答には storage が付かないので、保存しても警告が消えてはいけない。
-    await selectModel('Main model', 'gpt-4o');
+    await typeModel('Main model', 'gpt-4o');
     await userEvent.click(screen.getByRole('button', { name: 'Main model · Save' }));
     await waitFor(() => expect(api.saveModelSettings).toHaveBeenCalled());
     expect(screen.getByText(/ephemeral storage/)).toBeTruthy();
