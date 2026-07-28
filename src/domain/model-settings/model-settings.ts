@@ -124,15 +124,17 @@ function httpUrl(value: unknown, field: string): string {
 /**
  * 宛先の同一性判定に使う正規化（純関数）。
  *
- * 「小文字化した origin + 末尾スラッシュを除いた pathname」だけを見る。
- * query / fragment は宛先の同一性に寄与しないので落とす。URLとして解釈できない値は
- * 文字列としてだけ正規化する（判定は必ず「不一致寄り」に倒れる）。
+ * origin は URL の規則どおり大小文字・既定ポートを正規化し、pathname は末尾スラッシュ
+ * だけを除く。**pathname と query はそのまま比較する**。URL のパスは大文字小文字を
+ * 区別し、query もルーティング先を変え得るため、ここを小文字化・破棄すると別の宛先へ
+ * 保存済みAPIキーを流用してしまう。fragment はHTTPリクエストに送られないので落とす。
+ * URLとして解釈できない値は文字列としてだけ正規化し、大小文字を維持して不一致寄りに倒す。
  */
 export function normalizeBaseUrl(value: string): string {
   const raw = value.trim();
   let parsed: URL;
-  try { parsed = new URL(raw); } catch { return raw.toLowerCase().replace(/\/+$/, ''); }
-  return `${parsed.origin.toLowerCase()}${parsed.pathname.replace(/\/+$/, '').toLowerCase()}`;
+  try { parsed = new URL(raw); } catch { return raw.replace(/\/+$/, ''); }
+  return `${parsed.origin.toLowerCase()}${parsed.pathname.replace(/\/+$/, '')}${parsed.search}`;
 }
 
 /** 2つの baseUrl が同じ宛先を指すか。 */

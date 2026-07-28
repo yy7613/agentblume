@@ -97,6 +97,15 @@ describe('TestModelSettingsUseCase', () => {
     const same = await useCase.execute({ scope, slot: 'main', candidate: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1/', model: 'local' } });
     expect(factory.created[2]?.model).toMatchObject({ apiKey: 'sk-stored-7777' });
     expect(same).toMatchObject({ usedStoredKey: true });
+
+    // パスの大文字小文字や query が違う候補へも流用しない。
+    const caseChanged = await useCase.execute({ scope, slot: 'main', candidate: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/V1', model: 'local' } });
+    expect(factory.created[3]?.model).toEqual({ id: 'local', url: 'http://127.0.0.1:1234/V1' });
+    expect(caseChanged).toMatchObject({ usedStoredKey: false });
+
+    const queryChanged = await useCase.execute({ scope, slot: 'main', candidate: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1?tenant=other', model: 'local' } });
+    expect(factory.created[4]?.model).toEqual({ id: 'local', url: 'http://127.0.0.1:1234/v1?tenant=other' });
+    expect(queryChanged).toMatchObject({ usedStoredKey: false });
   });
 
   it('registry は provider 接頭辞が変われば別の宛先', async () => {
@@ -245,15 +254,21 @@ describe('QueryModelCatalogUseCase', () => {
     expect(result).toEqual({ models: ['local-a', 'local-b'], usedStoredKey: false });
   });
 
-  it('宛先の一致は正規化して見る（末尾スラッシュ・大文字小文字・既定ポート）', async () => {
+  it('宛先の一致は scheme / host / 末尾スラッシュを正規化し、path / query は厳密に見る', async () => {
     const { useCase, repo, cipher, catalog } = makeCatalog();
     await storedAt(repo, cipher, 'http://127.0.0.1:1234/v1');
 
-    await useCase.openAiCompatibleModels({ scope, baseUrl: 'HTTP://127.0.0.1:1234/V1/', slot: 'main' });
+    await useCase.openAiCompatibleModels({ scope, baseUrl: 'HTTP://127.0.0.1:1234/v1/', slot: 'main' });
     expect(catalog.lastKey).toBe('sk-catalog-8888');
 
     // ホストが同じでもパスが違えば別の宛先。
     await useCase.openAiCompatibleModels({ scope, baseUrl: 'http://127.0.0.1:1234/other', slot: 'main' });
+    expect(catalog.lastKey).toBeUndefined();
+
+    // pathname の大文字小文字と query の差も別宛先。秘密値を流用しない。
+    await useCase.openAiCompatibleModels({ scope, baseUrl: 'http://127.0.0.1:1234/V1', slot: 'main' });
+    expect(catalog.lastKey).toBeUndefined();
+    await useCase.openAiCompatibleModels({ scope, baseUrl: 'http://127.0.0.1:1234/v1?tenant=other', slot: 'main' });
     expect(catalog.lastKey).toBeUndefined();
   });
 

@@ -154,23 +154,26 @@ describe('createModelSlotSettings の baseUrl 検証', () => {
 });
 
 describe('normalizeBaseUrl / sameBaseUrl / sameModelDestination', () => {
-  it('origin + pathname だけを小文字で見る（末尾スラッシュ・既定ポート・query は無視）', () => {
-    expect(normalizeBaseUrl('HTTP://127.0.0.1:1234/V1/')).toBe('http://127.0.0.1:1234/v1');
+  it('origin と末尾スラッシュだけを正規化する（scheme・host・既定ポート）', () => {
+    expect(normalizeBaseUrl('HTTP://127.0.0.1:1234/V1/')).toBe('http://127.0.0.1:1234/V1');
     expect(normalizeBaseUrl('http://127.0.0.1:1234/v1')).toBe('http://127.0.0.1:1234/v1');
     expect(sameBaseUrl('https://API.example.com/v1/', 'https://api.example.com:443/v1')).toBe(true);
-    expect(sameBaseUrl('http://127.0.0.1:1234/v1?x=1#f', 'http://127.0.0.1:1234/v1')).toBe(true);
+    expect(sameBaseUrl('http://127.0.0.1:1234/v1#first', 'http://127.0.0.1:1234/v1#second')).toBe(true);
   });
 
-  it('ホスト・ポート・パス・スキームが違えば別の宛先', () => {
+  it('ホスト・ポート・パス・query・スキームが違えば別の宛先', () => {
     expect(sameBaseUrl('http://127.0.0.1:1234/v1', 'http://127.0.0.1:5678/v1')).toBe(false);
     expect(sameBaseUrl('http://127.0.0.1:1234/v1', 'https://127.0.0.1:1234/v1')).toBe(false);
     expect(sameBaseUrl('http://127.0.0.1:1234/v1', 'http://evil.example.com/v1')).toBe(false);
     expect(sameBaseUrl('http://127.0.0.1:1234/v1', 'http://127.0.0.1:1234/other')).toBe(false);
+    // URL の pathname は大文字小文字を区別し、query もルーティング先を変え得る。
+    expect(sameBaseUrl('http://127.0.0.1:1234/V1', 'http://127.0.0.1:1234/v1')).toBe(false);
+    expect(sameBaseUrl('http://127.0.0.1:1234/v1?tenant=a', 'http://127.0.0.1:1234/v1?tenant=b')).toBe(false);
   });
 
-  it('URLとして読めない値も落ちずに文字列比較へ倒れる', () => {
-    expect(normalizeBaseUrl('  Not A Url/  ')).toBe('not a url');
-    expect(sameBaseUrl('not a url', 'NOT A URL')).toBe(true);
+  it('URLとして読めない値も落ちず、不一致寄りの文字列比較へ倒れる', () => {
+    expect(normalizeBaseUrl('  Not A Url/  ')).toBe('Not A Url');
+    expect(sameBaseUrl('not a url', 'NOT A URL')).toBe(false);
   });
 
   it('宛先の同一性は source / provider接頭辞 / baseUrl で決まる', () => {

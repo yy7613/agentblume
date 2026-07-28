@@ -123,10 +123,19 @@ describe('SaveModelSettingsUseCase', () => {
     expect(moved.main?.apiKey).toEqual({ configured: false });
     expect((await repo.find(scope))?.main?.apiKey).toBeUndefined();
 
-    // 末尾スラッシュ・大文字小文字の違いは同じ宛先なので維持する。
+    // scheme / host の大文字小文字・末尾スラッシュの違いは同じ宛先なので維持する。
     await save.execute({ scope, main: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', model: 'local', apiKey: 'sk-lmstudio-1111' } });
-    const same = await save.execute({ scope, main: { source: 'openai-compatible', baseUrl: 'HTTP://127.0.0.1:1234/V1/', model: 'local-2' } });
+    const same = await save.execute({ scope, main: { source: 'openai-compatible', baseUrl: 'HTTP://127.0.0.1:1234/v1/', model: 'local-2' } });
     expect(same.main?.apiKey).toEqual({ configured: true, hint: '1111' });
+
+    // pathname は大文字小文字を区別する。別ルートへ保存済みキーを継承しない。
+    const caseChanged = await save.execute({ scope, main: { source: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/V1', model: 'local-3' } });
+    expect(caseChanged.main?.apiKey).toEqual({ configured: false });
+
+    // query もルーティング先を変え得るため、値が違えば別の宛先として扱う。
+    await save.execute({ scope, main: { source: 'openai-compatible', baseUrl: 'https://api.example.com/v1?tenant=a', model: 'remote', apiKey: 'sk-tenant-a-3333' } });
+    const queryChanged = await save.execute({ scope, main: { source: 'openai-compatible', baseUrl: 'https://api.example.com/v1?tenant=b', model: 'remote' } });
+    expect(queryChanged.main?.apiKey).toEqual({ configured: false });
   });
 
   it('registry の provider 接頭辞を変えたらキーは継承しない（モデル違いだけなら維持）', async () => {
