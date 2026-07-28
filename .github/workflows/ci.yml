@@ -1,0 +1,103 @@
+# 品質チェックの自動実行。
+#
+# 手元でしか回っていなかった typecheck / depcruise / test:cov / build を、push と PR で必ず通す。
+# ローカルは Windows（`scripts/*.ps1`）だが、ここは ubuntu-latest で動かす。
+# **OS依存のスクリプトは一切呼ばない**（呼んだ時点でCIが「Windowsでしか再現しない検証」になってしまう）。
+#
+# e2e（Playwright）はこのワークフローに入れない。理由は .github/workflows/e2e.yml の先頭に書いた。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同じ ref へ続けて push したとき、古い実行を止める（PR中の連投でランナーを埋めない）。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: typecheck / deps / test / build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # ここに置くのは「テストの前提を変えないもの」だけにする。
+    # 例えば AGENTCONTEXT_DB_PATH をジョブ全体へ設定すると、
+    # 「未設定なら ~/.agentblume/agentblume.db」を確かめている composition/root.test.ts が
+    # CIでだけ落ちる。実行時の設定は必要なステップにだけ渡す。
+    env:
+      # 外部送信の抑止（オフラインファースト）。src/mastra-runtime-env.ts と同じ値を先に置く。
+      # エントリポイントを経由しないユニットテストからも @mastra が読まれるため、ここでも立てておく。
+      MASTRA_TELEMETRY_DISABLED: 'true'
+      MASTRA_OFFLINE: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # .nvmrc（22.19.0）を唯一の版指定にする。package.json の engines `>=22.9.0` は
+          # 「動く下限」であって、CIで使う版を決めるものではない。
+          node-version-file: .nvmrc
+          cache: npm
+
+      # package-lock.json どおりに入れる（`npm install` と違い lock を書き換えない）。
+      - name: Install dependencies
+        run: npm ci
+
+      # tsconfig.json（backend）/ tsconfig.ui.json / tsconfig.e2e.json の3つを見る。
+      - name: Typecheck
+        run: npm run typecheck
+
+      # レイヤ依存ルール（docs/05-dependency-graph.md / ADR-0001）の機械的強制。
+      - name: Dependency rules
+        run: npm run depcruise
+
+      # カバレッジゲート（lines/functions/statements 90・branches 80）込み。
+      # node:sqlite は Node 22.19 ではフラグ無しでも動くが、vitest.config.ts が execArgv で
+      # `--experimental-sqlite` を渡している。このフラグは今も受理されるので Linux でも同じ挙動になる。
+      - name: Test with coverage
+        run: npm run test:cov
+
+      # 本番ビルド（vite: UI と サーバーのSSRビルド）。型が通ってもビルドが割れることはある。
+      - name: Build
+        run: npm run build
+
+      # 「ビルド成果物が起動できる形か」までは型もテストも見ていない
+      # （dist/server は preserveModules で出すため、import の解決失敗は実行して初めて分かる）。
+      # listen まで到達したら /health と /ready を叩いて落とす。
+      - name: Smoke test the production build
+        env:
+          AGENTCONTEXT_PROFILE: test
+          AGENTCONTEXT_PORT: '3031'
+          AGENTCONTEXT_HOST: 127.0.0.1
+          AGENTCONTEXT_LOG_LEVEL: info
+          AGENTCONTEXT_OTEL_ENABLED: 'false'
+          AGENTCONTEXT_RETENTION_INTERVAL_MS: '0'
+        run: |
+          npm start &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3031/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:3031/health
+          echo
+          curl -sf http://127.0.0.1:3031/ready
+          echo
+
+      # 落ちたときにカバレッジの内訳を見られるようにする（成功時は不要）。
+      - name: Upload coverage report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage
+          retention-days: 7
+          if-no-files-found: ignore

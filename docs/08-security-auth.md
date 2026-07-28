@@ -17,6 +17,13 @@ DB/API接続・カスタムコード・MCP公開・Webhookを提供する前に�
 | 5 | 実行者・対象バージョン・入力参照・使用Tool・承認・結果・エラーを監査ログへ記録し、秘密情報・個人情報はマスキングする |
 | 6 | ワークスペース・接続・Tool・Skill・Agent・公開エンドポイントごとにアクセス制御を適用できる |
 
+> #5 のうち**サーバーログのマスキング**は配線済み。pino の `redact`（`src/api/logging.ts`）が
+> Authorization / Cookie / APIキーの各ヘッダと、ボディ・ログcontextの `apiKey` / `password` / `token` /
+> `secret` 系を `[redacted]` へ落とす。例外メッセージに埋め込まれた秘密値は
+> `redactSecrets()`（`src/application/operations/logger.ts`）が別途正規表現で落とす。
+> 設定内容と「何を守らないか」は [02-tech-stack.md](./02-tech-stack.md#7-観測ログトレース) を参照。
+> 監査ログ本体（誰が何をしたか）の記録は未実装で、ここで言えるのは運用ログの話だけ。
+
 ---
 
 ## 2. 認証（Authentication）

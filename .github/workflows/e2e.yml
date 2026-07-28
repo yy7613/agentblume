@@ -1,0 +1,80 @@
+# Playwright の e2e。**手動トリガー（workflow_dispatch）専用**で、push / PR では走らせない。
+#
+# ## なぜ CI（ci.yml）に入れず、`continue-on-error: true` でもなく、別ワークフローの手動実行にしたか
+#
+# この構成はまだGitHub Actions上で一度も実行できていない（実行環境が手元に無い）。
+# 未検証のジョブを push 経路へ入れる方法は2つあるが、どちらも採らなかった。
+#
+# - **ci.yml に `continue-on-error: true` で入れる**: 失敗してもチェックが緑になる。
+#   つまり「壊れているのに緑」が常態化し、そのうち誰も見なくなる。
+#   さらに毎 push で ブラウザのダウンロード＋2つのサーバー起動＋シナリオ実行の数分を必ず払う。
+#   払った時間に対して得られるシグナルがゼロという、いちばん質の悪い組み合わせになる。
+# - **ci.yml に普通に入れる**: 未検証のものが main の門番になる。e2e 側の初期不具合で
+#   関係のないPRが全部止まる。
+#
+# 別ワークフロー＋手動トリガーなら「まだ検証中である」ことが状態として正しく見えるし、
+# ci.yml を巻き込まずに何度でも回して直せる。**安定して緑になることを確認できたら、
+# `on:` に `pull_request` を足してこのファイルの但し書きを消す**のが次の一手になる。
+#
+# ## 実行方法
+#
+# GitHub の Actions タブ → この workflow → "Run workflow"。
+name: E2E (manual)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  playwright:
+    name: playwright (chromium)
+    runs-on: ubuntu-latest
+    # ブラウザの取得とシナリオ実行で ci.yml より長くかかる。
+    timeout-minutes: 40
+
+    env:
+      MASTRA_TELEMETRY_DISABLED: 'true'
+      MASTRA_OFFLINE: '1'
+      # playwright.config.ts の webServer が API を profile=test で起こす。
+      # 既定のログレベルは silent なので、失敗時の調査用に info へ戻しておく。
+      AGENTCONTEXT_LOG_LEVEL: info
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # chromium 本体はキャッシュされないので、ここが所要時間の大半を占める。
+      # `--with-deps` は Linux 側の共有ライブラリ（libnss3 等）を入れる。
+      # package.json の `test:e2e:install` は `playwright install chromium` だけなので、
+      # ubuntu では依存ライブラリが足りず起動に失敗する。ここは CLI を直接呼ぶ。
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      # UI（vite dev server:5175）と API（npm run serve:3035）は
+      # playwright.config.ts の webServer が起動・停止する。ここでは何もしない。
+      - name: Run e2e
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          retention-days: 7
+          if-no-files-found: ignore

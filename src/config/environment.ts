@@ -25,6 +25,15 @@ import { z } from 'zod';
 export const PROFILES = ['local', 'test'] as const;
 /** 真偽値として読む env の受理値。`'true'` 以外は false 扱い、という曖昧さを排除する。 */
 export const FLAGS = ['true', 'false'] as const;
+/**
+ * ログレベルの値域（pino のレベル名）。`silent` は「1行も出さない」。
+ *
+ * pino は未知のレベル名を渡すと**起動時に throw する**ため、ここで先に弾いて
+ * 「env の打ち間違いでサーバーが不可解に死ぬ」状態を作らない。
+ */
+export const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
+/** `LOG_LEVELS` の要素。 */
+export type LogLevel = (typeof LOG_LEVELS)[number];
 
 /** listen ポートの既定（`src/server.ts`）。 */
 export const DEFAULT_PORT = 3030;
@@ -48,6 +57,18 @@ export const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
  * 初回は起動直後ではなく1インターバル後に走る（理由は `RetentionScheduler` のコメント）。
  */
 export const DEFAULT_RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/**
+ * `AGENTCONTEXT_LOG_LEVEL` 未設定時のログレベル。
+ *
+ * `local`（＝実運用）は `info`。`test` プロファイルは `silent`。
+ * テストプロファイルでサーバーを起こすのは E2E とテスト用の手動起動だけで、そこでは
+ * Fastify の「incoming request / request completed」が毎リクエスト2行流れるとテスト出力が読めなくなる。
+ * 調べたいときは `AGENTCONTEXT_LOG_LEVEL=info` を足せば戻せる（既定を変えるだけで、封じてはいない）。
+ */
+export const DEFAULT_LOG_LEVELS: Readonly<Record<(typeof PROFILES)[number], LogLevel>> = {
+  local: 'info',
+  test: 'silent',
+};
 
 /** `public.sales_daily` のような識別子だけを許す（adapters/database/environment-postgres と同じ規則）。 */
 const TABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$/;
@@ -158,6 +179,7 @@ export const environmentSchema = z.object({
   AGENTCONTEXT_UI_ROOT: optional(nonEmpty),
   AGENTCONTEXT_SHUTDOWN_GRACE_MS: optional(nonNegativeInteger),
   AGENTCONTEXT_RETENTION_INTERVAL_MS: optional(nonNegativeInteger),
+  AGENTCONTEXT_LOG_LEVEL: optional(z.enum(LOG_LEVELS)),
   // モデル（main / judge スロットの env 既定）
   LM_STUDIO_BASE_URL: optional(httpUrl),
   LM_STUDIO_MODEL: optional(nonEmpty),
@@ -180,6 +202,11 @@ export const environmentSchema = z.object({
   GOOGLE_CUSTOM_SEARCH_ENGINE_ID: optional(nonEmpty),
   // 観測・運用
   AGENTCONTEXT_OTEL_ENABLED: optional(flag),
+  // OTel の標準env。値を解釈するのは OpenTelemetry SDK であってこのアプリではないが、
+  // **打ち間違えても静かにspanが消えるだけ**（exporterは送信失敗をログにしか出さない）なので、
+  // 起動時に形だけ見ておく。ここに無い `OTEL_*` は SDK がそのまま読む（検証しない）。
+  OTEL_EXPORTER_OTLP_ENDPOINT: optional(httpUrl),
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: optional(httpUrl),
   AGENTCONTEXT_MODEL_PRICING_JSON: optional(json(z.array(pricingEntrySchema))),
   // UI / E2E（開発用）
   AGENTCONTEXT_API_URL: optional(httpUrl),
@@ -203,6 +230,7 @@ const EXPECTATIONS: Readonly<Record<string, string>> = {
   AGENTCONTEXT_UI_ROOT: 'ビルド済みUI（index.html を含むディレクトリ）のパス',
   AGENTCONTEXT_SHUTDOWN_GRACE_MS: '0以上の整数（ミリ秒・0 は「待たずに中断」）',
   AGENTCONTEXT_RETENTION_INTERVAL_MS: '0以上の整数（ミリ秒・既定 86400000＝24時間・0 は自動実行を無効化）',
+  AGENTCONTEXT_LOG_LEVEL: `${LOG_LEVELS.join(' / ')} のいずれか（既定は local=info・test=silent）`,
   LM_STUDIO_BASE_URL: 'URL（例 http://127.0.0.1:1234/v1）',
   LM_STUDIO_MODEL: '空でない文字列',
   LM_STUDIO_API_KEY: '空でない・空白や改行を含まない文字列',
@@ -221,6 +249,8 @@ const EXPECTATIONS: Readonly<Record<string, string>> = {
   GOOGLE_CUSTOM_SEARCH_API_KEY: '空でない・空白や改行を含まない文字列',
   GOOGLE_CUSTOM_SEARCH_ENGINE_ID: '空でない文字列',
   AGENTCONTEXT_OTEL_ENABLED: `'true' または 'false'`,
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'URL（例 http://127.0.0.1:4318）',
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'URL（例 http://127.0.0.1:4318/v1/traces）',
   AGENTCONTEXT_MODEL_PRICING_JSON: '{provider, model, inputPerMillionTokens, outputPerMillionTokens, effectiveAt} のJSON配列',
   AGENTCONTEXT_API_URL: 'URL（例 http://127.0.0.1:3030）',
   AGENTCONTEXT_MANUAL_LIVE: `'true' または 'false'`,
@@ -284,13 +314,16 @@ export interface ServerSettings {
   readonly shutdownGraceMs: number;
   /** retentionの自動実行間隔（ミリ秒）。`0` は自動実行を行わない。 */
   readonly retentionIntervalMs: number;
+  /** Fastify（pino）のログレベル。`silent` は1行も出さない。 */
+  readonly logLevel: LogLevel;
   readonly scope: { readonly tenantId: string; readonly workspaceId: string };
 }
 
 /** 検証済み env に既定値を当てて、起動に必要な設定へまとめる。 */
 export function serverSettings(env: ValidatedEnvironment): ServerSettings {
+  const profile = env.AGENTCONTEXT_PROFILE ?? 'local';
   return {
-    profile: env.AGENTCONTEXT_PROFILE ?? 'local',
+    profile,
     port: env.AGENTCONTEXT_PORT ?? DEFAULT_PORT,
     host: env.AGENTCONTEXT_HOST ?? DEFAULT_HOST,
     sampleData: env.AGENTCONTEXT_SAMPLE_DATA === 'true',
@@ -298,6 +331,7 @@ export function serverSettings(env: ValidatedEnvironment): ServerSettings {
     revision: env.AGENTCONTEXT_SOURCE_REVISION,
     shutdownGraceMs: env.AGENTCONTEXT_SHUTDOWN_GRACE_MS ?? DEFAULT_SHUTDOWN_GRACE_MS,
     retentionIntervalMs: env.AGENTCONTEXT_RETENTION_INTERVAL_MS ?? DEFAULT_RETENTION_INTERVAL_MS,
+    logLevel: env.AGENTCONTEXT_LOG_LEVEL ?? DEFAULT_LOG_LEVELS[profile],
     scope: {
       tenantId: env.AGENTCONTEXT_TENANT_ID ?? 'local',
       workspaceId: env.AGENTCONTEXT_WORKSPACE_ID ?? 'default',

@@ -7,7 +7,9 @@
  */
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyServerOptions } from 'fastify';
+import type { LogLevel } from '../config/environment';
+import { loggerOptions } from './logging';
 import { registerDraftToolRoutes } from './draft-tool-routes';
 import type { DraftToolRouteDeps } from './draft-tool-routes';
 import { toHttpError } from './error-mapping';
@@ -72,9 +74,27 @@ export interface ReadinessCheck {
   probe(): Promise<void>;
 }
 
+/** `buildServer` のログ設定。`true` は「既定レベル（info）で有効」の短縮形。 */
+export type LoggerOption = boolean | { readonly level: LogLevel };
+
+/** ログを有効にしたときの既定レベル（`logger: true` の短縮形が指す先）。 */
+export const DEFAULT_SERVER_LOG_LEVEL: LogLevel = 'info';
+
+/**
+ * `ServerOptions.logger` を Fastify のロガー設定へ落とす。
+ *
+ * 有効なときは**必ず** `loggerOptions()` を通す。`logger: true` をそのまま Fastify へ渡すと
+ * redact 無しの素の pino になるため、この関数を挟むことで「有効化したのにマスクされない」経路を無くす。
+ */
+export function resolveLoggerOption(option: LoggerOption | undefined): FastifyServerOptions['logger'] {
+  if (option === undefined || option === false) return false;
+  return loggerOptions(option === true ? DEFAULT_SERVER_LOG_LEVEL : option.level);
+}
+
 /** buildServer のオプション。 */
 export interface ServerOptions {
-  readonly logger?: boolean;
+  /** `false`／省略でロガー無効（テスト用）。`true` で既定レベル、`{ level }` でレベル指定。 */
+  readonly logger?: LoggerOption;
   /**
    * ビルド済みUI（`index.html` を含むディレクトリ）の絶対パス。
    * 指定したときだけ静的配信とSPAフォールバックを有効にする（開発時は Vite が配信するので指定しない）。
@@ -111,7 +131,7 @@ export function buildServer(
   options?: ServerOptions,
 ): FastifyInstance {
   const app = Fastify({
-    logger: options?.logger ?? false,
+    logger: resolveLoggerOption(options?.logger),
     bodyLimit: BODY_LIMIT_BYTES,
     requestTimeout: REQUEST_TIMEOUT_MS,
     keepAliveTimeout: KEEP_ALIVE_TIMEOUT_MS,

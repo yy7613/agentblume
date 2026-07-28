@@ -7,10 +7,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_HOST,
+  DEFAULT_LOG_LEVELS,
   DEFAULT_PORT,
   DEFAULT_RETENTION_INTERVAL_MS,
   DEFAULT_SHUTDOWN_GRACE_MS,
   EnvironmentValidationError,
+  LOG_LEVELS,
   databaseConnectionsSchema,
   environmentSchema,
   serverSettings,
@@ -73,6 +75,30 @@ describe('validateEnvironment', () => {
     expect(issuesOf({ AGENTCONTEXT_OTEL_ENABLED: '1' })[0]).toContain(`'true' または 'false'`);
     expect(issuesOf({ ANALYSIS_ASSISTANT_ENABLED: 'off' })).toHaveLength(1);
     expect(issuesOf({ AGENTCONTEXT_MANUAL_LIVE: 'maybe' })).toHaveLength(1);
+  });
+
+  it('AGENTCONTEXT_LOG_LEVEL は pino のレベル名だけを受ける', () => {
+    for (const level of LOG_LEVELS) {
+      expect(validateEnvironment({ AGENTCONTEXT_LOG_LEVEL: level }).AGENTCONTEXT_LOG_LEVEL).toBe(level);
+    }
+    // pino は未知のレベル名で throw するので、env の段階で弾いて起動失敗の理由を読めるようにする。
+    for (const bad of ['verbose', 'INFO', 'quiet']) {
+      expect(issuesOf({ AGENTCONTEXT_LOG_LEVEL: bad })[0]).toContain('AGENTCONTEXT_LOG_LEVEL');
+    }
+    expect(issuesOf({ AGENTCONTEXT_LOG_LEVEL: 'verbose' })[0]).toContain('silent');
+  });
+
+  it('OTel の exporter エンドポイントは http(s) のURLだけを受ける', () => {
+    const validated = validateEnvironment({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318', OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'http://127.0.0.1:4318/v1/traces' });
+    expect(validated.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('http://127.0.0.1:4318');
+    expect(validated.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).toBe('http://127.0.0.1:4318/v1/traces');
+    // 綴りを間違えても exporter は黙って送信に失敗するだけなので、起動時に弾く。
+    expect(issuesOf({ OTEL_EXPORTER_OTLP_ENDPOINT: '127.0.0.1:4318' })[0]).toContain('OTEL_EXPORTER_OTLP_ENDPOINT');
+    expect(issuesOf({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'grpc://127.0.0.1:4317' })).toHaveLength(1);
+  });
+
+  it('検証していない OTEL_* は素通しする（SDKがそのまま読む）', () => {
+    expect(validateEnvironment({ OTEL_EXPORTER_OTLP_HEADERS: 'authorization=Bearer x', OTEL_TRACES_SAMPLER: 'always_on' })).toEqual({});
   });
 
   it('タイムアウト・トークン上限は正の整数だけを受ける', () => {
@@ -176,6 +202,7 @@ describe('serverSettings', () => {
       revision: undefined,
       shutdownGraceMs: DEFAULT_SHUTDOWN_GRACE_MS,
       retentionIntervalMs: DEFAULT_RETENTION_INTERVAL_MS,
+      logLevel: 'info',
       scope: { tenantId: 'local', workspaceId: 'default' },
     });
   });
@@ -210,11 +237,24 @@ describe('serverSettings', () => {
       revision: 'deadbeef',
       shutdownGraceMs: 25_000,
       retentionIntervalMs: 3_600_000,
+      logLevel: 'silent',
       scope: { tenantId: 'acme', workspaceId: 'ops' },
     });
   });
 
   it('AGENTCONTEXT_SAMPLE_DATA=false はサンプル投入しない', () => {
     expect(serverSettings(validateEnvironment({ AGENTCONTEXT_SAMPLE_DATA: 'false' })).sampleData).toBe(false);
+  });
+
+  it('ログレベルの既定はプロファイルで変える（local=info / test=silent）', () => {
+    expect(DEFAULT_LOG_LEVELS).toEqual({ local: 'info', test: 'silent' });
+    expect(serverSettings(validateEnvironment({ AGENTCONTEXT_PROFILE: 'local' })).logLevel).toBe('info');
+    // テスト用の起動（E2Eなど）で毎リクエスト2行流れるとテスト出力が読めなくなる。
+    expect(serverSettings(validateEnvironment({ AGENTCONTEXT_PROFILE: 'test' })).logLevel).toBe('silent');
+  });
+
+  it('AGENTCONTEXT_LOG_LEVEL はプロファイル既定より優先する（test でも見たいときに戻せる）', () => {
+    expect(serverSettings(validateEnvironment({ AGENTCONTEXT_PROFILE: 'test', AGENTCONTEXT_LOG_LEVEL: 'debug' })).logLevel).toBe('debug');
+    expect(serverSettings(validateEnvironment({ AGENTCONTEXT_LOG_LEVEL: 'silent' })).logLevel).toBe('silent');
   });
 });

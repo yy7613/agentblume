@@ -257,6 +257,7 @@ SIGINT / SIGTERM を受けると `src/server.ts` が次の順で降りる。順�
 | 2 | `app.drainWorkers(graceMs)` | ワーカーの新規受付を止め、**実行中**のジョブを最大 `graceMs` 待つ |
 | 3 | `app.mcpClient.close()` | stdio接続の子プロセスを孤児にしないよう先に閉じる |
 | 4 | `app.close()` | DBハンドル等を解放（ワーカーへの最終中断も兼ねる） |
+| 5 | `telemetry.shutdown()` | 未送信の span をフラッシュ（OTel有効時のみ。`BatchSpanProcessor` は既定で5秒ためるため、これが無いと落ちる直前の trace が消える） |
 
 | env | 既定 | 内容 |
 |---|---|---|
@@ -271,3 +272,113 @@ SIGINT / SIGTERM を受けると `src/server.ts` が次の順で降りる。順�
 猶予の実体は `IdleLatch`（`src/adapters/worker/idle-latch.ts`）。`InProcessExperimentWorker` と
 `InProcessFactoryWorker` は独立した実装だが、この待ち合わせだけは共有して1箇所で検証する。
 待ち合わせタイマーは `unref()` する（待ちたいのはジョブであってタイマーではない）。
+
+---
+
+## 7. 観測（ログ・トレース）
+
+### ログ（Fastify / pino）
+
+`npm run serve` / `npm start` は `buildServer(app, { logger: { level } })` でロガーを有効にする。
+設定の実体は `src/api/logging.ts`。
+
+| 項目 | 内容 |
+|---|---|
+| レベル | `AGENTCONTEXT_LOG_LEVEL`。**既定はプロファイル依存で `local`=`info` / `test`=`silent`** |
+| マスク | pino の `redact`。伏せ字は `[redacted]` 固定（値の長さも漏らさない） |
+| リクエストID | Fastify がリクエストごとに `logger.child({ reqId })` を作るので**設定不要**。自動の「incoming request / request completed」にも `request.log.*` にも `reqId` が載る |
+
+`test` プロファイルの既定を `silent` にしているのは、E2E とテスト用の手動起動で
+リクエストごとに2行流れるとテスト出力が読めなくなるため。調べたいときは
+`AGENTCONTEXT_LOG_LEVEL=info` を明示すれば既定より優先される（封じてはいない）。
+
+マスク対象は「キー名で判別できるもの」に限る。
+
+| 層 | パス |
+|---|---|
+| ヘッダ | `req.headers.authorization` / `.cookie` / `["proxy-authorization"]` / `["x-api-key"]` / `["x-auth-token"]`、`res.headers["set-cookie"]`、`headers.*` の同名 |
+| ボディ | `req.body.apiKey` / `password` / `token` / `secret` / `accessToken` / `refreshToken` / `authorization`、`body.*` の同名 |
+| ログcontext | 深さ1（`apiKey` / `password` / `token` / `secret` …）と深さ2（`*.apiKey` …） |
+
+Fastify の**既定の `req` シリアライザはヘッダもボディも出さない**（method / url / host / remoteAddress だけ）ので、
+素の状態で `Authorization` が漏れるわけではない。危ないのは「調査のために一時的にヘッダやボディを出す」
+「`server.log.info({ apiKey }, …)` と直接書く」といった、その場では正しく見える変更のほうで、
+**設定が無ければ静かに全部出る**。`redact` はロガー生成時にしか渡せない（fast-redact がパスを事前コンパイルする）ため、
+後から足すこともできない。だから先に置く。
+
+値の形（JWTらしき文字列など）では判定しない。例外メッセージの中に埋め込まれた秘密値は
+`redactSecrets()`（`src/application/operations/logger.ts`）が正規表現で落とす。役割が違うので両方要る。
+
+### トレース（OpenTelemetry）
+
+計装（`agent.run` / `model.complete` / `tool.execute` / `evaluation.case` の span）は
+`src/adapters/telemetry/open-telemetry-adapter.ts` に前からあったが、依存は `@opentelemetry/api` **だけ**で
+SDKも exporter も初期化コードも無かった。`trace.getTracer()` は TracerProvider 未登録なら no-op を返すため、
+`AGENTCONTEXT_OTEL_ENABLED=true` にしても **span は1本も出ない**（エラーにもならないので気づけない）状態だった。
+`src/otel-runtime.ts` がその欠けていた側を埋める。
+
+| env | 既定 | 内容 |
+|---|---|---|
+| `AGENTCONTEXT_OTEL_ENABLED` | `false` | `true` のときだけ TracerProvider を登録する |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP/HTTP の送信先（末尾に `/v1/traces` が足される）。**OTel標準env**で解釈するのはSDK |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | — | trace専用の完全なURL。指定すれば上より優先される |
+
+その他の `OTEL_*`（`OTEL_EXPORTER_OTLP_HEADERS`、`OTEL_TRACES_SAMPLER` 等）もSDKがそのまま読む。
+このアプリは値を解釈しない（[SDK環境変数の仕様](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/)）。
+`service.name` は `agentblume` 固定、`AGENTCONTEXT_SOURCE_REVISION` があれば `service.version` に載せる。
+
+受け口を1つ立てて確かめる最短手順:
+
+```bash
+docker run --rm -p 4318:4318 otel/opentelemetry-collector:latest
+# .env に AGENTCONTEXT_OTEL_ENABLED=true と OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+npm run serve
+```
+
+**採用したのは `@opentelemetry/sdk-node` ではなく trace だけの構成**
+（`sdk-trace-node` + `exporter-trace-otlp-http` + `resources` + `semantic-conventions`）。
+`sdk-node` は metrics / logs / prometheus / zipkin / jaeger / gRPC の exporter を全部引き連れてくるが、
+使うのは trace の OTLP/HTTP 1本だけで、`@grpc/grpc-js` と `protobufjs` まで入る。
+実測で `node_modules` が +39 MB（trace限定なら +23 MB）。使わないものは配らない。
+
+**無効時はSDKパッケージを `import` すらしない**（`await import()` の手前で return する）。
+exporter は生成されず、バックグラウンドの送信タイマーも立たない。オフラインファーストの前提を壊さないため、
+これは `src/otel-runtime.test.ts` で固定してある。
+
+初期化に失敗しても throw しない（観測系の障害を業務へ伝播させない、というコードベース共通の規律）。
+ただし黙って無効化はせず、理由を1行出す。
+
+> **なぜ `src/mastra-runtime-env.ts` と同じ「副作用専用モジュールを最初に import する」形にしないのか**
+>
+> SDKの起動は非同期（`await import()`）なので top-level await が要る。ところが
+> **ESM の兄弟モジュールは async な兄弟の完了を待たない**（同期モジュール B は、TLA を持つ
+> 兄弟 A より先に評価が終わる。実測で確認済み）。「最初の import に置いたから fastify より先に起動している」
+> という保証は得られない。
+> 代わりに `startTelemetry()` を公開し、`src/server.ts` の本体の最初で `await` する。
+> この計装は自動計装（モジュールの monkey-patch）を使わず手書きの span だけなので、必要なのは
+> 「**最初の span が作られる前に** provider が登録されていること」だけで、`createApp()` より前に await していれば足りる
+> （`@opentelemetry/api` の ProxyTracer は span 生成のたびに delegate を引き直す）。
+
+---
+
+## 8. CI（GitHub Actions）
+
+| workflow | トリガー | 内容 |
+|---|---|---|
+| `.github/workflows/ci.yml` | push(main) / pull_request | `npm ci` → `typecheck` → `depcruise` → `test:cov` → `build` → 本番ビルドの起動確認（`/health` `/ready`） |
+| `.github/workflows/e2e.yml` | `workflow_dispatch`（手動）のみ | `playwright install --with-deps chromium` → `npm run test:e2e` |
+
+`ubuntu-latest` で動かす。Node の版は `.nvmrc`（22.19.0）を唯一の指定にし、
+`actions/setup-node` の `cache: npm` で `~/.npm` をキャッシュする。
+`package.json` の `engines` の `>=22.9.0` は「動く下限」であって、CIで使う版を決めるものではない。
+Windows前提のスクリプト（`scripts/*.ps1`）は呼ばない。
+
+`node:sqlite` は Node 22.19 では**フラグ無しでも使える**（`--experimental-sqlite` は受理されるが必須ではない）。
+`vitest.config.ts` の `execArgv` はそのままで Linux でも同じ挙動になる。
+
+e2e を CI 本体に入れず手動トリガーの別ワークフローにしたのは、この構成をまだ Actions 上で
+一度も実行できていないため。`continue-on-error: true` で ci.yml に同居させると
+「壊れているのにチェックは緑」が常態化してそのうち誰も見なくなるうえ、毎 push で
+ブラウザ取得＋サーバー2本の起動＋シナリオ実行の数分を必ず払うのにシグナルはゼロになる。
+別ワークフローなら「まだ検証中」が状態として正しく見え、ci.yml を巻き込まずに何度でも回して直せる。
+安定して緑になることを確認できたら `on:` に `pull_request` を足す。

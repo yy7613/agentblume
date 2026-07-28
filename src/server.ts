@@ -21,6 +21,7 @@ import { EnvironmentValidationError, serverSettings, validateEnvironment, type S
 import { createApp } from './composition/root';
 import type { LoggerPort } from './application/operations/logger';
 import { RetentionScheduler } from './application/operations/retention-scheduler';
+import { startTelemetry } from './otel-runtime';
 import { seedSampleData } from './sample-data';
 
 /** env を検証して起動設定へまとめる。1件でも不正なら理由を並べて起動しない。 */
@@ -51,10 +52,21 @@ function resolveUiRoot(override: string | undefined): string | undefined {
 }
 
 const settings = loadSettings();
+
+/**
+ * OTel の TracerProvider を登録する（`AGENTCONTEXT_OTEL_ENABLED=true` のときだけ）。
+ *
+ * **`createApp()` より前**であることに意味がある。`createApp` が組み立てる `OpenTelemetryAdapter` は
+ * この時点で tracer を取得するが、その先の span 生成は実行時なので、ここで登録が済んでいれば
+ * 最初の span から本物の provider に載る。無効時はSDKパッケージを import すらしない
+ * （オフラインファースト：exporter も送信タイマーも作らない）。詳細は `src/otel-runtime.ts`。
+ */
+const telemetry = await startTelemetry();
+
 const app = createApp();
 const uiRoot = resolveUiRoot(settings.uiRootOverride);
 const server = buildServer(app, {
-  logger: true,
+  logger: { level: settings.logLevel },
   ...(uiRoot === undefined ? {} : { uiRoot }),
   ...(settings.revision === undefined ? {} : { revision: settings.revision }),
   // DBは必須依存。読み取りが1本通ることを readiness の条件にする。
@@ -136,6 +148,9 @@ async function shutdown(signal: string): Promise<void> {
   } finally {
     try { await app.mcpClient.close(); } catch (err) { server.log.warn({ err }, 'failed to close MCP connections'); }
     app.close();
+    // 未送信の span をフラッシュしてから降りる。BatchSpanProcessor は既定で5秒ためてから送るので、
+    // これが無いと「落ちる直前の実行」の trace が丸ごと消える（障害調査で一番見たいところ）。
+    try { await telemetry.shutdown(); } catch (err) { server.log.warn({ err }, 'failed to flush OpenTelemetry spans'); }
   }
   process.exit(0);
 }
@@ -154,11 +169,14 @@ try {
       ui: uiRoot ?? 'disabled (use the Vite dev server)',
       shutdownGraceMs: settings.shutdownGraceMs,
       retentionIntervalMs: settings.retentionIntervalMs,
+      logLevel: settings.logLevel,
+      telemetry: telemetry.enabled ? 'opentelemetry' : 'disabled',
     },
     'agentblume API started',
   );
 } catch (err) {
   server.log.error(err);
   app.close();
+  await telemetry.shutdown();
   process.exit(1);
 }

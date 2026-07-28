@@ -77,8 +77,14 @@ npm run dev:sample
 npm test
 npm run test:e2e
 npm run typecheck
+npm run depcruise
+npm run test:cov
 npm run build
 ```
+
+`test:e2e` 以外は GitHub Actions（`.github/workflows/ci.yml`）が push(main) と pull request で
+`ubuntu-latest` 上でも回す。e2e は所要時間が長く、まだ Actions 上での安定性を確認できていないため
+`.github/workflows/e2e.yml` の**手動トリガー**（Actions タブ → E2E (manual) → Run workflow）にしてある。
 
 ## ビルドと本番起動
 
