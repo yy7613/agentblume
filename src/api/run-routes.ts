@@ -4,7 +4,8 @@ import type { RunAgentPreviewUseCase } from '../application/agent/run-agent-prev
 import type { QueryRunsUseCase } from '../application/agent/query-runs';
 import { SemVer } from '../domain/tool/semver';
 import { clientAbortSignal } from './client-abort';
-import { scopeOf } from './authentication';
+import { principalOf, scopeOf } from './authentication';
+import { recordAuditDetail } from './authorization';
 import { BadRequestError } from './error-mapping';
 import { resumeRunBodySchema, runAgentBodySchema, runListQuerySchema, runTraceQuerySchema } from './schemas';
 import type { RunApprovalCheckpoint, RunRecord } from '../domain/run/run';
@@ -54,6 +55,8 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
     let run;
     if ('agent' in body) {
       const version = parseVersion(body.agent.version);
+      // 監査は「誰が・何を・どの版で実行したか」まで残す（対象はボディにしか無いのでここで足す）。
+      recordAuditDetail(request, { agentId: body.agent.internalId, ...(body.agent.version === undefined ? {} : { agentVersion: body.agent.version }), mode: body.mode });
       run = await deps.runAgentPreview.executeSaved({
         scope: scopeOf(request),
         agentId: body.agent.internalId,
@@ -69,6 +72,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
       }, signal);
     } else {
       const version = parseVersion(body.tool.version);
+      recordAuditDetail(request, { toolId: body.tool.internalId, ...(body.tool.version === undefined ? {} : { toolVersion: body.tool.version }), mode: body.mode });
       run = await deps.runAgentPreview.execute({
         scope: scopeOf(request),
         toolId: body.tool.internalId,
@@ -86,13 +90,20 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
   /**
    * 承認待ちで停止したRunを、人間の承認結果とともに同じrunIdで再開する。
    * 応答は POST /runs と同じ形（再開後に別のツールで再び waiting-approval になることもある）。
+   *
+   * **承認者はリクエストからではなく Principal から取る**。ボディで受け取れるようにすると
+   * 承認の証跡を任意に名乗れてしまい、監査として成立しない。誰が承認してよいか（`approve` 権限）は
+   * `api/authorization.ts` の表が先に判定している。
    */
   app.post<{ Params: { runId: string } }>('/runs/:runId/resume', async (request, reply) => {
     const body = parseWith(resumeRunBodySchema, request.body);
+    const decidedBy = principalOf(request).subject;
+    recordAuditDetail(request, { decision: body.decision });
     const run = await deps.runAgentPreview.resumeSavedRun({
       scope: scopeOf(request),
       runId: request.params.runId,
       decision: body.decision,
+      decidedBy,
       ...(body.feedback !== undefined ? { feedback: body.feedback } : {}),
     }, clientAbortSignal(request, reply));
     return { run };

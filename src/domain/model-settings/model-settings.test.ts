@@ -109,6 +109,25 @@ describe('isHttpBaseUrl', () => {
     }
     expect(isHttpBaseUrl(`http://h/${'x'.repeat(600)}`)).toBe(false);
   });
+
+  it('リンクローカル（クラウドメタデータ）宛は拒否する', () => {
+    for (const value of ['http://169.254.169.254/latest/meta-data/', 'http://169.254.1.2:8080/v1', 'http://[fe80::1]/v1']) {
+      expect(isHttpBaseUrl(value)).toBe(false);
+    }
+  });
+
+  it('LANのLM Studioは許可したままにする（既定で塞ぐと既存環境が壊れる）', () => {
+    for (const value of ['http://192.168.1.20:1234/v1', 'http://10.0.0.5:1234/v1']) {
+      expect(isHttpBaseUrl(value)).toBe(true);
+    }
+  });
+});
+
+describe('createModelSlotSettings の baseUrl 検証', () => {
+  it('リンクローカル宛は保存できない', () => {
+    expect(() => createModelSlotSettings({ source: 'openai-compatible', baseUrl: 'http://169.254.169.254/v1', model: 'x' }))
+      .toThrow(/link-local/);
+  });
 });
 
 describe('normalizeBaseUrl / sameBaseUrl / sameModelDestination', () => {

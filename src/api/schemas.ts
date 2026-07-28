@@ -543,8 +543,15 @@ export const experimentComparisonBodySchema = z.object({ scope: tenantScopeSchem
 export const evaluateGateBodySchema = z.object({ scope: tenantScopeSchema, policy: z.object({ id: z.string().min(1), version: z.string().min(1) }), candidateExperimentId: z.string().min(1), baselineExperimentId: z.string().min(1).optional() });
 export const gateReportListQuerySchema = scopeQuerySchema.extend({ candidateExperimentId: z.string().min(1).optional() });
 export const promotionListQuerySchema = scopeQuerySchema.extend({ agentId: z.string().min(1).optional() });
-export const requestPromotionBodySchema = z.object({ scope: tenantScopeSchema, gateReportId: z.string().min(1), requestedBy: z.string().min(1) });
-export const decidePromotionBodySchema = z.object({ scope: tenantScopeSchema, decidedBy: z.string().min(1), reason: z.string().optional() });
+/**
+ * 昇格の申請・決定。
+ *
+ * `requestedBy` / `decidedBy` は**受理するが読まない**。以前はクライアントが自由に名乗れたため、
+ * 「reviewer が承認した」という監査証跡を誰でも作れた。いまは `Principal.subject` を使う。
+ * 受理を続ける理由は `tenantScopeSchema` と同じ（既存クライアントを400で止めない）。
+ */
+export const requestPromotionBodySchema = z.object({ scope: tenantScopeSchema, gateReportId: z.string().min(1), requestedBy: z.string().min(1).optional() });
+export const decidePromotionBodySchema = z.object({ scope: tenantScopeSchema, decidedBy: z.string().min(1).optional(), reason: z.string().optional() });
 
 /** POST /factory-runs の body（v33・Agent Factory M1 / docs/16-agent-factory.md §9）。options省略時はサーバー側既定を補完する。
  * `targets` / `budget` は指定する場合フィールド全体を渡す（`Partial<FactoryOptions>` はトップレベルのみ部分適用）。 */

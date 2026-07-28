@@ -1,12 +1,14 @@
 /**
- * Composition: 認証設定 → `AuthenticationPort` の実装選択。
+ * Composition: 認証・認可の実装選択（`AuthenticationPort` / `AuthorizationPort`）。
  *
  * `composition` だけが adapters 実装を import してよい（depcruise ルール）。
  * エントリポイント（`src/server.ts`）はここを経由して実装を受け取る。
  */
+import { RoleMatrixAuthorization } from '../adapters/security/role-matrix-authorization';
 import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { TokenAuthentication } from '../adapters/security/token-authentication';
 import type { AuthenticationPort } from '../application/security/authentication';
+import type { AuthorizationPort } from '../application/security/authorization';
 import type { AuthSettings } from '../config/environment';
 import type { TenantScope } from '../domain/tool/ids';
 
@@ -21,4 +23,16 @@ import type { TenantScope } from '../domain/tool/ids';
 export function createAuthentication(settings: AuthSettings, scope: TenantScope): AuthenticationPort {
   if (settings.mode === 'token') return new TokenAuthentication(settings.tokens);
   return new SingleUserAuthentication(scope);
+}
+
+/**
+ * 認可の実装を組み立てる。
+ *
+ * 現状は認証方式に関係なく同じロール表（`docs/08-security-auth.md` §3.2）を使う。
+ * 単一ユーザーモードで全操作が通るのは、この関数が方式を見ているからではなく、
+ * `SingleUserAuthentication` が返す Principal が全ロールを持つため
+ * （＝権限の話を1箇所＝Principal に集約してある）。
+ */
+export function createAuthorization(): AuthorizationPort {
+  return new RoleMatrixAuthorization();
 }

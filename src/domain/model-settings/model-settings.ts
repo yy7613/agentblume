@@ -9,6 +9,7 @@
  *
  * apiKey は封緘済み（SealedSecret）だけを持つ。平文はドメインに存在しない。
  */
+import { classifyHost } from '../net/url-policy';
 import type { TenantScope } from '../tool/ids';
 import { ModelSettingsValidationError } from './errors';
 import { createSealedSecret, type SealedSecret } from './sealed-secret';
@@ -65,6 +66,19 @@ function registryModel(value: unknown, field: string): string {
 }
 
 /**
+ * baseUrl のホストが**リンクローカル**（169.254.0.0/16・fe80::/10）か。
+ *
+ * `POST /model-catalog/openai-compatible-models` は保存済みキーを添えて `{baseUrl}/models` を
+ * 取りに行くので、baseUrl はサーバーに代行させる外向きリクエストの宛先になる（SSRF）。
+ * ただし MCP と違って**私設ネットワーク全体は塞げない** — 「LAN の別マシンで動かしている
+ * LM Studio を使う」は本製品の正当かつ一般的な使い方で、既定で塞ぐと既存環境が黙って壊れる。
+ * リンクローカルだけはクラウドのメタデータ窃取が目的の範囲で正当な用途が無いため、常に拒否する。
+ */
+function isLinkLocalHost(host: string): boolean {
+  return classifyHost(host) === 'link-local';
+}
+
+/**
  * baseUrl として受け入れる形かどうか（api層の入口検証と共有する純関数）。
  *
  * userinfo 付き（`https://user:pass@host`）を弾くのは、baseUrl が**封緘対象外**で
@@ -75,6 +89,7 @@ export function isHttpBaseUrl(value: unknown): boolean {
   let parsed: URL;
   try { parsed = new URL(value.trim()); } catch { return false; }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  if (isLinkLocalHost(parsed.hostname)) return false;
   return parsed.username === '' && parsed.password === '';
 }
 
@@ -90,6 +105,9 @@ function httpUrl(value: unknown, field: string): string {
   // 資格情報を含み得るのでメッセージにURLは載せない。
   if (parsed.username !== '' || parsed.password !== '') {
     throw new ModelSettingsValidationError(`createModelSettings: ${field} must not embed credentials (user:password@host)`);
+  }
+  if (isLinkLocalHost(parsed.hostname)) {
+    throw new ModelSettingsValidationError(`createModelSettings: ${field} must not target a link-local address (cloud metadata endpoints are never reachable from here)`);
   }
   return raw;
 }

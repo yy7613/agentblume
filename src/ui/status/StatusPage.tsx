@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { BackupSummaryDto, OperationsStatusDto, RunFeedbackDto, RunRecordDto, RunSummaryDto, RunTraceEventDto, TenantScopeDto } from '../api/types';
+import type { AuditEntryDto, BackupSummaryDto, OperationsStatusDto, RunFeedbackDto, RunRecordDto, RunSummaryDto, RunTraceEventDto, TenantScopeDto } from '../api/types';
 import { useI18n } from '../i18n';
 import { InlineFeedback } from '../components/InlineFeedback';
 import { scope } from '../scope';
@@ -60,6 +60,7 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
     {error !== undefined && <div className="api-error" role="alert">{error}</div>}
     {status !== undefined && <OperationsSummary status={status} text={text} />}
     <MaintenancePanel client={client} scope={scope} />
+    <AuditPanel client={client} scope={scope} />
 
     <div className="status-workspace">
       <section className="run-list" aria-label={text('Run history', '実行履歴')}>
@@ -159,8 +160,8 @@ function MaintenancePanel({ client, scope }: { readonly client: ToolApiClient; r
       setNotice({
         kind: 'ok',
         message: text(
-          `Retention applied: ${result.deleted} run(s) deleted, ${result.payloadRedacted} payload(s) redacted, ${result.traceRedacted} trace(s) redacted, ${result.feedbackDeleted} feedback deleted, ${result.aggregateBucketsDeleted} daily bucket(s) deleted.`,
-          `保持期限を適用しました: Run削除 ${result.deleted} 件 / payload伏せ字 ${result.payloadRedacted} 件 / trace伏せ字 ${result.traceRedacted} 件 / feedback削除 ${result.feedbackDeleted} 件 / 日次集計削除 ${result.aggregateBucketsDeleted} 件。`,
+          `Retention applied: ${result.deleted} run(s) deleted, ${result.payloadRedacted} payload(s) redacted, ${result.traceRedacted} trace(s) redacted, ${result.feedbackDeleted} feedback deleted, ${result.aggregateBucketsDeleted} daily bucket(s) deleted, ${result.auditDeleted ?? 0} audit entr(ies) deleted.`,
+          `保持期限を適用しました: Run削除 ${result.deleted} 件 / payload伏せ字 ${result.payloadRedacted} 件 / trace伏せ字 ${result.traceRedacted} 件 / feedback削除 ${result.feedbackDeleted} 件 / 日次集計削除 ${result.aggregateBucketsDeleted} 件 / 監査ログ削除 ${result.auditDeleted ?? 0} 件。`,
         ),
         details: [],
       });
@@ -193,6 +194,47 @@ function MaintenancePanel({ client, scope }: { readonly client: ToolApiClient; r
         {backup.manifest === undefined
           ? <span className="field-error">{text('Incomplete backup (no manifest) — safe to delete.', '未完成のバックアップ（manifestなし）。削除して構いません。')}</span>
           : <span>{new Date(backup.manifest.createdAt).toLocaleString()} · {formatBytes(backup.manifest.database.bytes + backup.manifest.artifacts.bytes)} · schema v{backup.manifest.schemaVersion} · {backup.manifest.secretKey.included ? text('key included', '鍵あり') : text('no key', '鍵なし')}</span>}
+      </li>)}</ul>}
+  </section>;
+}
+
+/**
+ * 監査ログの簡易表示。
+ *
+ * **読めるのは Operator / Workspace Admin だけ**（サーバーが403を返す）。
+ * 権限が無い利用者にはエラーを出さず、パネルごと消す。「見えないものがある」ことを
+ * 赤いエラーで知らせても、その人にできることは何も無い。
+ */
+function AuditPanel({ client, scope }: { readonly client: ToolApiClient; readonly scope: TenantScopeDto }) {
+  const { text } = useI18n();
+  const [entries, setEntries] = useState<readonly AuditEntryDto[]>([]);
+  const [visible, setVisible] = useState(true);
+  const [error, setError] = useState<string>();
+
+  const refresh = useCallback(async () => {
+    if (typeof client.listAuditLog !== 'function') { setVisible(false); return; }
+    try {
+      setEntries(await client.listAuditLog(scope, { limit: 20 }));
+      setVisible(true);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'Audit lookup failed';
+      // 権限不足は「表示しない」で正しい。それ以外は原因を出す。
+      if (/FORBIDDEN|forbidden|permission/i.test(message)) { setVisible(false); return; }
+      setError(message);
+    }
+  }, [client, scope]);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  if (!visible) return null;
+  return <section className="workspace-card" aria-label={text('Audit log', '監査ログ')}>
+    <div className="panel-title"><h2>{text('Audit log', '監査ログ')}</h2><button type="button" className="secondary" onClick={() => void refresh()}>{text('Refresh', '更新')}</button></div>
+    <p className="empty-state">{text('Who did what: denied requests, deletions, approvals and operational changes.', '誰が何をしたか: 拒否されたリクエスト・削除・承認・運用操作を記録します。')}</p>
+    {error !== undefined && <div className="api-error" role="alert">{error}</div>}
+    {entries.length === 0
+      ? <p className="empty-state">{text('No audit entries yet.', '監査ログはまだありません。')}</p>
+      : <ul className="backup-list">{entries.map((entry) => <li key={`${entry.at}-${entry.subject}-${entry.action}-${entry.resource.id ?? ''}-${entry.outcome}`}>
+        <code>{new Date(entry.at).toLocaleString()}</code>
+        <span><strong>{entry.subject}</strong> · {entry.action} · {entry.resource.kind}{entry.resource.id === undefined ? '' : `/${entry.resource.id}`} · <span className={entry.outcome === 'denied' || entry.outcome === 'failed' ? 'field-error' : ''}>{entry.outcome}</span></span>
       </li>)}</ul>}
   </section>;
 }

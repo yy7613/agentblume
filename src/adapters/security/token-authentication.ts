@@ -25,6 +25,7 @@ import {
   type AuthenticationRequest,
   type AuthenticationResult,
 } from '../../application/security/authentication';
+import { AUTHORIZATION_ROLES, isAuthorizationRole, type AuthorizationRole } from '../../domain/security/authorization';
 import type { Principal } from '../../domain/security/principal';
 import { DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID } from '../../domain/security/principal';
 
@@ -39,7 +40,7 @@ export interface TokenCredential {
   /** 省略時は既定ワークスペース。 */
   readonly workspaceId?: string;
   readonly displayName?: string;
-  /** 次Wave（RBAC）用。今回は保持するだけ。 */
+  /** 割り当てるロール（`AUTHORIZATION_ROLES`）。省略時は `DEFAULT_TOKEN_ROLES`。 */
   readonly roles?: readonly string[];
 }
 
@@ -48,6 +49,17 @@ export interface TokenCredential {
  * 入口で落とす。32文字は `openssl rand -hex 16` 相当。
  */
 export const MINIMUM_TOKEN_LENGTH = 32;
+
+/**
+ * `roles` を書かなかったトークンに付けるロール。
+ *
+ * **明示必須にはしない**。必須にすると、既に配ってあるトークン定義が起動時エラーになり、
+ * 「認可を入れたらサーバーが上がらない」という形で移行が止まる。
+ * 代わりに既定を **editor** にする（作る・直す・実行するはできるが、削除・承認・公開・
+ * 運用操作はできない）。`operator` を既定にすると保持期限の適用やバックアップまで
+ * 誰でも叩ける状態が続くため、既定は下げる側へ倒す。
+ */
+export const DEFAULT_TOKEN_ROLES: readonly AuthorizationRole[] = ['editor'];
 
 /** 資格情報の設定が壊れている（起動を止めるべき状態）。 */
 export class TokenAuthenticationConfigurationError extends Error {
@@ -97,6 +109,14 @@ export class TokenAuthentication implements AuthenticationPort {
       if (seenSubjects.has(credential.subject)) {
         throw new TokenAuthenticationConfigurationError(`TokenAuthentication: duplicate subject: '${credential.subject}'`);
       }
+      // 綴り違い（'admin' / 'Operator'）を黙って無視すると、権限が付いたつもりで
+      // 実際には何も付かない（＝read しかできない）トークンが配られる。起動時に落とす。
+      for (const role of credential.roles ?? []) {
+        if (isAuthorizationRole(role)) continue;
+        throw new TokenAuthenticationConfigurationError(
+          `TokenAuthentication: unknown role '${role}' for '${credential.subject}' (expected one of: ${AUTHORIZATION_ROLES.join(', ')})`,
+        );
+      }
       seenTokens.add(credential.token);
       seenSubjects.add(credential.subject);
       const principal: Principal = {
@@ -104,7 +124,7 @@ export class TokenAuthentication implements AuthenticationPort {
         tenantId: credential.tenantId ?? DEFAULT_TENANT_ID,
         workspaceId: credential.workspaceId ?? DEFAULT_WORKSPACE_ID,
         ...(credential.displayName === undefined ? {} : { displayName: credential.displayName }),
-        roles: credential.roles ?? ['operator'],
+        roles: credential.roles === undefined || credential.roles.length === 0 ? [...DEFAULT_TOKEN_ROLES] : credential.roles,
       };
       return { token: credential.token, principal };
     });

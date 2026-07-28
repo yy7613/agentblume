@@ -44,6 +44,15 @@ export interface RetentionPolicy {
   readonly payloadDays: number;
   readonly traceDays: number;
   readonly aggregateDays: number;
+  /**
+   * 監査ログを残す日数。
+   *
+   * trace（14日）より**ずっと長い**のが既定。監査ログが答える問いは
+   * 「先月あの設定を変えたのは誰か」であり、実行トレースと同じ寿命では用を成さない。
+   * 保持期間を短くして即適用すれば消せてしまう点は payload/trace と同じなので、
+   * 保持期限の変更そのものを監査対象にしてある（`PUT /operations/retention`）。
+   */
+  readonly auditDays: number;
   readonly updatedAt: string;
 }
 
@@ -51,6 +60,7 @@ export const DEFAULT_RETENTION_DAYS = {
   payload: 30,
   trace: 14,
   aggregate: 365,
+  audit: 365,
 } as const;
 
 export function utcDayStart(value: string): string {

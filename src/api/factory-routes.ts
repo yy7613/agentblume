@@ -10,7 +10,8 @@ import type { QueryFactoryRunsUseCase } from '../application/factory/query-facto
 import type { ResumeFactoryRunUseCase } from '../application/factory/resume-factory-run';
 import type { RetryFactoryRunUseCase } from '../application/factory/retry-factory-run';
 import { clientAbortSignal } from './client-abort';
-import { scopeOf } from './authentication';
+import { principalOf, scopeOf } from './authentication';
+import { recordAuditDetail } from './authorization';
 import { BadRequestError } from './error-mapping';
 import { cancelFactoryRunBodySchema, factoryRunBodySchema, factoryRunListQuerySchema, factoryRunQuerySchema, resumeFactoryRunBodySchema, retryFactoryRunBodySchema } from './schemas';
 
@@ -58,8 +59,10 @@ export function registerFactoryRoutes(app: FastifyInstance, deps: FactoryRouteDe
     return { events: run.events };
   });
 
+  /** 計画承認しか来ない入口なので `approve` 権限が要る（`api/authorization.ts` の表）。承認者は監査へ残す。 */
   app.post<{ Params: { runId: string } }>('/factory-runs/:runId/responses', async (request, reply) => {
     const body = parseWith(resumeFactoryRunBodySchema, request.body, 'invalid body');
+    recordAuditDetail(request, { decision: body.response.decision, decidedBy: principalOf(request).subject });
     const run = await deps.resumeFactoryRun.execute({ scope: scopeOf(request), runId: request.params.runId, decision: body.response.decision, ...(body.response.feedback === undefined ? {} : { feedback: body.response.feedback }) }, clientAbortSignal(request, reply));
     return { run };
   });

@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { AuthenticationRequest } from '../../application/security/authentication';
-import { MINIMUM_TOKEN_LENGTH, TokenAuthentication, TokenAuthenticationConfigurationError } from './token-authentication';
+import { DEFAULT_TOKEN_ROLES, MINIMUM_TOKEN_LENGTH, TokenAuthentication, TokenAuthenticationConfigurationError } from './token-authentication';
 
 const ALICE = 'a'.repeat(40);
 const BOB = 'b'.repeat(40);
@@ -34,7 +34,8 @@ describe('TokenAuthentication', () => {
     const result = await auth.authenticate(request(`Bearer ${ALICE}`));
     expect(result).toEqual({
       kind: 'authenticated',
-      principal: { subject: 'alice', tenantId: 'local', workspaceId: 'default', displayName: 'Alice', roles: ['operator'] },
+      // roles 未指定は既定の editor（作成・編集・実行はできるが、削除・承認・公開・運用はできない）。
+      principal: { subject: 'alice', tenantId: 'local', workspaceId: 'default', displayName: 'Alice', roles: ['editor'] },
     });
   });
 
@@ -63,6 +64,22 @@ describe('TokenAuthentication', () => {
     for (const token of ['c'.repeat(40), ALICE.slice(0, 39), `${ALICE}x`, ALICE.toUpperCase()]) {
       expect(await auth.authenticate(request(`Bearer ${token}`))).toEqual({ kind: 'rejected', reason: 'invalid-credentials' });
     }
+  });
+
+  it('roles 未指定は既定の editor（削除・承認・公開・運用は付かない）', () => {
+    expect(DEFAULT_TOKEN_ROLES).toEqual(['editor']);
+    const empty = new TokenAuthentication([{ subject: 'carol', token: 'c'.repeat(40), roles: [] }]);
+    expect(empty).toBeInstanceOf(TokenAuthentication);
+  });
+
+  it('未知のロール名は起動時に落とす（付けたつもりで付いていない状態を作らない）', () => {
+    expect(() => new TokenAuthentication([{ subject: 'carol', token: 'c'.repeat(40), roles: ['admin'] }]))
+      .toThrow(/unknown role 'admin'/);
+    expect(() => new TokenAuthentication([{ subject: 'carol', token: 'c'.repeat(40), roles: ['Operator'] }]))
+      .toThrow(TokenAuthenticationConfigurationError);
+    // メッセージには選べる値を並べる（打ち間違いをその場で直せるように）。
+    expect(() => new TokenAuthentication([{ subject: 'carol', token: 'c'.repeat(40), roles: ['root'] }]))
+      .toThrow(/workspace-admin/);
   });
 
   it('トークンが1本も無い設定は組み立てられない', () => {

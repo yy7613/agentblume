@@ -7,6 +7,7 @@
  * 未知の例外は 500 とし、message は 'internal error' 固定（詳細を漏らさない）。
  */
 import { UnauthenticatedError } from './authentication';
+import { ForbiddenError } from './authorization';
 import { GraphError, ConfigError, SchemaError } from '../domain/etl/errors';
 import {
   ToolNotFoundError,
@@ -87,6 +88,8 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof BadRequestError) return httpError(400, err.code, err.message);
   // 認証フックを通っていないのにスコープを要求した（＝公開パスの設定ミス）。
   if (err instanceof UnauthenticatedError) return httpError(401, err.code, err.message);
+  // 認可で拒否した。メッセージは「必要な権限」だけで、持っているロールも他人の情報も出さない。
+  if (err instanceof ForbiddenError) return httpError(403, err.code, err.message);
 
   // Tool ドメイン: 具象クラスを ToolValidationError より先に判定する。
   if (err instanceof ToolNotFoundError) return httpError(404, err.code, err.message);

@@ -68,6 +68,8 @@ import type {
   OperationsStatusDto,
   RetentionPolicyDto,
   RetentionApplyResultDto,
+  AuditEntryDto,
+  AuditLogQueryDto,
   BackupListDto,
   CreatedBackupDto,
   DataSourceDto,
@@ -650,16 +652,21 @@ export class ToolApiClient {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId }); if (candidateExperimentId !== undefined) query.set('candidateExperimentId', candidateExperimentId); return (await this.request<{ reports: GateReportDto[] }>(`/gate-reports?${query}`)).reports;
   }
 
-  async requestPromotion(agentId: string, version: string, scope: TenantScopeDto, gateReportId: string, requestedBy: string): Promise<PromotionRequestDto> {
-    return (await this.request<{ promotion: PromotionRequestDto }>(`/agents/${encodeURIComponent(agentId)}/versions/${encodeURIComponent(version)}/promotion-requests`, { method: 'POST', body: JSON.stringify({ scope, gateReportId, requestedBy }) })).promotion;
+  /**
+   * 昇格を申請する。**申請者は送らない**。サーバーが認証済みの Principal から決める
+   * （送れるようにすると、監査証跡の「誰が」を自由に名乗れてしまう）。
+   */
+  async requestPromotion(agentId: string, version: string, scope: TenantScopeDto, gateReportId: string): Promise<PromotionRequestDto> {
+    return (await this.request<{ promotion: PromotionRequestDto }>(`/agents/${encodeURIComponent(agentId)}/versions/${encodeURIComponent(version)}/promotion-requests`, { method: 'POST', body: JSON.stringify({ scope, gateReportId }) })).promotion;
   }
 
   async listPromotionRequests(scope: TenantScopeDto, agentId?: string): Promise<readonly PromotionRequestDto[]> {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId }); if (agentId !== undefined) query.set('agentId', agentId); return (await this.request<{ promotions: PromotionRequestDto[] }>(`/promotion-requests?${query}`)).promotions;
   }
 
-  async decidePromotion(id: string, decision: 'approve' | 'reject', scope: TenantScopeDto, decidedBy: string, reason?: string): Promise<PromotionRequestDto> {
-    return (await this.request<{ promotion: PromotionRequestDto }>(`/promotion-requests/${encodeURIComponent(id)}/${decision}`, { method: 'POST', body: JSON.stringify({ scope, decidedBy, ...(reason !== undefined ? { reason } : {}) }) })).promotion;
+  /** 昇格の採否。決定者もサーバーが Principal から決めるので送らない。 */
+  async decidePromotion(id: string, decision: 'approve' | 'reject', scope: TenantScopeDto, reason?: string): Promise<PromotionRequestDto> {
+    return (await this.request<{ promotion: PromotionRequestDto }>(`/promotion-requests/${encodeURIComponent(id)}/${decision}`, { method: 'POST', body: JSON.stringify({ scope, ...(reason !== undefined ? { reason } : {}) }) })).promotion;
   }
 
   async getRunTrace(runId: string, scope: TenantScopeDto): Promise<RunRecordDto> {
@@ -704,6 +711,18 @@ export class ToolApiClient {
 
   async listBackups(signal?: AbortSignal): Promise<BackupListDto> {
     return await this.request<BackupListDto>('/operations/backups', { signal });
+  }
+
+  /**
+   * 監査ログを読む。**Operator / Workspace Admin だけ**が呼べる（それ以外は403）。
+   * 画面側は403を「権限が無い」として静かに扱う（一覧を出さないだけ）。
+   */
+  async listAuditLog(scope: TenantScopeDto, filter?: AuditLogQueryDto, signal?: AbortSignal): Promise<readonly AuditEntryDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (filter?.outcome !== undefined) query.set('outcome', filter.outcome);
+    if (filter?.subject !== undefined) query.set('subject', filter.subject);
+    if (filter?.limit !== undefined) query.set('limit', String(filter.limit));
+    return (await this.request<{ entries: AuditEntryDto[] }>(`/operations/audit?${query}`, { signal })).entries;
   }
 
   // 長期記憶（v21）

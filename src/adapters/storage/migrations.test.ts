@@ -64,8 +64,39 @@ describe('applyMigrations', () => {
       expect(indexes).toContain('idx_harness_runs_status');
       expect(indexes).toContain('idx_factory_runs_status');
       expect(indexes).toContain('idx_experiments_status');
+      // version 3: 監査ログ。
+      expect(tables.has('audit_log')).toBe(true);
+      expect(indexes).toContain('idx_audit_log_scope_at');
+      expect(indexes).toContain('idx_audit_log_scope_subject');
     } finally {
       database.close();
+    }
+  });
+
+  it('version 2 で止まっている既存DBに audit_log を足す（既存データはそのまま）', () => {
+    // 1. version 3 まで進んだDBを作り、行を入れてから version 2 の状態へ巻き戻す。
+    const seeded = openSqliteDatabase(dbPath);
+    seeded.handle.exec(`INSERT INTO tools (tenant_id, workspace_id, internal_id, version, major, minor, patch, definition_json) VALUES ('t','w','tool-1','1.0.0',1,0,0,'{}')`);
+    seeded.close();
+
+    const legacy = new DatabaseSync(dbPath);
+    legacy.exec('DROP INDEX IF EXISTS idx_audit_log_scope_at');
+    legacy.exec('DROP INDEX IF EXISTS idx_audit_log_scope_subject');
+    legacy.exec('DROP TABLE IF EXISTS audit_log');
+    legacy.exec('PRAGMA user_version = 2');
+    expect(tablesOf(legacy).has('audit_log')).toBe(false);
+    legacy.close();
+
+    // 2. 開き直すと version 3 だけが適用される。
+    const upgraded = openSqliteDatabase(dbPath);
+    try {
+      expect(upgraded.schemaVersion).toBe(LATEST_SCHEMA_VERSION);
+      expect(tablesOf(upgraded.handle).has('audit_log')).toBe(true);
+      expect(columnsOf(upgraded.handle, 'audit_log')).toEqual(new Set(['sequence', 'tenant_id', 'workspace_id', 'at', 'subject', 'action', 'resource_kind', 'resource_id', 'outcome', 'record_json']));
+      // 既存データは残る（マイグレーションは足すだけ）。
+      expect(upgraded.handle.prepare('SELECT internal_id FROM tools').get()).toMatchObject({ internal_id: 'tool-1' });
+    } finally {
+      upgraded.close();
     }
   });
 

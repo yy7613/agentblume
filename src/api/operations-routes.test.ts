@@ -8,6 +8,7 @@ import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider
 import { AesGcmSecretCipher } from '../adapters/security/aes-gcm-secret-cipher';
 import type { TelemetryPort } from '../application/operations/telemetry';
 import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
+import { LATEST_SCHEMA_VERSION } from '../adapters/storage/migrations';
 import { createApp, type App } from '../composition/root';
 import { SemVer } from '../domain/tool/semver';
 import { buildServer } from './server';
@@ -99,18 +100,18 @@ describe('backup API (永続DB配線)', () => {
     expect(created.statusCode).toBe(200);
     const backup = created.json().backup;
     expect(backup.name).toMatch(/^backup-\d{8}-\d{9}$/);
-    expect(backup.manifest).toMatchObject({ formatVersion: 1, schemaVersion: 2, secretKey: { included: false } });
+    expect(backup.manifest).toMatchObject({ formatVersion: 1, schemaVersion: LATEST_SCHEMA_VERSION, secretKey: { included: false } });
     expect(backup.manifest.database.bytes).toBeGreaterThan(0);
     expect(backup.warnings.join(' ')).toMatch(/NOT included/);
 
     // マニフェストとDBが実際に置かれている（応答だけでなくファイルとして残る）。
     const manifest = JSON.parse(await readFile(join(backup.path, 'manifest.json'), 'utf8')) as { schemaVersion: number };
-    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.schemaVersion).toBe(LATEST_SCHEMA_VERSION);
 
     const listed = await server.inject({ method: 'GET', url: '/operations/backups' });
     expect(listed.json().root).toBe(join(directory, 'backups'));
     expect(listed.json().backups).toHaveLength(1);
-    expect(listed.json().backups[0]).toMatchObject({ name: backup.name, manifest: { schemaVersion: 2 } });
+    expect(listed.json().backups[0]).toMatchObject({ name: backup.name, manifest: { schemaVersion: LATEST_SCHEMA_VERSION } });
   });
 
   it('includeSecretKey=true のときだけ鍵を同梱し、マニフェストに記録する', async () => {

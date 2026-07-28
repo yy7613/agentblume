@@ -24,7 +24,10 @@ const BOB_SCOPE = { tenantId: 'globex', workspaceId: 'main' };
 
 function tokenAuth() {
   return new TokenAuthentication([
-    { subject: 'alice', token: ALICE_TOKEN, ...ALICE_SCOPE, displayName: 'Alice' },
+    // alice には削除まで許す workspace-admin を与える（このファイルが確かめたいのは
+    // ロールではなく**テナント境界**なので、認可で先に止まると境界の検証にならない）。
+    // bob はロール未指定＝既定の editor のまま。
+    { subject: 'alice', token: ALICE_TOKEN, ...ALICE_SCOPE, displayName: 'Alice', roles: ['workspace-admin'] },
     { subject: 'bob', token: BOB_TOKEN, ...BOB_SCOPE },
   ]);
 }
@@ -100,7 +103,7 @@ describe('認証フック（トークン方式）', () => {
       session: {
         mode: 'token',
         authenticationRequired: true,
-        principal: { subject: 'alice', tenantId: 'acme', workspaceId: 'ops', displayName: 'Alice', roles: ['operator'] },
+        principal: { subject: 'alice', tenantId: 'acme', workspaceId: 'ops', displayName: 'Alice', roles: ['workspace-admin'] },
       },
     });
   });

@@ -34,6 +34,15 @@ export const FLAGS = ['true', 'false'] as const;
 export const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
 /** `LOG_LEVELS` の要素。 */
 export type LogLevel = (typeof LOG_LEVELS)[number];
+/**
+ * 認可ロールの値域（`src/domain/security/authorization.ts` の `AUTHORIZATION_ROLES` と同じ）。
+ *
+ * ここは leaf モジュールなので domain を import せず**書き写す**（`PROFILES` と同じ方針）。
+ * 2つがずれないことは `environment.test.ts` が検査する。
+ * env の時点で弾くのは、`roles: ["admin"]` のような綴り違いが
+ * 「権限を付けたつもりで実際は read しかできないトークン」として静かに配られるのを防ぐため。
+ */
+export const AUTH_ROLES = ['viewer', 'editor', 'publisher', 'operator', 'workspace-admin'] as const;
 
 /** listen ポートの既定（`src/server.ts`）。 */
 export const DEFAULT_PORT = 3030;
@@ -174,7 +183,7 @@ const authTokenSchema = z.object({
   tenantId: optional(nonEmpty),
   workspaceId: optional(nonEmpty),
   displayName: optional(nonEmpty),
-  roles: z.array(nonEmpty).optional(),
+  roles: z.array(z.enum(AUTH_ROLES)).optional(),
 });
 
 /** `AGENTCONTEXT_AUTH_TOKENS`（1本以上のトークン）。 */
@@ -227,6 +236,9 @@ export const environmentSchema = z.object({
   ANALYSIS_ASSISTANT_ENABLED: optional(flag),
   MASTRA_TELEMETRY_DISABLED: optional(nonEmpty),
   MASTRA_OFFLINE: optional(nonEmpty),
+  // MCPクライアント（外部MCPサーバー接続）の安全策
+  AGENTCONTEXT_MCP_ALLOWED_COMMANDS: optional(nonEmpty),
+  AGENTCONTEXT_MCP_ALLOW_PRIVATE_NETWORK: optional(flag),
   // データソース
   AGENTCONTEXT_DB_CONNECTIONS: optional(json(databaseConnectionsSchema)),
   // Web検索provider（任意）
@@ -267,7 +279,7 @@ const EXPECTATIONS: Readonly<Record<string, string>> = {
   AGENTCONTEXT_RETENTION_INTERVAL_MS: '0以上の整数（ミリ秒・既定 86400000＝24時間・0 は自動実行を無効化）',
   AGENTCONTEXT_LOG_LEVEL: `${LOG_LEVELS.join(' / ')} のいずれか（既定は local=info・test=silent）`,
   AGENTCONTEXT_AUTH_MODE: `${AUTH_MODES.join(' / ')} のいずれか（既定: AGENTCONTEXT_AUTH_TOKENS があれば token、無ければ single-user）`,
-  AGENTCONTEXT_AUTH_TOKENS: `[{subject, token, tenantId?, workspaceId?, displayName?, roles?}] のJSON配列（token は${MINIMUM_AUTH_TOKEN_LENGTH}文字以上・空白を含まない）`,
+  AGENTCONTEXT_AUTH_TOKENS: `[{subject, token, tenantId?, workspaceId?, displayName?, roles?}] のJSON配列（token は${MINIMUM_AUTH_TOKEN_LENGTH}文字以上・空白を含まない / roles は ${AUTH_ROLES.join(' / ')} から選ぶ・既定は editor）`,
   LM_STUDIO_BASE_URL: 'URL（例 http://127.0.0.1:1234/v1）',
   LM_STUDIO_MODEL: '空でない文字列',
   LM_STUDIO_API_KEY: '空でない・空白や改行を含まない文字列',
@@ -280,6 +292,8 @@ const EXPECTATIONS: Readonly<Record<string, string>> = {
   ANALYSIS_ASSISTANT_ENABLED: `'true' または 'false'`,
   MASTRA_TELEMETRY_DISABLED: '空でない文字列（既定 true）',
   MASTRA_OFFLINE: '空でない文字列（既定 1）',
+  AGENTCONTEXT_MCP_ALLOWED_COMMANDS: `stdio MCPサーバーとして起動を許すコマンド名のカンマ区切り（未設定なら既定の許可リスト。'*' で無制限）`,
+  AGENTCONTEXT_MCP_ALLOW_PRIVATE_NETWORK: `'true' または 'false'（既定 false。true でも 169.254.0.0/16 等のリンクローカルは常に拒否）`,
   AGENTCONTEXT_DB_CONNECTIONS: '接続ID → {driver:"postgresql", host, database, username, passwordEnv, port?, ssl?, allowedTables?} のJSONオブジェクト',
   TAVILY_API_KEY: '空でない・空白や改行を含まない文字列',
   TINYFISH_API_KEY: '空でない・空白や改行を含まない文字列',
@@ -364,6 +378,44 @@ export function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
   if (normalized === 'localhost' || normalized === '::1') return true;
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized);
+}
+
+/**
+ * MCPクライアント（外部MCPサーバー接続）の安全策の設定。
+ *
+ * `composition/root.ts` がこれを `domain/mcp/transport-policy.ts` の `McpPolicy` へ組み立てる。
+ * ここは leaf モジュールなので domain を import せず、**素の値**だけを返す
+ * （既定の許可リストそのものは domain が持つ。`allowedCommands: undefined` は
+ * 「呼び出し側の既定に従う」であって「無制限」ではない — 無制限は `unrestrictedCommands`）。
+ */
+export interface McpSettings {
+  /** 明示指定された許可コマンド。未設定なら `undefined`（＝既定の許可リストを使う）。 */
+  readonly allowedCommands: readonly string[] | undefined;
+  /** `AGENTCONTEXT_MCP_ALLOWED_COMMANDS=*` が指定されたか（＝コマンドを制限しない）。 */
+  readonly unrestrictedCommands: boolean;
+  /** 私設ネットワーク宛のMCP接続を許すか。リンクローカルはこれと無関係に常に拒否。 */
+  readonly allowPrivateNetwork: boolean;
+}
+
+/** コマンド許可リストを「制限しない」と宣言する値。 */
+export const MCP_UNRESTRICTED_COMMANDS = '*';
+
+/**
+ * MCPの安全策設定を解決する。
+ *
+ * `AGENTCONTEXT_MCP_ALLOWED_COMMANDS` はカンマ区切り。空要素は落とす。
+ * 全体が `*` のときだけ「制限しない」と解釈する（`npx,*` のような部分指定は認めない —
+ * リストの一部にワイルドカードが混ざると、読んだ人が制限が効いていると誤解する）。
+ */
+export function mcpSettings(env: NodeJS.ProcessEnv = process.env): McpSettings {
+  const raw = env['AGENTCONTEXT_MCP_ALLOWED_COMMANDS']?.trim();
+  const entries = raw === undefined || raw === '' ? undefined : raw.split(',').map((item) => item.trim()).filter((item) => item !== '');
+  const unrestricted = entries !== undefined && entries.length === 1 && entries[0] === MCP_UNRESTRICTED_COMMANDS;
+  return {
+    allowedCommands: unrestricted ? undefined : entries,
+    unrestrictedCommands: unrestricted,
+    allowPrivateNetwork: env['AGENTCONTEXT_MCP_ALLOW_PRIVATE_NETWORK']?.trim() === 'true',
+  };
 }
 
 /** エントリポイントが listen までに必要とする設定。 */

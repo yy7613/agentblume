@@ -343,6 +343,12 @@ describe('POST /runs', () => {
     expect(resumed.json().run.trace.map((event: { kind: string }) => event.kind)).toEqual([
       'model-request', 'approval-requested', 'approval-resolved', 'tool-call', 'tool-result', 'model-request', 'model-response',
     ]);
+    /**
+     * 承認者は Principal から入る。ボディでは受け取らないので、
+     * 「runIdを知っていれば誰でも承認でき、しかも誰が承認したか残らない」状態にはならない。
+     */
+    expect(resumed.json().run.trace.find((event: { kind: string }) => event.kind === 'approval-resolved'))
+      .toMatchObject({ decision: 'approve', decidedBy: 'single-user' });
 
     // 完了済みRunの再開は422、不正bodyは400。
     const again = await server.inject({ method: 'POST', url: `/runs/${pausedRun.runId}/resume`, payload: { scope, decision: 'approve' } });

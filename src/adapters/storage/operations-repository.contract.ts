@@ -14,7 +14,7 @@ export async function operationsRepositoryContract(repo: OperationsRepository): 
   await repo.recordFeedbackMetric(scope, '2026-07-01T12:00:00.000Z');
   await expect(repo.listDailyMetrics(scope)).resolves.toEqual([expect.objectContaining({ bucketStart: '2026-07-01T00:00:00.000Z', runCount: 2, failureCount: 1, latencySamples: [10, 30], totalTokens: 12, estimatedCost: 0.2, pricedRunCount: 1, feedbackCount: 1 })]);
 
-  const policy = { scope, payloadDays: 7, traceDays: 3, aggregateDays: 90, updatedAt: '2026-07-02T00:00:00.000Z' };
+  const policy = { scope, payloadDays: 7, traceDays: 3, aggregateDays: 90, auditDays: 400, updatedAt: '2026-07-02T00:00:00.000Z' };
   await repo.saveRetentionPolicy(policy);
   await expect(repo.getRetentionPolicy(scope)).resolves.toEqual(policy);
   await expect(repo.deleteFeedbackBefore(scope, '2026-07-02T00:00:00.000Z')).resolves.toBe(1);

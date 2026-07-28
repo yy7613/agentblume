@@ -3,7 +3,8 @@ import type { z } from 'zod';
 import type { CompareExperimentsUseCase, DecidePromotionUseCase, DeleteGatePolicyUseCase, EvaluateQualityGateUseCase, QueryQualityGatesUseCase, RequestPromotionUseCase, SaveGatePolicyUseCase } from '../application/evaluation/quality-gate-actions';
 import { serializeGatePolicy, serializeGateReport, serializePromotionRequest } from '../domain/evaluation/quality-gate-serialization';
 import { SemVer } from '../domain/tool/semver';
-import { scopeOf } from './authentication';
+import { principalOf, scopeOf } from './authentication';
+import { recordAuditDetail } from './authorization';
 import { BadRequestError } from './error-mapping';
 import { decidePromotionBodySchema, evaluateGateBodySchema, experimentComparisonBodySchema, gateReportListQuerySchema, promotionListQuerySchema, requestPromotionBodySchema, saveGatePolicyBodySchema, scopeQuerySchema, versionQuerySchema } from './schemas';
 
@@ -25,8 +26,13 @@ export function registerQualityGateRoutes(app: FastifyInstance, deps: QualityGat
   app.post('/gate-reports', async (request, reply) => { const body = parse(evaluateGateBodySchema, request.body); const report = await deps.evaluateQualityGate.execute({ ...body, scope: scopeOf(request), policy: { id: body.policy.id, version: version(body.policy.version) } }); return reply.status(201).send({ report: serializeGateReport(report) }); });
   app.get('/gate-reports', async (request) => { const query = parse(gateReportListQuerySchema, request.query); return { reports: (await deps.queryQualityGates.listReports(scopeOf(request), query.candidateExperimentId)).map(serializeGateReport) }; });
   app.get<{ Params: { id: string } }>('/gate-reports/:id', async (request) => { parse(scopeQuerySchema, request.query); return { report: serializeGateReport(await deps.queryQualityGates.getReport(scopeOf(request), request.params.id)) }; });
-  app.post<{ Params: { id: string; version: string } }>('/agents/:id/versions/:version/promotion-requests', async (request, reply) => { const body = parse(requestPromotionBodySchema, request.body); const promotion = await deps.requestPromotion.execute({ ...body, scope: scopeOf(request), agentId: request.params.id, version: version(request.params.version) }); return reply.status(201).send({ promotion: serializePromotionRequest(promotion) }); });
+  /**
+   * 昇格の申請と決定。**申請者・決定者はボディではなく Principal から取る**。
+   * ボディの `requestedBy` / `decidedBy` は後方互換で受理するだけで、値は捨てる
+   * （残しておくと「reviewer が承認した」証跡を誰でも捏造できる）。
+   */
+  app.post<{ Params: { id: string; version: string } }>('/agents/:id/versions/:version/promotion-requests', async (request, reply) => { const body = parse(requestPromotionBodySchema, request.body); const promotion = await deps.requestPromotion.execute({ scope: scopeOf(request), gateReportId: body.gateReportId, requestedBy: principalOf(request).subject, agentId: request.params.id, version: version(request.params.version) }); return reply.status(201).send({ promotion: serializePromotionRequest(promotion) }); });
   app.get('/promotion-requests', async (request) => { const query = parse(promotionListQuerySchema, request.query); return { promotions: (await deps.queryQualityGates.listPromotions(scopeOf(request), query.agentId)).map(serializePromotionRequest) }; });
-  app.post<{ Params: { id: string } }>('/promotion-requests/:id/approve', async (request) => { const body = parse(decidePromotionBodySchema, request.body); return { promotion: serializePromotionRequest(await deps.decidePromotion.execute({ ...body, scope: scopeOf(request), requestId: request.params.id, decision: 'approved' })) }; });
-  app.post<{ Params: { id: string } }>('/promotion-requests/:id/reject', async (request) => { const body = parse(decidePromotionBodySchema, request.body); return { promotion: serializePromotionRequest(await deps.decidePromotion.execute({ ...body, scope: scopeOf(request), requestId: request.params.id, decision: 'rejected' })) }; });
+  app.post<{ Params: { id: string } }>('/promotion-requests/:id/approve', async (request) => { const body = parse(decidePromotionBodySchema, request.body); recordAuditDetail(request, { decision: 'approved' }); return { promotion: serializePromotionRequest(await deps.decidePromotion.execute({ scope: scopeOf(request), requestId: request.params.id, decision: 'approved', decidedBy: principalOf(request).subject, ...(body.reason === undefined ? {} : { reason: body.reason }) })) }; });
+  app.post<{ Params: { id: string } }>('/promotion-requests/:id/reject', async (request) => { const body = parse(decidePromotionBodySchema, request.body); recordAuditDetail(request, { decision: 'rejected' }); return { promotion: serializePromotionRequest(await deps.decidePromotion.execute({ scope: scopeOf(request), requestId: request.params.id, decision: 'rejected', decidedBy: principalOf(request).subject, ...(body.reason === undefined ? {} : { reason: body.reason }) })) }; });
 }

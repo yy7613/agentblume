@@ -17,8 +17,9 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildServer } from './api/server';
 import { seedBuiltinTools } from './builtin-tools';
-import { EnvironmentValidationError, serverSettings, validateEnvironment, type ServerSettings } from './config/environment';
-import { createAuthentication } from './composition/authentication';
+import { LOOPBACK_HOST_NAMES } from './api/host-check';
+import { EnvironmentValidationError, isLoopbackHost, serverSettings, validateEnvironment, type ServerSettings } from './config/environment';
+import { createAuthentication, createAuthorization } from './composition/authentication';
 import { createApp } from './composition/root';
 import type { LoggerPort } from './application/operations/logger';
 import { RetentionScheduler } from './application/operations/retention-scheduler';
@@ -71,9 +72,25 @@ const uiRoot = resolveUiRoot(settings.uiRootOverride);
  * 配線の抜けが「無認証で公開されている」という形でしか現れない。
  */
 const authentication = createAuthentication(settings.authentication, settings.scope);
+/**
+ * 認可と監査も明示的に渡す。`buildServer` の既定はテスト・埋め込み用の最小形で、
+ * 監査に至っては**省略すると1行も残らない**。本番経路で暗黙に頼らない。
+ */
+/**
+ * ループバックへバインドしているときだけ `Host` を縛る（DNSリバインディング対策）。
+ *
+ * この構成では認証が無いこともあり、そのとき `Host` が唯一の識別子になる。
+ * 非ループバック（＝認証必須）では、`Host` は運用者が付けたホスト名やLBのIPになり得るので
+ * 検査しない — そこでの識別はトークンが担う。
+ */
+const hostCheck = isLoopbackHost(settings.host) ? { allowedHosts: LOOPBACK_HOST_NAMES } : undefined;
+
 const server = buildServer(app, {
   logger: { level: settings.logLevel },
   authentication,
+  authorization: createAuthorization(),
+  ...(hostCheck === undefined ? {} : { hostCheck }),
+  audit: { sink: app.auditSink, fallbackScope: settings.scope },
   ...(uiRoot === undefined ? {} : { uiRoot }),
   ...(settings.revision === undefined ? {} : { revision: settings.revision }),
   // DBは必須依存。読み取りが1本通ることを readiness の条件にする。
@@ -101,6 +118,16 @@ const runtimeLogger: LoggerPort = {
  */
 const recovered = await app.recoverInterruptedRuns.execute();
 server.log.info(recovered, 'interrupted runs recovered');
+
+/**
+ * v36以前に平文で保存されたMCPの資格情報（env / headers）を封緘し直す。
+ *
+ * 読み出し側は平文を受け入れるので放っておいても動くが、それでは**誰も編集しない設定の
+ * 資格情報がディスク上に平文で残り続ける**。べき等なので毎回走らせてよい（件数0で即終わる）。
+ * サーバー名も値もログへ出さない。
+ */
+const resealedMcpSecrets = await app.resealMcpSecrets();
+if (resealedMcpSecrets > 0) server.log.info({ count: resealedMcpSecrets }, 'MCP server credentials were re-encrypted at rest');
 
 /**
  * retentionの定期実行。初回は1インターバル後（起動のたびに重い削除が走らないように）。

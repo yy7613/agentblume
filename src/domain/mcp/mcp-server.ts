@@ -51,6 +51,13 @@ function stringRecord(value: unknown, field: string): Record<string, string> {
   return copy;
 }
 
+/**
+ * URLの**不変条件**だけを課す（http(s)であること・資格情報を埋め込まないこと）。
+ *
+ * 宛先の到達範囲（private/link-local の可否）は設定で変わるポリシーなのでここには置かない。
+ * ここへ入れてしまうと、ポリシーを締めた瞬間に**保存済みの行が読めなくなる**（`list()` が投げる）。
+ * ポリシー検査は保存時（use case）と接続直前（adapters）で行う。
+ */
 function httpUrl(value: unknown, field: string): string {
   nonEmpty(value, field);
   const raw = value.trim();
@@ -58,6 +65,10 @@ function httpUrl(value: unknown, field: string): string {
   try { parsed = new URL(raw); }
   catch { throw new McpValidationError(`createMcpServerConfig: ${field} must be a valid URL: ${raw}`); }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new McpValidationError(`createMcpServerConfig: ${field} must use http(s): ${raw}`);
+  // URLは封緘対象外でDB・ログ・API応答に平文で残る。そこへ秘密を書かせない（モデル設定の baseUrl と同じ規約）。
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new McpValidationError(`createMcpServerConfig: ${field} must not embed credentials (user:password@host)`);
+  }
   return raw;
 }
 

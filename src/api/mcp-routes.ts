@@ -8,8 +8,7 @@ import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { DeleteMcpServerUseCase, ListMcpServersUseCase, ReplaceMcpServersUseCase, SaveMcpServerUseCase } from '../application/mcp/manage-mcp-servers';
 import type { TestMcpServerUseCase } from '../application/mcp/test-mcp-server';
-import type { McpServerConfig, McpTransportConfig } from '../domain/mcp/mcp-server';
-import { serializeMcpServerConfig, type SerializedMcpServerConfig } from '../domain/mcp/serialization';
+import type { McpTransportConfig } from '../domain/mcp/mcp-server';
 import { clientAbortSignal } from './client-abort';
 import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
@@ -30,12 +29,12 @@ function parseWith<S extends z.ZodType>(schema: S, value: unknown, label: string
   return parsed.data as z.infer<S>;
 }
 
-function toDto(config: McpServerConfig): SerializedMcpServerConfig { return serializeMcpServerConfig(config); }
-
 export function registerMcpRoutes(app: FastifyInstance, deps: McpRouteDeps): void {
+  // use case が返すのは既にマスク済みビュー（env / headers の値は `***`）。
+  // ここで平文へ戻す口を作らない — 応答に資格情報を出さないための最後の砦。
   app.get('/mcp-servers', async (request) => {
     parseWith(mcpServerListQuerySchema, request.query, 'invalid query');
-    return { servers: (await deps.listMcpServers.execute(scopeOf(request))).map(toDto) };
+    return { servers: await deps.listMcpServers.execute(scopeOf(request)) };
   });
 
   app.post('/mcp-servers', async (request, reply) => {
@@ -48,14 +47,14 @@ export function registerMcpRoutes(app: FastifyInstance, deps: McpRouteDeps): voi
         ...(body.server.disabled === undefined ? {} : { disabled: body.server.disabled }),
       },
     });
-    return reply.status(201).send({ server: toDto(server) });
+    return reply.status(201).send({ server });
   });
 
   // JSONタブのApply。スコープ内の設定を丸ごと置き換える（標準 mcpServers ドキュメント互換）。
+  // 応答のマスク値（`***`）をそのまま送り返すと「変更しない」と解釈されるので、往復は無損失。
   app.put('/mcp-servers', async (request) => {
     const body = parseWith(replaceMcpServersBodySchema, request.body, 'invalid body');
-    const servers = await deps.replaceMcpServers.execute(scopeOf(request), { mcpServers: body.mcpServers });
-    return { servers: servers.map(toDto) };
+    return { servers: await deps.replaceMcpServers.execute(scopeOf(request), { mcpServers: body.mcpServers }) };
   });
 
   app.delete<{ Params: McpServerParams }>('/mcp-servers/:name', async (request, reply) => {

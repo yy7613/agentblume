@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { McpClientError } from '../../application/mcp/mcp-client';
 import { createMcpServerConfig, type McpTransportConfig } from '../../domain/mcp/mcp-server';
+import { UNRESTRICTED_MCP_POLICY } from '../../domain/mcp/transport-policy';
 import { SdkMcpClient } from './sdk-mcp-client';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
@@ -199,6 +200,94 @@ describe('SdkMcpClient', () => {
     expect(result.isError).toBe(true);
     expect(result.content).toContain('missing-tool');
     expect(client.pooledConnections).toBe(1);
+  });
+
+  describe('接続直前のポリシー検査（保存済みの行にも効く最後の防壁）', () => {
+    /** ポリシー導入前に保存された設定を模す。use case を通さずクライアントへ直接渡す。 */
+    function forbidden(transport: McpTransportConfig) {
+      const factory = transportFactory();
+      factories.push(factory);
+      const client = new SdkMcpClient({ createTransport: factory.create });
+      clients.push(client);
+      return { client, factory, config: config({ name: 'legacy', transport }) };
+    }
+
+    it('許可外コマンドは接続を試みずに拒否する（プロセスを起こさない）', async () => {
+      const { client, factory, config: stored } = forbidden({ kind: 'stdio', command: 'whoami', args: [], env: {} });
+      await expect(client.listTools(stored)).rejects.toBeInstanceOf(McpClientError);
+      await expect(client.listTools(stored)).rejects.toThrow(/is not allowed to start/);
+      expect(factory.created).toBe(0);
+      expect(client.pooledConnections).toBe(0);
+    });
+
+    it('cmd /c の中身が許可外でも拒否する', async () => {
+      const { client, factory, config: stored } = forbidden({ kind: 'stdio', command: 'cmd', args: ['/c', 'calc.exe'], env: {} });
+      await expect(client.listTools(stored)).rejects.toThrow(/is not allowed to start/);
+      expect(factory.created).toBe(0);
+    });
+
+    it('私設・リンクローカル宛のURLは接続を試みずに拒否する', async () => {
+      const { client, factory, config: stored } = forbidden({ kind: 'http', url: 'http://169.254.169.254/mcp', headers: {} });
+      await expect(client.listTools(stored)).rejects.toThrow(/link-local/);
+      expect(factory.created).toBe(0);
+    });
+
+    it('ポリシーを緩めれば通る（既存利用を壊さない逃げ道）', async () => {
+      const factory = transportFactory();
+      factories.push(factory);
+      const client = new SdkMcpClient({ createTransport: factory.create, policy: UNRESTRICTED_MCP_POLICY });
+      clients.push(client);
+      await expect(client.listTools(config({ name: 'legacy', transport: { kind: 'stdio', command: 'whoami', args: [], env: {} } }))).resolves.toBeDefined();
+    });
+  });
+
+  describe('DNS再検査（リバインディング対策）', () => {
+    function withResolver(addresses: readonly string[] | Error) {
+      const factory = transportFactory();
+      factories.push(factory);
+      const client = new SdkMcpClient({
+        createTransport: factory.create,
+        resolveHost: async () => { if (addresses instanceof Error) throw addresses; return addresses; },
+      });
+      clients.push(client);
+      return { client, factory };
+    }
+    const remote = config({ name: 'remote', transport: { kind: 'http', url: 'https://mcp.example.com/mcp', headers: {} } });
+
+    it('公開アドレスへ解決されるホストは通る', async () => {
+      const { client, factory } = withResolver(['93.184.216.34']);
+      await expect(client.listTools(remote)).resolves.toBeDefined();
+      expect(factory.created).toBe(1);
+    });
+
+    it('私設アドレスへ解決されるホストは拒否する', async () => {
+      const { client, factory } = withResolver(['10.0.0.5']);
+      await expect(client.listTools(remote)).rejects.toThrow(/private network/);
+      expect(factory.created).toBe(0);
+    });
+
+    it('複数アドレスのうち1つでも内部なら拒否する', async () => {
+      const { client } = withResolver(['93.184.216.34', '169.254.169.254']);
+      await expect(client.listTools(remote)).rejects.toThrow(/link-local/);
+    });
+
+    it('解決できないホストは拒否する（検査の回避手段にしない）', async () => {
+      const { client, factory } = withResolver(new Error('ENOTFOUND'));
+      await expect(client.listTools(remote)).rejects.toThrow(/could not be resolved/);
+      expect(factory.created).toBe(0);
+    });
+
+    it('拒否メッセージに解決先アドレスを載せない', async () => {
+      const { client } = withResolver(['10.11.12.13']);
+      const error = await client.listTools(remote).catch((cause: unknown) => cause);
+      expect(String(error)).not.toContain('10.11.12.13');
+    });
+
+    it('stdio には DNS 検査を行わない', async () => {
+      const { client, factory } = withResolver(new Error('should not be called'));
+      await expect(client.listTools(config())).resolves.toBeDefined();
+      expect(factory.created).toBe(1);
+    });
   });
 
   it('接続断などの通信失敗後はプールから除去し、次回は新しい接続を張る', async () => {

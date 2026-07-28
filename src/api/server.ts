@@ -10,7 +10,11 @@ import fastifyStatic from '@fastify/static';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
 import type { LogLevel } from '../config/environment';
 import type { AuthenticationPort } from '../application/security/authentication';
+import type { AuthorizationPort } from '../application/security/authorization';
 import { defaultAuthentication, registerAuthRoutes, registerAuthentication } from './authentication';
+import { defaultAuthorization, registerAuthorization, type AuditOptions } from './authorization';
+import { registerHostCheck, type HostCheckOptions } from './host-check';
+import { registerRateLimit, type RateLimitOptions } from './rate-limit';
 import { loggerOptions } from './logging';
 import { registerDraftToolRoutes } from './draft-tool-routes';
 import type { DraftToolRouteDeps } from './draft-tool-routes';
@@ -115,6 +119,27 @@ export interface ServerOptions {
    * `serverSettings`（`src/config/environment.ts`）が起動を拒否する。
    */
   readonly authentication?: AuthenticationPort;
+  /**
+   * Principal + action → 許可/拒否。**省略時もロール表による判定が入る**
+   * （`defaultAuthorization()`）。単一ユーザーモードの Principal は全ロールを持つので、
+   * 省略しても従来どおり全操作が通る。
+   */
+  readonly authorization?: AuthorizationPort;
+  /**
+   * 監査ログの書き込み先。**省略すると監査を取らない**（テスト・埋め込み用）。
+   * 本番経路（`src/server.ts`）は composition が組み立てた sink を必ず渡す。
+   */
+  readonly audit?: AuditOptions;
+  /**
+   * レート制限の上限。省略時は既定（`rate-limit.ts`）で**必ず有効**。
+   * `false` で無効化できるが、これは埋め込み利用のための逃げ道であって本番の選択肢ではない。
+   */
+  readonly rateLimit?: RateLimitOptions | false;
+  /**
+   * `Host` ヘッダの許可リスト（DNSリバインディング対策）。省略時は検査しない。
+   * 本番経路（`src/server.ts`）はループバックへバインドしたときだけ渡す。
+   */
+  readonly hostCheck?: HostCheckOptions;
 }
 
 /** `/foo/bar?x=1` → `/foo`。ルートパスや空文字は `undefined`。 */
@@ -174,12 +199,41 @@ export function buildServer(
   });
 
   /**
+   * `Host` 検査は**最初**に置く。ここを通す時点で「このオリジンからの操作を受け付ける」と
+   * 決めているので、認証・認可より手前で切るのが筋（DNSリバインディングは、
+   * 攻撃者のドメインを 127.0.0.1 へ解決させて被害者のブラウザに叩かせる手口なので、
+   * 単一ユーザーモードでは認証が無い＝Hostだけが最後の識別子になる）。
+   */
+  if (options?.hostCheck !== undefined) registerHostCheck(app, options.hostCheck);
+
+  /**
    * 認証は**ルート登録より前**に置く（Fastify のフックは、そのインスタンスへ後から登録される
    * ルートに適用される）。`apiPrefixes` は上の onRoute が埋めるSetの参照をそのまま渡すので、
    * リクエストが来る時点では全ルート分が入っている。
    */
   const authentication = options?.authentication ?? defaultAuthentication();
   registerAuthentication(app, authentication, apiPrefixes);
+  /**
+   * 認可は**認証の直後**に登録する。フックは登録順に走るので、`request.principal` が
+   * 載ったあとで判定でき、ボディをパースする前に 403 を返せる。
+   */
+  registerAuthorization(app, {
+    authorization: options?.authorization ?? defaultAuthorization(),
+    ...(options?.audit === undefined ? {} : { audit: options.audit }),
+  });
+  /**
+   * レート制限は**認証・認可の直後**。`request.principal` が載ってから数えるので、
+   * 同じマシンの別トークン同士が枠を食い合わない。
+   *
+   * CORS（`@fastify/cors`）は**入れない**。UIは同一オリジンで配信され（`registerUi`）、
+   * 開発時も Vite の proxy 経由なのでブラウザから見れば同一オリジンである。
+   * つまりクロスオリジンでこのAPIを叩く正当な利用者は存在せず、**何も付けない
+   * ＝ブラウザの既定で拒否**が最も安全な設定になる。ヘッダを足す必要が出るのは
+   * 「別オリジンのUIから使う」構成を導入したときで、そのときに許可オリジンを
+   * 明示列挙して入れるべきもの（ワイルドカードで先回りしない）。
+   */
+  if (options?.rateLimit !== false) registerRateLimit(app, options?.rateLimit ?? {});
+
   registerAuthRoutes(app, authentication);
 
   registerToolRoutes(app, deps);

@@ -6,7 +6,7 @@
 
 ## 0. 実装状況（2026-07）
 
-このドキュメントは目標像を書いている。**現時点で動いているのは認証（Authentication）とテナント境界だけ**で、認可（RBAC）と監査は未実装である。
+このドキュメントは目標像を書いている。**認証・テナント境界・認可（RBAC）・監査ログまでが動いている**。残るのは外部IdP（OIDC）とアカウント機能のCapability化。
 
 | 項目 | 状態 | 実体 |
 |---|---|---|
@@ -14,11 +14,20 @@
 | `Principal` | ✅ 実装 | `src/domain/security/principal.ts` |
 | テナント境界の決定 | ✅ 実装 | `scopeOf(request)`（`src/api/authentication.ts`）が唯一の供給源 |
 | 単一ユーザーモード | ✅ 実装 | `SingleUserAuthentication`。**ループバック以外へのバインドでは起動を拒否** |
-| 共有トークン認証 | ✅ 実装 | `TokenAuthentication`（Bearer・人ごとに1本） |
+| 共有トークン認証 | ✅ 実装 | `TokenAuthentication`（Bearer・人ごとに1本・ロール付き） |
 | OIDC / PKCE | ❌ 未実装 | `AuthenticationPort` の別実装として追加できる |
-| `AuthorizationProvider`（RBAC） | ❌ 未実装 | `Principal.roles` は運ぶだけで判定に使っていない |
-| `AuditSink` | ❌ 未実装 | 運用ログのマスキングのみ（§1 の注記） |
+| `AuthorizationPort`（RBAC） | ✅ 実装 | 判定表 `src/domain/security/authorization.ts` / Port `src/application/security/authorization.ts` / 実装 `RoleMatrixAuthorization` / 適用 `src/api/authorization.ts` |
+| `AuditSink` | ✅ 実装 | Port `src/application/security/audit.ts` / 台帳 `audit_log`（スキーマ version 3）/ 参照 `GET /operations/audit` |
 | `AuthFeatureProvider` / `AuthUiExtension` / `PrincipalMapper` | ❌ 未実装 | — |
+
+### 0.0 認可の効き方（重要）
+
+権限は **Principal のロール**だけで決まる。認証方式は権限に関与しない。
+
+- **単一ユーザーモード**: Principal は**全ロール**を持つ（`SINGLE_USER_ROLES`）。資格情報を求めない構成では権限を絞る相手がいないため。既存のローカル利用は一切変わらない。
+- **トークン認証**: `AGENTCONTEXT_AUTH_TOKENS` の各エントリに `roles` を書く。**省略時は `editor`**（作成・編集・実行はできるが、削除・承認・公開・運用操作はできない）。綴りが違うロール名は**起動時に落とす**（権限を付けたつもりで付いていないトークンを配らないため）。
+- ルートごとの必要権限は `src/api/authorization.ts` の `ROUTE_RULES` が持ち、`onRequest` フックが機械的に適用する。**登録済みの全ルートが表に載っていること**をテストが強制するので、ルートを足して権限を決め忘れると赤くなる。
+- 拒否は **403 `FORBIDDEN`** で、メッセージは必要な権限（`tool:delete` など）だけを含む。保持しているロールや主体名は出さない。
 
 ### 0.1 テナント境界の決まりかた（重要）
 
@@ -68,7 +77,7 @@ DB/API接続・カスタムコード・MCP公開・Webhookを提供する前に�
 | 2 | カスタムコードは時間・メモリ・CPU・ネットワーク・ファイルアクセス・利用可能パッケージを制限した分離環境で実行する |
 | 3 | Toolは副作用を `read-only / write / external-action` として宣言し、`write` と `external-action` は実行前承認を要求する |
 | 4 | MCP・Webhook・公開Agentのエンドポイントは未認証公開を既定にしない |
-| 5 | 実行者・対象バージョン・入力参照・使用Tool・承認・結果・エラーを監査ログへ記録し、秘密情報・個人情報はマスキングする |
+| 5 | 実行者・対象バージョン・入力参照・使用Tool・承認・結果・エラーを監査ログへ記録し、秘密情報・個人情報はマスキングする（§7.1） |
 | 6 | ワークスペース・接続・Tool・Skill・Agent・公開エンドポイントごとにアクセス制御を適用できる |
 
 > #5 のうち**サーバーログのマスキング**は配線済み。pino の `redact`（`src/api/logging.ts`）が
@@ -76,7 +85,7 @@ DB/API接続・カスタムコード・MCP公開・Webhookを提供する前に�
 > `secret` 系を `[redacted]` へ落とす。例外メッセージに埋め込まれた秘密値は
 > `redactSecrets()`（`src/application/operations/logger.ts`）が別途正規表現で落とす。
 > 設定内容と「何を守らないか」は [02-tech-stack.md](./02-tech-stack.md#7-観測ログトレース) を参照。
-> 監査ログ本体（誰が何をしたか）の記録は未実装で、ここで言えるのは運用ログの話だけ。
+> 監査ログ本体（誰が何をしたか）は §7.1 で別の台帳として記録する。
 
 ---
 
@@ -181,7 +190,14 @@ flowchart LR
 | 削除（delete） | — | 自作のみ | 自作のみ | — | ✅ |
 | audit-log（read） | — | — | — | ✅ | ✅ |
 
-> 判定操作は `read / create / edit / execute / approve / publish / manage-access / delete` に分離。将来、所有者・環境・データ分類・テナント・Toolの副作用を条件にできるABACを追加。
+> 判定操作は `read / create / edit / execute / approve / publish / operate / manage-access / delete` に分離。将来、所有者・環境・データ分類・テナント・Toolの副作用を条件にできるABACを追加。
+
+#### 実装上の但し書き
+
+- **`delete` の「自作のみ」は現状効かない**。資産に作成者の `subject` を保存していないため所有者を判定できず、§3.1 のフェイルセーフに従って**拒否**する。結果として削除は実質 Workspace Admin のみ。`AuthorizationResource.ownerSubject` を渡せば Editor / Publisher にも開く実装は入っている（作成時に所有者を記録する改修が入れば有効になる）。
+- **セッション成果物の削除だけは `edit` 扱い**。実行の副産物でセッションと一緒に消える一時データなので、版管理された資産の削除と同じ重みで縛ると通常の後片付けができなくなる（監査には残す）。
+- **`operate`（運用・実行監視）に含めたもの**: `/operations/*`（稼働状況・保持期限・バックアップ）、モデル設定の変更と接続テスト（APIキーを預かるため）、サンプルデータ投入。保持期間を0日にして適用すれば全実行履歴が消えるので、実行系とは別の権限にしてある。
+- **`approve` に含めたもの**: ツール実行の事前承認（`POST /runs/:runId/resume`）、昇格の採否、記憶提案の採否、Factoryの計画承認。Harnessの応答（`POST /harness-runs/:runId/responses`）は「追加入力」と「計画承認」が同居するため、ルートは `execute` を要求し、本文が承認だったときにハンドラが `approve` を追加判定する。
 
 ---
 
@@ -268,6 +284,39 @@ flowchart LR
 
 記録対象: 実行者・対象バージョン・入力参照・使用Tool・承認・結果・エラー。関連Portは [04-api-spec.md](./04-api-spec.md#24-永続化観測監査) を参照。
 
+### 7.1 実装（2026-07）
+
+`AuditEntry`（`src/domain/security/audit.ts`）は `at / subject / tenantId / workspaceId / action / resource / outcome / detail?` を持ち、SQLiteの `audit_log`（スキーマ version 3）へ追記する。**Run trace は監査の代替にならない**——traceは「モデルとツールが何をしたか」であって実行者の概念が無く、保持期限（既定14日）で伏せ字になる。監査は独立した保持期間（既定365日・`RetentionPolicy.auditDays`）を持つ。
+
+**何を記録するか**（`ROUTE_RULES` の `audit` フラグ）。全リクエストを記録すると台帳が実行ログの写しになり、肝心の行が埋もれるので、「後から必ず問われる操作」だけを残す。
+
+| 記録する | 記録しない |
+|---|---|
+| 認証の失敗（401・`subject` は `(unauthenticated)`） | 参照（GET） |
+| 認可の拒否（403・必要だった権限を `detail.reason` に） | 資産の作成・更新（バージョン履歴が別に残る） |
+| 削除 | プレビュー実行・スキーマ推論 |
+| 承認（ツール承認・昇格の採否・記憶提案・Factory計画） | 実験の中断・再開 |
+| 実行の開始（Agent / Harness / Factory / シナリオ） | — |
+| 運用操作（保持期限の保存と適用・バックアップ・モデル設定・MCP設定） | — |
+
+**秘密は入らない**。`detail` はドメイン側で機械的にマスクする——`token` / `secret` / `password` / `apiKey` / `authorization` / `cookie` などを名前に含むキーは捨て、値は文字列・数値・真偽値のみ、長い文字列は500文字で切る。「呼び出し側が気をつける」には頼らない。
+
+**監査の失敗は本処理を止めない**。台帳への書き込みに失敗しても、利用者の操作は既に成功（あるいは既に拒否）している。そこで500を返すと監査DBが一杯になった瞬間に全機能が止まるので、api層が握り潰して運用ログへ落とす。
+
+**参照**は `GET /operations/audit`（`audit-log:read` ＝ Operator / Workspace Admin のみ）。`from` / `to` / `subject` / `action` / `outcome` / `resourceKind` / `limit` で絞れる。UIはステータス画面に直近20件を出し、権限が無ければパネルごと表示しない。
+
+### 7.2 承認者・申請者の記録
+
+`Principal` から取り、**クライアントからは受け取らない**。
+
+| 場所 | 記録先 |
+|---|---|
+| ツール実行の事前承認 | Run trace の `approval-resolved.decidedBy` ＋ 監査ログ |
+| 昇格の申請・採否 | `PromotionRequest.requestedBy` / `decidedBy` ＋ 監査ログ |
+| Harness / Factory の応答 | 監査ログ（`detail.decision` / `detail.respondedBy`） |
+
+`POST /agents/{id}/versions/{v}/promotion-requests` と `POST /promotion-requests/{id}/{approve,reject}` の body にある `requestedBy` / `decidedBy` は**後方互換のために受理するが読まない**（`scope` と同じ流儀）。以前はここが自由入力で、「reviewer が承認した」という証跡を誰でも作れた。
+
 ---
 
 ## 8. 認証・認可の拡張インターフェース一覧
@@ -275,8 +324,8 @@ flowchart LR
 | インターフェース | 責務 | 状態 |
 |---|---|---|
 | `AuthenticationPort` | 資格情報 → 内部Principal の解決 | ✅ 実装（`single-user` / `token`） |
-| `AuthorizationProvider` | Principal・resource・action・context → 許可/拒否 | ❌ 次Wave |
-| `AuditSink` | 認証イベント・認可拒否・承認・公開・実行を外部監査基盤へ転送 | ❌ 次Wave |
+| `AuthorizationPort` | Principal・action・resource → 許可/拒否 | ✅ 実装（`RoleMatrixAuthorization`） |
+| `AuditSink` | 認証イベント・認可拒否・承認・公開・実行を記録（将来はSIEMへ転送） | ✅ 実装（SQLite `audit_log`） |
 | `PrincipalMapper` | IdP固有claimを内部Principalへ変換 | ❌ OIDC実装時 |
 | `AuthFeatureProvider` | 登録・招待・メール確認・パスワード再設定・MFA・セッション一覧の対応可否と実行 | ❌ 未着手 |
 | `AuthUiExtension` | ログイン・登録・アカウント・セッション・メンバー管理画面の差し替え | ❌ 未着手 |

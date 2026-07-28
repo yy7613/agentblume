@@ -17,7 +17,8 @@ describe('SingleUserAuthentication', () => {
         tenantId: DEFAULT_TENANT_ID,
         workspaceId: DEFAULT_WORKSPACE_ID,
         displayName: 'Local operator',
-        roles: ['operator'],
+        // 単一ユーザーモードは絞る相手がいないので全ロールを持つ。
+        roles: ['viewer', 'editor', 'publisher', 'operator', 'workspace-admin'],
       },
     });
   });

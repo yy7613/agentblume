@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { OperationsDailyMetric, RetentionPolicy, RunFeedback } from './operations';
+import { DEFAULT_RETENTION_DAYS, type OperationsDailyMetric, type RetentionPolicy, type RunFeedback } from './operations';
 
 const scopeSchema = z.object({ tenantId: z.string().min(1), workspaceId: z.string().min(1) });
 const feedbackSchema = z.object({
@@ -15,9 +15,16 @@ const metricSchema = z.object({
   totalTokens: z.number().int().nonnegative(), estimatedCost: z.number().nonnegative(),
   pricedRunCount: z.number().int().nonnegative(), feedbackCount: z.number().int().nonnegative(),
 });
+/**
+ * `auditDays` は後から足した列なので `.default(...)` を置く。
+ * 既に保存されている行にはこのキーが無く、必須にすると**保持ポリシーの読み出しが全滅**する
+ * （＝保持期限のUIが開かなくなる）。既定値を当てて読み、次回の保存で書き戻す。
+ */
 const retentionSchema = z.object({
   scope: scopeSchema, payloadDays: z.number().int().min(0).max(3650), traceDays: z.number().int().min(0).max(3650),
-  aggregateDays: z.number().int().min(0).max(3650), updatedAt: z.string().min(1),
+  aggregateDays: z.number().int().min(0).max(3650),
+  auditDays: z.number().int().min(0).max(3650).default(DEFAULT_RETENTION_DAYS.audit),
+  updatedAt: z.string().min(1),
 });
 
 export const serializeFeedback = (value: RunFeedback): RunFeedback => structuredClone(feedbackSchema.parse(value)) as RunFeedback;

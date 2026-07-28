@@ -171,6 +171,8 @@ interface AuthUiExtension {
 
 Web UI・Webhookからユースケースを駆動する外部API。**すべてのエンドポイントでサーバー側の認可判定を行う**。
 
+> 実装では、ルート → 必要権限の対応表を `src/api/authorization.ts` の `ROUTE_RULES` が1箇所で持ち、`onRequest` フックが全ルートへ機械的に適用する。下表は主要エンドポイントの抜粋で、**正本は `ROUTE_RULES`**（登録済みの全ルートが載っていることをテストが強制する）。ロールとアクションの対応は [08-security-auth.md §3.2](./08-security-auth.md#32-rbac-ロール--アクション初期実装)。
+
 | メソッド | パス | ユースケース | 認可アクション |
 |---|---|---|---|
 | `POST` | `/tools` | Tool作成（ノードフロー） | `tool:create` |
@@ -200,6 +202,7 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/validations/{id}/run` | 疑似ユーザーで検証実行 | `agent:execute` |
 | `GET` | `/validations/{id}/report` | 検証指標・定性評価取得 | `agent:read` |
 | `POST` | `/connections` | 接続先登録（SecretReference参照） | `connection:create` |
+| `GET` | `/operations/audit` | 監査ログの参照（誰が何をしたか） | `audit-log:read` |
 | `GET`/`POST` | `/auth/*` | ログイン/コールバック/セッション | — |
 | `POST` | `/webhooks/{trigger}` | Webhookトリガー（Phase3） | Service Principal |
 

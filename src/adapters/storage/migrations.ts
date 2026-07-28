@@ -34,7 +34,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 /** このコードが理解できるスキーマの最新版。 */
-export const LATEST_SCHEMA_VERSION = 2;
+export const LATEST_SCHEMA_VERSION = 3;
 
 /** version 1 で作られるテーブル（列定義は「ALTER適用後の最終形」）。 */
 const BASELINE_TABLES: readonly string[] = [
@@ -260,6 +260,25 @@ const STATUS_INDEXES: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments (status)`,
 ];
 
+/**
+ * version 3: 監査ログ（`docs/08-security-auth.md` §7）。
+ *
+ * 本体は `record_json`、絞り込みに使う値だけ列へ出す。`sequence` は rowid の別名なので
+ * 追記順がそのまま残り、同一ミリ秒のエントリでも「拒否 → 再試行 → 成功」の並びを再現できる。
+ * `at DESC` のインデックスは「直近N件」「期間指定」の両方に効く（参照APIはこの2つしかしない）。
+ */
+const AUDIT_LOG_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS audit_log (
+    sequence INTEGER PRIMARY KEY,
+    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+    at TEXT NOT NULL, subject TEXT NOT NULL, action TEXT NOT NULL,
+    resource_kind TEXT NOT NULL, resource_id TEXT, outcome TEXT NOT NULL,
+    record_json TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_log_scope_at ON audit_log (tenant_id, workspace_id, at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_log_scope_subject ON audit_log (tenant_id, workspace_id, subject, at DESC)`,
+];
+
 /** 適用順のマイグレーション一覧（version は 1 から連番）。 */
 export const MIGRATIONS: readonly SchemaMigration[] = [
   {
@@ -276,6 +295,13 @@ export const MIGRATIONS: readonly SchemaMigration[] = [
     description: 'status indexes for cross-tenant orphan run recovery',
     apply(db) {
       for (const statement of STATUS_INDEXES) db.exec(statement);
+    },
+  },
+  {
+    version: 3,
+    description: 'audit log table (who did what, with which outcome)',
+    apply(db) {
+      for (const statement of AUDIT_LOG_STATEMENTS) db.exec(statement);
     },
   },
 ];

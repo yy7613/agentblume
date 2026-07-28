@@ -103,6 +103,14 @@ export interface ResumeSavedRunInput {
   readonly runId: string;
   readonly decision: 'approve' | 'reject';
   readonly feedback?: string;
+  /**
+   * 承認した主体（`Principal.subject`）。api層が必ず入れる。
+   *
+   * クライアントからは受け取らない。以前は承認者の概念自体が無く、
+   * runId を知っていれば誰でも他人の待機中Runを承認でき、しかも
+   * トレースには「承認された」としか残らなかった。
+   */
+  readonly decidedBy?: string;
 }
 
 /** サブエージェント委譲のツリー共有バジェット。remaining系は実行中に減算される。 */
@@ -988,7 +996,7 @@ export class RunAgentPreviewUseCase {
         structuredRepairs: 0,
         toolArgumentRepairs: 0,
       };
-      currentTrace.push({ sequence: currentTrace.length + 1, kind: 'approval-resolved', decision: input.decision });
+      currentTrace.push({ sequence: currentTrace.length + 1, kind: 'approval-resolved', decision: input.decision, ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }) });
       if (input.decision === 'approve') {
         // 先頭の呼び出しだけが承認済み。2件目以降で再び承認対象が来たら再度停止する。
         state.pending = checkpoint.pendingCalls.map(fromCheckpointToolCall);

@@ -4,6 +4,10 @@ import type { CreateBackupUseCase, ListBackupsUseCase } from '../application/ope
 import type { SubmitRunFeedbackUseCase, QueryRunFeedbackUseCase } from '../application/operations/feedback';
 import type { QueryOperationsStatusUseCase } from '../application/operations/query-operations-status';
 import type { RetentionUseCase } from '../application/operations/retention';
+import { MAX_AUDIT_PAGE_SIZE, type QueryAuditLogUseCase } from '../application/security/audit';
+import { AUDIT_OUTCOMES } from '../domain/security/audit';
+import { AUTHORIZATION_ACTIONS, AUTHORIZATION_RESOURCE_KINDS } from '../domain/security/authorization';
+import { DEFAULT_RETENTION_DAYS } from '../domain/operations/operations';
 import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 
@@ -14,6 +18,7 @@ export interface OperationsRouteDeps {
   readonly retention: RetentionUseCase;
   readonly createBackup: CreateBackupUseCase;
   readonly listBackups: ListBackupsUseCase;
+  readonly queryAuditLog: QueryAuditLogUseCase;
 }
 
 // スコープは Principal から取るのでここでは形だけ受ける（値は読まない）。
@@ -21,7 +26,21 @@ const scopeSchema = z.object({ tenantId: z.string().min(1).optional(), workspace
 const scopeQuerySchema = scopeSchema;
 const feedbackBodySchema = z.object({ scope: scopeSchema, thumb: z.enum(['up', 'down']), rating: z.number().int().min(1).max(5).optional(), comment: z.string().max(2000).optional(), issueTags: z.array(z.string().min(1).max(50)).max(10).default([]) });
 const statusQuerySchema = scopeQuerySchema.extend({ days: z.coerce.number().int().min(1).max(365).default(30) });
-const retentionBodySchema = z.object({ scope: scopeSchema, payloadDays: z.number().int().min(0).max(3650), traceDays: z.number().int().min(0).max(3650), aggregateDays: z.number().int().min(0).max(3650) });
+/**
+ * `auditDays` は後から足したので**省略を許す**（既定 365）。必須にすると、
+ * 保持ポリシーを保存する既存クライアント（UI・スクリプト）が一斉に400になる。
+ */
+const retentionBodySchema = z.object({ scope: scopeSchema, payloadDays: z.number().int().min(0).max(3650), traceDays: z.number().int().min(0).max(3650), aggregateDays: z.number().int().min(0).max(3650), auditDays: z.number().int().min(0).max(3650).default(DEFAULT_RETENTION_DAYS.audit) });
+/** `GET /operations/audit` の絞り込み。すべて任意で、既定は「自分のスコープの直近100件」。 */
+const auditQuerySchema = scopeQuerySchema.extend({
+  from: z.string().min(1).optional(),
+  to: z.string().min(1).optional(),
+  subject: z.string().min(1).max(200).optional(),
+  action: z.enum(AUTHORIZATION_ACTIONS).optional(),
+  outcome: z.enum(AUDIT_OUTCOMES).optional(),
+  resourceKind: z.enum(AUTHORIZATION_RESOURCE_KINDS).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_AUDIT_PAGE_SIZE).optional(),
+});
 
 function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
   const parsed = schema.safeParse(value);
@@ -73,5 +92,26 @@ export function registerOperationsRoutes(app: FastifyInstance, deps: OperationsR
     return { backup: await deps.createBackup.execute({ includeSecretKey: body.includeSecretKey }) };
   });
   app.get('/operations/backups', async () => ({ root: deps.listBackups.root(), backups: await deps.listBackups.execute() }));
+
+  /**
+   * 監査ログの参照。**Operator / Workspace Admin だけ**が読める
+   * （`api/authorization.ts` の表で `audit-log:read` を要求している）。
+   *
+   * 監査ログは「誰が何をしたか」の一覧なので、全員に見せると人の行動追跡の道具になる。
+   * 逆に運用担当が読めなければ台帳の意味が無い。§3.2 の `audit-log(read)` 行そのまま。
+   */
+  app.get('/operations/audit', async (request) => {
+    const query = parse(auditQuerySchema, request.query);
+    const entries = await deps.queryAuditLog.list(scopeOf(request), {
+      ...(query.from === undefined ? {} : { from: query.from }),
+      ...(query.to === undefined ? {} : { to: query.to }),
+      ...(query.subject === undefined ? {} : { subject: query.subject }),
+      ...(query.action === undefined ? {} : { action: query.action }),
+      ...(query.outcome === undefined ? {} : { outcome: query.outcome }),
+      ...(query.resourceKind === undefined ? {} : { resourceKind: query.resourceKind }),
+      ...(query.limit === undefined ? {} : { limit: query.limit }),
+    });
+    return { entries };
+  });
 }
 

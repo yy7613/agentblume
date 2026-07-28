@@ -61,11 +61,11 @@ describe('ValidationPage', () => {
     await waitFor(() => expect(compareExperiments).toHaveBeenCalledWith(scope, 'baseline', 'candidate')); expect(await screen.findAllByText('improved')).toHaveLength(2);
     await userEvent.click(screen.getByRole('button', { name: 'Evaluate gate' })); await waitFor(() => expect(evaluateGate).toHaveBeenCalledWith(scope, { id: 'release', version: '1.0.0' }, 'candidate', 'baseline'));
     expect(await screen.findByText('PASS')).toBeTruthy(); await userEvent.click(screen.getByRole('button', { name: 'Request promotion' }));
-    await waitFor(() => expect(requestPromotion).toHaveBeenCalledWith('agent', '2.0.0', scope, 'report', 'reviewer'));
+    await waitFor(() => expect(requestPromotion).toHaveBeenCalledWith('agent', '2.0.0', scope, 'report'));
     await userEvent.click(await screen.findByRole('button', { name: 'Approve' }));
     const decisionDialog = await screen.findByRole('alertdialog');
     await userEvent.click(within(decisionDialog).getByRole('button', { name: 'Approve' }));
-    await waitFor(() => expect(decidePromotion).toHaveBeenCalledWith('promotion', 'approve', scope, 'reviewer'));
+    await waitFor(() => expect(decidePromotion).toHaveBeenCalledWith('promotion', 'approve', scope));
   });
 
   it('Gate policyを切り替えるとgetGatePolicyでルール編集フィールドが復元される', async () => {

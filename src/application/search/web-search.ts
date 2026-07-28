@@ -6,6 +6,15 @@ import type { SearchProviderCatalog, SearchProviderId, SearchProviderSummary } f
 const MAX_QUERY_LENGTH = 2_000;
 const MAX_RESULTS = 10;
 const CACHE_TTL_MS = 15 * 60 * 1000;
+/**
+ * キャッシュに置く検索結果の最大件数。
+ *
+ * 以前は上限もスイープも無い `Map` だったため、**取得のたびに1件ずつ永久に積み上がった**
+ * （`resolve` で期限切れに当たったときだけ1件消える）。1件あたり最大10件の検索結果本文なので、
+ * 常用すればプロセスのメモリを食い潰す。TTL（15分）を過ぎたものは誰も使えないのだから、
+ * 期限切れの掃除と件数上限の両方を入れる。
+ */
+const MAX_CACHE_ENTRIES = 500;
 
 export class WebSearchValidationError extends Error {
   readonly code = 'WEB_SEARCH_VALIDATION';
@@ -52,8 +61,26 @@ export class WebSearchUseCase {
       retrievedAt: now.toISOString(), expiresAt: new Date(now.getTime() + CACHE_TTL_MS).toISOString(),
     };
     this.entries.set(entry.cacheKey, entry);
+    this.evict(now.getTime());
     return withoutScope(entry);
   }
+
+  /**
+   * 期限切れを掃除し、それでも上限を超えるなら**古い順**に捨てる。
+   *
+   * `Map` は挿入順を保つので、先頭が最も古い。上限に当たった利用者には
+   * 「取得し直してください」という既存のエラー（`resolve` の cache unavailable）が出る。
+   */
+  private evict(now: number): void {
+    for (const [key, entry] of this.entries) {
+      if (new Date(entry.expiresAt).getTime() <= now) this.entries.delete(key);
+    }
+    if (this.entries.size <= MAX_CACHE_ENTRIES) return;
+    for (const key of [...this.entries.keys()].slice(0, this.entries.size - MAX_CACHE_ENTRIES)) this.entries.delete(key);
+  }
+
+  /** 保持している件数（テスト・診断用）。 */
+  get cachedCount(): number { return this.entries.size; }
 
   resolve(scope: TenantScope, input: { readonly cacheKey: string; readonly provider: string; readonly query: string; readonly maxResults: number; readonly includeDomains?: readonly string[] }): readonly Row[] {
     const entry = this.entries.get(input.cacheKey);

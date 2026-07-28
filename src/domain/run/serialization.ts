@@ -11,7 +11,8 @@ const traceSchema = z.discriminatedUnion('kind', [
   z.object({ sequence: z.number().int().positive(), kind: z.literal('agent_call'), toolName: z.string(), agentRef: z.object({ internalId: z.string(), version: z.string() }), childRunId: z.string(), ok: z.boolean(), summary: z.string() }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('compaction'), beforeChars: z.number().int().nonnegative(), afterChars: z.number().int().nonnegative() }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('approval-requested'), tool: z.string(), sideEffect: z.enum(SIDE_EFFECTS as [SideEffect, ...SideEffect[]]), prompt: z.string() }),
-  z.object({ sequence: z.number().int().positive(), kind: z.literal('approval-resolved'), decision: z.enum(['approve', 'reject']) }),
+  // decidedBy は後から足したので任意。既に保存されている Run のトレースには入っていない。
+  z.object({ sequence: z.number().int().positive(), kind: z.literal('approval-resolved'), decision: z.enum(['approve', 'reject']), decidedBy: z.string().min(1).optional() }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('error'), code: z.string(), message: z.string() }),
 ]);
 

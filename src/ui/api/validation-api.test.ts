@@ -151,7 +151,7 @@ describe('ToolApiClient scenario validation contract', () => {
     const client = new ToolApiClient('/api', fetcher as typeof fetch);
     const input: SaveGatePolicyDto = { scope, internalId: 'release', workingName: 'Release', displayName: 'Release', publishName: 'release', owner: 'owner', rules: [{ id: 'quality', kind: 'metric-threshold', metric: 'quality', operator: 'gte', threshold: 0.8 }] };
     await client.compareExperiments(scope, 'base/1', 'candidate/1'); await client.saveGatePolicy(input); await client.listGatePolicies(scope); await client.getGatePolicy('release/1', scope, '1.0.0');
-    await client.evaluateGate(scope, { id: 'release', version: '1.0.0' }, 'candidate/1', 'base/1'); await client.listGateReports(scope, 'candidate/1'); await client.requestPromotion('agent/1', '2.0.0', scope, 'report', 'alice'); await client.listPromotionRequests(scope, 'agent/1'); await client.decidePromotion('promotion/1', 'approve', scope, 'reviewer');
+    await client.evaluateGate(scope, { id: 'release', version: '1.0.0' }, 'candidate/1', 'base/1'); await client.listGateReports(scope, 'candidate/1'); await client.requestPromotion('agent/1', '2.0.0', scope, 'report'); await client.listPromotionRequests(scope, 'agent/1'); await client.decidePromotion('promotion/1', 'approve', scope);
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: 'POST', body: JSON.stringify({ scope, baselineExperimentId: 'base/1', candidateExperimentId: 'candidate/1' }) });
     expect(fetcher).toHaveBeenNthCalledWith(2, '/api/gate-policies', expect.objectContaining({ body: JSON.stringify(input) }));
     expect(fetcher.mock.calls[3]?.[0]).toContain('/api/gate-policies/release%2F1?'); expect(fetcher.mock.calls[5]?.[0]).toContain('candidateExperimentId=candidate%2F1');

@@ -6,6 +6,7 @@
  * 設定が変わった（ハッシュ不一致）ときだけ旧接続を捨てて張り直す。
  */
 import { createHash } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -14,6 +15,8 @@ import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.j
 import { McpClientError, type McpClientPort, type McpToolCallResult, type McpToolDescriptor } from '../../application/mcp/mcp-client';
 import type { JsonObject } from '../../application/model/model-provider';
 import type { McpServerConfig } from '../../domain/mcp/mcp-server';
+import { assertAllowedTransport, DEFAULT_MCP_POLICY, type McpPolicy } from '../../domain/mcp/transport-policy';
+import { checkHost, URL_REJECTION_MESSAGE } from '../../domain/net/url-policy';
 
 /** 1リクエストの上限。ツール実行が長引くケースを考えても30秒あれば十分で、無反応の検知にもなる。 */
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -25,13 +28,57 @@ const TRUNCATION_NOTICE = '\n…[truncated]';
 
 export type McpTransportFactory = (config: McpServerConfig) => Transport;
 
+/** ホスト名 → IPアドレス列。DNS再検査の差し替え口（既定は `node:dns` の `lookup`）。 */
+export type HostResolver = (hostname: string) => Promise<readonly string[]>;
+
 export interface SdkMcpClientOptions {
   /** テスト用にトランスポート生成を差し替える（既定は stdio / streamable-http の実接続）。 */
   readonly createTransport?: McpTransportFactory;
+  /**
+   * 起動を許すコマンド・到達を許す宛先。**接続直前に必ず当てる**。
+   *
+   * 保存時（use case）にも同じ検査をしているが、そちらは入力の即時フィードバックが目的で、
+   * ポリシー導入前に保存された行やポリシーを緩めてから戻した環境では素通りする。
+   * 実際にプロセスを起こす・ソケットを開くのはここなので、ここが最後の防壁になる。
+   */
+  readonly policy?: McpPolicy;
+  /**
+   * ホスト名の解決結果を再検査するためのリゾルバ。
+   *
+   * 明示指定するか、既定のトランスポート（＝実接続）を使うときだけDNS再検査が走る。
+   * `createTransport` を差し替えているテスト・埋め込みでは実際の通信が起きないため、
+   * 名前解決だけを走らせても意味が無く、オフラインで不安定になるだけである。
+   */
+  readonly resolveHost?: HostResolver;
   readonly requestTimeoutMs?: number;
   readonly idleTtlMs?: number;
   readonly sweepIntervalMs?: number;
   readonly now?: () => number;
+}
+
+/** 既定のリゾルバ。IPv4/IPv6 の**全アドレス**を見る（1つでも内部なら拒否するため）。 */
+async function defaultResolveHost(hostname: string): Promise<readonly string[]> {
+  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  return addresses.map((entry) => entry.address);
+}
+
+/**
+ * ホスト名が私設・リンクローカルへ解決されないことを確かめる（DNSリバインディング対策）。
+ *
+ * IPリテラルは純関数側（`checkUrl`）で既に判定済みなので、ここは名前のときだけ意味を持つ。
+ * **解決できない場合は拒否する**。「解決できなかったから素通し」にすると、検査を回避する手段に
+ * なってしまう（接続自体はどうせ失敗するので、拒否しても正常系は失われない）。
+ */
+export async function assertResolvedHostAllowed(url: string, policy: McpPolicy, resolve: HostResolver): Promise<void> {
+  const hostname = new URL(url).hostname.replace(/^\[|\]$/g, '');
+  let addresses: readonly string[];
+  try { addresses = await resolve(hostname); }
+  catch { throw new McpClientError(`transport.url host could not be resolved: ${hostname}`); }
+  for (const address of addresses) {
+    const reason = checkHost(address, policy.url);
+    // 解決先のアドレスは載せない（内部のアドレス割り当てを教える材料になる）。
+    if (reason !== undefined) throw new McpClientError(`transport.url ${URL_REJECTION_MESSAGE[reason]}`);
+  }
 }
 
 interface PoolEntry {
@@ -112,6 +159,8 @@ function defaultTransport(config: McpServerConfig): Transport {
 export class SdkMcpClient implements McpClientPort {
   private readonly pool = new Map<string, PoolEntry>();
   private readonly createTransport: McpTransportFactory;
+  private readonly policy: McpPolicy;
+  private readonly resolveHost: HostResolver | undefined;
   private readonly requestTimeoutMs: number;
   private readonly idleTtlMs: number;
   private readonly sweepIntervalMs: number;
@@ -120,6 +169,9 @@ export class SdkMcpClient implements McpClientPort {
 
   constructor(options: SdkMcpClientOptions = {}) {
     this.createTransport = options.createTransport ?? defaultTransport;
+    this.policy = options.policy ?? DEFAULT_MCP_POLICY;
+    // 実接続する構成（既定トランスポート）か、明示指定があるときだけDNS再検査を行う。
+    this.resolveHost = options.resolveHost ?? (options.createTransport === undefined ? defaultResolveHost : undefined);
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.idleTtlMs = options.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
     this.sweepIntervalMs = options.sweepIntervalMs ?? Math.max(1_000, Math.floor(this.idleTtlMs / 5));
@@ -174,6 +226,10 @@ export class SdkMcpClient implements McpClientPort {
       await closeQuietly(existing.client);
     }
 
+    // プロセスを起こす・ソケットを開く直前の最終検査。プールの前に置くと、
+    // ポリシー違反の設定でも一度確立した接続が再利用されてしまう。
+    await this.assertAllowed(config);
+
     const client = new Client({ name: 'agentblume', version: '0.1.0' }, { capabilities: {} });
     let transport: Transport;
     try { transport = this.createTransport(config); }
@@ -187,6 +243,19 @@ export class SdkMcpClient implements McpClientPort {
     this.pool.set(key, { client, hash, lastUsedAt: this.now() });
     this.ensureSweeper();
     return client;
+  }
+
+  /**
+   * ポリシー違反を `McpClientError` として拒否する。
+   *
+   * ドメイン側の判定は `McpValidationError` だが、ここは「接続できなかった」経路なので
+   * 接続テスト（`ok:false`）・Agent実行の失敗として扱われるように統一する。
+   */
+  private async assertAllowed(config: McpServerConfig): Promise<void> {
+    try { assertAllowedTransport(this.policy, config.transport); }
+    catch (cause) { throw new McpClientError(`MCP server "${config.name}" is not allowed to start: ${cause instanceof Error ? cause.message : String(cause)}`); }
+    if (config.transport.kind !== 'http' || this.resolveHost === undefined) return;
+    await assertResolvedHostAllowed(config.transport.url, this.policy, this.resolveHost);
   }
 
   private async evict(config: McpServerConfig): Promise<void> {

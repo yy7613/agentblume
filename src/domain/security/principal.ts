@@ -10,9 +10,11 @@
  *
  * 以降、スコープの唯一の供給源はこの `Principal` であり、リクエスト本文の値は使わない。
  *
- * `roles` は次Wave（RBAC）のための器。**今回の判定には一切使わない**が、
- * 認証実装（トークン設定）から運ぶ経路だけ先に通しておく（後から全経路を触り直さないため）。
+ * `roles` は認可（RBAC）の入力。値域と判定は `authorization.ts`（同じディレクトリ）にある。
+ * ここでは「どの主体がどのロールを持つか」だけを扱い、ロールが何を許すかは持たない。
  */
+import type { AuthorizationRole } from './authorization';
+import { AUTHORIZATION_ROLES } from './authorization';
 import type { TenantScope } from '../tool/ids';
 
 /** 認証済みの主体。api層は必ずこれ経由で `TenantScope` を得る。 */
@@ -25,7 +27,13 @@ export interface Principal {
   readonly workspaceId: string;
   /** 画面表示用の名前（無ければ subject を出す）。 */
   readonly displayName?: string;
-  /** 将来のRBAC用。今回は保持するだけで判定に使わない。 */
+  /**
+   * 割り当てられたロール（`AUTHORIZATION_ROLES`）。認可はここだけを見る。
+   *
+   * 型を `string[]` のままにしてあるのは、外部IdPのgroup/roleをそのまま運ぶ経路
+   * （`PrincipalMapper`、未実装）を後から足せるようにするため。
+   * 未知の名前は判定側（`rolesOf`）が捨てるので、権限が増えることはない。
+   */
   readonly roles: readonly string[];
 }
 
@@ -41,6 +49,15 @@ export function principalScope(principal: Principal): TenantScope {
   return { tenantId: principal.tenantId, workspaceId: principal.workspaceId };
 }
 
+/**
+ * 単一ユーザーモードで付与するロール。**全ロール**。
+ *
+ * このモードは「資格情報を一切求めない＝そのマシンの利用者が唯一の主体」なので、
+ * 権限を絞る相手がいない。絞ると、認可を入れた瞬間に既存のローカル利用が壊れる
+ * （削除も承認も運用操作もできなくなる）一方で、守れるものは何も無い。
+ */
+export const SINGLE_USER_ROLES: readonly AuthorizationRole[] = AUTHORIZATION_ROLES;
+
 /** 単一ユーザーモードの Principal を作る（scope 省略で既定テナント／ワークスペース）。 */
 export function singleUserPrincipal(scope?: TenantScope): Principal {
   return {
@@ -48,6 +65,6 @@ export function singleUserPrincipal(scope?: TenantScope): Principal {
     tenantId: scope?.tenantId ?? DEFAULT_TENANT_ID,
     workspaceId: scope?.workspaceId ?? DEFAULT_WORKSPACE_ID,
     displayName: 'Local operator',
-    roles: ['operator'],
+    roles: [...SINGLE_USER_ROLES],
   };
 }

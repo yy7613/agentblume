@@ -112,6 +112,10 @@ import type { JudgeEvaluatorPort } from '../application/evaluation/judge-evaluat
 import { InMemoryOperationsRepository } from '../adapters/storage/in-memory-operations-repository';
 import { SqliteOperationsRepository } from '../adapters/storage/sqlite-operations-repository';
 import type { OperationsRepository } from '../domain/operations/operations-repository';
+import { InMemoryAuditLogRepository } from '../adapters/storage/in-memory-audit-log-repository';
+import { SqliteAuditLogRepository } from '../adapters/storage/sqlite-audit-log-repository';
+import type { AuditLogRepository } from '../domain/security/audit';
+import { QueryAuditLogUseCase, type AuditSink } from '../application/security/audit';
 import { NoopTelemetryAdapter } from '../adapters/telemetry/noop-telemetry-adapter';
 import { OpenTelemetryAdapter } from '../adapters/telemetry/open-telemetry-adapter';
 import type { TelemetryPort } from '../application/operations/telemetry';
@@ -176,6 +180,9 @@ import { SqliteMcpServerRepository } from '../adapters/storage/sqlite-mcp-server
 import { SdkMcpClient } from '../adapters/mcp/sdk-mcp-client';
 import type { McpServerRepository } from '../domain/mcp/mcp-server-repository';
 import type { McpClientPort } from '../application/mcp/mcp-client';
+import { DEFAULT_MCP_COMMAND_POLICY, UNRESTRICTED_MCP_COMMAND_POLICY } from '../domain/mcp/command-policy';
+import { type McpPolicy } from '../domain/mcp/transport-policy';
+import { mcpSettings } from '../config/environment';
 import { DeleteMcpServerUseCase, ListMcpServersUseCase, ReplaceMcpServersUseCase, SaveMcpServerUseCase } from '../application/mcp/manage-mcp-servers';
 import { TestMcpServerUseCase } from '../application/mcp/test-mcp-server';
 import { InMemoryModelSettingsRepository } from '../adapters/storage/in-memory-model-settings-repository';
@@ -226,6 +233,8 @@ export interface AppOptions {
   readonly modelSnapshot?: ExperimentModelSnapshot;
   readonly judgeModelSnapshot?: ExperimentModelSnapshot;
   readonly operationsRepository?: OperationsRepository;
+  /** 監査ログの差し替え（テスト用）。`AuditSink`（書き）と `AuditLogRepository`（読み）を兼ねる。 */
+  readonly auditLogRepository?: AuditLogRepository & AuditSink;
   readonly telemetry?: TelemetryPort;
   readonly pricing?: PricingPort;
   /** 検索adapterの契約テスト・埋め込み用差し替え。省略時は環境変数でproviderを検出する。 */
@@ -233,6 +242,11 @@ export interface AppOptions {
   readonly mcpServerRepository?: McpServerRepository;
   /** テスト・埋め込み用の明示MCPクライアント。省略時は SDK 実装（実接続）。 */
   readonly mcpClient?: McpClientPort;
+  /**
+   * MCPの安全策（起動を許すコマンド・到達を許す宛先）。省略時は env（`mcpSettings`）から組み立てる。
+   * テストが「許可外は拒否／許可済みは通る」を検証するための注入口でもある。
+   */
+  readonly mcpPolicy?: McpPolicy;
   /** モデル設定（v34）のfake注入口。省略時は profile に従う。 */
   readonly modelSettingsRepository?: ModelSettingsRepository;
   readonly secretCipher?: SecretCipherPort;
@@ -283,10 +297,19 @@ export interface App {
   readonly qualityGateRepo: QualityGateRepository;
   readonly judgeRubricRepo: JudgeRubricRepository;
   readonly operationsRepo: OperationsRepository;
+  /** 監査ログの台帳（`GET /operations/audit` と保持期限が使う）。 */
+  readonly auditLogRepo: AuditLogRepository;
+  /** 監査イベントの記録先。api層のフックへ渡す。 */
+  readonly auditSink: AuditSink;
   readonly sessionRepo: AgentSessionRepository;
   readonly sessionArtifactRepo: SessionArtifactRepository;
   readonly dataSourceRepo: DataSourceRepository;
   readonly mcpServerRepo: McpServerRepository;
+  /**
+   * v36以前に平文で保存されたMCPの資格情報を封緘し直す（起動時に1回）。戻り値は直した件数。
+   * 永続DBを使っていない構成では何もせず 0 を返す（メモリ上のデータに「保管時」は無い）。
+   */
+  readonly resealMcpSecrets: () => Promise<number>;
   readonly modelSettingsRepo: ModelSettingsRepository;
   /** 外部MCPサーバーへの接続。shutdown時に close() を呼び、プール済み接続（子プロセス）を解放する。 */
   readonly mcpClient: McpClientPort;
@@ -372,6 +395,7 @@ export interface App {
   readonly submitRunFeedback: SubmitRunFeedbackUseCase;
   readonly queryRunFeedback: QueryRunFeedbackUseCase;
   readonly queryOperationsStatus: QueryOperationsStatusUseCase;
+  readonly queryAuditLog: QueryAuditLogUseCase;
   readonly retention: RetentionUseCase;
   /** DB + セッションアーティファクトのスナップショットを作る（鍵は既定で含めない）。 */
   readonly createBackup: CreateBackupUseCase;
@@ -542,7 +566,6 @@ export function createApp(options?: AppOptions): App {
   const sessionArtifactSqlite = database === undefined ? undefined : new SqliteSessionArtifactRepository(database);
   const sessionArtifactAdapter = { repo: (sessionArtifactSqlite ?? new InMemorySessionArtifactRepository()) as SessionArtifactRepository, close: () => sessionArtifactSqlite?.close() };
   const dataSourceAdapter = { repo: pickRepository<DataSourceRepository>(undefined, database, (db) => new SqliteDataSourceRepository(db), () => new InMemoryDataSourceRepository()) };
-  const mcpServerAdapter = { repo: pickRepository<McpServerRepository>(options?.mcpServerRepository, database, (db) => new SqliteMcpServerRepository(db), () => new InMemoryMcpServerRepository()) };
   const skillAdapter = { repo: pickRepository<SkillRepository>(options?.skillRepository, database, (db) => new SqliteSkillRepository(db), () => new InMemorySkillRepository()) };
   const personaAdapter = { repo: pickRepository<PersonaRepository>(undefined, database, (db) => new SqlitePersonaRepository(db), () => new InMemoryPersonaRepository()) };
   const scenarioAdapter = { repo: pickRepository<ScenarioRepository>(undefined, database, (db) => new SqliteScenarioRepository(db), () => new InMemoryScenarioRepository()) };
@@ -555,6 +578,7 @@ export function createApp(options?: AppOptions): App {
   const qualityGateAdapter = { repo: pickRepository<QualityGateRepository>(options?.qualityGateRepository, database, (db) => new SqliteQualityGateRepository(db), () => new InMemoryQualityGateRepository()) };
   const judgeRubricAdapter = { repo: pickRepository<JudgeRubricRepository>(options?.judgeRubricRepository, database, (db) => new SqliteJudgeRubricRepository(db), () => new InMemoryJudgeRubricRepository()) };
   const operationsAdapter = { repo: pickRepository<OperationsRepository>(options?.operationsRepository, database, (db) => new SqliteOperationsRepository(db), () => new InMemoryOperationsRepository()) };
+  const auditAdapter = { repo: pickRepository<AuditLogRepository & AuditSink>(options?.auditLogRepository, database, (db) => new SqliteAuditLogRepository(db), () => new InMemoryAuditLogRepository()) };
   /**
    * 握り潰した障害の出力先。以前は「observability の失敗は業務へ伝播させない」という正しい方針の下で
    * **何も残していなかった**ため、メトリクスが1件も保存されていないような障害が完全に不可視だった。
@@ -573,6 +597,29 @@ export function createApp(options?: AppOptions): App {
   // testプロファイルは揮発鍵（ファイルを作らない）にして、テスト実行が利用者のホームを汚さないようにする。
   const modelSettingsAdapter = { repo: pickRepository<ModelSettingsRepository>(options?.modelSettingsRepository, database, (db) => new SqliteModelSettingsRepository(db), () => new InMemoryModelSettingsRepository()) };
   const secretCipher = options?.secretCipher ?? (profile === 'local' ? new AesGcmSecretCipher() : AesGcmSecretCipher.ephemeral());
+
+  /**
+   * MCPサーバー設定（v35）: env / headers は資格情報なので、モデル設定のAPIキーと同じ鍵で封緘する。
+   * `secretCipher` より後に組み立てる必要があるため、他のリポジトリ群とは並びが離れている。
+   */
+  const mcpServerAdapter = {
+    repo: pickRepository<McpServerRepository>(
+      options?.mcpServerRepository, database,
+      (db) => new SqliteMcpServerRepository(db, secretCipher),
+      () => new InMemoryMcpServerRepository(),
+    ),
+  };
+  /**
+   * 起動を許すコマンドと到達を許す宛先。
+   * `AGENTCONTEXT_MCP_ALLOWED_COMMANDS=*` を明示したときだけ制限を外す（未設定は既定の許可リスト）。
+   */
+  const mcp = mcpSettings();
+  const mcpPolicy: McpPolicy = options?.mcpPolicy ?? {
+    command: mcp.unrestrictedCommands
+      ? UNRESTRICTED_MCP_COMMAND_POLICY
+      : (mcp.allowedCommands === undefined ? DEFAULT_MCP_COMMAND_POLICY : { allowedCommands: mcp.allowedCommands }),
+    url: { allowPrivateNetwork: mcp.allowPrivateNetwork },
+  };
   const modelProviderFactory = options?.modelProviderFactory ?? new MastraModelProviderFactory({
     timeoutMs: resolveModelTimeoutMs(),
     idleTimeoutMs: resolveModelIdleTimeoutMs(),
@@ -633,7 +680,9 @@ export function createApp(options?: AppOptions): App {
   const databaseConnections = new EnvironmentPostgresConnectionCatalog();
   // 接続は初回利用まで張られず、スイープタイマーも接続後にしか起動しないため、
   // testプロファイルでも実装をそのまま使える（外部プロセスは設定が保存されない限り生まれない）。
-  const mcpClient = options?.mcpClient ?? new SdkMcpClient();
+  // ポリシーはクライアント側にも渡す。保存時の検査だけでは、ポリシー導入前に保存された行や
+  // ポリシーを緩めてから戻した環境で、既存の設定がそのまま起動・接続できてしまう。
+  const mcpClient = options?.mcpClient ?? new SdkMcpClient({ policy: mcpPolicy });
   const webSearch = new WebSearchUseCase(options?.searchProviderCatalog ?? new EnvironmentSearchProviderCatalog());
   const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections, webSearch);
 
@@ -739,10 +788,14 @@ export function createApp(options?: AppOptions): App {
     qualityGateRepo: qualityGateAdapter.repo,
     judgeRubricRepo: judgeRubricAdapter.repo,
     operationsRepo: operationsAdapter.repo,
+    auditLogRepo: auditAdapter.repo,
+    auditSink: auditAdapter.repo,
+    queryAuditLog: new QueryAuditLogUseCase(auditAdapter.repo),
     sessionRepo: sessionAdapter.repo,
     sessionArtifactRepo: sessionArtifactAdapter.repo,
     dataSourceRepo: dataSourceAdapter.repo,
     mcpServerRepo: mcpServerAdapter.repo,
+    resealMcpSecrets: async () => (mcpServerAdapter.repo instanceof SqliteMcpServerRepository ? mcpServerAdapter.repo.resealLegacySecrets() : 0),
     modelSettingsRepo: modelSettingsAdapter.repo,
     mcpClient,
     telemetry,
@@ -777,10 +830,10 @@ export function createApp(options?: AppOptions): App {
     retryFactoryRun,
     cancelFactoryRun,
     queryFactoryRuns,
-    saveMcpServer: new SaveMcpServerUseCase(mcpServerAdapter.repo),
+    saveMcpServer: new SaveMcpServerUseCase(mcpServerAdapter.repo, undefined, mcpPolicy),
     listMcpServers: new ListMcpServersUseCase(mcpServerAdapter.repo),
     deleteMcpServer: new DeleteMcpServerUseCase(mcpServerAdapter.repo),
-    replaceMcpServers: new ReplaceMcpServersUseCase(mcpServerAdapter.repo),
+    replaceMcpServers: new ReplaceMcpServersUseCase(mcpServerAdapter.repo, undefined, mcpPolicy),
     testMcpServer: new TestMcpServerUseCase(mcpServerAdapter.repo, mcpClient),
     // 保存先が :memory:（AGENTCONTEXT_DB_PATH 未指定）なら再起動で設定が消えることをUIへ伝える。
     getModelSettings: new GetModelSettingsUseCase(modelSettingsAdapter.repo, profile === 'local' && (path ?? ':memory:') !== ':memory:' ? 'persistent' : 'ephemeral'),
@@ -829,7 +882,7 @@ export function createApp(options?: AppOptions): App {
     submitRunFeedback,
     queryRunFeedback: new QueryRunFeedbackUseCase(operationsAdapter.repo),
     queryOperationsStatus: new QueryOperationsStatusUseCase(operationsAdapter.repo),
-    retention: new RetentionUseCase(runAdapter.repo, operationsAdapter.repo, undefined, errorLogger),
+    retention: new RetentionUseCase(runAdapter.repo, operationsAdapter.repo, undefined, errorLogger, auditAdapter.repo),
     createBackup: new CreateBackupUseCase(backupStore, backupLocations, backupSchemaVersion, {
       ...(sourceRevision === undefined ? {} : { revision: sourceRevision }),
       logger: errorLogger,

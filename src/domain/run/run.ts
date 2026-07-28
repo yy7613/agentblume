@@ -20,8 +20,14 @@ export type RunTraceEvent =
   | { readonly sequence: number; readonly kind: 'compaction'; readonly beforeChars: number; readonly afterChars: number }
   /** toolApproval: 非read-onlyツールの実行前に人間の承認を要求してRunを止めた。 */
   | { readonly sequence: number; readonly kind: 'approval-requested'; readonly tool: string; readonly sideEffect: SideEffect; readonly prompt: string }
-  /** toolApproval: 人間が承認/拒否を返してRunを再開した。 */
-  | { readonly sequence: number; readonly kind: 'approval-resolved'; readonly decision: 'approve' | 'reject' }
+  /**
+   * toolApproval: 人間が承認/拒否を返してRunを再開した。
+   *
+   * `decidedBy` は承認した主体（`Principal.subject`）。**任意**なのは、認可・監査を入れる前に
+   * 保存された Run のトレースにこのキーが無いため（必須にすると既存Runの参照が全滅する）。
+   * 新しく記録するイベントには必ず入る。
+   */
+  | { readonly sequence: number; readonly kind: 'approval-resolved'; readonly decision: 'approve' | 'reject'; readonly decidedBy?: string }
   | { readonly sequence: number; readonly kind: 'error'; readonly code: string; readonly message: string };
 
 // ---------------------------------------------------------------------------

@@ -43,9 +43,13 @@ describe('quality gate routes', () => {
     expect((await server.inject({ method: 'GET', url: `/gate-reports/${report.id}?tenantId=tenant&workspaceId=workspace` })).statusCode).toBe(200);
     const requested = await server.inject({ method: 'POST', url: '/agents/agent/versions/2.0.0/promotion-requests', payload: { scope, gateReportId: report.id, requestedBy: 'alice' } });
     expect(requested.statusCode).toBe(201); const promotion = requested.json().promotion; expect(promotion.status).toBe('pending'); expect((await app.agentRepo.findVersion(scope, 'agent', v2))?.metadata.state).toBe('in-review');
+    // 申請者はボディの 'alice' ではなく Principal（単一ユーザー）から入る。
+    expect(promotion.requestedBy).toBe('single-user');
     expect((await server.inject({ method: 'GET', url: '/promotion-requests?tenantId=tenant&workspaceId=workspace&agentId=agent' })).json().promotions).toHaveLength(1);
     const approved = await server.inject({ method: 'POST', url: `/promotion-requests/${promotion.id}/approve`, payload: { scope, decidedBy: 'reviewer' } });
     expect(approved.json().promotion.status).toBe('approved'); expect((await app.agentRepo.findVersion(scope, 'agent', v2))?.metadata.state).toBe('published');
+    // 決定者も同様。ボディの 'reviewer' を名乗っても証跡は偽装できない。
+    expect(approved.json().promotion.decidedBy).toBe('single-user');
     const relaxed = await app.saveGatePolicy.execute({ scope, internalId: 'relaxed', workingName: 'Relaxed', displayName: 'Relaxed', publishName: 'relaxed', owner: 'owner', rules: [{ id: 'quality', kind: 'metric-threshold', metric: 'quality', operator: 'gte', threshold: 0.5 }] });
     const baselineReport = await server.inject({ method: 'POST', url: '/gate-reports', payload: { scope, policy: { id: 'relaxed', version: relaxed.metadata.version.toString() }, candidateExperimentId: 'baseline' } }); expect(baselineReport.json().report.status).toBe('pass');
     const secondRequest = await server.inject({ method: 'POST', url: '/agents/agent/versions/1.0.0/promotion-requests', payload: { scope, gateReportId: baselineReport.json().report.id, requestedBy: 'alice' } });

@@ -242,7 +242,7 @@ describe('ToolApiClient', () => {
 
   it('operations status、feedback、retentionのwire contractを扱う', async () => {
     const feedback = { id: 'feedback-1', runId: 'run-1' };
-    const policy = { scope, payloadDays: 30, traceDays: 14, aggregateDays: 365, updatedAt: 'now' };
+    const policy = { scope, payloadDays: 30, traceDays: 14, aggregateDays: 365, auditDays: 365, updatedAt: 'now' };
     const fetcher = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ status: { summary: { runCount: 1 }, points: [] } }))
       .mockResolvedValueOnce(jsonResponse({ feedback: null }))
@@ -255,7 +255,7 @@ describe('ToolApiClient', () => {
     await client.getRunFeedback('run/1', scope);
     await client.submitRunFeedback('run/1', { scope, thumb: 'down', rating: 2, comment: 'wrong', issueTags: ['incorrect'] });
     await client.getRetentionPolicy(scope);
-    await client.saveRetentionPolicy({ scope, payloadDays: 30, traceDays: 14, aggregateDays: 365 });
+    await client.saveRetentionPolicy({ scope, payloadDays: 30, traceDays: 14, aggregateDays: 365, auditDays: 365 });
     await client.applyRetention(scope);
     expect(fetcher.mock.calls[0]?.[0]).toContain('/api/operations/status?');
     expect(fetcher.mock.calls[1]?.[0]).toContain('/api/runs/run%2F1/feedback?');

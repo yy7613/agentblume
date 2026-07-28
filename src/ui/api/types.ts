@@ -210,7 +210,8 @@ export type RunTraceEventDto =
   | { readonly sequence: number; readonly kind: 'agent_call'; readonly toolName: string; readonly agentRef: { readonly internalId: string; readonly version: string }; readonly childRunId: string; readonly ok: boolean; readonly summary: string }
   | { readonly sequence: number; readonly kind: 'compaction'; readonly beforeChars: number; readonly afterChars: number }
   | { readonly sequence: number; readonly kind: 'approval-requested'; readonly tool: string; readonly sideEffect: SideEffectDto; readonly prompt: string }
-  | { readonly sequence: number; readonly kind: 'approval-resolved'; readonly decision: 'approve' | 'reject' }
+  // decidedBy は承認した主体。認可・監査を入れる前に保存されたRunには入っていないので任意。
+  | { readonly sequence: number; readonly kind: 'approval-resolved'; readonly decision: 'approve' | 'reject'; readonly decidedBy?: string }
   | { readonly sequence: number; readonly kind: 'error'; readonly code: string; readonly message: string };
 
 /** POST /runs / POST /runs/:runId/resume が waiting-approval で返す承認プロンプト。 */
@@ -554,8 +555,22 @@ export interface RunFeedbackDto {
 export interface SubmitRunFeedbackDto { readonly scope: TenantScopeDto; readonly thumb: 'up' | 'down'; readonly rating?: number; readonly comment?: string; readonly issueTags: readonly string[] }
 export interface OperationsMetricPointDto { readonly bucketStart: string; readonly runCount: number; readonly failureRate: number; readonly p50LatencyMs: number; readonly p95LatencyMs: number; readonly totalTokens: number; readonly estimatedCost: number; readonly pricedRunCount: number; readonly feedbackRate: number }
 export interface OperationsStatusDto { readonly from: string; readonly to: string; readonly summary: Omit<OperationsMetricPointDto, 'bucketStart'>; readonly points: readonly OperationsMetricPointDto[] }
-export interface RetentionPolicyDto { readonly scope: TenantScopeDto; readonly payloadDays: number; readonly traceDays: number; readonly aggregateDays: number; readonly updatedAt: string }
-export interface RetentionApplyResultDto { readonly payloadRedacted: number; readonly traceRedacted: number; readonly deleted: number; readonly feedbackDeleted: number; readonly aggregateBucketsDeleted: number }
+export interface RetentionPolicyDto { readonly scope: TenantScopeDto; readonly payloadDays: number; readonly traceDays: number; readonly aggregateDays: number; readonly auditDays: number; readonly updatedAt: string }
+export interface RetentionApplyResultDto { readonly payloadRedacted: number; readonly traceRedacted: number; readonly deleted: number; readonly feedbackDeleted: number; readonly aggregateBucketsDeleted: number; readonly auditDeleted: number }
+
+/** 監査ログ1件（`GET /operations/audit`）。Operator / Workspace Admin だけが読める。 */
+export interface AuditEntryDto {
+  readonly at: string;
+  readonly subject: string;
+  readonly tenantId: string;
+  readonly workspaceId: string;
+  readonly action: 'read' | 'create' | 'edit' | 'execute' | 'approve' | 'publish' | 'operate' | 'manage-access' | 'delete';
+  readonly resource: { readonly kind: string; readonly id?: string; readonly version?: string };
+  readonly outcome: 'allowed' | 'denied' | 'succeeded' | 'failed';
+  readonly detail?: Readonly<Record<string, string | number | boolean>>;
+}
+/** `GET /operations/audit` の絞り込み。 */
+export interface AuditLogQueryDto { readonly outcome?: AuditEntryDto['outcome']; readonly subject?: string; readonly limit?: number }
 
 /** バックアップ1件の自己記述メタデータ（`manifest.json` の中身）。 */
 export interface BackupManifestDto {

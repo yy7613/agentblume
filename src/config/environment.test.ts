@@ -5,7 +5,9 @@
  * 通す条件よりも**弾く条件と、そのときのメッセージ**を厚く確認する。
  */
 import { describe, expect, it } from 'vitest';
+import { AUTHORIZATION_ROLES } from '../domain/security/authorization';
 import {
+  AUTH_ROLES,
   DEFAULT_HOST,
   DEFAULT_LOG_LEVELS,
   DEFAULT_PORT,
@@ -16,6 +18,7 @@ import {
   databaseConnectionsSchema,
   environmentSchema,
   isLoopbackHost,
+  mcpSettings,
   serverSettings,
   validateEnvironment,
 } from './environment';
@@ -356,6 +359,17 @@ describe('serverSettings 認証', () => {
     }
   });
 
+  it('未知のロール名は起動時に落ちる（AUTH_ROLES は domain の値域と一致する）', () => {
+    // leaf モジュールなので domain を import せず書き写している。ずれたらここで気づく。
+    expect([...AUTH_ROLES]).toEqual([...AUTHORIZATION_ROLES]);
+    expect(() => validateEnvironment({ AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: TOKEN, roles: ['admin'] }]) }))
+      .toThrow(EnvironmentValidationError);
+    expect(() => validateEnvironment({ AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: TOKEN, roles: ['Operator'] }]) }))
+      .toThrow(EnvironmentValidationError);
+    expect(() => validateEnvironment({ AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: TOKEN, roles: ['workspace-admin', 'operator'] }]) }))
+      .not.toThrow();
+  });
+
   it('トークンの値はエラーメッセージへ出さない', () => {
     try {
       validateEnvironment({ AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: 'short' }]) });
@@ -375,5 +389,38 @@ describe('serverSettings 認証', () => {
     // 先頭一致だけを見て通してしまわないこと（127 で始まる公開アドレスは実在する）。
     expect(isLoopbackHost('127.0.0.1.example.com')).toBe(false);
     expect(isLoopbackHost('1270.0.0.1')).toBe(false);
+  });
+});
+
+describe('mcpSettings', () => {
+  it('未設定なら「呼び出し側の既定に従う」（無制限ではない）', () => {
+    expect(mcpSettings({})).toEqual({ allowedCommands: undefined, unrestrictedCommands: false, allowPrivateNetwork: false });
+  });
+
+  it('カンマ区切りを許可リストとして読む（空要素と前後空白は落とす）', () => {
+    expect(mcpSettings({ AGENTCONTEXT_MCP_ALLOWED_COMMANDS: ' npx , node ,, uvx ' }))
+      .toMatchObject({ allowedCommands: ['npx', 'node', 'uvx'], unrestrictedCommands: false });
+  });
+
+  it('`*` 単独のときだけ制限しない', () => {
+    expect(mcpSettings({ AGENTCONTEXT_MCP_ALLOWED_COMMANDS: '*' })).toMatchObject({ unrestrictedCommands: true, allowedCommands: undefined });
+    // 部分的なワイルドカードは「制限が効いている」と誤読されるので、ただの許可リストとして扱う。
+    expect(mcpSettings({ AGENTCONTEXT_MCP_ALLOWED_COMMANDS: 'npx,*' })).toMatchObject({ unrestrictedCommands: false, allowedCommands: ['npx', '*'] });
+  });
+
+  it('空文字は未設定と同じ（.env に `KEY=` とだけ書かれた行）', () => {
+    expect(mcpSettings({ AGENTCONTEXT_MCP_ALLOWED_COMMANDS: '   ' }).allowedCommands).toBeUndefined();
+  });
+
+  it("私設ネットワークの許可は 'true' のときだけ", () => {
+    expect(mcpSettings({ AGENTCONTEXT_MCP_ALLOW_PRIVATE_NETWORK: 'true' }).allowPrivateNetwork).toBe(true);
+    for (const value of ['false', 'TRUE', '1', 'yes', '']) {
+      expect(mcpSettings({ AGENTCONTEXT_MCP_ALLOW_PRIVATE_NETWORK: value }).allowPrivateNetwork).toBe(false);
+    }
+  });
+
+  it('環境変数の形式は起動時検証の対象になっている', () => {
+    expect(issuesOf({ AGENTCONTEXT_MCP_ALLOW_PRIVATE_NETWORK: 'maybe' })[0]).toContain('AGENTCONTEXT_MCP_ALLOW_PRIVATE_NETWORK');
+    expect(validateEnvironment({ AGENTCONTEXT_MCP_ALLOWED_COMMANDS: 'npx,node' }).AGENTCONTEXT_MCP_ALLOWED_COMMANDS).toBe('npx,node');
   });
 });

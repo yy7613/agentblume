@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { McpNotFoundError, McpValidationError } from '../../domain/mcp/errors';
 import type { McpServerConfig } from '../../domain/mcp/mcp-server';
 import type { McpServerRepository } from '../../domain/mcp/mcp-server-repository';
+import { UNRESTRICTED_MCP_POLICY } from '../../domain/mcp/transport-policy';
 import type { TenantScope } from '../../domain/tool/ids';
 import { DeleteMcpServerUseCase, ListMcpServersUseCase, ReplaceMcpServersUseCase, SaveMcpServerUseCase } from './manage-mcp-servers';
 import { McpClientError, type McpClientPort, type McpToolDescriptor } from './mcp-client';
@@ -56,6 +57,60 @@ describe('SaveMcpServerUseCase', () => {
     await expect(new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'bad name', transport: { kind: 'stdio', command: 'node', args: [], env: {} } } }))
       .rejects.toBeInstanceOf(McpValidationError);
     expect(repo.configs.size).toBe(0);
+  });
+});
+
+describe('秘密値のマスクとポリシー', () => {
+  it('戻り値は必ずマスク済み（use caseの外へ平文を出さない）', async () => {
+    const repo = new FakeRepository();
+    const view = await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'fs', transport: { kind: 'stdio', command: 'npx', args: [], env: { TOKEN: 'plaintext-secret' } } } });
+    expect(view.transport).toMatchObject({ env: { TOKEN: '***' } });
+    expect(JSON.stringify(view)).not.toContain('plaintext-secret');
+    // リポジトリ（＝接続に使う側）には平文が入っている。
+    expect(repo.configs.get('fs')?.transport).toMatchObject({ env: { TOKEN: 'plaintext-secret' } });
+  });
+
+  it('一覧もマスク済み', async () => {
+    const repo = new FakeRepository();
+    await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'fs', transport: { kind: 'http', url: 'https://e.com/mcp', headers: { Authorization: 'Bearer plaintext-secret' } } } });
+    expect(JSON.stringify(await new ListMcpServersUseCase(repo).execute(scope))).not.toContain('plaintext-secret');
+  });
+
+  it('マスクのまま保存すると保存済みの値を維持する', async () => {
+    const repo = new FakeRepository();
+    const save = new SaveMcpServerUseCase(repo, now);
+    await save.execute({ scope, server: { name: 'fs', transport: { kind: 'stdio', command: 'npx', args: [], env: { TOKEN: 'real' } } } });
+    await save.execute({ scope, server: { name: 'fs', transport: { kind: 'stdio', command: 'npx', args: ['-y'], env: { TOKEN: '***' } } } });
+    expect(repo.configs.get('fs')?.transport).toMatchObject({ args: ['-y'], env: { TOKEN: 'real' } });
+  });
+
+  it('許可外コマンドは保存されない', async () => {
+    const repo = new FakeRepository();
+    await expect(new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'evil', transport: { kind: 'stdio', command: 'whoami', args: [], env: {} } } }))
+      .rejects.toBeInstanceOf(McpValidationError);
+    expect(repo.configs.size).toBe(0);
+  });
+
+  it('私設ネットワーク宛URLは保存されないが、ループバックは通る', async () => {
+    const repo = new FakeRepository();
+    const save = new SaveMcpServerUseCase(repo, now);
+    await expect(save.execute({ scope, server: { name: 'probe', transport: { kind: 'http', url: 'http://10.0.0.5/mcp', headers: {} } } })).rejects.toBeInstanceOf(McpValidationError);
+    await expect(save.execute({ scope, server: { name: 'local', transport: { kind: 'http', url: 'http://127.0.0.1:3000/mcp', headers: {} } } })).resolves.toBeDefined();
+  });
+
+  it('ReplaceMcpServers はポリシー違反があれば1件も置き換えない', async () => {
+    const repo = new FakeRepository();
+    await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'keep', transport: { kind: 'stdio', command: 'node', args: [], env: {} } } });
+    await expect(new ReplaceMcpServersUseCase(repo, now).execute(scope, { mcpServers: { ok: { command: 'npx' }, bad: { command: 'whoami' } } }))
+      .rejects.toBeInstanceOf(McpValidationError);
+    expect(repo.replaceAllCalls).toBe(0);
+    expect([...repo.configs.keys()]).toEqual(['keep']);
+  });
+
+  it('ポリシーを注入で緩められる', async () => {
+    const repo = new FakeRepository();
+    await expect(new SaveMcpServerUseCase(repo, now, UNRESTRICTED_MCP_POLICY).execute({ scope, server: { name: 'any', transport: { kind: 'stdio', command: 'whoami', args: [], env: {} } } }))
+      .resolves.toBeDefined();
   });
 });
 

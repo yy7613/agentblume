@@ -3,7 +3,8 @@ import type { z } from 'zod';
 import type { QueryHarnessRunsUseCase, RunHarnessUseCase } from '../application/harness/run-harness';
 import { SemVer } from '../domain/tool/semver';
 import { clientAbortSignal } from './client-abort';
-import { scopeOf } from './authentication';
+import { principalOf, scopeOf } from './authentication';
+import { authorizeOf, recordAuditDetail } from './authorization';
 import { BadRequestError } from './error-mapping';
 import { cancelHarnessRunBodySchema, harnessRunListQuerySchema, harnessRunQuerySchema, resumeHarnessRunBodySchema, runHarnessBodySchema } from './schemas';
 
@@ -20,8 +21,20 @@ export function registerHarnessRunRoutes(app: FastifyInstance, deps: HarnessRunR
     const requestedVersion = version(body.harness.version);
     return { run: await deps.runHarness.execute({ scope: scopeOf(request), harnessId: body.harness.internalId, ...(requestedVersion === undefined ? {} : { version: requestedVersion }), message: body.message, mode: body.mode }, clientAbortSignal(request, reply)) };
   });
+  /**
+   * この入口には2種類の応答が来る。Handoffの**追加入力**（`kind: 'input'`）は会話の続きで、
+   * Magenticの**計画承認**（`kind: 'approval'`）は実行前承認そのもの。
+   * ルート表は最小権限（`harness:execute`）を要求し、承認の場合だけここで `approve` を足す
+   * （入力まで Publisher に縛ると、Editor が自分で始めた対話を続けられなくなる）。
+   */
   app.post<{ Params: { runId: string } }>('/harness-runs/:runId/responses', async (request, reply) => {
     const body = parseWith(resumeHarnessRunBodySchema, request.body, 'invalid body');
+    if (body.response.kind === 'approval') {
+      await authorizeOf(request)('approve', { kind: 'harness', id: request.params.runId });
+      recordAuditDetail(request, { decision: body.response.decision, respondedBy: principalOf(request).subject });
+    } else {
+      recordAuditDetail(request, { responseKind: body.response.kind, respondedBy: principalOf(request).subject });
+    }
     return { run: await deps.runHarness.resume({ scope: scopeOf(request), runId: request.params.runId, response: body.response }, clientAbortSignal(request, reply)) };
   });
   app.post<{ Params: { runId: string } }>('/harness-runs/:runId/cancel', async (request) => {

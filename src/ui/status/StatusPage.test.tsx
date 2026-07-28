@@ -103,10 +103,53 @@ function maintenanceClient(overrides: Partial<Record<string, unknown>> = {}): To
     listRuns: vi.fn().mockResolvedValue([]),
     listBackups: vi.fn().mockResolvedValue({ root: '/home/.agentblume/agentblume.db.backups', backups: [] }),
     createBackup: vi.fn().mockResolvedValue({ name: 'backup-20260728-093012345', path: '/home/.agentblume/agentblume.db.backups/backup-20260728-093012345', manifest, warnings: ['The secret key file is NOT included.'] }),
-    applyRetention: vi.fn().mockResolvedValue({ payloadRedacted: 1, traceRedacted: 2, deleted: 3, feedbackDeleted: 4, aggregateBucketsDeleted: 5 }),
+    applyRetention: vi.fn().mockResolvedValue({ payloadRedacted: 1, traceRedacted: 2, deleted: 3, feedbackDeleted: 4, aggregateBucketsDeleted: 5, auditDeleted: 6 }),
     ...overrides,
   } as unknown as ToolApiClient;
 }
+
+describe('StatusPage 監査ログ', () => {
+  const entry = {
+    at: '2026-07-28T09:30:12.345Z', subject: 'alice', tenantId: 'local', workspaceId: 'default',
+    action: 'delete', resource: { kind: 'tool', id: 'scores' }, outcome: 'denied',
+  };
+
+  it('読める権限があれば直近の記録を並べる', async () => {
+    const client = maintenanceClient({ listAuditLog: vi.fn().mockResolvedValue([entry]) });
+    render(<StatusPage client={client} />);
+    expect(await screen.findByLabelText(/Audit log|監査ログ/)).toBeTruthy();
+    expect(await screen.findByText('alice')).toBeTruthy();
+    expect(screen.getByText(/delete · tool\/scores/)).toBeTruthy();
+    expect(screen.getByText('denied')).toBeTruthy();
+    await waitFor(() => expect(client.listAuditLog).toHaveBeenCalledWith({ tenantId: 'local', workspaceId: 'default' }, { limit: 20 }));
+  });
+
+  it('権限が無ければパネルごと消す（できることが無い相手にエラーを見せない）', async () => {
+    const client = maintenanceClient({ listAuditLog: vi.fn().mockRejectedValue(new Error("FORBIDDEN: this operation requires the 'audit-log:read' permission")) });
+    render(<StatusPage client={client} />);
+    await screen.findByRole('button', { name: /Create backup|バックアップを作成/ });
+    await waitFor(() => expect(screen.queryByLabelText(/Audit log|監査ログ/)).toBeNull());
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('権限以外の失敗は原因を出す', async () => {
+    const client = maintenanceClient({ listAuditLog: vi.fn().mockRejectedValue(new Error('database is locked')) });
+    render(<StatusPage client={client} />);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/database is locked/);
+  });
+
+  it('記録がまだ無いときは空である旨を出す', async () => {
+    const client = maintenanceClient({ listAuditLog: vi.fn().mockResolvedValue([]) });
+    render(<StatusPage client={client} />);
+    expect(await screen.findByText(/No audit entries yet|監査ログはまだありません/)).toBeTruthy();
+  });
+
+  it('監査APIを持たないクライアントでは表示しない', async () => {
+    render(<StatusPage client={maintenanceClient()} />);
+    await screen.findByRole('button', { name: /Create backup|バックアップを作成/ });
+    expect(screen.queryByLabelText(/Audit log|監査ログ/)).toBeNull();
+  });
+});
 
 describe('StatusPage メンテナンス操作', () => {
   it('バックアップ置き場と一覧を表示し、作成すると保存先パスと注意書きを出す', async () => {

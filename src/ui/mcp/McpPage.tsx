@@ -15,6 +15,20 @@ type Translate = (english: string, japanese: string) => string;
 
 function errorText(cause: unknown, text: Translate): string { return cause instanceof Error ? cause.message : text('Request failed', 'リクエストが失敗しました'); }
 
+/**
+ * 資格情報がマスク表示されることの説明。
+ *
+ * env / headers の値はサーバー側で暗号化して保管され、応答では `***` に置き換わる。
+ * `***` のまま保存すると保存済みの値が維持される（モデル設定のAPIキーと同じ流儀）。
+ * これを書いておかないと、利用者は「値が消えた」と誤解して実値を入れ直すことになる。
+ */
+function maskedSecretHint(text: Translate): string {
+  return text(
+    'Saved values are stored encrypted and shown as "***". Leave "***" to keep the stored value; type a real value to replace it.',
+    '保存済みの値は暗号化して保管され、表示は "***" になります。"***" のままなら値は変わりません。変えるときだけ実際の値を入力してください。',
+  );
+}
+
 /** JSONタブのパース失敗を画面文言へ落とす（純関数側は理由コードだけを返す）。 */
 function documentErrorText(result: Extract<McpServersDocumentParseResult, { ok: false }>, text: Translate): string {
   switch (result.reason) {
@@ -177,11 +191,13 @@ export function McpPage({ client }: { readonly client: ToolApiClient }) {
             <label>{text('Command', 'コマンド')}<input aria-label={text('MCP command', 'MCPコマンド')} placeholder={text('e.g. npx', '例: npx')} value={form.command} onChange={(event) => update({ command: event.target.value })} /></label>
             <label>{text('Args (one per line)', '引数（1行1件）')}<textarea aria-label={text('MCP args', 'MCP引数')} rows={3} placeholder={'-y\n@modelcontextprotocol/server-filesystem'} value={form.args} onChange={(event) => update({ args: event.target.value })} /></label>
             <label>{text('Env (one KEY=VALUE per line)', '環境変数（1行1件 KEY=VALUE）')}<textarea aria-label={text('MCP env', 'MCP環境変数')} rows={3} placeholder={'API_TOKEN=xxxx'} value={form.env} onChange={(event) => update({ env: event.target.value })} /></label>
+            <small className="data-source-hint">{maskedSecretHint(text)}</small>
             <label>{text('Working directory (optional)', '作業ディレクトリ（任意）')}<input aria-label={text('MCP working directory', 'MCP作業ディレクトリ')} placeholder={text('e.g. C:\\workspace', '例: C:\\workspace')} value={form.cwd} onChange={(event) => update({ cwd: event.target.value })} /></label>
             <small className="data-source-hint">{text('On Windows, npx-based servers may need command "cmd" with args "/c", "npx", ...', 'Windowsでnpx系サーバーは command を "cmd"、args を "/c", "npx", ... とする必要がある場合があります')}</small>
           </> : <>
             <label>{text('URL', 'URL')}<input aria-label={text('MCP server URL', 'MCPサーバーURL')} placeholder="https://example.com/mcp" value={form.url} onChange={(event) => update({ url: event.target.value })} /></label>
             <label>{text('Headers (one "Header: value" per line)', 'ヘッダー（1行1件 "Header: value"）')}<textarea aria-label={text('MCP headers', 'MCPヘッダー')} rows={3} placeholder={'Authorization: Bearer xxxx'} value={form.headers} onChange={(event) => update({ headers: event.target.value })} /></label>
+            <small className="data-source-hint">{maskedSecretHint(text)}</small>
           </>}
           <label className="structured-output-toggle"><input type="checkbox" aria-label={text('Disable this server', 'このサーバーを無効化')} checked={form.disabled} onChange={(event) => update({ disabled: event.target.checked })} /> {text('Disabled (skipped at run time)', '無効（実行時はスキップ）')}</label>
           <div className="save-actions">
@@ -193,6 +209,7 @@ export function McpPage({ client }: { readonly client: ToolApiClient }) {
         <div className="notice-card">
           <strong>{text('Apply replaces every server', '適用はすべて置き換えます')}</strong>
           <p>{text('Applying replaces all MCP server settings in this workspace with this document. Servers missing from it are deleted.', '適用するとこのワークスペースのMCPサーバー設定はこのドキュメントで全置換されます。記載の無いサーバーは削除されます。')}</p>
+          <p>{text('Secrets in env and headers are shown as "***". Applying the document unchanged keeps them; replace "***" with a real value to change one. Because of this the document cannot be pasted into another tool as-is.', 'env と headers の値は "***" で伏せられます。このまま適用すれば保存済みの値が維持され、変えたいものだけ実際の値に書き換えます。このため書き出したドキュメントを他のツールへそのまま貼り付けることはできません。')}</p>
         </div>
         <textarea aria-label={text('mcpServers document', 'mcpServers ドキュメント')} className="mcp-json-editor" rows={18} value={jsonText} onChange={(event) => { setJsonText(event.target.value); setJsonError(undefined); }} />
         {jsonError !== undefined && <p className="field-error">{jsonError}</p>}
