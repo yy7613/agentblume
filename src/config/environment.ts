@@ -183,7 +183,13 @@ const authTokenSchema = z.object({
   tenantId: optional(nonEmpty),
   workspaceId: optional(nonEmpty),
   displayName: optional(nonEmpty),
-  roles: z.array(z.enum(AUTH_ROLES)).optional(),
+  /**
+   * 空配列は**受け付けない**。「何もさせないつもり」で `roles: []` と書いた設定が
+   * 「未指定」と同一視されて既定（editor）へ落ち、**全権に近いトークン**になっていた。
+   * 意図を書き分けられるようにする: 権限を絞るなら `["viewer"]`、
+   * 既定でよければキーごと書かない。どちらとも読めない空配列は起動時に落とす。
+   */
+  roles: z.array(z.enum(AUTH_ROLES)).min(1, 'roles を空配列にしない（読み取りだけなら ["viewer"]、既定でよければ roles を書かない）').optional(),
 });
 
 /** `AGENTCONTEXT_AUTH_TOKENS`（1本以上のトークン）。 */
@@ -210,6 +216,7 @@ export const environmentSchema = z.object({
   AGENTCONTEXT_DB_PATH: optional(nonEmpty),
   AGENTCONTEXT_PORT: optional(tcpPort),
   AGENTCONTEXT_HOST: optional(nonEmpty),
+  AGENTCONTEXT_ALLOWED_HOSTS: optional(nonEmpty),
   AGENTCONTEXT_SAMPLE_DATA: optional(flag),
   AGENTCONTEXT_TENANT_ID: optional(nonEmpty),
   AGENTCONTEXT_WORKSPACE_ID: optional(nonEmpty),
@@ -268,6 +275,7 @@ const EXPECTATIONS: Readonly<Record<string, string>> = {
   AGENTCONTEXT_DB_PATH: 'SQLiteファイルのパス、または :memory:',
   AGENTCONTEXT_PORT: '1〜65535 の整数',
   AGENTCONTEXT_HOST: 'listen するホスト名／IP',
+  AGENTCONTEXT_ALLOWED_HOSTS: '受け入れる Host ヘッダのカンマ区切り（例 app.example.com,127.0.0.1。未設定なら単一ユーザーモードのときだけループバック名を検査する）',
   AGENTCONTEXT_SAMPLE_DATA: `'true' または 'false'`,
   AGENTCONTEXT_TENANT_ID: '空でない文字列',
   AGENTCONTEXT_WORKSPACE_ID: '空でない文字列',
@@ -437,6 +445,32 @@ export interface ServerSettings {
   readonly scope: { readonly tenantId: string; readonly workspaceId: string };
   /** 認証方式と登録済みトークン。`single-user` は「認証しない」を意味する。 */
   readonly authentication: AuthSettings;
+  /** `AGENTCONTEXT_ALLOWED_HOSTS` の明示指定（未設定なら `undefined`）。 */
+  readonly allowedHosts: readonly string[] | undefined;
+}
+
+/**
+ * `Host` ヘッダ検査で受け入れるホスト名。`undefined` は「検査しない」。
+ *
+ * ## なぜ「ループバックへバインドしているか」だけでは決められないか
+ *
+ * 以前は `isLoopbackHost(host)` だけで判定していた。しかし
+ * **`127.0.0.1` へバインドしてリバースプロキシを前に置く**のは本番の一般形で、
+ * その構成ではブラウザが送る `Host` は `app.example.com` になる。
+ * 結果として、認証を有効にした真っ当な運用が**全リクエスト403**になっていた。
+ *
+ * 検査の目的はDNSリバインディング対策であり、それが要るのは
+ * **認証が無い（＝`Host` が唯一の識別子になる）単一ユーザーモード**である。
+ * トークン認証を有効にしている構成では識別はトークンが担うので、既定では検査しない。
+ * プロキシ配下でも縛りたい／単一ユーザーモードで別名を使いたい場合のために
+ * `AGENTCONTEXT_ALLOWED_HOSTS` で明示的に上書きできる（指定した場合はモードを問わず検査する）。
+ *
+ * `loopbackDefaults` を引数で受けるのは、ここが leaf モジュールで api層を import しないため。
+ */
+export function allowedHostNames(settings: ServerSettings, loopbackDefaults: readonly string[]): readonly string[] | undefined {
+  if (settings.allowedHosts !== undefined) return settings.allowedHosts;
+  if (settings.authentication.mode !== 'single-user') return undefined;
+  return isLoopbackHost(settings.host) ? loopbackDefaults : undefined;
 }
 
 /**
@@ -509,5 +543,13 @@ export function serverSettings(env: ValidatedEnvironment): ServerSettings {
     logLevel: env.AGENTCONTEXT_LOG_LEVEL ?? DEFAULT_LOG_LEVELS[profile],
     scope,
     authentication,
+    allowedHosts: splitList(env.AGENTCONTEXT_ALLOWED_HOSTS),
   };
+}
+
+/** カンマ区切りを配列へ。空要素は落とし、1件も残らなければ「未設定」と同じ `undefined`。 */
+function splitList(raw: string | undefined): readonly string[] | undefined {
+  if (raw === undefined) return undefined;
+  const entries = raw.split(',').map((item) => item.trim()).filter((item) => item !== '');
+  return entries.length === 0 ? undefined : entries;
 }

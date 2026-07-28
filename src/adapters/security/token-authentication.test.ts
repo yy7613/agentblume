@@ -66,10 +66,23 @@ describe('TokenAuthentication', () => {
     }
   });
 
-  it('roles 未指定は既定の editor（削除・承認・公開・運用は付かない）', () => {
+  it('roles 未指定は既定の editor（削除・承認・公開・運用は付かない）', async () => {
     expect(DEFAULT_TOKEN_ROLES).toEqual(['editor']);
-    const empty = new TokenAuthentication([{ subject: 'carol', token: 'c'.repeat(40), roles: [] }]);
-    expect(empty).toBeInstanceOf(TokenAuthentication);
+    const carol = 'c'.repeat(40);
+    const auth = new TokenAuthentication([{ subject: 'carol', token: carol }]);
+    expect(await auth.authenticate(request(`Bearer ${carol}`))).toMatchObject({ principal: { roles: ['editor'] } });
+  });
+
+  /**
+   * `roles: []` を「未指定」と同一視して editor を付けていた回帰。
+   * 「何もさせないつもり」で書いた設定が**全権に近いトークン**になる、最悪の向きの fail-open だった。
+   * 空配列は「1つも与えない」と読む（全操作が拒否される）。
+   */
+  it('roles の空配列は既定へ落とさず「1つも与えない」として通す', async () => {
+    const carol = 'c'.repeat(40);
+    const auth = new TokenAuthentication([{ subject: 'carol', token: carol, roles: [] }]);
+    const result = await auth.authenticate(request(`Bearer ${carol}`));
+    expect(result).toMatchObject({ kind: 'authenticated', principal: { subject: 'carol', roles: [] } });
   });
 
   it('未知のロール名は起動時に落とす（付けたつもりで付いていない状態を作らない）', () => {

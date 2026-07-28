@@ -1,8 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
+import { RoleMatrixAuthorization } from '../adapters/security/role-matrix-authorization';
 import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
+import { authenticated, rejected, type AuthenticationPort } from '../application/security/authentication';
 import { createApp, type App } from '../composition/root';
-import { bucketOf, MAX_RATE_LIMIT_KEYS, RateLimiter, type RateLimitOptions } from './rate-limit';
+import type { AuthorizationRole } from '../domain/security/authorization';
+import { bucketOf, keyOf, MAX_RATE_LIMIT_KEYS, RateLimiter, type RateLimitOptions } from './rate-limit';
 import { buildServer } from './server';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
@@ -17,6 +20,12 @@ describe('bucketOf', () => {
     ['POST', '/mcp-servers', 'default'],
     ['GET', '/tools', 'default'],
   ])('%s %s → %s', (method, url, expected) => { expect(bucketOf(method, url)).toBe(expected); });
+});
+
+describe('keyOf', () => {
+  it('送信元IPで数える（認証より前に走るので主体はまだ分からない）', () => {
+    expect(keyOf({ ip: '203.0.113.9' })).toBe('203.0.113.9');
+  });
 });
 
 describe('RateLimiter', () => {
@@ -125,5 +134,71 @@ describe('レート制限の配線', () => {
     for (let i = 0; i < 20; i += 1) {
       expect((await server.inject({ method: 'GET', url: '/tools', query: scope })).statusCode).toBe(200);
     }
+  });
+});
+
+/**
+ * **認証より前に数えること**の回帰。
+ *
+ * 以前は `hostCheck → 認証 → 認可 → レート制限` の順で登録していた。Fastify は各フックの前に
+ * `reply.sent` を見るため、認証が401を送った時点で以降のフックが走らない ＝ 401も403も
+ * 一切数えられなかった（実測: `max:3` に対して不正トークン12回が全て401、429はゼロ）。
+ * 一方 `onResponse` の監査フックは走るので、401ごとに監査ログが1行増えていた。
+ */
+describe('認証・認可より前に数える', () => {
+  const SCOPE = { tenantId: 'acme', workspaceId: 'ops' };
+  const TOKEN = 't'.repeat(40);
+  let app: App; let server: FastifyInstance;
+  afterEach(async () => { await server.close(); app.close(); });
+
+  function rolesAuth(roles: readonly AuthorizationRole[]): AuthenticationPort {
+    return {
+      mode: 'token', required: true,
+      authenticate: async (request) => request.header('authorization') === `Bearer ${TOKEN}`
+        ? authenticated({ subject: 'rita', ...SCOPE, roles })
+        : rejected('invalid-credentials'),
+    };
+  }
+
+  function build(roles: readonly AuthorizationRole[], max: number) {
+    app = createApp({ profile: 'test' });
+    server = buildServer(app, {
+      authentication: rolesAuth(roles),
+      authorization: new RoleMatrixAuthorization(),
+      rateLimit: { default: { max, windowMs: 60_000 } },
+    });
+    return server;
+  }
+
+  it('401（不正な資格情報）も数えて429へ切り替わる', async () => {
+    build(['viewer'], 3);
+    const codes: number[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      codes.push((await server.inject({ method: 'GET', url: '/tools', headers: { authorization: 'Bearer wrong' } })).statusCode);
+    }
+    expect(codes).toEqual([401, 401, 401, 429, 429, 429]);
+  });
+
+  it('401（資格情報なし）も数える', async () => {
+    build(['viewer'], 2);
+    expect((await server.inject({ method: 'GET', url: '/tools' })).statusCode).toBe(401);
+    expect((await server.inject({ method: 'GET', url: '/tools' })).statusCode).toBe(401);
+    expect((await server.inject({ method: 'GET', url: '/tools' })).statusCode).toBe(429);
+  });
+
+  it('403（認可の拒否）も数える', async () => {
+    build(['viewer'], 2);
+    const headers = { authorization: `Bearer ${TOKEN}` };
+    expect((await server.inject({ method: 'DELETE', url: '/tools/x', headers })).statusCode).toBe(403);
+    expect((await server.inject({ method: 'DELETE', url: '/tools/x', headers })).statusCode).toBe(403);
+    expect((await server.inject({ method: 'DELETE', url: '/tools/x', headers })).statusCode).toBe(429);
+  });
+
+  it('資格情報の有無に関わらず同じ枠を消費する（送信元IPで数える）', async () => {
+    build(['viewer'], 3);
+    expect((await server.inject({ method: 'GET', url: '/tools' })).statusCode).toBe(401);
+    expect((await server.inject({ method: 'GET', url: '/tools', headers: { authorization: `Bearer ${TOKEN}` } })).statusCode).toBe(200);
+    expect((await server.inject({ method: 'GET', url: '/tools', headers: { authorization: 'Bearer wrong' } })).statusCode).toBe(401);
+    expect((await server.inject({ method: 'GET', url: '/tools', headers: { authorization: `Bearer ${TOKEN}` } })).statusCode).toBe(429);
   });
 });

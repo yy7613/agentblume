@@ -10,6 +10,7 @@ import type { TelemetryPort } from '../application/operations/telemetry';
 import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { LATEST_SCHEMA_VERSION } from '../adapters/storage/migrations';
 import { createApp, type App } from '../composition/root';
+import { MINIMUM_AUDIT_RETENTION_DAYS } from '../domain/operations/operations';
 import { SemVer } from '../domain/tool/semver';
 import { buildServer } from './server';
 
@@ -62,6 +63,29 @@ describe('LLMOps operations API', () => {
     model.enqueue({ message: { role: 'assistant', content: 'ok' }, finishReason: 'stop', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } });
     const response = await server.inject({ method: 'POST', url: '/runs', payload: { scope, agent: { internalId: 'agent-2', version: SemVer.parse('1.0.0').toString() }, message: 'hello', mode: 'preview' } });
     expect(response.statusCode).toBe(200); expect(response.json().run.estimatedCost).toBeUndefined();
+  });
+
+  /**
+   * `auditDays: 0` + 即適用で、**保持期限を変更した監査行ごと**消せた回帰。
+   *
+   * 「保持期限の変更そのものを監査対象にしてある」は緩和にならない。`PUT` の監査行は
+   * 変更**時刻**で書かれるので、直後の `apply` が `deleteBefore(now - 0日)` でその行を含めて消す。
+   * 残るのは「誰かが operate に成功した」1行だけで、何を何に変えたかは台帳から消える。
+   */
+  it('auditDays は下限を下回れない（変更の記録ごと消せないようにする）', async () => {
+    const body = { scope, payloadDays: 30, traceDays: 14, aggregateDays: 365 };
+    for (const auditDays of [0, 1, MINIMUM_AUDIT_RETENTION_DAYS - 1]) {
+      const response = await server.inject({ method: 'PUT', url: '/operations/retention', payload: { ...body, auditDays } });
+      expect(response.statusCode, `auditDays=${auditDays}`).toBe(400);
+      expect(response.json().error.message).toContain('auditDays');
+    }
+    // 下限ちょうどは通る。payload / trace は 0 のままでよい（監査だけが特別）。
+    const ok = await server.inject({ method: 'PUT', url: '/operations/retention', payload: { ...body, payloadDays: 0, traceDays: 0, auditDays: MINIMUM_AUDIT_RETENTION_DAYS } });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().policy.auditDays).toBe(MINIMUM_AUDIT_RETENTION_DAYS);
+    // 省略時は既定（365日）のまま。
+    const omitted = await server.inject({ method: 'PUT', url: '/operations/retention', payload: body });
+    expect(omitted.json().policy.auditDays).toBe(365);
   });
 
   it('揮発DB配線ではバックアップを拒否し、一覧は空で返す', async () => {

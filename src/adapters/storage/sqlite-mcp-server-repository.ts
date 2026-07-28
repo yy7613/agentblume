@@ -26,6 +26,14 @@ import {
 } from '../../domain/mcp/serialization';
 import type { TenantScope } from '../../domain/tool/ids';
 
+/** `resealLegacySecrets()` の結果。`failed > 0` は「次の保存に委ねた行がある」を意味する。 */
+export interface ResealResult {
+  /** 平文から封緘し直せた行数。 */
+  readonly resealed: number;
+  /** 壊れている・開封できない等で処理できなかった行数（起動は止めない）。 */
+  readonly failed: number;
+}
+
 export class SqliteMcpServerRepository extends SqliteRepositoryBase implements McpServerRepository {
   /**
    * `cipher` は必須。省略可能にすると、配線を1箇所忘れただけで**黙って平文保存に戻る**。
@@ -74,28 +82,40 @@ export class SqliteMcpServerRepository extends SqliteRepositoryBase implements M
   }
 
   /**
-   * v36以前に平文で保存された行を封緘し直す（起動時に1回だけ呼ぶ想定）。戻り値は直した件数。
+   * v36以前に平文で保存された行を封緘し直す（起動時に1回だけ呼ぶ想定）。
    *
    * 「読み出しで平文を許し、次の保存で封緘する」だけだと、**誰も編集しないサーバーの資格情報は
    * ディスク上に平文で残り続ける**。それでは対策として不十分なので、起動時に一掃する。
    * スコープ横断で全行を見る必要があるためリポジトリの契約（`McpServerRepository`）には載せず、
    * SQLite実装固有の運用操作としてここに置く。
    *
-   * **べき等**。封緘済みの行は読み書きしない。1行の失敗で全体を止めない（壊れた行があっても
-   * 起動は続ける）。件数だけを返し、サーバー名も値もログへ出さないのは呼び出し側の責任。
+   * **べき等**。封緘済みの行は読み書きしない。
+   *
+   * ## 1行の失敗で起動を落とさない
+   *
+   * 以前はJSONパースだけを `try/catch` していて、`cipher.open` / `cipher.seal` は無保護だった。
+   * 鍵を差し替えた環境（開封できない封緘済みの行が混ざる）では例外がそのまま起動処理へ抜け、
+   * **`listen()` へ到達せずプロセスが落ちる**。しかも画面が上がらないので、原因の設定を
+   * 消して復旧することもできない（デッドロック）。掃除の失敗は掃除の失敗であって
+   * 起動の失敗ではないので、行ごとに握って件数として返す。
+   * サーバー名も値もログへ出さないのは呼び出し側の責任。
    */
-  async resealLegacySecrets(): Promise<number> {
+  async resealLegacySecrets(): Promise<ResealResult> {
     const rows = this.db.prepare(`SELECT tenant_id, workspace_id, name, config_json FROM mcp_servers`).all();
     let resealed = 0;
+    let failed = 0;
     for (const row of rows) {
-      let stored: StoredMcpServerConfig;
-      try { stored = parseStoredMcpServerConfig(JSON.parse(String(row['config_json']))); }
-      catch { continue; }
-      if (!Object.values(storedSecrets(stored)).some((value) => !isStoredSealed(value))) continue;
-      this.insert(await this.seal(await this.open(stored)));
-      resealed += 1;
+      try {
+        const stored = parseStoredMcpServerConfig(JSON.parse(String(row['config_json'])));
+        if (!Object.values(storedSecrets(stored)).some((value) => !isStoredSealed(value))) continue;
+        this.insert(await this.seal(await this.open(stored)));
+        resealed += 1;
+      } catch {
+        // 壊れた行・開封できない行は次の保存に委ねる。ここで止めると起動できなくなる。
+        failed += 1;
+      }
     }
-    return resealed;
+    return { resealed, failed };
   }
 
   private async seal(config: McpServerConfig): Promise<StoredMcpServerConfig> {

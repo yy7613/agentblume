@@ -73,6 +73,15 @@ function registryModel(value: unknown, field: string): string {
  * ただし MCP と違って**私設ネットワーク全体は塞げない** — 「LAN の別マシンで動かしている
  * LM Studio を使う」は本製品の正当かつ一般的な使い方で、既定で塞ぐと既存環境が黙って壊れる。
  * リンクローカルだけはクラウドのメタデータ窃取が目的の範囲で正当な用途が無いため、常に拒否する。
+ *
+ * ## 限界（既知・意図的）
+ *
+ * 判定するのは**入力されたホストそのもの**だけで、名前が後からリンクローカルへ解決される場合は
+ * 素通りする（MCP側の `assertResolvedHostAllowed` に相当する解決後の再検査を持たない）。
+ * ここへ同じ仕組みを入れないのは、私設ネットワークを既定で許している以上、再検査で追加的に
+ * 塞げるのはリンクローカルへ解決される名前だけであり、その1点のために全プロバイダー実装の
+ * 接続経路へ非同期の検査を配線する割に合わないと判断したため。塞ぐ必要が出たら、
+ * fetch の実行点（`adapters/model/*`）に `assertResolvedHostAllowed` と同型の検査を足すこと。
  */
 function isLinkLocalHost(host: string): boolean {
   return classifyHost(host) === 'link-local';

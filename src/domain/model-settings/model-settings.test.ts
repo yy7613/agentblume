@@ -116,6 +116,29 @@ describe('isHttpBaseUrl', () => {
     }
   });
 
+  /**
+   * `new URL()` はIPv6リテラルを16進形へ正規化する（`::ffff:169.254.169.254` → `::ffff:a9fe:a9fe`）。
+   * 以前はここが素通しで、**モデル設定経由では応答本文がAPIレスポンスとして返る**
+   * （`POST /model-catalog/openai-compatible-models`）＝読めるSSRFになっていた。
+   */
+  it('IPv4射影で書いたリンクローカルも拒否する（表記を変えても抜けられない）', () => {
+    for (const value of [
+      'http://[::ffff:169.254.169.254]/v1',
+      'http://[::ffff:a9fe:a9fe]/v1',
+      'http://[0:0:0:0:0:ffff:169.254.169.254]/v1',
+      'http://[::169.254.169.254]/v1',
+    ]) {
+      expect(isHttpBaseUrl(value)).toBe(false);
+      expect(() => createModelSlotSettings({ source: 'openai-compatible', baseUrl: value, model: 'x' })).toThrow(/link-local/);
+    }
+  });
+
+  it('IPv4射影のループバック・LANは従来どおり許可する', () => {
+    for (const value of ['http://[::ffff:127.0.0.1]:1234/v1', 'http://[::ffff:192.168.1.20]:1234/v1']) {
+      expect(isHttpBaseUrl(value)).toBe(true);
+    }
+  });
+
   it('LANのLM Studioは許可したままにする（既定で塞ぐと既存環境が壊れる）', () => {
     for (const value of ['http://192.168.1.20:1234/v1', 'http://10.0.0.5:1234/v1']) {
       expect(isHttpBaseUrl(value)).toBe(true);

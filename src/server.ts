@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { buildServer } from './api/server';
 import { seedBuiltinTools } from './builtin-tools';
 import { LOOPBACK_HOST_NAMES } from './api/host-check';
-import { EnvironmentValidationError, isLoopbackHost, serverSettings, validateEnvironment, type ServerSettings } from './config/environment';
+import { EnvironmentValidationError, allowedHostNames, serverSettings, validateEnvironment, type ServerSettings } from './config/environment';
 import { createAuthentication, createAuthorization } from './composition/authentication';
 import { createApp } from './composition/root';
 import type { LoggerPort } from './application/operations/logger';
@@ -77,13 +77,14 @@ const authentication = createAuthentication(settings.authentication, settings.sc
  * 監査に至っては**省略すると1行も残らない**。本番経路で暗黙に頼らない。
  */
 /**
- * ループバックへバインドしているときだけ `Host` を縛る（DNSリバインディング対策）。
+ * `Host` を縛るか（DNSリバインディング対策）。判断は `allowedHostNames` が持つ。
  *
- * この構成では認証が無いこともあり、そのとき `Host` が唯一の識別子になる。
- * 非ループバック（＝認証必須）では、`Host` は運用者が付けたホスト名やLBのIPになり得るので
- * 検査しない — そこでの識別はトークンが担う。
+ * 既定は「認証が無い単一ユーザーモードでループバックへバインドしているとき」だけ。
+ * `127.0.0.1` バインド + リバースプロキシ（本番の一般形）で全リクエストが403になるのを避ける。
+ * `AGENTCONTEXT_ALLOWED_HOSTS` を書けばモードを問わず明示した名前だけを受け付ける。
  */
-const hostCheck = isLoopbackHost(settings.host) ? { allowedHosts: LOOPBACK_HOST_NAMES } : undefined;
+const allowedHosts = allowedHostNames(settings, LOOPBACK_HOST_NAMES);
+const hostCheck = allowedHosts === undefined ? undefined : { allowedHosts };
 
 const server = buildServer(app, {
   logger: { level: settings.logLevel },
@@ -125,9 +126,20 @@ server.log.info(recovered, 'interrupted runs recovered');
  * 読み出し側は平文を受け入れるので放っておいても動くが、それでは**誰も編集しない設定の
  * 資格情報がディスク上に平文で残り続ける**。べき等なので毎回走らせてよい（件数0で即終わる）。
  * サーバー名も値もログへ出さない。
+ *
+ * **ここで起動を止めない**。掃除は「次の保存」でもやり直せる一方、起動できないと
+ * 原因になっている設定を画面から消すことすらできなくなる（復旧不能）。
+ * リポジトリ側も行ごとに握るが、想定外の失敗（DBハンドル・鍵ファイル）でも同じ判断を通す。
  */
-const resealedMcpSecrets = await app.resealMcpSecrets();
-if (resealedMcpSecrets > 0) server.log.info({ count: resealedMcpSecrets }, 'MCP server credentials were re-encrypted at rest');
+try {
+  const resealedMcpSecrets = await app.resealMcpSecrets();
+  if (resealedMcpSecrets.resealed > 0) server.log.info({ count: resealedMcpSecrets.resealed }, 'MCP server credentials were re-encrypted at rest');
+  if (resealedMcpSecrets.failed > 0) {
+    server.log.warn({ count: resealedMcpSecrets.failed }, 'some MCP server credentials could not be re-encrypted and were left as they are');
+  }
+} catch (err) {
+  server.log.warn({ err }, 'failed to re-encrypt MCP server credentials at rest; startup continues');
+}
 
 /**
  * retentionの定期実行。初回は1インターバル後（起動のたびに重い削除が走らないように）。

@@ -74,3 +74,30 @@ function contract(name: string, create: () => Repo): void {
 
 contract('InMemoryAuditLogRepository', () => new InMemoryAuditLogRepository());
 contract('SqliteAuditLogRepository', () => new SqliteAuditLogRepository(':memory:'));
+
+/**
+ * **ソースに生のNULバイトを埋めない**という回帰。
+ *
+ * `in-memory-audit-log-repository.ts` のスコープ鍵の区切りが U+0000 そのもので書かれていた。
+ * gitはNULを含むファイルをバイナリと判定するため、`git diff` も `git show` も中身を出さず、
+ * **このファイルの変更が静かにレビューの対象外になっていた**（挙動には現れないので気づけない）。
+ * 意図（テナントIDに現れない文字で区切る）はエスケープ表記で同じように書ける。
+ */
+describe('ソースの健全性', () => {
+  it('src 配下のTypeScriptに生のNULバイトが無い（gitがバイナリ扱いしない）', async () => {
+    const { readdir, readFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const root = new URL('../../', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+    const offenders: string[] = [];
+    const walk = async (directory: string): Promise<void> => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) { await walk(path); continue; }
+        if (!/\.(ts|tsx)$/.test(entry.name)) continue;
+        if ((await readFile(path, 'utf8')).includes(String.fromCharCode(0))) offenders.push(path);
+      }
+    };
+    await walk(root);
+    expect(offenders).toEqual([]);
+  });
+});

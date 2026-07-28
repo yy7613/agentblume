@@ -43,7 +43,8 @@ export interface SdkMcpClientOptions {
    */
   readonly policy?: McpPolicy;
   /**
-   * ホスト名の解決結果を再検査するためのリゾルバ。
+   * ホスト名の解決結果を再検査するためのリゾルバ（緩和策。限界は
+   * `assertResolvedHostAllowed` のコメントを参照）。
    *
    * 明示指定するか、既定のトランスポート（＝実接続）を使うときだけDNS再検査が走る。
    * `createTransport` を差し替えているテスト・埋め込みでは実際の通信が起きないため、
@@ -63,11 +64,21 @@ async function defaultResolveHost(hostname: string): Promise<readonly string[]> 
 }
 
 /**
- * ホスト名が私設・リンクローカルへ解決されないことを確かめる（DNSリバインディング対策）。
+ * ホスト名が私設・リンクローカルへ解決されないことを確かめる。
  *
  * IPリテラルは純関数側（`checkUrl`）で既に判定済みなので、ここは名前のときだけ意味を持つ。
  * **解決できない場合は拒否する**。「解決できなかったから素通し」にすると、検査を回避する手段に
  * なってしまう（接続自体はどうせ失敗するので、拒否しても正常系は失われない）。
+ *
+ * ## これはDNSリバインディングの「緩和」であって根治ではない
+ *
+ * ここで解決した結果と、この直後にトランスポートが接続する先は**別々の解決**である
+ * （check-then-connect ＝ TOCTOU）。TTLを0にした権威DNSが「1回目は公開IP・2回目は
+ * 169.254.169.254」を返せば、検査は通って接続は内部へ届く。これを本当に塞ぐには
+ * 「検査したアドレスへそのまま接続する」（解決結果を固定してソケットを張る）必要があり、
+ * SDKのトランスポートに宛先アドレスを渡す口が無い以上ここでは実現できない。
+ * つまりここが止められるのは**素直に内部アドレスへ解決される名前**までで、
+ * 攻撃者が制御するDNSは止まらない。名前解決を1回余分にする価値はあるが、防壁とは呼べない。
  */
 export async function assertResolvedHostAllowed(url: string, policy: McpPolicy, resolve: HostResolver): Promise<void> {
   const hostname = new URL(url).hostname.replace(/^\[|\]$/g, '');
@@ -107,13 +118,18 @@ function sortedEntries(record: Readonly<Record<string, string>>): readonly (read
  * 認証情報（env / headers の値）が外へ漏れないよう伏せ字化する。
  * 子プロセスやHTTPサーバーの生エラーが値をそのまま含めてくることがあるため、
  * エラーメッセージは必ずこれを通してから外へ出す。
+ *
+ * **長さで対象を選ばない**。以前は4文字未満を「伏せると本文が壊れるだけ」として素通ししていたが、
+ * それは短いトークンがそのままエラー本文（＝API応答・ログ）に残るということである。
+ * 読みやすさと漏洩なら漏洩を止めるほうを取る。長い値から先に置換して、
+ * 短い値が長い値の一部を先に潰してしまうのを防ぐ。
  */
 function redactSecrets(config: McpServerConfig, message: string): string {
   const secrets = config.transport.kind === 'stdio' ? Object.values(config.transport.env) : Object.values(config.transport.headers);
   let redacted = message;
-  for (const secret of secrets) {
-    // 短すぎる値（'1' 等）は伏せると本文が壊れるだけなので対象外。
-    if (secret.length >= 4) redacted = redacted.split(secret).join('***');
+  for (const secret of [...secrets].sort((left, right) => right.length - left.length)) {
+    // 空文字で split すると1文字ずつに割れて本文が壊れる。空だけは対象外。
+    if (secret.length > 0) redacted = redacted.split(secret).join('***');
   }
   return redacted;
 }

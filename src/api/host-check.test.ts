@@ -27,6 +27,24 @@ describe('isAllowedHost', () => {
     expect(isAllowedHost(undefined, LOOPBACK_HOST_NAMES)).toBe(false);
     expect(isAllowedHost('  ', LOOPBACK_HOST_NAMES)).toBe(false);
   });
+
+  /**
+   * 許可リストに裸の `::1` が入っていた頃の回帰。`hostNameOf('::1')` は「最初のコロンより前」
+   * ＝空文字を返すため、許可リストに空文字が混ざり、**ホスト名を持たない `Host: :3030` が
+   * 空文字同士の一致で通っていた**。
+   */
+  it.each([':3030', ':', ' :80 '])('ホスト名を持たない %s は拒否する', (header) => {
+    expect(isAllowedHost(header, LOOPBACK_HOST_NAMES)).toBe(false);
+  });
+
+  it('許可リストにホスト名を持たない項目が混ざっても穴にならない', () => {
+    expect(isAllowedHost(':3030', ['::1', '', ':1234'])).toBe(false);
+  });
+
+  it('許可リストのIPv6は角括弧つきだけを載せる（HTTPのHostは必ず角括弧で包む）', () => {
+    expect(LOOPBACK_HOST_NAMES).not.toContain('::1');
+    expect(LOOPBACK_HOST_NAMES).toContain('[::1]');
+  });
 });
 
 describe('registerHostCheck', () => {

@@ -56,6 +56,15 @@ describe('classifyHost', () => {
     // `010.0.0.1` を 10.0.0.1 と解釈する実装があるため、リテラルとしては受け付けず名前扱いにする。
     expect(classifyHost('010.0.0.1')).toBe('public');
   });
+
+  it.each([
+    ['1:2:3:4:5:6:7', 'public'],
+    ['1::2::3', 'public'],
+    ['gggg::1', 'public'],
+    ['::ffff:999.1.1.1', 'public'],
+  ])('IPv6として展開できない %s は名前として扱う（判定を落とさない）', (host, expected) => {
+    expect(classifyHost(host)).toBe(expected);
+  });
 });
 
 describe('checkUrl', () => {
@@ -77,6 +86,55 @@ describe('checkUrl', () => {
     expect(checkUrl('http://10.0.0.5:8080/mcp', DEFAULT_URL_POLICY)).toBe('private-network');
     expect(checkUrl('http://10.0.0.5:8080/mcp', allowPrivate)).toBeUndefined();
     expect(checkUrl('http://192.168.1.20:1234/v1', allowPrivate)).toBeUndefined();
+  });
+
+  /**
+   * **`classifyHost` を直接呼ぶテストでは検出できない穴**の回帰。
+   *
+   * `new URL()` はIPv6リテラルを必ず16進形へ正規化する
+   * （`[::ffff:169.254.169.254]` → `[::ffff:a9fe:a9fe]`）。分類器がドット10進の表記しか
+   * 見ていないと、`classifyHost('::ffff:169.254.169.254')` は正しく link-local を返すのに
+   * `checkUrl('http://[::ffff:169.254.169.254]/')` は素通しする、という食い違いが起きる。
+   * 実際にそうなっており、クラウドメタデータへ到達できていた。
+   * よってこの系統の検査は**必ず `checkUrl` 経由**で書く。
+   */
+  describe('IPv4を埋め込んだIPv6（URLの正規化を経由して判定する）', () => {
+    it.each([
+      // IPv4射影（RFC4291）。利用者が書く表記と、new URL() が作る表記の両方。
+      'http://[::ffff:169.254.169.254]/latest/meta-data/',
+      'http://[::ffff:a9fe:a9fe]/latest/meta-data/',
+      'http://[0:0:0:0:0:ffff:169.254.169.254]/latest/meta-data/',
+      // IPv4変換（RFC2765）。
+      'http://[::ffff:0:169.254.169.254]/',
+      // 旧IPv4互換（RFC4291で非推奨だが表記としては通る）。
+      'http://[::169.254.169.254]/',
+      'http://[::a9fe:a9fe]/',
+    ])('%s は opt-in しても link-local として拒否される', (url) => {
+      expect(checkUrl(url, DEFAULT_URL_POLICY)).toBe('link-local');
+      expect(checkUrl(url, allowPrivate)).toBe('link-local');
+    });
+
+    it.each([
+      'http://[::ffff:10.0.0.5]/mcp',
+      'http://[::ffff:a00:5]/mcp',
+      'http://[::ffff:192.168.1.20]/mcp',
+    ])('%s は私設扱い（既定で拒否・opt-in で許可）', (url) => {
+      expect(checkUrl(url, DEFAULT_URL_POLICY)).toBe('private-network');
+      expect(checkUrl(url, allowPrivate)).toBeUndefined();
+    });
+
+    it('射影されたループバックと公開アドレスは従来どおり通る', () => {
+      expect(checkUrl('http://[::ffff:127.0.0.1]:3000/mcp', DEFAULT_URL_POLICY)).toBeUndefined();
+      expect(checkUrl('http://[::1]:3000/mcp', DEFAULT_URL_POLICY)).toBeUndefined();
+      expect(checkUrl('http://[::ffff:8.8.8.8]/mcp', DEFAULT_URL_POLICY)).toBeUndefined();
+      expect(checkUrl('http://[2606:4700::1111]/mcp', DEFAULT_URL_POLICY)).toBeUndefined();
+    });
+
+    it('未指定アドレス（::）とユニークローカルは私設のまま', () => {
+      expect(checkUrl('http://[::]:8080/mcp', DEFAULT_URL_POLICY)).toBe('private-network');
+      expect(checkUrl('http://[fd00::1]:8080/mcp', DEFAULT_URL_POLICY)).toBe('private-network');
+      expect(checkUrl('http://[fe80::1]:8080/mcp', DEFAULT_URL_POLICY)).toBe('link-local');
+    });
   });
 
   it.each([

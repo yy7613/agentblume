@@ -85,32 +85,71 @@ function classifyIpv4(octets: readonly number[]): HostClass {
   return 'public';
 }
 
-/**
- * IPv6リテラルの先頭ヘクステットだけを取り出す（完全な展開はしない）。
- * 判定に必要なのは `::1` / `fe80::/10` / `fc00::/7` / `::` の4つだけで、
- * いずれも先頭ヘクステットと「全ゼロか」で決まる。
- */
-function ipv6FirstHextet(host: string): number | undefined {
-  if (host.startsWith('::')) return 0;
-  const head = host.split(':')[0] ?? '';
-  if (!/^[0-9a-f]{1,4}$/.test(head)) return undefined;
-  return Number.parseInt(head, 16);
+/** 16進のヘクステット列を数値へ。1つでも不正なら `undefined`。 */
+function hextets(part: string): number[] | undefined {
+  if (part === '') return [];
+  const values: number[] = [];
+  for (const group of part.split(':')) {
+    if (!/^[0-9a-f]{1,4}$/.test(group)) return undefined;
+    values.push(Number.parseInt(group, 16));
+  }
+  return values;
 }
 
-function classifyIpv6(host: string): HostClass | undefined {
-  // IPv4射影（`::ffff:127.0.0.1`）は実質IPv4なので、IPv4として分類する。
-  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(host);
-  if (mapped !== null) {
-    const octets = ipv4Octets(mapped[1] ?? '');
-    return octets === undefined ? undefined : classifyIpv4(octets);
-  }
+/**
+ * IPv6リテラルを8ヘクステット（各16bit）へ展開する。展開できなければ `undefined`。
+ *
+ * **先頭ヘクステットだけを見る近道は取らない**。IPv4を埋め込んだ表記
+ * （`::ffff:a.b.c.d` など）は先頭が常にゼロで、そこだけ見ると全部 `public` に落ちるためである。
+ * 末尾のドット10進（`::ffff:169.254.169.254`）は先に16進2組へ畳んでから展開する。
+ */
+function ipv6Hextets(host: string): readonly number[] | undefined {
   if (!host.includes(':')) return undefined;
-  if (host === '::1') return 'loopback';
-  if (host === '::') return 'private';
-  const head = ipv6FirstHextet(host);
-  if (head === undefined) return undefined;
-  if (head >= 0xfe80 && head <= 0xfebf) return 'link-local';
-  if (head >= 0xfc00 && head <= 0xfdff) return 'private';
+  let text = host;
+  const dotted = /:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(text);
+  if (dotted !== null) {
+    const octets = ipv4Octets(dotted[1] ?? '');
+    if (octets === undefined) return undefined;
+    const [a = 0, b = 0, c = 0, d = 0] = octets;
+    text = `${text.slice(0, dotted.index)}:${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const parts = text.split('::');
+  // `::` は1回まで。2回以上あるものはIPv6として成立しない。
+  if (parts.length > 2) return undefined;
+  const left = hextets(parts[0] ?? '');
+  if (left === undefined) return undefined;
+  if (parts.length === 1) return left.length === 8 ? left : undefined;
+  const right = hextets(parts[1] ?? '');
+  if (right === undefined) return undefined;
+  const zeros = 8 - left.length - right.length;
+  if (zeros < 0) return undefined;
+  return [...left, ...Array<number>(zeros).fill(0), ...right];
+}
+
+/**
+ * IPv6リテラルを分類する。
+ *
+ * **IPv4を埋め込んだ表記は必ずIPv4として分類する**。ここを取りこぼすと
+ * `http://[::ffff:169.254.169.254]/` がクラウドメタデータへ到達する経路になる。
+ * 特に `new URL()` は**必ず16進形へ正規化する**（`::ffff:169.254.169.254` →
+ * `::ffff:a9fe:a9fe`）ため、ドット10進の表記だけを見る実装は `checkUrl` 経由では
+ * 一度も一致せず、判定そのものがデッドコードになる。
+ * 対象は3種類:
+ * - `::ffff:a.b.c.d`（IPv4射影・RFC4291）
+ * - `::ffff:0:a.b.c.d`（IPv4変換・RFC2765）
+ * - `::a.b.c.d`（旧IPv4互換・RFC4291で非推奨だが表記としては通る）
+ */
+function classifyIpv6(host: string): HostClass | undefined {
+  const parts = ipv6Hextets(host);
+  if (parts === undefined) return undefined;
+  const [h0 = 0, h1 = 0, h2 = 0, h3 = 0, h4 = 0, h5 = 0, h6 = 0, h7 = 0] = parts;
+  if (parts.every((value) => value === 0)) return 'private';
+  const embedsIpv4 = h0 === 0 && h1 === 0 && h2 === 0 && h3 === 0
+    && ((h4 === 0 && h5 === 0xffff) || (h4 === 0xffff && h5 === 0) || (h4 === 0 && h5 === 0 && (h6 !== 0 || h7 > 1)));
+  if (embedsIpv4) return classifyIpv4([h6 >> 8, h6 & 0xff, h7 >> 8, h7 & 0xff]);
+  if (h0 === 0 && h1 === 0 && h2 === 0 && h3 === 0 && h4 === 0 && h5 === 0 && h6 === 0 && h7 === 1) return 'loopback';
+  if (h0 >= 0xfe80 && h0 <= 0xfebf) return 'link-local';
+  if (h0 >= 0xfc00 && h0 <= 0xfdff) return 'private';
   return 'public';
 }
 

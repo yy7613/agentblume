@@ -207,6 +207,21 @@ export function buildServer(
   if (options?.hostCheck !== undefined) registerHostCheck(app, options.hostCheck);
 
   /**
+   * レート制限は**認証より前**。Fastify は各フックの前に `reply.sent` を見るので、
+   * 認証の後ろに置くと 401 / 403 が一切数えられない（＝資格情報を持たない相手からの
+   * 総当たりが無制限に通り、その1回ごとに監査ログが1行増える）。詳細は `rate-limit.ts` 冒頭。
+   * 認証前なので計数の鍵は送信元IPになる。
+   *
+   * CORS（`@fastify/cors`）は**入れない**。UIは同一オリジンで配信され（`registerUi`）、
+   * 開発時も Vite の proxy 経由なのでブラウザから見れば同一オリジンである。
+   * つまりクロスオリジンでこのAPIを叩く正当な利用者は存在せず、**何も付けない
+   * ＝ブラウザの既定で拒否**が最も安全な設定になる。ヘッダを足す必要が出るのは
+   * 「別オリジンのUIから使う」構成を導入したときで、そのときに許可オリジンを
+   * 明示列挙して入れるべきもの（ワイルドカードで先回りしない）。
+   */
+  if (options?.rateLimit !== false) registerRateLimit(app, options?.rateLimit ?? {});
+
+  /**
    * 認証は**ルート登録より前**に置く（Fastify のフックは、そのインスタンスへ後から登録される
    * ルートに適用される）。`apiPrefixes` は上の onRoute が埋めるSetの参照をそのまま渡すので、
    * リクエストが来る時点では全ルート分が入っている。
@@ -221,18 +236,6 @@ export function buildServer(
     authorization: options?.authorization ?? defaultAuthorization(),
     ...(options?.audit === undefined ? {} : { audit: options.audit }),
   });
-  /**
-   * レート制限は**認証・認可の直後**。`request.principal` が載ってから数えるので、
-   * 同じマシンの別トークン同士が枠を食い合わない。
-   *
-   * CORS（`@fastify/cors`）は**入れない**。UIは同一オリジンで配信され（`registerUi`）、
-   * 開発時も Vite の proxy 経由なのでブラウザから見れば同一オリジンである。
-   * つまりクロスオリジンでこのAPIを叩く正当な利用者は存在せず、**何も付けない
-   * ＝ブラウザの既定で拒否**が最も安全な設定になる。ヘッダを足す必要が出るのは
-   * 「別オリジンのUIから使う」構成を導入したときで、そのときに許可オリジンを
-   * 明示列挙して入れるべきもの（ワイルドカードで先回りしない）。
-   */
-  if (options?.rateLimit !== false) registerRateLimit(app, options?.rateLimit ?? {});
 
   registerAuthRoutes(app, authentication);
 

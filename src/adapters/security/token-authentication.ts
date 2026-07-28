@@ -40,7 +40,10 @@ export interface TokenCredential {
   /** 省略時は既定ワークスペース。 */
   readonly workspaceId?: string;
   readonly displayName?: string;
-  /** 割り当てるロール（`AUTHORIZATION_ROLES`）。省略時は `DEFAULT_TOKEN_ROLES`。 */
+  /**
+   * 割り当てるロール（`AUTHORIZATION_ROLES`）。**省略時**は `DEFAULT_TOKEN_ROLES`。
+   * 空配列は「1つも与えない」＝全操作が拒否される（省略と同じにはしない）。
+   */
   readonly roles?: readonly string[];
 }
 
@@ -51,13 +54,20 @@ export interface TokenCredential {
 export const MINIMUM_TOKEN_LENGTH = 32;
 
 /**
- * `roles` を書かなかったトークンに付けるロール。
+ * `roles` を**書かなかった**トークンに付けるロール。
  *
  * **明示必須にはしない**。必須にすると、既に配ってあるトークン定義が起動時エラーになり、
  * 「認可を入れたらサーバーが上がらない」という形で移行が止まる。
  * 代わりに既定を **editor** にする（作る・直す・実行するはできるが、削除・承認・公開・
  * 運用操作はできない）。`operator` を既定にすると保持期限の適用やバックアップまで
  * 誰でも叩ける状態が続くため、既定は下げる側へ倒す。
+ *
+ * これが効くのは `roles` が **`undefined`（キーそのものが無い）** ときだけである。
+ * `roles: []` は「未指定」ではなく「1つも与えない」と読む（＝全操作が拒否される）。
+ * 以前は空配列も未指定と同一視して editor を付けていた。**権限を与えないつもりで書いた設定が
+ * 全権に近いトークンになる**という、間違え方として最悪の向きの fail-open だった。
+ * env 経由（`config/environment.ts`）では空配列は起動時に落とすが、
+ * 埋め込み利用でも同じ穴を作らないようここでも閉じる側へ倒す。
  */
 export const DEFAULT_TOKEN_ROLES: readonly AuthorizationRole[] = ['editor'];
 
@@ -124,7 +134,7 @@ export class TokenAuthentication implements AuthenticationPort {
         tenantId: credential.tenantId ?? DEFAULT_TENANT_ID,
         workspaceId: credential.workspaceId ?? DEFAULT_WORKSPACE_ID,
         ...(credential.displayName === undefined ? {} : { displayName: credential.displayName }),
-        roles: credential.roles === undefined || credential.roles.length === 0 ? [...DEFAULT_TOKEN_ROLES] : credential.roles,
+        roles: credential.roles ?? [...DEFAULT_TOKEN_ROLES],
       };
       return { token: credential.token, principal };
     });

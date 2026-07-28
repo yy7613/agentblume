@@ -286,7 +286,9 @@ flowchart LR
 
 ### 7.1 実装（2026-07）
 
-`AuditEntry`（`src/domain/security/audit.ts`）は `at / subject / tenantId / workspaceId / action / resource / outcome / detail?` を持ち、SQLiteの `audit_log`（スキーマ version 3）へ追記する。**Run trace は監査の代替にならない**——traceは「モデルとツールが何をしたか」であって実行者の概念が無く、保持期限（既定14日）で伏せ字になる。監査は独立した保持期間（既定365日・`RetentionPolicy.auditDays`）を持つ。
+`AuditEntry`（`src/domain/security/audit.ts`）は `at / subject / tenantId / workspaceId / action / resource / outcome / detail?` を持ち、SQLiteの `audit_log`（スキーマ version 3）へ追記する。**Run trace は監査の代替にならない**——traceは「モデルとツールが何をしたか」であって実行者の概念が無く、保持期限（既定14日）で伏せ字になる。監査は独立した保持期間（既定365日・`RetentionPolicy.auditDays`。**下限30日**——0を許すと「保持期限を変更した記録」ごと即座に消せてしまうため）を持つ。
+
+主体不明の401（＝資格情報を持たない相手からの試行）は**送信元ごと・分ごとに上限件数まで**しか書かない。ここは誰でも無制限に到達できる位置なので、1件1行で書くと台帳がリモートからの書き込み増幅装置になる。抑制した件数は次の記録時に集約行として残す（規模は捨てない）。併せてレート制限フックを**認証より前**に置き、401・403も計数対象にしてある（後ろに置くと `reply.sent` により一切数えられない）。
 
 **何を記録するか**（`ROUTE_RULES` の `audit` フラグ）。全リクエストを記録すると台帳が実行ログの写しになり、肝心の行が埋もれるので、「後から必ず問われる操作」だけを残す。
 

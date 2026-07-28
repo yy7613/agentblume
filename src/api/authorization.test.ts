@@ -16,7 +16,16 @@ import { authenticated, rejected, type AuthenticationPort } from '../application
 import { createApp, type App } from '../composition/root';
 import type { AuthorizationRole } from '../domain/security/authorization';
 import { buildServer } from './server';
-import { AUTHORIZATION_EXEMPT_PATHS, defaultRouteAuthorization, explicitRouteAuthorization, ROUTE_RULES, routeAuthorizationFor } from './authorization';
+import {
+  AUTHORIZATION_EXEMPT_PATHS,
+  MAX_UNAUTHENTICATED_AUDIT_KEYS,
+  MAX_UNAUTHENTICATED_AUDIT_PER_WINDOW,
+  ROUTE_RULES,
+  UnauthenticatedAuditThrottle,
+  defaultRouteAuthorization,
+  explicitRouteAuthorization,
+  routeAuthorizationFor,
+} from './authorization';
 
 const TOKEN = 'r'.repeat(40);
 const SCOPE = { tenantId: 'acme', workspaceId: 'ops' };
@@ -95,6 +104,24 @@ describe('ルート → 権限の対応表', () => {
     expect(routeAuthorizationFor('GET', '/does-not-exist')).toEqual({ action: 'read', kind: 'workspace' });
     expect(defaultRouteAuthorization('POST')).toEqual({ action: 'edit', kind: 'workspace' });
     expect(defaultRouteAuthorization('DELETE')).toEqual({ action: 'delete', kind: 'workspace', audit: true });
+  });
+
+  /**
+   * Fastify は `exposeHeadRoutes`（既定 true）でGETごとにHEADを自動生成する。
+   * 表はGETの行しか持たないので、HEADを正規化せずに引くと既定（`workspace:read`＝全ロール許可）
+   * へ落ち、`audit-log:read` や `operate` の縛りがHEADだけ消える。
+   */
+  it('HEAD は GET の行を引く（表を迂回して既定へ落ちない）', () => {
+    expect(routeAuthorizationFor('HEAD', '/operations/audit')).toEqual(routeAuthorizationFor('GET', '/operations/audit'));
+    expect(routeAuthorizationFor('HEAD', '/operations/status')).toMatchObject({ action: 'operate', kind: 'workspace' });
+    expect(routeAuthorizationFor('head', '/operations/audit')).toMatchObject({ action: 'read', kind: 'audit-log' });
+    // 表に無いHEADは従来どおり既定へ落ちる。
+    expect(routeAuthorizationFor('HEAD', '/does-not-exist')).toEqual({ action: 'read', kind: 'workspace' });
+  });
+
+  it('接続テストは監査対象（子プロセス起動・保存済みAPIキーの外部送出）', () => {
+    expect(explicitRouteAuthorization('POST', '/mcp-servers/:name/test')?.audit).toBe(true);
+    expect(explicitRouteAuthorization('POST', '/model-settings/test')?.audit).toBe(true);
   });
 
   it('/auth/session は認可の対象外（403の理由を確認する手段を残す）', () => {
@@ -179,6 +206,24 @@ describe('ロールごとの許可と拒否', () => {
     expect((await server.inject({ method: 'GET', url: '/tools', headers: auth })).statusCode).toBe(403);
     // ただし「自分が誰か」は確認できる（権限が無い理由を画面で読めるようにするため）。
     expect((await server.inject({ method: 'GET', url: '/auth/session', headers: auth })).statusCode).toBe(200);
+  });
+
+  /**
+   * `HEAD /operations/audit` が 200 を返していた回帰。
+   *
+   * 本文が空でもハンドラは実行され（ファイルI/O・集計クエリが走る）、`content-length` が
+   * 結果件数で変わるため**監査ログの検索オラクル**になっていた
+   * （`?subject=...&outcome=denied` を振りながら長さの違いを見るだけで中身を推定できる）。
+   */
+  it('HEAD でも GET と同じ権限を要求する（本文が空でも迂回させない）', async () => {
+    const viewer = serverFor(['viewer']);
+    for (const url of ['/operations/audit', '/operations/backups', '/operations/status', '/operations/retention']) {
+      expect((await viewer.inject({ method: 'GET', url, headers: auth })).statusCode).toBe(403);
+      expect((await viewer.inject({ method: 'HEAD', url, headers: auth })).statusCode, `HEAD ${url}`).toBe(403);
+    }
+    // 権限を持つロールでは通る（HEADを一律で塞いだわけではない）。
+    const operator = serverFor(['operator']);
+    expect((await operator.inject({ method: 'HEAD', url: '/operations/audit', headers: auth })).statusCode).toBe(200);
   });
 
   it('403 のメッセージに保持しているロールや主体名は出さない', async () => {
@@ -277,6 +322,70 @@ describe('監査ログ', () => {
     const entries = await audit.list(SCOPE, { subject: '(unauthenticated)' });
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ outcome: 'denied', detail: { status: 401, reason: 'authentication failed' } });
+  });
+
+  /**
+   * 主体不明の401は**資格情報を持たない相手**が好きなだけ発生させられる。1件1行で書いていたため、
+   * リモートから台帳を膨らませる書き込み増幅装置になっていた（実測: 不正トークン12回で監査12行）。
+   * レート制限を認証より前へ移して回数自体は抑えたが、上限は通常操作を壊さない高さなので、
+   * 書き込み側でも束ねる。
+   */
+  it('主体不明の401は送信元ごと・分ごとに束ねる（台帳を膨らませない）', async () => {
+    const server = serverFor(['operator']);
+    // レート制限は無効化して「監査側の抑制」だけを見る。
+    const unlimited = buildServer(app, {
+      authentication: rolesAuth(['operator']),
+      audit: { sink: audit, fallbackScope: SCOPE },
+      rateLimit: false,
+    });
+    for (let i = 0; i < 40; i += 1) {
+      expect((await unlimited.inject({ method: 'GET', url: '/tools', headers: { authorization: 'Bearer wrong' } })).statusCode).toBe(401);
+    }
+    await settle();
+    const entries = await audit.list(SCOPE, { subject: '(unauthenticated)' });
+    expect(entries.length).toBeLessThanOrEqual(MAX_UNAUTHENTICATED_AUDIT_PER_WINDOW);
+    // 弾いた事実そのものは残っている（黙って捨てない）。
+    expect(entries.length).toBeGreaterThan(0);
+    await server.close();
+    await unlimited.close();
+  });
+
+  it('抑制した件数は次の窓の先頭で集約行として残る（規模を捨てない）', async () => {
+    const throttle = new UnauthenticatedAuditThrottle(2, 60_000);
+    expect(throttle.record('1.2.3.4', 0)).toEqual({ write: true });
+    expect(throttle.record('1.2.3.4', 10)).toEqual({ write: true });
+    expect(throttle.record('1.2.3.4', 20)).toEqual({ write: false });
+    expect(throttle.record('1.2.3.4', 30)).toEqual({ write: false });
+    // 別の送信元は独立して数える。
+    expect(throttle.record('5.6.7.8', 30)).toEqual({ write: true });
+    // 窓が明けたら、直前の窓で書かなかった件数を1行にまとめて出す。
+    expect(throttle.record('1.2.3.4', 60_001)).toEqual({ write: true, summary: { suppressed: 2 } });
+    // 抑制が無かった窓では集約行を出さない。
+    expect(throttle.record('1.2.3.4', 120_001)).toEqual({ write: true });
+  });
+
+  it('送信元が増え続けてもカウンタは上限で頭打ちになる', () => {
+    const throttle = new UnauthenticatedAuditThrottle(1, 60_000);
+    for (let i = 0; i < MAX_UNAUTHENTICATED_AUDIT_KEYS + 50; i += 1) throttle.record(`ip-${i}`, 0);
+    expect(throttle.size).toBeLessThanOrEqual(MAX_UNAUTHENTICATED_AUDIT_KEYS);
+  });
+
+  /**
+   * `auditDays` を短くして即適用すれば「変更した記録ごと」消せる、という指摘への手当ての片側。
+   * 下限（`MINIMUM_AUDIT_RETENTION_DAYS`）で消せなくするのが本体だが、**何を何日にしたか**が
+   * 台帳に残っていなければ「誰かが operate に成功した」以上のことは分からない。
+   */
+  it('保持期限の変更は変更後の値ごと残す', async () => {
+    const server = serverFor(['operator']);
+    const response = await server.inject({
+      method: 'PUT', url: '/operations/retention', headers: auth,
+      payload: { scope: SCOPE, payloadDays: 7, traceDays: 3, aggregateDays: 90, auditDays: 30 },
+    });
+    expect(response.statusCode).toBe(200);
+    await settle();
+    const entries = await audit.list(SCOPE, { action: 'operate' });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.detail).toMatchObject({ route: '/operations/retention', payloadDays: 7, traceDays: 3, aggregateDays: 90, auditDays: 30 });
   });
 
   it('秘密値は台帳へ入らない', async () => {

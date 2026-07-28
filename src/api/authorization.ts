@@ -110,7 +110,8 @@ const rule = (method: string, url: string, action: AuthorizationAction, kind: Au
  * 全リクエストを記録すると台帳が実行ログの写しになり、肝心の行が埋もれる。
  * 「後から必ず問われる操作」だけを残す:
  * 削除 / 承認 / 昇格の申請と決定 / 運用操作（保持期限・バックアップ・設定変更）/
- * 実行の開始（Agent・Harness・Factory・シナリオ）。
+ * 実行の開始（Agent・Harness・Factory・シナリオ）/
+ * **接続テスト**（子プロセスの起動・保存済み資格情報の外部送出を伴うため、保存を伴わなくても残す）。
  * 参照と、資産の作成・更新はバージョン履歴が別に残るので対象外。
  */
 export const ROUTE_RULES: readonly RouteRule[] = [
@@ -288,12 +289,14 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   rule('POST', '/mcp-servers', 'create', 'mcp-server', true),
   rule('PUT', '/mcp-servers', 'edit', 'mcp-server', true),
   rule('DELETE', '/mcp-servers/:name', 'delete', 'mcp-server', true),
-  rule('POST', '/mcp-servers/:name/test', 'execute', 'mcp-server'),
+  // 接続テストは**子プロセスの起動と外部接続**そのもの。保存を伴わなくても「実行した」事実は残す。
+  rule('POST', '/mcp-servers/:name/test', 'execute', 'mcp-server', true),
 
   // --- モデル設定（APIキーを預かるので変更は運用権限） ---
   rule('GET', '/model-settings', 'read', 'model-settings'),
   rule('PUT', '/model-settings', 'operate', 'model-settings', true),
-  rule('POST', '/model-settings/test', 'operate', 'model-settings'),
+  // 接続テストは**保存済みAPIキーを利用者指定の宛先へ送出する**。誰がどこへ試したかを残す。
+  rule('POST', '/model-settings/test', 'operate', 'model-settings', true),
   rule('GET', '/model-catalog', 'read', 'model-settings'),
   rule('GET', '/model-catalog/:providerId/models', 'read', 'model-settings'),
   rule('POST', '/model-catalog/openai-compatible-models', 'operate', 'model-settings'),
@@ -333,9 +336,18 @@ export function defaultRouteAuthorization(method: string): RouteAuthorization {
   return { action: 'edit', kind: 'workspace' };
 }
 
-/** ルートに適用する要件（表 → 既定の順）。 */
+/**
+ * ルートに適用する要件（表 → 既定の順）。
+ *
+ * **HEAD は GET として引く**。Fastify は `exposeHeadRoutes`（既定 true）でGETごとにHEADを
+ * 自動生成するが、表はGETの行しか持たない。正規化しないと `HEAD /operations/audit` が
+ * 既定（`workspace:read`＝全ロール許可）へ落ち、`audit-log:read` や `operate` の縛りが消える。
+ * 本文は返らなくてもハンドラは実行され（ファイルI/O・集計クエリが走る）、
+ * `content-length` が結果件数で変わるため**監査ログの検索オラクル**にもなる。
+ */
 export function routeAuthorizationFor(method: string, url: string): RouteAuthorization {
-  return explicitRouteAuthorization(method, url) ?? defaultRouteAuthorization(method);
+  const normalized = method.toUpperCase() === 'HEAD' ? 'GET' : method;
+  return explicitRouteAuthorization(normalized, url) ?? defaultRouteAuthorization(normalized);
 }
 
 /** パスパラメータから「対象の識別子」を1つ選ぶ（監査の `resource.id`）。 */
@@ -384,6 +396,72 @@ export interface AuthorizationOptions {
 }
 
 /**
+ * 主体不明の401を、同一送信元・同一分あたり何件まで台帳へ書くか。
+ *
+ * 401は**資格情報を持たない相手**でも好きなだけ発生させられる。1件1行で書くと、
+ * 認証を通れない相手がリモートからディスクを埋められる（レート制限で回数は抑えるが、
+ * 上限そのものは通常操作を壊さない高さなので、それだけでは書き込み量を絞れない）。
+ * 「弾いた事実」は数行あれば伝わり、規模は集約行の件数で伝わるので、束ねて書く。
+ */
+export const MAX_UNAUTHENTICATED_AUDIT_PER_WINDOW = 5;
+/** 集約の窓（1分）。 */
+export const UNAUTHENTICATED_AUDIT_WINDOW_MS = 60_000;
+/** 集約カウンタの上限。多数の送信元から叩かれてもメモリを食わせない。 */
+export const MAX_UNAUTHENTICATED_AUDIT_KEYS = 10_000;
+
+interface FailureWindow { window: number; written: number; suppressed: number }
+
+/**
+ * 主体不明の401を送信元ごと・分ごとに束ねる集約器。
+ *
+ * `record` は「この1件を書くか」を返し、窓が変わった時点で前の窓の抑制件数を
+ * 集約行として吐き出す（`summary`）。抑制した件数を捨てないので、
+ * 「静かになった」のか「束ねられた」のかを台帳から区別できる。
+ */
+export class UnauthenticatedAuditThrottle {
+  private readonly windows = new Map<string, FailureWindow>();
+
+  constructor(
+    private readonly max: number = MAX_UNAUTHENTICATED_AUDIT_PER_WINDOW,
+    private readonly windowMs: number = UNAUTHENTICATED_AUDIT_WINDOW_MS,
+  ) {}
+
+  /**
+   * 1件ぶん数える。`write` が true ならそのまま記録してよい。
+   * `summary` が付いていれば、直前の窓で抑制した件数を1行として併せて記録する。
+   */
+  record(key: string, at: number): { readonly write: boolean; readonly summary?: { readonly suppressed: number } } {
+    const window = Math.floor(at / this.windowMs);
+    const current = this.windows.get(key);
+    if (current === undefined || current.window !== window) {
+      this.sweep(window);
+      this.windows.set(key, { window, written: 1, suppressed: 0 });
+      const suppressed = current?.suppressed ?? 0;
+      return suppressed > 0 ? { write: true, summary: { suppressed } } : { write: true };
+    }
+    if (current.written < this.max) {
+      current.written += 1;
+      return { write: true };
+    }
+    current.suppressed += 1;
+    return { write: false };
+  }
+
+  /** 古い窓を捨てる。上限に達していたら古い順に捨てる（抑制件数の報告よりメモリを優先する）。 */
+  private sweep(window: number): void {
+    for (const [key, entry] of this.windows) {
+      if (entry.window < window) this.windows.delete(key);
+    }
+    if (this.windows.size < MAX_UNAUTHENTICATED_AUDIT_KEYS) return;
+    const excess = this.windows.size - MAX_UNAUTHENTICATED_AUDIT_KEYS + 1;
+    for (const key of [...this.windows.keys()].slice(0, excess)) this.windows.delete(key);
+  }
+
+  /** 保持している送信元数（テスト・診断用）。 */
+  get size(): number { return this.windows.size; }
+}
+
+/**
  * ハンドラから追加の認可判定を行う（本文の中身で必要な権限が変わるルート用）。
  *
  * 拒否は `ForbiddenError`（403）。フックを通っていないリクエストで呼ぶのは配線ミスなので、
@@ -414,6 +492,7 @@ export function registerAuthorization(app: FastifyInstance, options: Authorizati
   const { authorization } = options;
   const audit = options.audit;
   const now = options.now ?? (() => new Date());
+  const throttle = new UnauthenticatedAuditThrottle();
 
   /**
    * ルート登録の時点で「表に載っているか」を記録する。
@@ -483,14 +562,26 @@ export function registerAuthorization(app: FastifyInstance, options: Authorizati
     const principal = request.principal;
     const routeUrl = request.routeOptions?.url;
 
-    // 認証に失敗した試行。誰かは分からないが「弾かれた」ことは残す価値がある。
+    /**
+     * 認証に失敗した試行。誰かは分からないが「弾かれた」ことは残す価値がある。
+     *
+     * ただし**送信元ごと・分ごとに上限を設ける**。ここは資格情報を持たない相手が
+     * 何度でも到達できる位置なので、1件1行で書くと台帳が書き込み増幅装置になる。
+     */
     if (principal === undefined) {
       if (reply.statusCode !== 401 || routeUrl === undefined) return;
-      await write(createAuditEntry({
-        at: now().toISOString(), subject: UNAUTHENTICATED_SUBJECT, scope: audit.fallbackScope,
-        action: 'read', resource: { kind: 'workspace' }, outcome: 'denied',
-        detail: { method: request.method, route: routeUrl, status: reply.statusCode, reason: 'authentication failed' },
-      }));
+      const at = now();
+      const decision = throttle.record(request.ip, at.getTime());
+      const entry = (detail: Record<string, AuditDetailValue>): Parameters<AuditSink['record']>[0] => createAuditEntry({
+        at: at.toISOString(), subject: UNAUTHENTICATED_SUBJECT, scope: audit.fallbackScope,
+        action: 'read', resource: { kind: 'workspace' }, outcome: 'denied', detail,
+      });
+      if (decision.summary !== undefined) {
+        // 直前の窓で書かなかった分。件数だけを残す（経路は既に上限まで記録済み）。
+        await write(entry({ reason: 'authentication failed', suppressed: decision.summary.suppressed }));
+      }
+      if (!decision.write) return;
+      await write(entry({ method: request.method, route: routeUrl, status: reply.statusCode, reason: 'authentication failed' }));
       return;
     }
 

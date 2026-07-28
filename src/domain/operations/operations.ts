@@ -45,12 +45,10 @@ export interface RetentionPolicy {
   readonly traceDays: number;
   readonly aggregateDays: number;
   /**
-   * 監査ログを残す日数。
+   * 監査ログを残す日数。**`MINIMUM_AUDIT_RETENTION_DAYS` 未満は受け付けない**。
    *
    * trace（14日）より**ずっと長い**のが既定。監査ログが答える問いは
    * 「先月あの設定を変えたのは誰か」であり、実行トレースと同じ寿命では用を成さない。
-   * 保持期間を短くして即適用すれば消せてしまう点は payload/trace と同じなので、
-   * 保持期限の変更そのものを監査対象にしてある（`PUT /operations/retention`）。
    */
   readonly auditDays: number;
   readonly updatedAt: string;
@@ -62,6 +60,21 @@ export const DEFAULT_RETENTION_DAYS = {
   aggregate: 365,
   audit: 365,
 } as const;
+
+/**
+ * `auditDays` の下限（日）。**0 を許してはいけない**。
+ *
+ * 「保持期限の変更そのものを監査対象にしてあるから短縮しても足跡は残る」は成り立たない。
+ * `PUT /operations/retention` の監査行は変更**時刻**で書かれるので、直後に
+ * `POST /operations/retention/apply` を打てば `deleteBefore(now - 0日)` がその行ごと消す
+ * （実測: 残るのは適用操作の1行だけで、何を何に変えたかは台帳から消える）。
+ * 下限を設けると「消せるようになるまで下限日数ぶん待つ」必要が生まれ、その間に
+ * 変更の記録が確実に読まれる。30日は「月次の点検で必ず目に入る」長さとして選んだ。
+ *
+ * 併せて `PUT /operations/retention` は**変更後の値を監査 detail へ載せる**。
+ * 短縮の意図そのものが記録に残るので、下限まで待って消しても痕跡は残る。
+ */
+export const MINIMUM_AUDIT_RETENTION_DAYS = 30;
 
 export function utcDayStart(value: string): string {
   const date = new Date(value);

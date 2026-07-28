@@ -15,6 +15,7 @@ import {
   DEFAULT_SHUTDOWN_GRACE_MS,
   EnvironmentValidationError,
   LOG_LEVELS,
+  allowedHostNames,
   databaseConnectionsSchema,
   environmentSchema,
   isLoopbackHost,
@@ -209,6 +210,7 @@ describe('serverSettings', () => {
       logLevel: 'info',
       scope: { tenantId: 'local', workspaceId: 'default' },
       authentication: { mode: 'single-user', tokens: [] },
+      allowedHosts: undefined,
     });
   });
 
@@ -251,6 +253,7 @@ describe('serverSettings', () => {
         // トークンにテナントを書かなければ、既定スコープ（AGENTCONTEXT_TENANT_ID/_WORKSPACE_ID）を引き継ぐ。
         tokens: [{ subject: 'alice', token: 'a'.repeat(40), tenantId: 'acme', workspaceId: 'ops' }],
       },
+      allowedHosts: undefined,
     });
   });
 
@@ -268,6 +271,42 @@ describe('serverSettings', () => {
   it('AGENTCONTEXT_LOG_LEVEL はプロファイル既定より優先する（test でも見たいときに戻せる）', () => {
     expect(serverSettings(validateEnvironment({ AGENTCONTEXT_PROFILE: 'test', AGENTCONTEXT_LOG_LEVEL: 'debug' })).logLevel).toBe('debug');
     expect(serverSettings(validateEnvironment({ AGENTCONTEXT_LOG_LEVEL: 'silent' })).logLevel).toBe('silent');
+  });
+
+  it('AGENTCONTEXT_ALLOWED_HOSTS はカンマ区切りで読み、空要素は落とす', () => {
+    expect(serverSettings(validateEnvironment({ AGENTCONTEXT_ALLOWED_HOSTS: 'app.example.com, 127.0.0.1 ,,' })).allowedHosts)
+      .toEqual(['app.example.com', '127.0.0.1']);
+    expect(serverSettings(validateEnvironment({ AGENTCONTEXT_ALLOWED_HOSTS: ' , ' })).allowedHosts).toBeUndefined();
+  });
+});
+
+/**
+ * `Host` 検査の適用範囲。
+ *
+ * 以前は「ループバックへバインドしているか」だけで決めていた。しかし `127.0.0.1` へ
+ * バインドしてリバースプロキシを前に置くのは本番の一般形で、そこでは `Host: app.example.com`
+ * が飛んでくる。バインド先だけを見て縛ると**認証込みの真っ当な構成が全リクエスト403**になる。
+ */
+describe('allowedHostNames', () => {
+  const LOOPBACK = ['localhost', '127.0.0.1', '[::1]'];
+  const settingsOf = (env: NodeJS.ProcessEnv) => serverSettings(validateEnvironment(env));
+  const tokens = JSON.stringify([{ subject: 'alice', token: 'a'.repeat(40) }]);
+
+  it('単一ユーザーモード（ループバック）では検査する — 認証が無くHostが唯一の識別子', () => {
+    expect(allowedHostNames(settingsOf({}), LOOPBACK)).toEqual(LOOPBACK);
+    expect(allowedHostNames(settingsOf({ AGENTCONTEXT_HOST: 'localhost' }), LOOPBACK)).toEqual(LOOPBACK);
+  });
+
+  it('トークン認証なら検査しない（127.0.0.1 バインド + リバースプロキシで403にしない）', () => {
+    expect(allowedHostNames(settingsOf({ AGENTCONTEXT_AUTH_TOKENS: tokens }), LOOPBACK)).toBeUndefined();
+    expect(allowedHostNames(settingsOf({ AGENTCONTEXT_HOST: '0.0.0.0', AGENTCONTEXT_AUTH_TOKENS: tokens }), LOOPBACK)).toBeUndefined();
+  });
+
+  it('AGENTCONTEXT_ALLOWED_HOSTS を書けばモードを問わず、書いた名前だけを受け付ける', () => {
+    expect(allowedHostNames(settingsOf({ AGENTCONTEXT_ALLOWED_HOSTS: 'app.example.com', AGENTCONTEXT_AUTH_TOKENS: tokens }), LOOPBACK))
+      .toEqual(['app.example.com']);
+    // 単一ユーザーモードでも上書きできる（ループバック名の既定より優先する）。
+    expect(allowedHostNames(settingsOf({ AGENTCONTEXT_ALLOWED_HOSTS: 'blume.local' }), LOOPBACK)).toEqual(['blume.local']);
   });
 });
 
@@ -368,6 +407,25 @@ describe('serverSettings 認証', () => {
       .toThrow(EnvironmentValidationError);
     expect(() => validateEnvironment({ AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: TOKEN, roles: ['workspace-admin', 'operator'] }]) }))
       .not.toThrow();
+  });
+
+  /**
+   * `roles: []` は「何もさせない」の意図で書かれる。ところが空配列を「未指定」と同一視して
+   * 既定（editor）を付けていたため、**権限を与えないつもりの設定が全権に近いトークン**になっていた。
+   * 間違え方として最悪の向きなので、どちらとも読める書き方を起動時に落とす。
+   */
+  it('roles の空配列は起動時に落ちる（黙って editor にしない）', () => {
+    expect(() => validateEnvironment({ AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: TOKEN, roles: [] }]) }))
+      .toThrow(EnvironmentValidationError);
+    // 直し方が伝わる文言になっている。
+    try {
+      validateEnvironment({ AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: TOKEN, roles: [] }]) });
+    } catch (error) {
+      expect((error as EnvironmentValidationError).message).toContain('viewer');
+    }
+    // 「読み取りだけ」は明示すれば通る。キーを書かなければ既定（editor）のまま。
+    expect(() => validateEnvironment({ AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: TOKEN, roles: ['viewer'] }]) })).not.toThrow();
+    expect(() => validateEnvironment({ AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: TOKEN }]) })).not.toThrow();
   });
 
   it('トークンの値はエラーメッセージへ出さない', () => {

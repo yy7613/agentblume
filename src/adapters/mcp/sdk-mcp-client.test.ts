@@ -194,6 +194,32 @@ describe('SdkMcpClient', () => {
     expect(String(error)).toContain('***');
   });
 
+  /**
+   * 以前は4文字未満の値を「伏せると本文が壊れるだけ」として素通ししていた。
+   * 短いトークンがそのままエラー本文（＝API応答・ログ）に残るということなので、
+   * 読みやすさより漏洩を止めるほうを取る。
+   */
+  it('短い秘密値も伏せる（長さで対象を選ばない）', async () => {
+    const client = new SdkMcpClient({ createTransport: () => { throw new Error('rejected token=abc key=z'); } });
+    clients.push(client);
+    const error = await client.listTools(config({ transport: { kind: 'stdio', command: 'node', args: [], env: { A: 'abc', B: 'z' } } }))
+      .catch((cause: unknown) => cause);
+    expect(String(error)).not.toContain('abc');
+    expect(String(error)).toContain('token=***');
+    expect(String(error)).toContain('key=***');
+  });
+
+  it('長い値から先に伏せる（短い値が長い値を先に潰さない）', async () => {
+    const client = new SdkMcpClient({ createTransport: () => { throw new Error('rejected: secret-value-long'); } });
+    clients.push(client);
+    const error = await client.listTools(config({ transport: { kind: 'stdio', command: 'node', args: [], env: { SHORT: 'secret', LONG: 'secret-value-long' } } }))
+      .catch((cause: unknown) => cause);
+    expect(String(error)).toContain('rejected: ***');
+    expect(String(error)).not.toContain('secret-value-long');
+    // 短い値の残骸（'***-value-long'）が出ていない＝長い値が丸ごと1つの *** になっている。
+    expect(String(error)).not.toContain('-value-long');
+  });
+
   it('未知のツール名はMCP仕様どおり例外ではなく isError で返る（接続は維持する）', async () => {
     const { client } = make();
     const result = await client.callTool(config(), 'missing-tool', {});

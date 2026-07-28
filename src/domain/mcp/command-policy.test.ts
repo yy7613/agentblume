@@ -5,8 +5,16 @@ import {
 } from './command-policy';
 import { McpValidationError } from './errors';
 
-function check(transport: { command: string; args?: readonly string[]; cwd?: string }, policy = DEFAULT_MCP_COMMAND_POLICY): void {
-  assertAllowedStdioCommand(policy, { command: transport.command, args: transport.args ?? [], ...(transport.cwd === undefined ? {} : { cwd: transport.cwd }) });
+function check(
+  transport: { command: string; args?: readonly string[]; cwd?: string; env?: Readonly<Record<string, string>> },
+  policy = DEFAULT_MCP_COMMAND_POLICY,
+): void {
+  assertAllowedStdioCommand(policy, {
+    command: transport.command,
+    args: transport.args ?? [],
+    ...(transport.cwd === undefined ? {} : { cwd: transport.cwd }),
+    ...(transport.env === undefined ? {} : { env: transport.env }),
+  });
 }
 
 describe('commandBaseName', () => {
@@ -77,6 +85,20 @@ describe('assertAllowedStdioCommand', () => {
     it('シェル経由でない引数のメタ文字は許容する（直接spawnでは不活性）', () => {
       expect(() => check({ command: 'node', args: ['server.js', '--filter=a|b'] })).not.toThrow();
     });
+
+    /**
+     * cmd.exe は引数中の `%VAR%` を**コマンド行の解釈時に展開する**。`%` を通していたため、
+     * 引数側は無害なまま env 側に区切り文字を置く書き方が成立していた
+     * （`args:['/c','npx','%X%']` + `env:{X:'& calc'}`）。
+     */
+    it('シェル経由の引数に % があれば拒否される（env 経由の展開を塞ぐ）', () => {
+      expect(() => check({ command: 'cmd', args: ['/c', 'npx', '%X%'], env: { X: '& calc' } })).toThrow(/shell metacharacters/);
+      expect(() => check({ command: 'cmd', args: ['/c', 'npx', '%PATH%'] })).toThrow(/shell metacharacters/);
+    });
+
+    it('シェル経由でない引数の % は許容する（展開されない）', () => {
+      expect(() => check({ command: 'node', args: ['server.js', '--pct=50%'] })).not.toThrow();
+    });
   });
 
   it('コマンド名のメタ文字は常に拒否される', () => {
@@ -95,6 +117,34 @@ describe('assertAllowedStdioCommand', () => {
 
   it('空のコマンドは拒否される', () => {
     expect(() => check({ command: '   ' })).toThrow(/non-empty/);
+  });
+
+  /**
+   * env は `args` と違って**一切検査されていなかった**。値は子プロセスの環境ブロックへ
+   * そのまま入るので、名前と制御文字だけは入口で落とす（値の中身は資格情報なので問わない）。
+   */
+  describe('transport.env', () => {
+    it('通常の環境変数は通る（値の中身は問わない）', () => {
+      expect(() => check({ command: 'npx', env: { API_TOKEN: 'sk-abc&def|ghi', DEBUG: '1', _PRIVATE: 'x' } })).not.toThrow();
+    });
+
+    it('変数名に使えない文字は拒否される', () => {
+      expect(() => check({ command: 'npx', env: { 'BAD NAME': 'x' } })).toThrow(/invalid variable name/);
+      expect(() => check({ command: 'npx', env: { 'A=B': 'x' } })).toThrow(/invalid variable name/);
+      expect(() => check({ command: 'npx', env: { '1ST': 'x' } })).toThrow(/invalid variable name/);
+      expect(() => check({ command: 'npx', env: { '': 'x' } })).toThrow(/invalid variable name/);
+    });
+
+    it('値の制御文字は拒否され、メッセージに値は載らない', () => {
+      expect(() => check({ command: 'npx', env: { TOKEN: 'a\nb' } })).toThrow(/transport\.env\.TOKEN/);
+      expect(() => check({ command: 'npx', env: { TOKEN: 'a\0b' } })).toThrow(/control characters/);
+      try {
+        check({ command: 'npx', env: { TOKEN: 'secret-value\nX' } });
+        expect.unreachable('should have thrown');
+      } catch (error) {
+        expect((error as Error).message).not.toContain('secret-value');
+      }
+    });
   });
 });
 

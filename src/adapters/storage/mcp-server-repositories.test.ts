@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AesGcmSecretCipher } from '../security/aes-gcm-secret-cipher';
+import type { SecretCipherPort } from '../../application/model-settings/secret-cipher';
 import { createMcpServerConfig } from '../../domain/mcp/mcp-server';
 import { InMemoryMcpServerRepository } from './in-memory-mcp-server-repository';
 import { mcpServerRepositoryContract } from './mcp-server-repository.contract';
@@ -126,7 +127,7 @@ describe('SqliteMcpServerRepository', () => {
           seedLegacy(database, 'a', { kind: 'stdio', command: 'npx', args: [], env: { TOKEN: 'plain-a' } });
           seedLegacy(database, 'b', { kind: 'http', url: 'https://example.com/mcp', headers: { Authorization: 'Bearer plain-b' } });
 
-          expect(await repo.resealLegacySecrets()).toBe(2);
+          expect(await repo.resealLegacySecrets()).toEqual({ resealed: 2, failed: 0 });
           expect(storedJson(database, 'a')).not.toContain('plain-a');
           expect(storedJson(database, 'b')).not.toContain('plain-b');
           expect((await repo.find(scope, 'a'))?.transport).toMatchObject({ env: { TOKEN: 'plain-a' } });
@@ -139,9 +140,9 @@ describe('SqliteMcpServerRepository', () => {
         const repo = sqliteRepo(database);
         try {
           seedLegacy(database, 'a', { kind: 'stdio', command: 'npx', args: [], env: { TOKEN: 'plain-a' } });
-          expect(await repo.resealLegacySecrets()).toBe(1);
+          expect(await repo.resealLegacySecrets()).toEqual({ resealed: 1, failed: 0 });
           const after = storedJson(database, 'a');
-          expect(await repo.resealLegacySecrets()).toBe(0);
+          expect(await repo.resealLegacySecrets()).toEqual({ resealed: 0, failed: 0 });
           // IVは毎回変わるので、再封緘されていれば本文も変わる＝変わらないことが「触っていない」証拠。
           expect(storedJson(database, 'a')).toBe(after);
         } finally { database.close(); }
@@ -156,8 +157,36 @@ describe('SqliteMcpServerRepository', () => {
             .run(scope.tenantId, scope.workspaceId, 'broken', '2026-07-01T00:00:00.000Z', 'not json');
           seedLegacy(database, 'zz', { kind: 'stdio', command: 'npx', args: [], env: { TOKEN: 'plain-z' } });
 
-          expect(await repo.resealLegacySecrets()).toBe(1);
+          expect(await repo.resealLegacySecrets()).toEqual({ resealed: 1, failed: 1 });
           expect(storedJson(database, 'zz')).not.toContain('plain-z');
+        } finally { database.close(); }
+      });
+
+      /**
+       * 鍵を差し替えた環境の再現。**起動時に呼ばれるので、ここで throw すると
+       * `listen()` に到達せずプロセスが落ちる**（画面が上がらないので設定を消して直すこともできない）。
+       * 封緘・開封の失敗は行ごとに握って件数で返し、残りの行の掃除は続ける。
+       */
+      it('封緘・開封が失敗する行があっても throw せず、残りは掃除する', async () => {
+        const database = openSqliteDatabase();
+        const inner = AesGcmSecretCipher.ephemeral();
+        const failing: SecretCipherPort = {
+          seal: async (value) => {
+            if (value === 'boom') throw new Error('key rotated');
+            return inner.seal(value);
+          },
+          open: async (sealed) => inner.open(sealed),
+        };
+        const repo = new SqliteMcpServerRepository(database, failing);
+        try {
+          seedLegacy(database, 'bad', { kind: 'stdio', command: 'npx', args: [], env: { TOKEN: 'boom' } });
+          seedLegacy(database, 'good', { kind: 'stdio', command: 'npx', args: [], env: { TOKEN: 'plain-ok' } });
+
+          const result = await repo.resealLegacySecrets();
+          expect(result).toEqual({ resealed: 1, failed: 1 });
+          // 失敗した行は平文のまま（次の保存に委ねる）。成功した行は封緘済み。
+          expect(storedJson(database, 'bad')).toContain('boom');
+          expect(storedJson(database, 'good')).not.toContain('plain-ok');
         } finally { database.close(); }
       });
     });

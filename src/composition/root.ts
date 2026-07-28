@@ -176,7 +176,7 @@ import { RetryFactoryRunUseCase } from '../application/factory/retry-factory-run
 import { CancelFactoryRunUseCase } from '../application/factory/cancel-factory-run';
 import { QueryFactoryRunsUseCase } from '../application/factory/query-factory-runs';
 import { InMemoryMcpServerRepository } from '../adapters/storage/in-memory-mcp-server-repository';
-import { SqliteMcpServerRepository } from '../adapters/storage/sqlite-mcp-server-repository';
+import { SqliteMcpServerRepository, type ResealResult } from '../adapters/storage/sqlite-mcp-server-repository';
 import { SdkMcpClient } from '../adapters/mcp/sdk-mcp-client';
 import type { McpServerRepository } from '../domain/mcp/mcp-server-repository';
 import type { McpClientPort } from '../application/mcp/mcp-client';
@@ -306,10 +306,12 @@ export interface App {
   readonly dataSourceRepo: DataSourceRepository;
   readonly mcpServerRepo: McpServerRepository;
   /**
-   * v36以前に平文で保存されたMCPの資格情報を封緘し直す（起動時に1回）。戻り値は直した件数。
-   * 永続DBを使っていない構成では何もせず 0 を返す（メモリ上のデータに「保管時」は無い）。
+   * v36以前に平文で保存されたMCPの資格情報を封緘し直す（起動時に1回）。
+   * 戻り値は直した件数と、処理できず次の保存へ委ねた件数。**例外は投げない**
+   * （掃除の失敗で起動が止まると、原因の設定を画面から消すこともできなくなる）。
+   * 永続DBを使っていない構成では何もせず 0 件を返す（メモリ上のデータに「保管時」は無い）。
    */
-  readonly resealMcpSecrets: () => Promise<number>;
+  readonly resealMcpSecrets: () => Promise<ResealResult>;
   readonly modelSettingsRepo: ModelSettingsRepository;
   /** 外部MCPサーバーへの接続。shutdown時に close() を呼び、プール済み接続（子プロセス）を解放する。 */
   readonly mcpClient: McpClientPort;
@@ -795,7 +797,7 @@ export function createApp(options?: AppOptions): App {
     sessionArtifactRepo: sessionArtifactAdapter.repo,
     dataSourceRepo: dataSourceAdapter.repo,
     mcpServerRepo: mcpServerAdapter.repo,
-    resealMcpSecrets: async () => (mcpServerAdapter.repo instanceof SqliteMcpServerRepository ? mcpServerAdapter.repo.resealLegacySecrets() : 0),
+    resealMcpSecrets: async () => (mcpServerAdapter.repo instanceof SqliteMcpServerRepository ? mcpServerAdapter.repo.resealLegacySecrets() : { resealed: 0, failed: 0 }),
     modelSettingsRepo: modelSettingsAdapter.repo,
     mcpClient,
     telemetry,

@@ -7,8 +7,9 @@ import type { RetentionUseCase } from '../application/operations/retention';
 import { MAX_AUDIT_PAGE_SIZE, type QueryAuditLogUseCase } from '../application/security/audit';
 import { AUDIT_OUTCOMES } from '../domain/security/audit';
 import { AUTHORIZATION_ACTIONS, AUTHORIZATION_RESOURCE_KINDS } from '../domain/security/authorization';
-import { DEFAULT_RETENTION_DAYS } from '../domain/operations/operations';
+import { DEFAULT_RETENTION_DAYS, MINIMUM_AUDIT_RETENTION_DAYS } from '../domain/operations/operations';
 import { scopeOf } from './authentication';
+import { recordAuditDetail } from './authorization';
 import { BadRequestError } from './error-mapping';
 
 export interface OperationsRouteDeps {
@@ -29,8 +30,11 @@ const statusQuerySchema = scopeQuerySchema.extend({ days: z.coerce.number().int(
 /**
  * `auditDays` は後から足したので**省略を許す**（既定 365）。必須にすると、
  * 保持ポリシーを保存する既存クライアント（UI・スクリプト）が一斉に400になる。
+ *
+ * 下限が 0 ではなく `MINIMUM_AUDIT_RETENTION_DAYS` なのは、0 を許すと
+ * 「変更 → 即適用」で**その変更を記録した監査行ごと**消せるため（理由はドメイン側のコメント）。
  */
-const retentionBodySchema = z.object({ scope: scopeSchema, payloadDays: z.number().int().min(0).max(3650), traceDays: z.number().int().min(0).max(3650), aggregateDays: z.number().int().min(0).max(3650), auditDays: z.number().int().min(0).max(3650).default(DEFAULT_RETENTION_DAYS.audit) });
+const retentionBodySchema = z.object({ scope: scopeSchema, payloadDays: z.number().int().min(0).max(3650), traceDays: z.number().int().min(0).max(3650), aggregateDays: z.number().int().min(0).max(3650), auditDays: z.number().int().min(MINIMUM_AUDIT_RETENTION_DAYS, `auditDays は${MINIMUM_AUDIT_RETENTION_DAYS}日以上（短くすると変更の記録ごと消せてしまう）`).max(3650).default(DEFAULT_RETENTION_DAYS.audit) });
 /** `GET /operations/audit` の絞り込み。すべて任意で、既定は「自分のスコープの直近100件」。 */
 const auditQuerySchema = scopeQuerySchema.extend({
   from: z.string().min(1).optional(),
@@ -65,8 +69,15 @@ export function registerOperationsRoutes(app: FastifyInstance, deps: OperationsR
     parse(scopeQuerySchema, request.query);
     return { policy: await deps.retention.get(scopeOf(request)) };
   });
+  /**
+   * 保持期限の変更。**変更後の値を監査 detail へ載せる**。
+   *
+   * 「誰かが operate に成功した」だけでは台帳の役に立たない。保持期限は
+   * 「消えるまでの猶予」を決める設定なので、後から必ず「いつ誰が何日にしたのか」を問われる。
+   */
   app.put('/operations/retention', async (request) => {
     const body = parse(retentionBodySchema, request.body);
+    recordAuditDetail(request, { payloadDays: body.payloadDays, traceDays: body.traceDays, aggregateDays: body.aggregateDays, auditDays: body.auditDays });
     return { policy: await deps.retention.save({ ...body, scope: scopeOf(request) }) };
   });
   app.post('/operations/retention/apply', async (request) => {
