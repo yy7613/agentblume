@@ -19,7 +19,7 @@ import type { ToolRepository } from '../../domain/tool/tool-repository';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
 import { EtlEngine } from '../etl/engine';
 import type { JsonObject, ModelCompletion, ModelContentPart, ModelMessage, ModelProviderPort, ModelRequestMessage, ModelToolCall, ModelToolDefinition, ModelUsage } from '../model/model-provider';
-import { AgentRunError, RunFailedError, UnsafeToolError } from './errors';
+import { AgentRunError, RunFailedError, ToolArgumentsError, UnsafeToolError } from './errors';
 import { failureFrom, sanitizeRunTrace } from './run-trace';
 import { assertOutputMatchesSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
 import { toModelResponseFormat, validateStructuredResponse } from './structured-output';
@@ -156,6 +156,25 @@ export const DEFAULT_TOOL_CALLS_BUDGET = 16;
 export const INTERACTIVE_CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1_000;
 
 /**
+ * 構造化出力の検証に失敗したとき、エラーを添えてモデルへ作り直させる回数（1 Runあたり）。
+ * Factoryの `generateToolWithRepair` と同じ規律だが、対話実行は待ち時間が体感に直結するため
+ * 既定は控えめの1回。修復は通常のモデル往復として発行するので `maxModelRounds` と
+ * ツリー共有バジェット `remainingModelRounds` を1つ消費する（最終往復・予算切れでは修復しない）。
+ */
+export const MAX_STRUCTURED_OUTPUT_REPAIRS = 1;
+
+/**
+ * モデルが渡したツール引数がスキーマに合わなかったとき、エラーをツール結果として差し戻し
+ * 呼び直させる回数（1 Runあたり）。差し戻しは新しいツール呼び出しを誘発するため
+ * `remainingToolCalls` を追加で消費しうる（失敗した呼び出し自体も1件として消費済み）。
+ */
+export const MAX_TOOL_ARGUMENT_REPAIRS = 1;
+
+/** 中断されたRunの失敗コード。`failed` で残るRunを「利用者が止めた」と読めるようにする。 */
+export const RUN_CANCELLED_CODE = 'RUN_CANCELLED';
+const RUN_CANCELLED_MESSAGE = 'run cancelled by the user';
+
+/**
  * 内部の制御シグナル。承認待ちは「失敗」ではなく永続的な状態遷移なので、
  * 実行ループから executeRun まで checkpoint を運ぶためだけに例外を使う（HarnessPause と同型）。
  */
@@ -228,6 +247,10 @@ interface LoopState {
   pending?: readonly ModelToolCall[];
   /** 承認済みとして1件だけ承認ゲートを素通しするツール呼び出しID。 */
   approvedCallId?: string;
+  /** これまでに使った構造化出力の修復回数（上限 MAX_STRUCTURED_OUTPUT_REPAIRS）。 */
+  structuredRepairs: number;
+  /** これまでに使ったツール引数の修復回数（上限 MAX_TOOL_ARGUMENT_REPAIRS）。 */
+  toolArgumentRepairs: number;
 }
 
 export interface RunObservabilityOptions {
@@ -435,6 +458,7 @@ export class RunAgentPreviewUseCase {
         const result = await this.perform(input.systemPrompt, input.message, [tool], trace, timing, ctx, signal, undefined, undefined, undefined, input.images);
         return result.tool === undefined ? { ...result, tool: this.toolRef(tool) } : result;
       },
+      signal,
     );
   }
 
@@ -472,6 +496,7 @@ export class RunAgentPreviewUseCase {
         const systemPrompt = withMemoryContext(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), memoryContext);
         return this.perform(systemPrompt, input.message, resolved.tools, trace, timing, ctx, signal, this.agentRef(agent), agent.output, input.history, input.images);
       },
+      signal,
     );
   }
 
@@ -482,7 +507,7 @@ export class RunAgentPreviewUseCase {
       const ctx: NodeContext = { runId, scope, mode, budget, depth, subAgents: resolved.subAgents, ...(session === undefined ? {} : { session }), ...(agent.harness === undefined ? {} : { harness: agent.harness }), ...(agent.mcpServers === undefined ? {} : { mcpServers: agent.mcpServers }) };
       const wikiContext = await this.buildWikiContext(scope, agent, message);
       return this.perform(withMemoryContext(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), wikiContext), message, resolved.tools, trace, timing, ctx, signal, this.agentRef(agent), agent.output);
-    });
+    }, signal);
   }
 
   private async executeRun(
@@ -492,13 +517,14 @@ export class RunAgentPreviewUseCase {
     sessionId: string | undefined,
     refs: Pick<RunRecord, 'tool' | 'agent'>,
     work: (trace: RunTraceEvent[], timing: RunTiming, runId: string) => Promise<RunResult>,
+    signal?: AbortSignal,
   ): Promise<AgentPreviewRun> {
     const runId = this.makeRunId();
     const startedAt = this.now().toISOString();
     const model = await this.currentModelSnapshot();
     const started = startRun({ runId, scope, mode, purpose, ...(sessionId === undefined ? {} : { sessionId }), ...refs, ...(model !== undefined ? { model } : {}), startedAt });
     await this.runRepo.save(started);
-    return this.runWithRecord(started, [], { modelMs: 0, toolMs: 0 }, 0, work);
+    return this.runWithRecord(started, [], { modelMs: 0, toolMs: 0 }, 0, work, signal);
   }
 
   /**
@@ -523,6 +549,7 @@ export class RunAgentPreviewUseCase {
     timing: RunTiming,
     baseTotalMs: number,
     work: (trace: RunTraceEvent[], timing: RunTiming, runId: string) => Promise<RunResult>,
+    signal?: AbortSignal,
   ): Promise<AgentPreviewRun> {
     const { runId, scope, mode } = started;
     const purpose = started.purpose ?? 'interactive';
@@ -579,7 +606,12 @@ export class RunAgentPreviewUseCase {
           trace,
         };
       }
-      const failure = failureFrom(error);
+      /**
+       * 中断は「壊れた」のではなく「利用者が止めた」。Runは failed のまま残す（既存の状態遷移を
+       * 増やさない）が、失敗理由を専用コードにして履歴から中断だと読み取れるようにする。
+       * abort後は握り潰した副次的な失敗（接続断など）も混ざるため、signal を最優先で見る。
+       */
+      const failure = signal?.aborted === true ? { code: RUN_CANCELLED_CODE, message: RUN_CANCELLED_MESSAGE } : failureFrom(error);
       trace.push({ sequence: trace.length + 1, kind: 'error', code: failure.code, message: failure.message });
       const latency = this.latency(startedTick, timing, baseTotalMs);
       const failed = failRun(started, { trace: sanitizeRunTrace(trace), failure, latency, completedAt: this.now().toISOString() });
@@ -619,6 +651,8 @@ export class RunAgentPreviewUseCase {
       usage: {},
       remainingHistory: history?.length ?? 0,
       startStep: 1,
+      structuredRepairs: 0,
+      toolArgumentRepairs: 0,
     });
   }
 
@@ -742,7 +776,20 @@ export class RunAgentPreviewUseCase {
       }
       if (calls.length === 0) {
         const content = completion.message.content ?? '';
-        const structuredResponse = loop.output === undefined ? undefined : validateStructuredResponse(loop.output, content);
+        let structuredResponse: JsonObject | undefined;
+        if (loop.output !== undefined) {
+          try { structuredResponse = validateStructuredResponse(loop.output, content); }
+          catch (error) {
+            // 1回の不正JSONでRunを落とさない: 何が違ったかを添えて、同じ往復予算の中で作り直させる。
+            if (!this.canRepairStructuredOutput(loop, state, step)) throw error;
+            state.structuredRepairs += 1;
+            const detail = error instanceof Error ? error.message : String(error);
+            trace.push({ sequence: trace.length + 1, kind: 'error', code: 'AGENT_RUN', message: `${detail} (retrying ${state.structuredRepairs}/${MAX_STRUCTURED_OUTPUT_REPAIRS})` });
+            state.messages.push({ role: 'assistant', content });
+            state.messages.push({ role: 'user', content: structuredRepairInstruction(loop.output, detail) });
+            continue;
+          }
+        }
         trace.push({ sequence: trace.length + 1, kind: 'model-response', content });
         const last = state.executed.at(-1);
         return {
@@ -765,6 +812,17 @@ export class RunAgentPreviewUseCase {
       await this.executeCalls(loop, state, calls, step);
     }
     throw new AgentRunError(`model round limit exceeded: maximum ${loop.maxModelRounds}`);
+  }
+
+  /**
+   * 構造化出力の修復往復を発行してよいか。
+   * 残り往復が無いのに修復すると「構造化出力が壊れている」ではなく「往復上限に達した」という
+   * 分かりにくい失敗にすり替わるので、最終往復と予算切れでは修復せず元のエラーを見せる。
+   */
+  private canRepairStructuredOutput(loop: LoopContext, state: LoopState, step: number): boolean {
+    return state.structuredRepairs < MAX_STRUCTURED_OUTPUT_REPAIRS
+      && step < loop.maxModelRounds
+      && loop.ctx.budget.remainingModelRounds > 0;
   }
 
   /** 1往復ぶんのツール呼び出しを順に実行する。承認が必要なETL Toolに当たったら AgentRunPause を投げる。 */
@@ -822,7 +880,17 @@ export class RunAgentPreviewUseCase {
         continue;
       }
       const selected = tool as Tool;
-      state.messages.push(await this.executeToolTimed(selected, call, trace, timing, ctx, loop.agent));
+      try {
+        state.messages.push(await this.executeToolTimed(selected, call, trace, timing, ctx, loop.agent));
+      } catch (error) {
+        // 引数の作り間違いはモデル側の誤りなので、Runを落とさずツール結果として差し戻して呼び直させる。
+        // スキーマ不一致など**ツール定義側**の誤り（AgentRunError）は差し戻しても直らないため対象外。
+        if (!(error instanceof ToolArgumentsError) || state.toolArgumentRepairs >= MAX_TOOL_ARGUMENT_REPAIRS) throw error;
+        state.toolArgumentRepairs += 1;
+        trace.push({ sequence: trace.length + 1, kind: 'error', code: error.code, message: `${error.message} (retrying ${state.toolArgumentRepairs}/${MAX_TOOL_ARGUMENT_REPAIRS})` });
+        state.messages.push({ role: 'tool', toolCallId: call.id, content: JSON.stringify({ error: error.message, hint: `Call '${call.name}' again with corrected arguments that match its schema.` }) });
+        continue;
+      }
       state.executed.push(this.toolRef(selected));
     }
   }
@@ -916,6 +984,9 @@ export class RunAgentPreviewUseCase {
         usage: stored.usage ?? {},
         remainingHistory: 0,
         startStep: checkpoint.step,
+        // 修復回数は再開ごとに数え直す（checkpointは承認の再開情報だけを持ち、修復履歴は保持しない）。
+        structuredRepairs: 0,
+        toolArgumentRepairs: 0,
       };
       currentTrace.push({ sequence: currentTrace.length + 1, kind: 'approval-resolved', decision: input.decision });
       if (input.decision === 'approve') {
@@ -931,7 +1002,7 @@ export class RunAgentPreviewUseCase {
         state.startStep = checkpoint.step + 1;
       }
       return this.runLoop(loop, state);
-    });
+    }, signal);
   }
 
   /** ランタイムハーネスの組み込みツール実行。workspace_* と同じく tool-call / tool-result をトレースへ残す。 */
@@ -1194,6 +1265,22 @@ function unknownToolMessage(name: string): string {
   return isMcpToolName(name)
     ? `MCP tool '${name}' is unavailable: its MCP server could not be resolved for this run`
     : `model requested unknown tool: ${name}`;
+}
+
+/**
+ * 構造化出力の修復依頼文。**何が悪かったか**と**期待する形**の両方を渡す
+ * （エラー文だけだとモデルは同じ形を出し直しがち）。
+ */
+function structuredRepairInstruction(output: StructuredOutputDefinition, detail: string): string {
+  const fields = output.fields
+    .map((field) => `- ${field.name}: ${field.type}${field.required ? ' (required)' : ' (optional)'}${field.description === undefined ? '' : ` — ${field.description}`}`)
+    .join('\n');
+  return [
+    `Your previous reply was rejected: ${detail}`,
+    `Reply again with a single JSON object named '${output.name}'. Output raw JSON only: no prose, no markdown code fence.`,
+    'Use exactly these fields and nothing else:',
+    fields,
+  ].join('\n');
 }
 
 function userContent(message: string, images?: readonly ImageAttachment[]): string | readonly ModelContentPart[] {

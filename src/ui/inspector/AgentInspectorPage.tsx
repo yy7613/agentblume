@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ToolApiClient } from '../api/tool-api';
+import { isAbortError, type ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, EvaluationResultDto, RunTraceEventDto, SerializedAgentDto, WikiPageSummaryDto } from '../api/types';
 import { useI18n } from '../i18n';
 import { useElapsedSeconds } from '../chat/useElapsedSeconds';
+// 実行中の段階表示はChat画面と同じ文言・同じ閾値を使う（出所を一箇所に保つ）。
+import { runProgressHint } from '../chat/ChatPage';
 import { buildHistory } from '../chat/agent-history';
 import { appendTurn, emptyThread, type TurnThread } from '../chat/turn-limit';
 
@@ -15,7 +17,8 @@ type DistillState = 'loading' | 'error' | { readonly count: number };
 type Turn =
   | { readonly role: 'user'; readonly text: string }
   | { readonly role: 'assistant'; readonly run: AgentPreviewRunDto; readonly elapsedMs: number }
-  | { readonly role: 'error'; readonly text: string; readonly elapsedMs: number; readonly onRetry?: () => void };
+  // cancelled は「利用者が中断した」印。失敗ではないので控えめな通知として描く。
+  | { readonly role: 'error'; readonly text: string; readonly elapsedMs: number; readonly onRetry?: () => void; readonly cancelled?: boolean };
 
 const sparkIcon = (
   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
@@ -30,6 +33,11 @@ const userIcon = (
 const sendIcon = (
   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
     <path fill="currentColor" d="M12 4l7 7-1.4 1.4L13 7.8V20h-2V7.8l-4.6 4.6L5 11z" />
+  </svg>
+);
+const stopIcon = (
+  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+    <rect fill="currentColor" x="6" y="6" width="12" height="12" rx="2" />
   </svg>
 );
 
@@ -47,6 +55,8 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   const [wikiPages, setWikiPages] = useState<readonly WikiPageSummaryDto[]>([]);
   const [attached, setAttached] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  /** 実行中のリクエストを中断するための controller。存在＝中断できる実行が走っている。 */
+  const [aborter, setAborter] = useState<AbortController>();
   // ツール承認待ちで止まったRun。承認/拒否ボタンを出す対象を最新の1件に絞る。
   const [approvalRunId, setApprovalRunId] = useState<string>();
   const [loadError, setLoadError] = useState<string>();
@@ -90,36 +100,49 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   async function send(retry?: { readonly content: string }): Promise<void> {
     const content = retry === undefined ? message.trim() : retry.content;
     if (agent === undefined || content === '' || busy) return;
-    setBusy(true); setLoadError(undefined);
+    const controller = new AbortController();
+    setBusy(true); setAborter(controller); setLoadError(undefined);
     pushTurn({ role: 'user', text: content });
     if (retry === undefined) setMessage('');
     const startedAt = performance.now();
     try {
       const memoryPageIds = [...attached];
       const history = buildHistory(turns, content);
-      const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview', ...(history.length > 0 ? { history } : {}), ...(memoryPageIds.length > 0 ? { memoryPageIds } : {}) });
+      const run = await client.runSavedAgent({ scope, agent: { internalId: agent.internalId, version: agent.latestVersion }, message: content, mode: 'preview', ...(history.length > 0 ? { history } : {}), ...(memoryPageIds.length > 0 ? { memoryPageIds } : {}) }, controller.signal);
       pushTurn({ role: 'assistant', run, elapsedMs: performance.now() - startedAt });
       setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
     } catch (cause) {
-      pushTurn({ role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt, onRetry: () => void send({ content }) });
+      const elapsedMs = performance.now() - startedAt;
+      if (isAbortError(cause)) {
+        // 中断は失敗ではない。入力を戻して、そのまま送り直せるようにする。
+        setMessage((current) => current.trim() === '' ? content : current);
+        pushTurn({ role: 'error', cancelled: true, elapsedMs, text: text('Run cancelled. Your message is back in the composer.', '実行を中断しました。入力内容はそのまま残しています。') });
+      } else {
+        pushTurn({ role: 'error', text: messageOf(cause), elapsedMs, onRetry: () => void send({ content }) });
+      }
     } finally {
-      setBusy(false);
+      setBusy(false); setAborter(undefined);
     }
   }
+
+  function cancelRun(): void { aborter?.abort(); }
 
   // ツール承認の応答。resumeRunの結果は通常のrun応答と同じturnとして積む（再びwaiting-approvalなら再表示）。
   async function resolveToolApproval(runId: string, decision: 'approve' | 'reject'): Promise<void> {
     if (busy || typeof (client as Partial<ToolApiClient>).resumeRun !== 'function') return;
-    setBusy(true); setLoadError(undefined);
+    const controller = new AbortController();
+    setBusy(true); setAborter(controller); setLoadError(undefined);
     const startedAt = performance.now();
     try {
-      const run = await client.resumeRun(runId, scope, decision);
+      const run = await client.resumeRun(runId, scope, decision, undefined, controller.signal);
       pushTurn({ role: 'assistant', run, elapsedMs: performance.now() - startedAt });
       setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
     } catch (cause) {
-      pushTurn({ role: 'error', text: messageOf(cause), elapsedMs: performance.now() - startedAt, onRetry: () => void resolveToolApproval(runId, decision) });
+      const elapsedMs = performance.now() - startedAt;
+      if (isAbortError(cause)) pushTurn({ role: 'error', cancelled: true, elapsedMs, text: text('Run cancelled.', '実行を中断しました。') });
+      else pushTurn({ role: 'error', text: messageOf(cause), elapsedMs, onRetry: () => void resolveToolApproval(runId, decision) });
     } finally {
-      setBusy(false);
+      setBusy(false); setAborter(undefined);
     }
   }
 
@@ -218,6 +241,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
                 <span className="cc-name">{agentName}</span>
                 <span className="cc-typing" aria-label={text('Running…', '実行中…')}><i /><i /><i /></span>
                 <span className="cc-meta">{text(`Running… ${elapsedSeconds}s`, `実行中… ${elapsedSeconds}秒`)}</span>
+                {aborter !== undefined && <span className="cc-meta" role="status">{runProgressHint(elapsedSeconds, text)}</span>}
               </div>
             </div>
           )}
@@ -263,9 +287,14 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
               <option value="">{text('Select an agent', 'エージェントを選択')}</option>
               {agents.map((item) => <option key={item.internalId} value={item.internalId}>{item.displayName} · {item.latestVersion}</option>)}
             </select>
-            <button type="submit" className="cc-send" aria-label={text('Send', '送信')} disabled={busy || agent === undefined || message.trim() === ''}>
-              {sendIcon}
-            </button>
+            {aborter === undefined
+              ? <button type="submit" className="cc-send" aria-label={text('Send', '送信')} disabled={busy || agent === undefined || message.trim() === ''}>
+                {sendIcon}
+              </button>
+              // 実行中は送信ボタンを中断ボタンへ差し替える（送信は busy でどのみち無効なので、席を譲る）。
+              : <button type="button" className="cc-send" aria-label={text('Stop run', '実行を中断')} title={text('Stop run', '実行を中断')} onClick={cancelRun}>
+                {stopIcon}
+              </button>}
           </div>
         </div>
         <p className="cc-hint">{text('Preview mode · read-only tools only · Enter to send', 'プレビュー実行 · 読み取り専用ツールのみ · Enterで送信')}</p>
@@ -312,6 +341,8 @@ function TurnView({ turn, agentName, text, busy, inputText, approvalRunId, onRes
     );
   }
   if (turn.role === 'error') {
+    // 中断はエラーではないので、赤いエラーバブルではなくシステム通知の行として出す。
+    if (turn.cancelled === true) return <p className="cc-trimmed" role="status">{turn.text}</p>;
     return (
       <div className="cc-msg error">
         <span className="cc-avatar error" aria-hidden="true">!</span>

@@ -33,6 +33,7 @@ import { registerHarnessRunRoutes, type HarnessRunRouteDeps } from './harness-ru
 import { registerFactoryRoutes, type FactoryRouteDeps } from './factory-routes';
 import { registerMcpRoutes, type McpRouteDeps } from './mcp-routes';
 import { registerModelSettingsRoutes, type ModelSettingsRouteDeps } from './model-settings-routes';
+import { registerSampleDataRoutes, type SampleDataRouteDeps } from './sample-data-routes';
 
 /**
  * チャットの画像（最大2枚・各3 MiB）はBase64化で合計約8 MiBになる。
@@ -127,7 +128,7 @@ function messageOf(error: unknown): string {
 
 /** ルート・エラーハンドラ設定済みの Fastify インスタンスを組み立てる（listen しない）。 */
 export function buildServer(
-  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & HarnessRouteDeps & HarnessRunRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps & FactoryRouteDeps & McpRouteDeps & ModelSettingsRouteDeps,
+  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & HarnessRouteDeps & HarnessRunRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps & FactoryRouteDeps & McpRouteDeps & ModelSettingsRouteDeps & SampleDataRouteDeps,
   options?: ServerOptions,
 ): FastifyInstance {
   const app = Fastify({
@@ -173,6 +174,7 @@ export function buildServer(
   registerFactoryRoutes(app, deps);
   registerMcpRoutes(app, deps);
   registerModelSettingsRoutes(app, deps);
+  registerSampleDataRoutes(app, deps);
 
   const revision = options?.revision;
   const buildInfo = { node: process.version, ...(revision === undefined ? {} : { revision }) };

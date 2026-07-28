@@ -718,3 +718,53 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 .run-approval > p > small { display: block; color: #5a6a9d; font-size: 11px; margin-top: 3px; }
 .run-approval-actions { display: flex; gap: 8px; }
 .run-approval-actions button { height: 30px; font-size: 12px; }
+
+/* 画面間リンク（空状態の案内から関連画面へ飛ぶボタン）。リンクに見せるが、未保存確認を通すため button。 */
+.screen-link { border: 0; background: transparent; color: #4d5ef2; font-size: inherit; font-weight: 700; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
+.screen-link:hover { color: #3444d8; }
+.factory-asset-links { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 0; }
+
+/* 左ナビのヘルプ（表示中の画面に追従する1つのボタン）。 */
+.app-nav button.nav-help { margin-top: auto; color: #8b97b4; font-size: 12px; }
+.app-nav button.nav-help:hover { color: white; background: #1a2340; }
+.app-nav button.nav-help > span { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: 1px solid currentColor; border-radius: 50%; font-size: 10px; font-weight: 800; }
+.app-nav button.nav-help + small { margin-top: 0; }
+
+/* アプリ内ヘルプのダイアログ。 */
+.help-dialog { background: white; border-radius: 12px; padding: 18px 20px; width: min(520px, calc(100vw - 48px)); max-height: calc(100vh - 80px); overflow: auto; box-shadow: 0 18px 55px rgba(20, 26, 43, .3); }
+.help-dialog header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.help-dialog h2 { margin: 3px 0 0; font-size: 18px; }
+.help-summary { margin: 12px 0 0; font-size: 13px; line-height: 1.6; color: #3c4761; }
+.help-steps { margin: 12px 0 0; padding-left: 18px; color: #4b5772; font-size: 12px; line-height: 1.7; }
+.help-doc { margin: 14px 0 0; font-size: 11px; color: #7a8598; }
+.help-doc code { background: #f2f4f8; border-radius: 5px; padding: 2px 6px; }
+
+/* 初回起動のウェルカム。背景を敷かないフローティングカード（モーダルではないので背後の操作を妨げない）。 */
+.welcome-card { position: fixed; top: 18px; right: 18px; z-index: 45; width: min(370px, calc(100vw - 210px)); max-height: calc(100vh - 36px); overflow: auto; background: white; border: 1px solid #dce1eb; border-radius: 12px; padding: 16px 18px; box-shadow: 0 18px 55px rgba(20, 26, 43, .22); }
+.welcome-card header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.welcome-card h2 { margin: 3px 0 0; font-size: 17px; }
+.welcome-card h3 { margin: 16px 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: #7c879c; }
+.welcome-lead { margin: 10px 0 0; font-size: 12px; line-height: 1.65; color: #4b5772; }
+.welcome-priority { margin-top: 14px; padding: 12px; border: 1px solid #efd39d; border-radius: 8px; background: #fff8e8; color: #6e5218; }
+.welcome-priority strong { display: block; font-size: 12px; }
+.welcome-priority p { margin: 5px 0 10px; font-size: 11px; line-height: 1.55; }
+.welcome-priority button { height: 30px; }
+.welcome-choices { display: flex; flex-direction: column; gap: 8px; }
+.welcome-choice { text-align: left; border: 1px solid #d9deea; border-radius: 9px; background: white; color: #2c3850; padding: 10px 12px; }
+.welcome-choice:hover { border-color: #697aff; }
+.welcome-choice strong { display: block; font-size: 12.5px; font-weight: 750; }
+.welcome-choice small { display: block; margin-top: 4px; color: #8390a7; font-size: 11px; line-height: 1.5; }
+.welcome-choice.primary { border-color: #4d5ef2; background: #f2f4ff; color: #263063; }
+.welcome-choice.primary small { color: #5b6890; }
+.welcome-sample-result { margin-top: 12px; padding: 12px; border: 1px solid #bfe3d4; border-radius: 9px; background: #eef9f4; color: #17604a; }
+.welcome-sample-result strong { font-size: 12.5px; }
+.welcome-sample-result p { margin: 6px 0 0; font-size: 11px; }
+.welcome-sample-list { margin: 8px 0 0; padding-left: 18px; font-size: 11px; line-height: 1.6; }
+.welcome-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.welcome-actions button { height: 30px; }
+.welcome-checklist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.welcome-checklist li { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.welcome-checklist li.done .screen-link { color: #7a8598; text-decoration: none; }
+.welcome-check { width: 16px; color: #a7b0c4; font-weight: 800; }
+.welcome-checklist li.done .welcome-check { color: #17a37a; }
+.welcome-dismiss { display: block; margin: 16px 0 0; border: 0; background: transparent; color: #8a94a8; font-size: 11px; text-decoration: underline; padding: 0; }

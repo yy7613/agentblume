@@ -7,6 +7,7 @@ import { InlineFeedback } from '../components/InlineFeedback';
 import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
 import { useReportUnsavedChanges } from '../unsaved-changes';
 import { useI18n } from '../i18n';
+import { ScreenLink } from '../navigation';
 
 type Translate = (english: string, japanese: string) => string;
 
@@ -434,7 +435,7 @@ export function HarnessBuilder({ client }: { readonly client: ToolApiClient }) {
       <header className="harness-builder-header"><div><span className="eyebrow">{text('Multi-Agent Builder', 'マルチエージェントビルダー')}</span><h1>{text('Multi-Agents', 'マルチエージェント一覧')}</h1><p>{text('Compose saved Agent versions into a typed orchestration pattern.', '保存済みAgentのversionを型付きオーケストレーションへ組み立てます。')}</p></div><div className="save-actions"><button type="button" className="primary" onClick={startNewHarness}>{text('New multi-agent', '新規作成')}</button></div></header>
       {error !== undefined && <div className="api-error">{error}</div>}
       <section className="workspace-card harness-list">
-        {harnesses.length === 0 ? <p className="empty-state">{text('No multi-agents yet.', 'マルチエージェントはまだありません。')}</p> : <div className="harness-list-rows">{harnesses.map((item) => <article className="harness-list-row" key={item.internalId}>
+        {harnesses.length === 0 ? <p className="empty-state"><span>{text('No multi-agents yet.', 'マルチエージェントはまだありません。')}</span> <span>{text('Every slot needs a saved Agent version.', '各slotには保存済みのエージェントが必要です。')}</span> <ScreenLink to="Agent">{text('Open the Agent screen', 'エージェント画面を開く')}</ScreenLink></p> : <div className="harness-list-rows">{harnesses.map((item) => <article className="harness-list-row" key={item.internalId}>
           <div><strong>{item.displayName}</strong><code>{item.publishName}@{item.latestVersion}</code><small>{item.pattern} · {item.state}</small></div>
           <div className="harness-list-actions">
             <button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void openHarness(item.internalId)}>{text('Open', '開く')}</button>

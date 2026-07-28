@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ToolApiClient } from '../api/tool-api';
+import { isAbortError, type ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, AgentSummaryDto, HarnessRunDto, HarnessSummaryDto, RunImageAttachmentDto, RunTraceEventDto, SessionArtifactDto } from '../api/types';
 import { useModalBehavior } from '../hooks/useModalBehavior';
 import { useI18n } from '../i18n';
@@ -14,7 +14,9 @@ type Translate = (english: string, japanese: string) => string;
 type ChatTurn =
   | { readonly role: 'user'; readonly text: string; readonly images: readonly RunImageAttachmentDto[] }
   | { readonly role: 'assistant'; readonly run: AgentPreviewRunDto | HarnessRunDto }
-  | { readonly role: 'error'; readonly text: string; readonly onRetry?: () => void };
+  // cancelled は「利用者が中断した」印。失敗ではないので赤いエラー表示ではなく控えめな通知として描く
+  // （buildHistory は role だけを見るため、error turn と同じく履歴からは除かれる）。
+  | { readonly role: 'error'; readonly text: string; readonly onRetry?: () => void; readonly cancelled?: boolean };
 
 const sparkIcon = (
   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
@@ -29,6 +31,11 @@ const userIcon = (
 const sendIcon = (
   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
     <path fill="currentColor" d="M12 4l7 7-1.4 1.4L13 7.8V20h-2V7.8l-4.6 4.6L5 11z" />
+  </svg>
+);
+const stopIcon = (
+  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+    <rect fill="currentColor" x="6" y="6" width="12" height="12" rx="2" />
   </svg>
 );
 const attachIcon = (
@@ -51,6 +58,12 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const turns = thread.turns;
   const pushTurn = (turn: ChatTurn) => setThread((prev) => appendTurn(prev, turn));
   const [busy, setBusy] = useState(false);
+  /**
+   * 実行中のリクエストを中断するための controller。
+   * 「実行中か」は busy ではなくこれで判定する（busy は初回のエージェント一覧読み込みでも立つため、
+   * busy を使うと中断できない読み込み中に中断ボタンが出てしまう）。
+   */
+  const [aborter, setAborter] = useState<AbortController>();
   const [loadError, setLoadError] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
   const [activeHarnessRun, setActiveHarnessRun] = useState<HarnessRunDto>();
@@ -96,7 +109,8 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   async function send(retry?: { readonly content: string; readonly images: readonly RunImageAttachmentDto[] }): Promise<void> {
     const content = retry === undefined ? message.trim() : retry.content;
     if (target === undefined || content === '' || busy) return;
-    setBusy(true);
+    const controller = new AbortController();
+    setBusy(true); setAborter(controller);
     const attachedImages = retry === undefined ? images : retry.images;
     pushTurn({ role: 'user', text: content, images: attachedImages });
     if (retry === undefined) { setMessage(''); setImages([]); }
@@ -111,22 +125,35 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       if (target.kind === 'harness' && attachedImages.length > 0) throw new Error(text('Image input is not available for Multi-Agent preview yet.', 'マルチエージェントpreviewではまだ画像入力を利用できません。'));
       const history = target.kind === 'agent' ? buildHistory(turns, content) : [];
       const run = target.kind === 'agent'
-        ? await client.runSavedAgent({ scope, agent: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview', sessionId: activeSessionId, ...(history.length > 0 ? { history } : {}), ...(attachedImages.length > 0 ? { images: attachedImages } : {}) })
+        ? await client.runSavedAgent({ scope, agent: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview', sessionId: activeSessionId, ...(history.length > 0 ? { history } : {}), ...(attachedImages.length > 0 ? { images: attachedImages } : {}) }, controller.signal)
         : activeHarnessRun?.status === 'waiting-input'
-          ? await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'input', message: content } })
+          ? await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'input', message: content } }, controller.signal)
           : activeHarnessRun?.status === 'waiting-approval'
-            ? await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'approval', decision: 'revise', feedback: content } })
-            : await client.runHarness({ scope, harness: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview' });
+            ? await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'approval', decision: 'revise', feedback: content } }, controller.signal)
+            : await client.runHarness({ scope, harness: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview' }, controller.signal);
       pushTurn({ role: 'assistant', run });
       if (isHarnessRun(run)) setActiveHarnessRun(run.status === 'waiting-input' || run.status === 'waiting-approval' ? run : undefined);
       else setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
       if (activeSessionId !== undefined && typeof sessions.listSessionArtifacts === 'function') void sessions.listSessionArtifacts(activeSessionId, scope).then(setArtifacts).catch(() => {});
     } catch (cause) {
-      pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void send({ content, images: attachedImages }) });
+      if (isAbortError(cause)) restoreCancelled(content, attachedImages);
+      else pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void send({ content, images: attachedImages }) });
     } finally {
-      setBusy(false);
+      setBusy(false); setAborter(undefined);
     }
   }
+
+  /**
+   * 中断の後始末。送信内容をコンポーザーへ戻して、そのまま送り直せるようにする
+   * （利用者が書き直したあとに上書きしないよう、空のときだけ復元する）。
+   */
+  function restoreCancelled(content: string, attachedImages: readonly RunImageAttachmentDto[]): void {
+    setMessage((current) => current.trim() === '' ? content : current);
+    setImages((current) => current.length === 0 ? attachedImages : current);
+    pushTurn({ role: 'error', cancelled: true, text: text('Run cancelled. Your message is back in the composer.', '実行を中断しました。入力内容はそのまま残しています。') });
+  }
+
+  function cancelRun(): void { aborter?.abort(); }
 
   function newChat(): void {
     const closing = sessionId;
@@ -172,30 +199,35 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   // 単一Agent実行のツール承認。応答は通常のrun応答と同じ経路で積み、再びwaiting-approvalなら承認UIを出し直す。
   async function resolveToolApproval(runId: string, decision: 'approve' | 'reject'): Promise<void> {
     if (busy || typeof (client as Partial<ToolApiClient>).resumeRun !== 'function') return;
-    setBusy(true);
+    const controller = new AbortController();
+    setBusy(true); setAborter(controller);
     try {
-      const run = await client.resumeRun(runId, scope, decision);
+      const run = await client.resumeRun(runId, scope, decision, undefined, controller.signal);
       pushTurn({ role: 'assistant', run });
       setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
     } catch (cause) {
-      pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void resolveToolApproval(runId, decision) });
+      if (isAbortError(cause)) pushTurn({ role: 'error', cancelled: true, text: text('Run cancelled.', '実行を中断しました。') });
+      else pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void resolveToolApproval(runId, decision) });
     } finally {
-      setBusy(false);
+      setBusy(false); setAborter(undefined);
     }
   }
 
   async function respondToApproval(decision: 'approve' | 'reject'): Promise<void> {
     if (activeHarnessRun?.status !== 'waiting-approval' || busy) return;
-    setBusy(true);
+    // 承認後の実行は計画全体を回すので長い。中断ボタンの対象にする。
+    const controller = new AbortController();
+    setBusy(true); setAborter(controller);
     pushTurn({ role: 'user', text: decision === 'approve' ? text('Approve the plan.', '計画を承認します。') : text('Reject and cancel the plan.', '計画を却下して中止します。'), images: [] });
     try {
-      const run = await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'approval', decision } });
+      const run = await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'approval', decision } }, controller.signal);
       pushTurn({ role: 'assistant', run });
       setActiveHarnessRun(run.status === 'waiting-input' || run.status === 'waiting-approval' ? run : undefined);
     } catch (cause) {
-      pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void respondToApproval(decision) });
+      if (isAbortError(cause)) pushTurn({ role: 'error', cancelled: true, text: text('Run cancelled.', '実行を中断しました。') });
+      else pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void respondToApproval(decision) });
     } finally {
-      setBusy(false);
+      setBusy(false); setAborter(undefined);
     }
   }
 
@@ -263,6 +295,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
                 <span className="cc-name">{agentName}</span>
                 <span className="cc-typing" aria-label={text('Running…', '実行中…')}><i /><i /><i /></span>
                 <span className="cc-meta">{text(`Running… ${elapsedSeconds}s`, `実行中… ${elapsedSeconds}秒`)}</span>
+                {aborter !== undefined && <span className="cc-meta" role="status">{runProgressHint(elapsedSeconds, text)}</span>}
               </div>
             </div>
           )}
@@ -313,9 +346,14 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
                 </optgroup>}
               </select>
             </div>
-            <button type="submit" className="cc-send" aria-label={text('Send', '送信')} disabled={busy || target === undefined || message.trim() === ''}>
-              {sendIcon}
-            </button>
+            {aborter === undefined
+              ? <button type="submit" className="cc-send" aria-label={text('Send', '送信')} disabled={busy || target === undefined || message.trim() === ''}>
+                {sendIcon}
+              </button>
+              // 実行中は送信ボタンを中断ボタンへ差し替える（送信は busy でどのみち無効なので、席を譲る）。
+              : <button type="button" className="cc-send" aria-label={text('Stop run', '実行を中断')} title={text('Stop run', '実行を中断')} onClick={cancelRun}>
+                {stopIcon}
+              </button>}
           </div>
         </div>
         <p className="cc-hint">{text('Enter to send · Shift+Enter for a new line · attach up to 2 images · preview mode', 'Enterで送信 · Shift+Enterで改行 · 画像は2枚まで添付 · プレビュー実行')}</p>
@@ -345,6 +383,8 @@ function Turn({ turn, agentName, text, busy, approvalRunId, onResolveApproval }:
     );
   }
   if (turn.role === 'error') {
+    // 中断はエラーではないので、赤いエラーバブルではなくシステム通知の行として出す。
+    if (turn.cancelled === true) return <p className="cc-trimmed" role="status">{turn.text}</p>;
     return (
       <div className="cc-msg error">
         <span className="cc-avatar error" aria-hidden="true">!</span>
@@ -396,6 +436,26 @@ function Turn({ turn, agentName, text, busy, approvalRunId, onResolveApproval }:
       </div>
     </div>
   );
+}
+
+/**
+ * 実行中に「今どうなっているか」を経過秒数だけで案内する段階表示。
+ *
+ * サーバーはRun記録を**開始時と確定時にしか**書かない（`run-agent-preview.ts` の executeRun）。
+ * 途中のtraceはメモリ上にしか無く、POST /runs も完了までRunIdを返さないため、
+ * 進捗のポーリングもSSEも今の配線では取れない。そこで「無音の待ち時間」を減らす最小手段として、
+ * 経過時間に応じた見込みと次の手（中断できること）を案内する。
+ * Chat / Inspector の両画面で同じ文言を使うため、ここを唯一の出所にする。
+ */
+export function runProgressHint(elapsedSeconds: number, text: Translate): string {
+  if (elapsedSeconds >= 120) {
+    return text('Still running. The model can take up to 10 minutes before it times out — stop the run if you would rather retry with a shorter request.', 'まだ実行中です。モデルはタイムアウトまで最大10分かかります。待てない場合は中断して、短い指示で試し直してください。');
+  }
+  if (elapsedSeconds >= 30) {
+    return text('Tools or the model are taking a while. You can stop the run at any time.', 'ツールの実行やモデルの応答に時間がかかっています。いつでも中断できます。');
+  }
+  if (elapsedSeconds >= 10) return text('Waiting for the model to respond…', 'モデルの応答を待っています…');
+  return text('Sending the request to the model…', 'モデルへ指示を送っています…');
 }
 
 function welcomeHint(agentCount: number, busy: boolean, text: Translate): string {

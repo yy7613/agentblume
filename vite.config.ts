@@ -46,6 +46,7 @@ export default defineConfig({
       '/mcp-servers': apiTarget,
       '/model-settings': apiTarget,
       '/model-catalog': apiTarget,
+      '/sample-data': apiTarget,
     },
   },
   build: { outDir: 'dist/ui', emptyOutDir: true },

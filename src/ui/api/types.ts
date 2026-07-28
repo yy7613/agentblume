@@ -981,3 +981,15 @@ export interface OpenAiCompatibleModelsResultDto {
   /** 保存済みキーを実際に使ったか（宛先不一致なら false）。 */
   readonly usedStoredKey: boolean;
 }
+/**
+ * POST /sample-data の応答。オンボーディングの「サンプルを読み込む」で投入された資産の一覧。
+ * `created` は今回新しく作成した件数（0 なら既に投入済みで、何も変更していない＝冪等）。
+ */
+export interface SampleDataSummaryDto {
+  readonly dataSources: readonly string[];
+  readonly tools: readonly string[];
+  readonly skills: readonly string[];
+  readonly agents: readonly string[];
+  readonly wikis: readonly string[];
+  readonly created: number;
+}

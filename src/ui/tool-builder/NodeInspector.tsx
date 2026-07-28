@@ -124,7 +124,9 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
 }
 
 function ColumnMultiSelect({ label, columns, value, onChange, hint }: { readonly label: string; readonly columns: readonly ColumnDto[]; readonly value: readonly string[]; readonly onChange: (columns: string[]) => void; readonly hint?: string }) {
-  return <label>{label}{hint !== undefined && <small>{hint}</small>}<select aria-label={label} multiple size={Math.min(8, Math.max(3, columns.length))} value={value} onChange={(event) => onChange(Array.from(event.currentTarget.selectedOptions).map((option) => option.value))}>{columns.map((column) => <option key={column.name} value={column.name}>{column.name} · {column.type}</option>)}</select>{columns.length === 0 && <small>{'Connect an upstream node to choose columns.'}</small>}</label>;
+  // 空状態の案内も他と同様に日英で出す（ここだけ英語ベタ書きが残っていた）。
+  const { text } = useI18n();
+  return <label>{label}{hint !== undefined && <small>{hint}</small>}<select aria-label={label} multiple size={Math.min(8, Math.max(3, columns.length))} value={value} onChange={(event) => onChange(Array.from(event.currentTarget.selectedOptions).map((option) => option.value))}>{columns.map((column) => <option key={column.name} value={column.name}>{column.name} · {column.type}</option>)}</select>{columns.length === 0 && <small>{text('Connect an upstream node to choose columns.', '列を選ぶには上流のノードを接続してください。')}</small>}</label>;
 }
 
 function AgentOutputFields({ config, setConfig, columns }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[] }) {

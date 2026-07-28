@@ -396,3 +396,111 @@ describe('localizeSchemaIssueMessage（ノード単位のSchemaIssue/propagation
     expect(localizeSchemaIssueMessage('totally unrecognized issue text', 'en')).toBe('totally unrecognized issue text');
   });
 });
+
+/**
+ * エージェント実行の内部エラー。**原因の言い換えだけでなく次の一手**まで出ることを確かめる
+ * （このWave以前は英語の原文がそのまま括弧に出ていて、利用者は何をすればよいか分からなかった）。
+ */
+describe('エージェント実行エラー（AGENT_RUN / TOOL_ARGUMENTS / UNSAFE_TOOL）の日本語化', () => {
+  function agentRun(message: string, language: 'en' | 'ja' = 'ja'): string {
+    return localizeApiErrorMessage({ status: 422, code: 'AGENT_RUN', serverMessage: message }, language);
+  }
+  function toolArgs(message: string): string {
+    return localizeApiErrorMessage({ status: 422, code: 'TOOL_ARGUMENTS', serverMessage: message }, 'ja');
+  }
+  function unsafe(message: string): string {
+    return localizeApiErrorMessage({ status: 403, code: 'UNSAFE_TOOL', serverMessage: message }, 'ja');
+  }
+
+  it('存在しないツール呼び出しは、接続を確認する案内にする', () => {
+    expect(agentRun('model requested unknown tool: lookup_sales'))
+      .toBe('エージェントの実行に失敗しました（モデルが存在しないツール「lookup_sales」を呼ぼうとしました。エージェントに必要なツールが接続されているか確認してください）');
+    // ランタイムツール / MCP の未知ツールも同じ案内へ寄せる。
+    expect(agentRun('unknown MCP tool: mcp__files__read')).toContain('mcp__files__read');
+    expect(agentRun('unknown runtime harness tool: todos_add')).toContain('todos_add');
+  });
+
+  it('MCPサーバーを解決できない場合は接続テストへ誘導する', () => {
+    expect(agentRun("MCP tool 'mcp__files__read' is unavailable: its MCP server could not be resolved for this run"))
+      .toContain('MCP設定画面で接続をテスト');
+  });
+
+  it('ツール呼び出し上限・往復上限は、上限値と広げ方を示す', () => {
+    expect(agentRun('tool call limit exceeded: maximum 4'))
+      .toBe('エージェントの実行に失敗しました（1回の実行で使えるツール呼び出しの上限（4回）に達しました。目的を分けて質問するか、エージェントのハーネス設定で上限を広げてください）');
+    expect(agentRun('model round limit exceeded: maximum 5')).toContain('モデルとの往復回数の上限（5回）');
+  });
+
+  it('ツリー共有バジェットの枯渇は、委譲を減らす案内にする', () => {
+    expect(agentRun('run budget exhausted: model rounds')).toContain('モデル往復の予算を使い切りました');
+    expect(agentRun('run budget exhausted: tool calls')).toContain('ツール呼び出しの予算を使い切りました');
+  });
+
+  it('構造化出力の検証失敗は、項目名と次の手を示す', () => {
+    expect(agentRun("structured response is missing required field 'answer'"))
+      .toBe('エージェントの実行に失敗しました（モデルの応答に必要な項目「answer」がありませんでした。別のモデルを試すか、構造化出力の項目を減らしてください）');
+    expect(agentRun("structured response contains unknown field 'extra'")).toContain('定義していない項目「extra」');
+    expect(agentRun("structured response field 'score' must be integer")).toContain('項目「score」の型が違います（integer が必要）');
+    expect(agentRun('structured response is not valid JSON')).toContain('JSONとして解釈できませんでした');
+    expect(agentRun('structured response must be a JSON object')).toContain('JSONとして解釈できませんでした');
+  });
+
+  it('モデルの能力不足は、設定画面での切り替えへ誘導する', () => {
+    expect(agentRun('configured model provider does not support tool-calling')).toContain('ツール呼び出しに対応したモデルへ切り替え');
+    expect(agentRun('configured model provider does not support structured output')).toContain('構造化出力に対応していません');
+    expect(agentRun('configured model provider does not support image input')).toContain('画像入力に対応していません');
+  });
+
+  it('モデルがツール呼び出しに失敗した場合の案内', () => {
+    expect(agentRun('model reported tool_calls without a tool call')).toContain('ツール呼び出しに対応したモデルを選び直して');
+    expect(agentRun('model requested a tool call but function invocation is disabled for this agent')).toContain('ハーネス設定でツール実行を有効に');
+  });
+
+  it('ツール引数の不備は、引数名と直し方を示す', () => {
+    expect(toolArgs('required argument missing: minimumScore'))
+      .toBe('エージェントがツールを不正な引数で呼び出しました。ツールのスキーマとプロンプトを見直してください（モデルがツールの必須引数「minimumScore」を渡しませんでした。ツールの引数の説明を具体的にするか、指示の中でその値を明示してください）');
+    expect(toolArgs("invalid argument 'score': expected number")).toContain('引数「score」の型が違います（number が必要）');
+    expect(toolArgs('unknown argument(s): region, month')).toContain('存在しない引数「region, month」');
+  });
+
+  it('副作用ガード（UNSAFE_TOOL）は read-only へ寄せる案内にする', () => {
+    expect(unsafe("Agent preview refuses write effective side-effect for agent 'sales-agent'"))
+      .toBe("このツールは現在のモードでは実行できません（エージェント「sales-agent」は副作用「write」を持つためプレビュー実行できません。読み取り専用（read-only / session-write）のツールだけを接続してください）");
+    expect(unsafe("Agent preview refuses external-action effective side-effect for additional sub-agent 'poster'")).toContain('エージェント「poster」');
+    expect(unsafe("Agent preview refuses write tool 'crm-writer'")).toContain('ツール「crm-writer」は副作用「write」');
+  });
+
+  it('承認・セッション・記憶まわりも次の操作を示す', () => {
+    expect(agentRun("run 'run-1' is not waiting for approval")).toContain('画面を開き直して');
+    expect(agentRun('approval checkpoint expired at 2026-07-28T00:00:00.000Z')).toContain('ツール承認の期限');
+    expect(agentRun("run 'run-1' approval checkpoint expired at 2026-07-28T00:00:00.000Z")).toContain('ツール承認の期限');
+    expect(agentRun('agent session belongs to a different Agent version')).toContain('「新しいチャット」を開始');
+    expect(agentRun("memory page 'p1' is outside Agent wiki allowlist")).toContain('参照Wiki設定');
+    // 汎用の「... not found: id」変換に食われず、専用の案内が出る。
+    expect(agentRun('workspace artifact not found: a-1')).toContain('セッション内の成果物「a-1」');
+    expect(agentRun('web_search has no configured search provider')).toContain('検索プロバイダを登録');
+  });
+
+  it('ツール定義の不整合はツール画面での直し方を示す', () => {
+    expect(agentRun("filter node 'f1' references an unavailable Agent input")).toContain('引数（Agent Input）の宣言と接続');
+    expect(agentRun("tool inputSchema does not match agent-input node 'in'")).toContain('引数を保存し直して');
+    expect(agentRun('tool declares inputSchema but has no agent-input node')).toContain('引数ノードを追加');
+    expect(agentRun('saved Agent execution is not configured')).toContain('サーバーの起動設定');
+    expect(agentRun('additional sub-agent not found: sub@1.0.0')).toContain('サブエージェント「sub@1.0.0」');
+  });
+
+  it('英語UIでも次の一手を示す（原文のままにしない）', () => {
+    expect(agentRun('model requested unknown tool: lookup_sales', 'en'))
+      .toBe("The agent run failed (the model called a tool named 'lookup_sales' that is not connected. Check the tools attached to this agent)");
+    expect(agentRun('tool call limit exceeded: maximum 4', 'en')).toContain('raise the limit in the agent harness settings');
+  });
+
+  it('未知の実行エラーは原文を括弧で残す（詳細を握りつぶさない）', () => {
+    expect(agentRun('some brand new agent failure')).toBe('エージェントの実行に失敗しました（some brand new agent failure）');
+  });
+
+  it('中断されたRunの失敗コードにも見出しがある', () => {
+    expect(localizeApiErrorMessage({ status: 499, code: 'RUN_CANCELLED', serverMessage: 'run cancelled by the user' }, 'ja'))
+      .toBe('実行を中断しました');
+  });
+});

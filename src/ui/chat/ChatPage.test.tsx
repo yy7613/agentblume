@@ -15,7 +15,7 @@ describe('ChatPage', () => {
     render(<ChatPage client={client} />);
     await screen.findByRole('option', { name: /Agent/ });
     await sendMessage();
-    await waitFor(() => expect(client.runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ agent: { internalId: 'agent', version: '2.0.0' }, mode: 'preview' })));
+    await waitFor(() => expect(client.runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ agent: { internalId: 'agent', version: '2.0.0' }, mode: 'preview' }), expect.any(AbortSignal)));
     expect(await screen.findByText('done')).toBeTruthy();
   });
 
@@ -50,7 +50,7 @@ describe('ChatPage', () => {
 
     await sendMessage('first question');
     expect(await screen.findByText('first answer')).toBeTruthy();
-    expect(client.runSavedAgent).toHaveBeenNthCalledWith(1, expect.not.objectContaining({ history: expect.anything() }));
+    expect(client.runSavedAgent).toHaveBeenNthCalledWith(1, expect.not.objectContaining({ history: expect.anything() }), expect.any(AbortSignal));
 
     await sendMessage('second question');
     expect(await screen.findByText('second answer')).toBeTruthy();
@@ -60,7 +60,7 @@ describe('ChatPage', () => {
         { role: 'user', content: 'first question' },
         { role: 'assistant', content: 'first answer' },
       ],
-    }));
+    }), expect.any(AbortSignal));
   });
 
   it('初期のウェルカム候補をクリックするとコンポーザーへ差し込む', async () => {
@@ -163,7 +163,7 @@ describe('ChatPage', () => {
     expect(banner.textContent).toContain('write_rows');
 
     await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith('run-approval', { tenantId: 'local', workspaceId: 'default' }, 'approve'));
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith('run-approval', { tenantId: 'local', workspaceId: 'default' }, 'approve', undefined, expect.any(AbortSignal)));
     expect(await screen.findByText('wrote 3 rows')).toBeTruthy();
     // 完走したので承認バナーは消える。
     expect(screen.queryByRole('group', { name: 'Tool approval' })).toBeNull();
@@ -183,7 +183,7 @@ describe('ChatPage', () => {
     await screen.findByRole('group', { name: 'Tool approval' });
 
     await userEvent.click(screen.getByRole('button', { name: 'Reject' }));
-    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith('run-reject', { tenantId: 'local', workspaceId: 'default' }, 'reject'));
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith('run-reject', { tenantId: 'local', workspaceId: 'default' }, 'reject', undefined, expect.any(AbortSignal)));
     expect(await screen.findByText('cancelled by user')).toBeTruthy();
   });
 
@@ -223,7 +223,7 @@ describe('ChatPage', () => {
     await userEvent.upload(input, file);
     expect(await screen.findByAltText('tiny.png')).toBeTruthy();
     await sendMessage('What is this?');
-    await waitFor(() => expect(client.runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ images: [expect.objectContaining({ name: 'tiny.png', dataUrl: expect.stringMatching(/^data:image\/png;base64,/) })] })));
+    await waitFor(() => expect(client.runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ images: [expect.objectContaining({ name: 'tiny.png', dataUrl: expect.stringMatching(/^data:image\/png;base64,/) })] }), expect.any(AbortSignal)));
     expect(await screen.findByText('I can see it.')).toBeTruthy();
   });
 
@@ -238,7 +238,7 @@ describe('ChatPage', () => {
     render(<ChatPage client={client} />);
     await screen.findByRole('option', { name: /Agent/ });
     await sendMessage();
-    await waitFor(() => expect(client.runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' })));
+    await waitFor(() => expect(client.runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }), expect.any(AbortSignal)));
     expect(await screen.findByLabelText('Session workspace')).toBeTruthy();
     expect(screen.getByText(/scores · table · 1.0 KB/)).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'New chat' }));
@@ -325,5 +325,96 @@ describe('ChatPage', () => {
     expect(screen.queryByText('question 1')).toBeNull();
     expect(screen.getByText('question 51')).toBeTruthy();
     expect(screen.getByText('answer 51')).toBeTruthy();
+  });
+  /**
+   * 中断。モデルのタイムアウトは最大10分あるので、「止められる」ことが体験の要になる。
+   * ボタンの出現条件・abort・再送できることをまとめて押さえる。
+   */
+  describe('実行の中断', () => {
+    function pendingClient(): { readonly client: ToolApiClient; readonly signals: (AbortSignal | undefined)[] } {
+      const signals: (AbortSignal | undefined)[] = [];
+      const runSavedAgent = vi.fn((_input: unknown, signal?: AbortSignal) => {
+        signals.push(signal);
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+        });
+      });
+      return { client: { listAgents: vi.fn().mockResolvedValue(oneAgent), runSavedAgent } as unknown as ToolApiClient, signals };
+    }
+
+    it('中断ボタンは実行中だけ出る（読み込み中や待機中には出さない）', async () => {
+      const { client } = pendingClient();
+      render(<ChatPage client={client} />);
+      await screen.findByRole('option', { name: /Agent/ });
+      expect(screen.queryByRole('button', { name: 'Stop run' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy();
+
+      await sendMessage('slow question');
+      expect(await screen.findByRole('button', { name: 'Stop run' })).toBeTruthy();
+      // 実行中は送信ボタンと入れ替わる。
+      expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+    });
+
+    it('クリックでリクエストをabortし、エラーではなく中断として扱って入力を戻す', async () => {
+      const { client, signals } = pendingClient();
+      render(<ChatPage client={client} />);
+      await screen.findByRole('option', { name: /Agent/ });
+      await sendMessage('slow question');
+      // 送信時点でコンポーザーは空になっている。
+      expect((screen.getByLabelText('Chat message') as HTMLTextAreaElement).value).toBe('');
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Stop run' }));
+
+      expect(signals[0]?.aborted).toBe(true);
+      expect(await screen.findByText('Run cancelled. Your message is back in the composer.')).toBeTruthy();
+      // 赤いエラーturnにはしない（Retryボタンも出さない）。
+      expect(screen.queryByText('Error')).toBeNull();
+      // 入力が戻るので、そのまま再送できる。
+      expect((screen.getByLabelText('Chat message') as HTMLTextAreaElement).value).toBe('slow question');
+      expect(await screen.findByRole('button', { name: 'Send' })).toBeTruthy();
+    });
+
+    it('中断後にそのまま再送できる', async () => {
+      const signals: (AbortSignal | undefined)[] = [];
+      const runSavedAgent = vi.fn()
+        .mockImplementationOnce((_input: unknown, signal?: AbortSignal) => {
+          signals.push(signal);
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+          });
+        })
+        .mockResolvedValue({ runId: 'run-retry', response: 'answered at last', trace: [], usage: {}, mode: 'preview' });
+      const client = { listAgents: vi.fn().mockResolvedValue(oneAgent), runSavedAgent } as unknown as ToolApiClient;
+      render(<ChatPage client={client} />);
+      await screen.findByRole('option', { name: /Agent/ });
+      await sendMessage('slow question');
+      await userEvent.click(await screen.findByRole('button', { name: 'Stop run' }));
+      await screen.findByText('Run cancelled. Your message is back in the composer.');
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Send' }));
+      expect(await screen.findByText('answered at last')).toBeTruthy();
+      expect(runSavedAgent).toHaveBeenNthCalledWith(2, expect.objectContaining({ message: 'slow question' }), expect.any(AbortSignal));
+    });
+
+    it('実行が長引くと段階的な案内を出す', async () => {
+      vi.useFakeTimers();
+      try {
+        const { client } = pendingClient();
+        render(<ChatPage client={client} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        fireEvent.change(screen.getByLabelText('Chat message'), { target: { value: 'slow question' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(screen.getByText('Sending the request to the model…')).toBeTruthy();
+        await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+        expect(screen.getByText('Waiting for the model to respond…')).toBeTruthy();
+        await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+        expect(screen.getByText('Tools or the model are taking a while. You can stop the run at any time.')).toBeTruthy();
+        await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+        expect(screen.getByText(/Still running\. The model can take up to 10 minutes/)).toBeTruthy();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

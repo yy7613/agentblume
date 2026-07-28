@@ -136,6 +136,7 @@ import { SqliteDataSourceRepository } from '../adapters/storage/sqlite-data-sour
 import type { DataSourceRepository } from '../domain/data-source/data-source-repository';
 import { EnvironmentPostgresConnectionCatalog } from '../adapters/database/environment-postgres';
 import { DeleteDataSourceUseCase, QueryDataSourcesUseCase, QueryDatabaseConnectionsUseCase, RegisterDatabaseDataSourceUseCase, SaveFileDataSourceUseCase } from '../application/data-source/manage-data-sources';
+import { SeedSampleDataUseCase } from '../application/onboarding/seed-sample-data';
 import { ResolveDataSourceGraphUseCase } from '../application/data-source/resolve-data-source-graph';
 import { EnvironmentSearchProviderCatalog } from '../adapters/search/environment-search-provider-catalog';
 import { WebSearchUseCase } from '../application/search/web-search';
@@ -403,6 +404,8 @@ export interface App {
   readonly listTools: ListToolsUseCase;
   readonly deleteTool: DeleteToolUseCase;
   readonly previewTool: PreviewToolUseCase;
+  /** オンボーディング用サンプル一式の投入（UIの `POST /sample-data` と CLI の `dev:sample` が共有する）。 */
+  readonly seedSampleData: SeedSampleDataUseCase;
   /**
    * shutdown猶予（`AGENTCONTEXT_SHUTDOWN_GRACE_MS`）。ワーカーの新規受付を止め、
    * 実行中のジョブを最大 `graceMs` だけ待ってから abort する。**`close()` の前に呼ぶ**
@@ -694,6 +697,22 @@ export function createApp(options?: AppOptions): App {
   const backupStore = new FilesystemBackupStore();
   const backupSchemaVersion = database?.schemaVersion ?? LATEST_SCHEMA_VERSION;
 
+  // サンプル投入は「読み取り + 保存」を13個のユースケースにまたがって行うため、
+  // 返却オブジェクトへ埋め込む前にローカルへ束ねてから注入する（App全体を渡さない）。
+  const queryDataSources = new QueryDataSourcesUseCase(dataSourceAdapter.repo);
+  const saveFileDataSource = new SaveFileDataSourceUseCase(dataSourceAdapter.repo);
+  const listTools = new ListToolsUseCase(repo);
+  const getTool = new GetToolUseCase(repo);
+  const querySkills = new QuerySkillsUseCase(skillAdapter.repo);
+  const queryWikiSpaces = new QueryWikiSpacesUseCase(wikiAdapter.repo);
+  const saveWikiSpace = new SaveWikiSpaceUseCase(wikiAdapter.repo);
+  const queryWiki = new QueryWikiUseCase(wikiAdapter.repo);
+  const queryAgents = new QueryAgentsUseCase(agentAdapter.repo);
+  const seedSampleData = new SeedSampleDataUseCase({
+    queryDataSources, saveFileDataSource, listTools, getTool, saveTool, querySkills, saveSkill,
+    queryWikiSpaces, saveWikiSpace, queryWiki, saveWikiPage, queryAgents, saveAgent,
+  });
+
   return {
     profile,
     ...(path === undefined ? {} : { dbPath: path }),
@@ -733,14 +752,14 @@ export function createApp(options?: AppOptions): App {
     createAgentSession: new CreateAgentSessionUseCase(sessionAdapter.repo, agentAdapter.repo),
     queryAgentSession: new QueryAgentSessionUseCase(sessionAdapter.repo),
     querySessionArtifacts: new QuerySessionArtifactsUseCase(new QueryAgentSessionUseCase(sessionAdapter.repo), sessionArtifactAdapter.repo),
-    saveFileDataSource: new SaveFileDataSourceUseCase(dataSourceAdapter.repo),
+    saveFileDataSource,
     registerDatabaseDataSource: new RegisterDatabaseDataSourceUseCase(dataSourceAdapter.repo, databaseConnections),
-    queryDataSources: new QueryDataSourcesUseCase(dataSourceAdapter.repo),
+    queryDataSources,
     deleteDataSource: new DeleteDataSourceUseCase(dataSourceAdapter.repo),
     queryDatabaseConnections: new QueryDatabaseConnectionsUseCase(databaseConnections),
     webSearch,
     saveAgent,
-    queryAgents: new QueryAgentsUseCase(agentAdapter.repo),
+    queryAgents,
     generateAgentPrompt,
     deleteAgent: new DeleteAgentUseCase(agentAdapter.repo),
     saveHarness: new SaveHarnessUseCase(harnessAdapter.repo, agentAdapter.repo),
@@ -769,7 +788,7 @@ export function createApp(options?: AppOptions): App {
     testModelSettings: new TestModelSettingsUseCase(modelSettingsAdapter.repo, secretCipher, modelProviderFactory, envSlotDefault),
     queryModelCatalog: new QueryModelCatalogUseCase(modelCatalog, modelSettingsAdapter.repo, secretCipher),
     saveSkill,
-    querySkills: new QuerySkillsUseCase(skillAdapter.repo),
+    querySkills,
     deleteSkill: new DeleteSkillUseCase(skillAdapter.repo),
     generateSkillPrompt: new GenerateSkillPromptUseCase(repo),
     savePersona,
@@ -826,13 +845,13 @@ export function createApp(options?: AppOptions): App {
     }),
     // 長期記憶（v21）。reflectRun は modelProvider（振り返り）を使用。承認は Wiki 保存 / Skill 蒸留へ委譲。
     saveWikiPage,
-    queryWiki: new QueryWikiUseCase(wikiAdapter.repo),
+    queryWiki,
     deleteWikiPage: new DeleteWikiPageUseCase(wikiAdapter.repo),
     reflectRun: new ReflectRunUseCase(modelProvider, memoryProposalAdapter.repo, wikiAdapter.repo, skillAdapter.repo),
     listProposals: new ListProposalsUseCase(memoryProposalAdapter.repo),
     reviewProposal: new ReviewProposalUseCase(memoryProposalAdapter.repo, saveWikiPage, skillAdapter.repo, saveSkill, unitOfWork),
-    saveWikiSpace: new SaveWikiSpaceUseCase(wikiAdapter.repo),
-    queryWikiSpaces: new QueryWikiSpacesUseCase(wikiAdapter.repo),
+    saveWikiSpace,
+    queryWikiSpaces,
     deleteWikiSpace: new DeleteWikiSpaceUseCase(wikiAdapter.repo),
     draftTool: new DraftToolUseCase(engine, resolveDataSources),
     suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, async () => {
@@ -843,11 +862,12 @@ export function createApp(options?: AppOptions): App {
       catch { return false; } // 設定が読めない/復号できない場合は「使えない」側へ倒す。
     }),
     saveTool,
-    getTool: new GetToolUseCase(repo),
+    getTool,
     listToolVersions: new ListToolVersionsUseCase(repo),
-    listTools: new ListToolsUseCase(repo),
+    listTools,
     deleteTool: new DeleteToolUseCase(repo),
     previewTool: new PreviewToolUseCase(repo, engine, resolveDataSources),
+    seedSampleData,
     // 2つのワーカーは互いに独立なので同時に待つ（直列にすると猶予が最大2倍かかる）。
     drainWorkers: async (graceMs: number) => {
       const drained = await Promise.all([experimentWorker.drainInFlight(graceMs), factoryWorker.drainInFlight(graceMs)]);

@@ -4,6 +4,7 @@ import type { DataSourceDto, DatabaseConnectionDto, DatabaseConnectionStatusDto 
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { InlineFeedback } from '../components/InlineFeedback';
 import { useI18n } from '../i18n';
+import { ScreenLink } from '../navigation';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
@@ -28,6 +29,8 @@ export function DataSourcesPage({ client }: { readonly client: ToolApiClient }) 
   const [error, setError] = useState<string>();
   const [uploadedName, setUploadedName] = useState<string>();
   const [pendingDelete, setPendingDelete] = useState<{ readonly id: string; readonly name: string }>();
+  // 「サンプルを読み込む」の結果。ウェルカムカードを閉じた利用者にも入口を残すため、この画面にも置く。
+  const [sampleCreated, setSampleCreated] = useState<number>();
 
   const refresh = useCallback(async () => {
     try {
@@ -37,6 +40,14 @@ export function DataSourcesPage({ client }: { readonly client: ToolApiClient }) 
   }, [client]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  // サンプル投入は冪等なので、押し間違いや二重クリックで資産が増えることはない。
+  const loadSample = useCallback(async () => {
+    setBusy(true); setError(undefined);
+    try { const sample = await client.seedSampleData(scope); setSampleCreated(sample.created); await refresh(); }
+    catch (cause) { setError(errorText(cause)); }
+    finally { setBusy(false); }
+  }, [client, refresh]);
 
   const upload = useCallback(async () => {
     if (selectedFile === undefined) return;
@@ -97,7 +108,11 @@ export function DataSourcesPage({ client }: { readonly client: ToolApiClient }) 
       </section>
     </div>
     <section className="workspace-card data-source-list"><h2>{text('Registered sources', '登録済みソース')}</h2>
-      {sources.length === 0 ? <p className="empty-state">{text('No data sources yet.', 'データソースはまだありません。')}</p> : <div className="data-source-rows">{sources.map((source) => {
+      {sampleCreated !== undefined && <InlineFeedback kind="success" autoHideMs={6000} onDismiss={() => setSampleCreated(undefined)}>{sampleCreated > 0
+        ? text(`Loaded the sample set (${sampleCreated} new item(s)). A Tool, Skill, Wiki, and Agent were added too.`, `サンプル一式を読み込みました（新規${sampleCreated}件）。ツール・スキル・Wiki・エージェントも追加されています。`)
+        : text('The sample set was already loaded — nothing changed.', 'サンプル一式は既に読み込み済みでした（変更はありません）。')}</InlineFeedback>}
+      {sources.length === 0 ? <p className="empty-state"><span>{text('No data sources yet.', 'データソースはまだありません。')}</span> <button type="button" className="secondary" disabled={busy} onClick={() => void loadSample()}>{text('Load sample data', 'サンプルを読み込む')}</button></p> : <p className="empty-state"><span>{text('Next: turn a source into a Tool, or let Factory build an Agent from it.', '次は、ソースをツールにするか、Factoryにエージェントを作らせます。')}</span> <ScreenLink to="Tool">{text('Open the Tool screen', 'ツール画面を開く')}</ScreenLink> <ScreenLink to="Factory">{text('Open Agent Factory', 'Agent Factoryを開く')}</ScreenLink></p>}
+      {sources.length > 0 && <div className="data-source-rows">{sources.map((source) => {
         const status = source.kind === 'database' ? statuses[source.connectionId] : undefined;
         return <article className="data-source-row" key={source.id}><div><strong>{source.name}</strong><code>{source.kind === 'file' ? `${source.format.toUpperCase()} · ${bytes(source.sizeBytes)}` : `${source.driver} · ${source.connectionId}${source.defaultSchema === undefined ? '' : ` · ${source.defaultSchema}`}`}</code>{status !== undefined && <small className={status.available ? 'connection-ready' : 'connection-unavailable'}>{status.available ? text('Connection available', '接続可能') : `${text('Unavailable', '利用不可')}: ${status.error ?? ''}`}</small>}</div><div className="data-source-actions">{source.kind === 'database' && <button type="button" className="secondary" disabled={busy} onClick={() => void test(source.connectionId)}>{text('Test', '接続テスト')}</button>}<button type="button" className="secondary danger" disabled={busy} onClick={() => setPendingDelete({ id: source.id, name: source.name })}>{text('Remove', '削除')}</button></div></article>;
       })}</div>}

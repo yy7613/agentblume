@@ -99,6 +99,7 @@ import type {
   ListOpenAiCompatibleModelsDto,
   OpenAiCompatibleModelsResultDto,
   SaveModelSettingsDto,
+  SampleDataSummaryDto,
 } from './types';
 import { localizeApiErrorMessage } from './error-messages';
 
@@ -116,6 +117,17 @@ export class ApiError extends Error {
     super(localizeApiErrorMessage({ status, code, serverMessage }));
     this.name = 'ApiError';
   }
+}
+
+/**
+ * `AbortController.abort()` で fetch が投げた中断かどうか。
+ *
+ * これは失敗ではなく利用者の操作なので、画面は「エラー」ではなく「中断しました」として扱う。
+ * 環境によって `DOMException`（ブラウザ / Node18+）だったり素の `Error` だったりするため、
+ * instanceof ではなく name で判定する。
+ */
+export function isAbortError(cause: unknown): boolean {
+  return cause instanceof Error && (cause.name === 'AbortError' || cause.name === 'TimeoutError');
 }
 
 type Fetcher = typeof fetch;
@@ -820,6 +832,17 @@ export class ToolApiClient {
   async listOpenAiCompatibleModels(scope: TenantScopeDto, baseUrl: string, slot?: ModelSlotNameDto, signal?: AbortSignal): Promise<OpenAiCompatibleModelsResultDto> {
     const body: ListOpenAiCompatibleModelsDto = { scope, baseUrl, ...(slot === undefined ? {} : { slot }) };
     return this.request<OpenAiCompatibleModelsResultDto>('/model-catalog/openai-compatible-models', { method: 'POST', body: JSON.stringify(body), signal });
+  }
+
+  /**
+   * オンボーディング用サンプル一式（データソース・ツール・スキル・Wiki・エージェント）を投入する。
+   * 冪等: 既に投入済みなら何も作らず、同じ一覧と `created: 0` を返す。
+   */
+  async seedSampleData(scope: TenantScopeDto): Promise<SampleDataSummaryDto> {
+    return (await this.request<{ sample: SampleDataSummaryDto }>('/sample-data', {
+      method: 'POST',
+      body: JSON.stringify({ scope }),
+    })).sample;
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

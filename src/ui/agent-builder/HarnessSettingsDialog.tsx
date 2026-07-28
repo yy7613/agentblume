@@ -3,7 +3,13 @@ import type { AgentRuntimeHarnessDto } from '../api/types';
 import { useModalBehavior } from '../hooks/useModalBehavior';
 import { useI18n } from '../i18n';
 
-/** Agent単位のランタイムハーネス設定。undefined は「未設定（サーバー既定の従来動作）」を意味する。 */
+/**
+ * Agent単位のランタイムハーネス設定。undefined は「未設定（サーバー既定の従来動作）」を意味する。
+ *
+ * **表示名は「実行オプション / Runtime options」**にしている。UIには別概念の「ハーネス」
+ * （複数Agentのオーケストレーション＝ナビ表示は「マルチエージェント」）があり、同じ言葉が
+ * 2つの意味で並ぶと利用者が取り違えるため。型名・内部id・保存フィールド名は Harness のまま。
+ */
 export type AgentHarnessValue = AgentRuntimeHarnessDto;
 
 /** 未設定のAgentへダイアログを開いたときの初期値（バックエンドの既定値と一致させる）。 */
@@ -44,13 +50,13 @@ export function HarnessSettingsDialog({ initial, onCancel, onClear, onApply }: {
     { key: 'functionInvocation', ariaLabel: 'Function invocation', label: text('Function invocation', 'ツール自動実行'), description: text('automatic tool-calling loop (off = single reply, no tools)', 'ツール呼び出しの自動ループ（オフで1回応答のみ）') },
   ];
   return <div className="node-config-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
-    <section ref={dialogRef} tabIndex={-1} className="node-config-dialog harness-settings-dialog" role="dialog" aria-modal="true" aria-label={text('Runtime harness', 'ランタイムハーネス')}>
+    <section ref={dialogRef} tabIndex={-1} className="node-config-dialog harness-settings-dialog" role="dialog" aria-modal="true" aria-label={text('Runtime options', '実行オプション')}>
       <header>
-        <div><span className="eyebrow">{text('Agent runtime', 'エージェント実行')}</span><h2>{text('Harness', 'ハーネス')}</h2></div>
-        <button type="button" className="ghost" aria-label={text('Close harness settings', 'ハーネス設定を閉じる')} onClick={onCancel}>×</button>
+        <div><span className="eyebrow">{text('Agent runtime', 'エージェント実行')}</span><h2>{text('Runtime options', '実行オプション')}</h2></div>
+        <button type="button" className="ghost" aria-label={text('Close runtime options', '実行オプションを閉じる')} onClick={onCancel}>×</button>
       </header>
       <div className="node-config-dialog-body harness-toggle-list">
-        <p className="harness-hint">{text('These features are opt-in per Agent. Leaving them unset keeps the previous behaviour.', 'これらの機能はAgent単位のopt-inです。未設定のままなら従来どおりの動作になります。')}</p>
+        <p className="harness-hint">{text('These runtime features are opt-in per Agent (they are unrelated to the Multi-Agent screen). Leaving them unset keeps the previous behaviour.', 'これらの実行時機能はAgent単位のopt-inです（マルチエージェント画面とは別物です）。未設定のままなら従来どおりの動作になります。')}</p>
         {rows.map((row) => <label className="harness-toggle" key={row.key}>
           <input type="checkbox" aria-label={row.ariaLabel} checked={draft[row.key]} onChange={() => toggle(row.key)} />
           <span><strong>{row.label}</strong><small>{row.description}</small></span>

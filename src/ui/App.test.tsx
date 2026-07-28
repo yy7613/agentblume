@@ -99,6 +99,44 @@ describe('App URLルーティング', () => {
   });
 });
 
+describe('App アプリ内ヘルプ', () => {
+  it('ヘルプボタンは表示中の画面の説明を出し、Escapeで閉じる', async () => {
+    render(<App client={{} as ToolApiClient} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Data' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Help for this screen' }));
+    expect(await screen.findByRole('dialog', { name: 'Help' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Data sources' })).toBeTruthy();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Help' })).toBeNull();
+  });
+
+  it('画面を変えるとヘルプの内容も変わる', async () => {
+    render(<App client={{} as ToolApiClient} />);
+    await userEvent.click(screen.getByRole('button', { name: 'MCP' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Help for this screen' }));
+    expect(await screen.findByRole('heading', { name: 'MCP' })).toBeTruthy();
+  });
+});
+
+describe('App ウェルカム（初回体験）', () => {
+  it('一覧APIを持たないclientでは出さない（既存画面の描画を妨げない）', () => {
+    render(<App client={{} as ToolApiClient} />);
+    expect(screen.queryByRole('heading', { name: 'Welcome to AgentBlume' })).toBeNull();
+  });
+
+  it('Chat画面かつデータが空のときだけ出す', async () => {
+    const client = {
+      listDataSources: vi.fn().mockResolvedValue([]),
+      listTools: vi.fn().mockResolvedValue([]),
+      listAgents: vi.fn().mockResolvedValue([]),
+    } as unknown as ToolApiClient;
+    render(<App client={client} />);
+    expect(await screen.findByRole('heading', { name: 'Welcome to AgentBlume' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Skill' }));
+    expect(screen.queryByRole('heading', { name: 'Welcome to AgentBlume' })).toBeNull();
+  });
+});
+
 describe('App 未保存の離脱確認', () => {
   it('未保存を報告する画面が無ければ確認せずに遷移する', async () => {
     render(<App client={{} as ToolApiClient} />);

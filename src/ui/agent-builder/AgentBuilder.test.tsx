@@ -265,12 +265,12 @@ describe('AgentBuilder', () => {
       await userEvent.type(screen.getByRole('textbox', { name: 'System prompt' }), 'You are helpful.');
     }
 
-    it('ハーネスボタンでダイアログを開き、6つの機能トグルを表示する', async () => {
+    it('実行オプションボタンでダイアログを開き、6つの機能トグルを表示する', async () => {
       const client = stubClient();
       await openNewAgentEditor(client);
-      await userEvent.click(screen.getByRole('button', { name: /^Harness/ }));
+      await userEvent.click(screen.getByRole('button', { name: /^Runtime options/ }));
 
-      const dialog = screen.getByRole('dialog', { name: 'Runtime harness' });
+      const dialog = screen.getByRole('dialog', { name: 'Runtime options' });
       expect(within(dialog).getAllByRole('checkbox')).toHaveLength(6);
       for (const name of ['File memory', 'Todo provider', 'Compaction', 'Web search', 'Tool approval', 'Function invocation']) {
         expect(within(dialog).getByRole('checkbox', { name })).toBeTruthy();
@@ -280,31 +280,31 @@ describe('AgentBuilder', () => {
       expect((within(dialog).getByRole('checkbox', { name: 'Tool approval' }) as HTMLInputElement).checked).toBe(false);
     });
 
-    it('ハーネスダイアログはEscapeで閉じ、フォーカスをHarnessボタンへ戻す', async () => {
+    it('実行オプションダイアログはEscapeで閉じ、フォーカスを開いたボタンへ戻す', async () => {
       const client = stubClient();
       await openNewAgentEditor(client);
-      const opener = screen.getByRole('button', { name: /^Harness/ });
+      const opener = screen.getByRole('button', { name: /^Runtime options/ });
       await userEvent.click(opener);
-      expect(screen.getByRole('dialog', { name: 'Runtime harness' })).toBeTruthy();
+      expect(screen.getByRole('dialog', { name: 'Runtime options' })).toBeTruthy();
 
       await userEvent.keyboard('{Escape}');
-      expect(screen.queryByRole('dialog', { name: 'Runtime harness' })).toBeNull();
-      expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Harness/ }));
+      expect(screen.queryByRole('dialog', { name: 'Runtime options' })).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Runtime options/ }));
     });
 
     it('2つ有効にしてApplyすると6キーすべてを含むharnessを保存ペイロードへ載せる', async () => {
       const client = stubClient();
       (client.saveAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.0.0' } });
       await openNewAgentEditor(client);
-      await userEvent.click(screen.getByRole('button', { name: /^Harness/ }));
-      const dialog = screen.getByRole('dialog', { name: 'Runtime harness' });
+      await userEvent.click(screen.getByRole('button', { name: /^Runtime options/ }));
+      const dialog = screen.getByRole('dialog', { name: 'Runtime options' });
       await userEvent.click(within(dialog).getByRole('checkbox', { name: 'File memory' }));
       await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Todo provider' }));
       await userEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
 
       // Applyでダイアログは閉じ、ボタンには有効な機能数が出る（fileMemory + todoProvider + functionInvocation）。
-      expect(screen.queryByRole('dialog', { name: 'Runtime harness' })).toBeNull();
-      expect(screen.getByRole('button', { name: 'Harness (3)' })).toBeTruthy();
+      expect(screen.queryByRole('dialog', { name: 'Runtime options' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Runtime options (3)' })).toBeTruthy();
 
       await fillRequired();
       await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
@@ -317,11 +317,11 @@ describe('AgentBuilder', () => {
       const client = stubClient();
       (client.saveAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.0.0' } });
       await openNewAgentEditor(client);
-      await userEvent.click(screen.getByRole('button', { name: /^Harness/ }));
-      const dialog = screen.getByRole('dialog', { name: 'Runtime harness' });
+      await userEvent.click(screen.getByRole('button', { name: /^Runtime options/ }));
+      const dialog = screen.getByRole('dialog', { name: 'Runtime options' });
       await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Compaction' }));
       await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-      expect(screen.getByRole('button', { name: 'Harness' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Runtime options' })).toBeTruthy();
 
       await fillRequired();
       await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
@@ -340,9 +340,9 @@ describe('AgentBuilder', () => {
       await userEvent.click(await screen.findByRole('button', { name: 'Open' }));
 
       // ボタンには有効な3機能が出る。
-      expect(await screen.findByRole('button', { name: 'Harness (3)' })).toBeTruthy();
-      await userEvent.click(screen.getByRole('button', { name: 'Harness (3)' }));
-      const dialog = screen.getByRole('dialog', { name: 'Runtime harness' });
+      expect(await screen.findByRole('button', { name: 'Runtime options (3)' })).toBeTruthy();
+      await userEvent.click(screen.getByRole('button', { name: 'Runtime options (3)' }));
+      const dialog = screen.getByRole('dialog', { name: 'Runtime options' });
       const checked = (name: string) => (within(dialog).getByRole('checkbox', { name }) as HTMLInputElement).checked;
       expect(checked('File memory')).toBe(true);
       expect(checked('Compaction')).toBe(true);
@@ -363,10 +363,10 @@ describe('AgentBuilder', () => {
       render(<AgentBuilder client={client} />);
       await userEvent.click(await screen.findByRole('button', { name: 'Open' }));
 
-      await userEvent.click(await screen.findByRole('button', { name: 'Harness (2)' }));
-      await userEvent.click(within(screen.getByRole('dialog', { name: 'Runtime harness' })).getByRole('button', { name: 'Clear' }));
-      expect(screen.queryByRole('dialog', { name: 'Runtime harness' })).toBeNull();
-      expect(screen.getByRole('button', { name: 'Harness' })).toBeTruthy();
+      await userEvent.click(await screen.findByRole('button', { name: 'Runtime options (2)' }));
+      await userEvent.click(within(screen.getByRole('dialog', { name: 'Runtime options' })).getByRole('button', { name: 'Clear' }));
+      expect(screen.queryByRole('dialog', { name: 'Runtime options' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Runtime options' })).toBeTruthy();
 
       await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
       await waitFor(() => expect(client.saveAgent).toHaveBeenCalled());

@@ -6,6 +6,7 @@ import { DraftRestoreBanner } from '../components/DraftRestoreBanner';
 import { InlineFeedback } from '../components/InlineFeedback';
 import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
 import { useReportUnsavedChanges } from '../unsaved-changes';
+import { ScreenLink } from '../navigation';
 import { useI18n } from '../i18n';
 import { DEFAULT_HARNESS, HarnessSettingsDialog, countEnabledHarness, type AgentHarnessValue } from './HarnessSettingsDialog';
 
@@ -328,7 +329,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
       </header>
       {error !== undefined && <div className="api-error">{error}</div>}
       <section className="workspace-card agent-list">
-        {agents.length === 0 ? <p className="empty-state">{text('No agents yet.', 'エージェントはまだありません。')}</p> : <div className="agent-list-rows">{agents.map((item) => <article className="agent-list-row" key={item.internalId}>
+        {agents.length === 0 ? <p className="empty-state"><span>{text('No agents yet.', 'エージェントはまだありません。')}</span> <ScreenLink to="Factory">{text('Generate one automatically (Factory)', '自動生成で作る (Factory)')}</ScreenLink></p> : <div className="agent-list-rows">{agents.map((item) => <article className="agent-list-row" key={item.internalId}>
           <div><strong>{item.displayName}</strong><code>{item.publishName}@{item.latestVersion}</code><small>{item.kind} · {item.state}</small></div>
           <div className="agent-list-actions">
             <button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void openAgent(item.internalId)}>{text('Open', '開く')}</button>
@@ -347,7 +348,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
       <div><button type="button" className="secondary agent-back-button" onClick={() => void backToList()}>{text('Back to list', '一覧へ戻る')}</button><span className="eyebrow">{text('Agent Builder', 'エージェントビルダー')}</span><h1>{displayName || text('New Agent', '新しいエージェント')}</h1><p>{text('Generate a system prompt from Skill and Tool metadata, then save the reviewed definition as a new version.', 'スキルとツールのメタデータからシステムプロンプトを生成し、レビュー後の定義を新しいバージョンとして保存します。')}</p></div>
       <div className="save-actions">
         {savedVersion !== undefined && <span className="version-chip">{text('saved', '保存済み')} {savedVersion}</span>}
-        <button type="button" className="secondary" onClick={() => setHarnessOpen(true)}>{text('Harness', 'ハーネス')}{harness === undefined ? '' : ` (${countEnabledHarness(harness)})`}</button>
+        <button type="button" className="secondary" onClick={() => setHarnessOpen(true)}>{text('Runtime options', '実行オプション')}{harness === undefined ? '' : ` (${countEnabledHarness(harness)})`}</button>
         <button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void generate()}>{busy === 'generate' ? text('Generating…', '生成中…') : text('Generate draft', '草案を生成')}</button>
         <button type="button" className="primary" disabled={busy !== undefined || saveBlocked} title={missingRequired.length > 0 ? text(`Required fields are empty: ${missingRequiredLabel}.`, `${missingRequiredLabel}が未入力です。`) : undefined} onClick={() => void save()}>{busy === 'save' ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
       </div>
@@ -377,13 +378,13 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
         <h2>{text('Skills', 'スキル')} <small>{skillRefs.length} {text('selected', '件選択')}</small></h2>
         {/* 選択行の種別バッジ: Skill / Tool / サブエージェント / Wiki を取り違えないようにする。 */}
         <div className="agent-tool-list">
-          {busy !== 'load' && skills.length === 0 && <p className="empty-state">{text('No saved Skills yet.', '保存済みスキルがありません。')}</p>}
+          {busy !== 'load' && skills.length === 0 && <p className="empty-state"><span>{text('No saved Skills yet.', '保存済みスキルがありません。')}</span> <ScreenLink to="Skill">{text('Open the Skill screen', 'スキル画面を開く')}</ScreenLink></p>}
           {skills.map((skill) => <label key={key(skill)} className="agent-tool-option"><input type="checkbox" checked={selectedSkills.has(skill.internalId)} onChange={() => toggleSkill(skill)} /><span><strong>{skill.displayName}</strong><code>{skill.publishName}@{skill.latestVersion}</code></span><small className="validation-status">{text('Skill', 'スキル')}</small><small>{skill.state}</small></label>)}
         </div>
         <h2>{text('Tools', 'ツール')} <small>{refs.length} {text('selected', '件選択')}</small></h2>
         <div className="agent-tool-list">
           {busy === 'load' && <p className="empty-state">{text('Loading tools…', 'ツールを読み込み中…')}</p>}
-          {busy !== 'load' && tools.length === 0 && <p className="empty-state">{text('No saved Tools yet.', '保存済みツールがありません。')}</p>}
+          {busy !== 'load' && tools.length === 0 && <p className="empty-state"><span>{text('No saved Tools yet.', '保存済みツールがありません。')}</span> <ScreenLink to="Tool">{text('Open the Tool screen', 'ツール画面を開く')}</ScreenLink></p>}
           {tools.map((tool) => <label key={key(tool)} className="agent-tool-option"><input type="checkbox" checked={selectedTools.has(tool.internalId)} onChange={() => toggle(tool)} /><span><strong>{tool.displayName}</strong><code>{tool.publishName}@{tool.latestVersion}</code></span><small className="validation-status">{text('Tool', 'ツール')}</small><small>{tool.state}</small></label>)}
         </div>
         <h2>{text('Sub-agents', 'サブエージェント')} <small>{subAgentRefs.length} {text('selected', '件選択')}</small></h2>
@@ -402,13 +403,13 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
         <h2>{text('Wikis', 'Wiki')} <small>{selectedWikis.size} {text('selected', '件選択')}</small></h2>
         <p className="agent-subagent-hint">{text('Only pages from the selected Wikis can be retrieved during execution.', '実行時に参照できるのは選択したWiki内のページだけです。')}</p>
         <div className="agent-tool-list">
-          {wikis.length === 0 && <p className="empty-state">{text('Create Wikis in Memory first.', '先に記憶画面でWikiを作成してください。')}</p>}
+          {wikis.length === 0 && <p className="empty-state"><span>{text('Create Wikis in Memory first.', '先に記憶画面でWikiを作成してください。')}</span> <ScreenLink to="Memory">{text('Open the Memory screen', '記憶画面を開く')}</ScreenLink></p>}
           {wikis.map((wiki) => <label key={wiki.id} className="agent-tool-option"><input aria-label={`${text('Use wiki', 'Wikiを使用')} ${wiki.name}`} type="checkbox" disabled={kind === 'pseudo-user'} checked={selectedWikis.has(wiki.id)} onChange={() => toggleWiki(wiki.id)} /><span><strong>{wiki.name}</strong><code>{wiki.id}</code></span><small className="validation-status">Wiki</small><small>{wiki.description}</small></label>)}
         </div>
         <h2>{text('MCP servers', 'MCPサーバー')} <small>{selectedMcpServers.size} {text('selected', '件選択')}</small></h2>
         <p className="agent-subagent-hint">{text('Tools from the selected servers are injected as mcp__<server>__<tool>.', '選択したサーバーのツールが mcp__<サーバー名>__<ツール名> として注入されます。')}</p>
         <div className="agent-tool-list">
-          {mcpServers.length === 0 && <p className="empty-state">{text('No MCP servers configured. Add them on the MCP page.', 'MCPサーバーが未設定です。MCP画面で追加してください。')}</p>}
+          {mcpServers.length === 0 && <p className="empty-state"><span>{text('No MCP servers configured. Add them on the MCP page.', 'MCPサーバーが未設定です。MCP画面で追加してください。')}</span> <ScreenLink to="MCP">{text('Open the MCP screen', 'MCP画面を開く')}</ScreenLink></p>}
           {mcpServers.map((server) => {
             const selected = selectedMcpServers.has(server.name);
             return <label key={server.name} className="agent-tool-option">

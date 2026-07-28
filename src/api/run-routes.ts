@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { z } from 'zod';
 import type { RunAgentPreviewUseCase } from '../application/agent/run-agent-preview';
 import type { QueryRunsUseCase } from '../application/agent/query-runs';
@@ -45,9 +45,30 @@ function parseVersion(value: string | undefined): SemVer | undefined {
   catch { throw new BadRequestError(`invalid version string: "${value}"`); }
 }
 
+/**
+ * クライアント切断で abort する AbortSignal。**UIの「中断」はこれ1本に懸かっている**。
+ *
+ * `request.raw.signal` は Node 26.1 で入った新しいAPIで、`@types/node` が 26 系のため
+ * 型検査は通るが、このリポジトリが動かす Node 22（.nvmrc / engines >=22.9）では
+ * **実行時に undefined** になる。素で参照するとユースケースへ `undefined` が渡り、
+ * ブラウザが fetch を abort してもモデル呼び出しは最大10分走り続ける。
+ *
+ * そのため未提供の実行環境では、応答ストリームが「書き終える前に閉じた」＝クライアントが
+ * 切断した、という古典的な判定で同等のシグナルを自前で作る。
+ */
+export function clientAbortSignal(request: FastifyRequest, reply: FastifyReply): AbortSignal {
+  const native = (request.raw as Partial<{ signal: AbortSignal }>).signal;
+  if (native !== undefined) return native;
+  const controller = new AbortController();
+  const raw = reply.raw;
+  raw.once('close', () => { if (!raw.writableEnded) controller.abort(); });
+  return controller.signal;
+}
+
 export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): void {
-  app.post('/runs', async (request) => {
+  app.post('/runs', async (request, reply) => {
     const body = parseWith(runAgentBodySchema, request.body);
+    const signal = clientAbortSignal(request, reply);
     let run;
     if ('agent' in body) {
       const version = parseVersion(body.agent.version);
@@ -63,7 +84,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
         ...(body.history !== undefined ? { history: body.history } : {}),
         // 対話相手（人間）がいる唯一の入口。toolApproval の承認ゲートはここからの実行だけで発火する。
         interactive: true,
-      }, request.raw.signal);
+      }, signal);
     } else {
       const version = parseVersion(body.tool.version);
       run = await deps.runAgentPreview.execute({
@@ -75,7 +96,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
         mode: body.mode,
         ...(body.images !== undefined ? { images: body.images } : {}),
         ...(body.sessionId !== undefined ? { sessionId: body.sessionId } : {}),
-      }, request.raw.signal);
+      }, signal);
     }
     return { run };
   });
@@ -84,14 +105,14 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
    * 承認待ちで停止したRunを、人間の承認結果とともに同じrunIdで再開する。
    * 応答は POST /runs と同じ形（再開後に別のツールで再び waiting-approval になることもある）。
    */
-  app.post<{ Params: { runId: string } }>('/runs/:runId/resume', async (request) => {
+  app.post<{ Params: { runId: string } }>('/runs/:runId/resume', async (request, reply) => {
     const body = parseWith(resumeRunBodySchema, request.body);
     const run = await deps.runAgentPreview.resumeSavedRun({
       scope: body.scope,
       runId: request.params.runId,
       decision: body.decision,
       ...(body.feedback !== undefined ? { feedback: body.feedback } : {}),
-    }, request.raw.signal);
+    }, clientAbortSignal(request, reply));
     return { run };
   });
 

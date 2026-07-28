@@ -109,6 +109,7 @@ describe('AgentInspectorPage', () => {
 
     expect(client.runSavedAgent).toHaveBeenCalledWith(
       expect.objectContaining({ agent: { internalId: 'agent', version: '1.2.0' }, mode: 'preview' }),
+      expect.any(AbortSignal),
     );
   });
 
@@ -121,7 +122,7 @@ describe('AgentInspectorPage', () => {
     await userEvent.click(await screen.findByText('Attach memory'));
     await userEvent.click(screen.getByRole('checkbox', { name: /Cohort SQL/ }));
     await sendMessage();
-    await waitFor(() => expect(runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ memoryPageIds: ['w1'] })));
+    await waitFor(() => expect(runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ memoryPageIds: ['w1'] }), expect.any(AbortSignal)));
   });
 
   it('ツール未使用の実行では「呼ばれたツールなし」を示す', async () => {
@@ -255,13 +256,13 @@ describe('AgentInspectorPage', () => {
     expect(banner.textContent).toContain('Approve write_rows?');
 
     await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    await waitFor(() => expect(resumeRun).toHaveBeenNthCalledWith(1, 'run-w1', { tenantId: 'local', workspaceId: 'default' }, 'approve'));
+    await waitFor(() => expect(resumeRun).toHaveBeenNthCalledWith(1, 'run-w1', { tenantId: 'local', workspaceId: 'default' }, 'approve', undefined, expect.any(AbortSignal)));
     // 再びwaiting-approvalなら次のツールの承認バナーを出し直す（前のバナーは残さない）。
     const next = await screen.findByRole('group', { name: 'Tool approval' });
     expect(next.textContent).toContain('Approve delete_rows?');
 
     await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    await waitFor(() => expect(resumeRun).toHaveBeenNthCalledWith(2, 'run-w2', { tenantId: 'local', workspaceId: 'default' }, 'approve'));
+    await waitFor(() => expect(resumeRun).toHaveBeenNthCalledWith(2, 'run-w2', { tenantId: 'local', workspaceId: 'default' }, 'approve', undefined, expect.any(AbortSignal)));
     expect(await screen.findByText('all writes applied')).toBeTruthy();
     expect(screen.queryByRole('group', { name: 'Tool approval' })).toBeNull();
   });
@@ -280,7 +281,7 @@ describe('AgentInspectorPage', () => {
     await screen.findByRole('group', { name: 'Tool approval' });
 
     await userEvent.click(screen.getByRole('button', { name: 'Reject' }));
-    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith('run-r1', { tenantId: 'local', workspaceId: 'default' }, 'reject'));
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledWith('run-r1', { tenantId: 'local', workspaceId: 'default' }, 'reject', undefined, expect.any(AbortSignal)));
     expect(await screen.findByText('skipped the write')).toBeTruthy();
   });
 
@@ -305,5 +306,59 @@ describe('AgentInspectorPage', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+  describe('実行の中断', () => {
+    function pendingClient(): { readonly client: ToolApiClient; readonly signals: (AbortSignal | undefined)[] } {
+      const signals: (AbortSignal | undefined)[] = [];
+      const runSavedAgent = vi.fn((_input: unknown, signal?: AbortSignal) => {
+        signals.push(signal);
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+        });
+      });
+      return { client: makeClient({ runSavedAgent }), signals };
+    }
+
+    it('中断ボタンは実行中だけ出る', async () => {
+      const { client } = pendingClient();
+      render(<AgentInspectorPage client={client} />);
+      await screen.findByRole('option', { name: /Agent/ });
+      expect(screen.queryByRole('button', { name: 'Stop run' })).toBeNull();
+
+      await sendMessage('slow question');
+      expect(await screen.findByRole('button', { name: 'Stop run' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+    });
+
+    it('クリックでabortし、中断として扱って入力を戻す', async () => {
+      const { client, signals } = pendingClient();
+      render(<AgentInspectorPage client={client} />);
+      await screen.findByRole('option', { name: /Agent/ });
+      await sendMessage('slow question');
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Stop run' }));
+
+      expect(signals[0]?.aborted).toBe(true);
+      expect(await screen.findByText('Run cancelled. Your message is back in the composer.')).toBeTruthy();
+      expect(screen.queryByText('Error')).toBeNull();
+      expect((screen.getByLabelText('Inspect message') as HTMLTextAreaElement).value).toBe('slow question');
+    });
+
+    it('実行が長引くと段階的な案内を出す', async () => {
+      vi.useFakeTimers();
+      try {
+        const { client } = pendingClient();
+        render(<AgentInspectorPage client={client} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        fireEvent.change(screen.getByLabelText('Inspect message'), { target: { value: 'slow question' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(screen.getByText('Sending the request to the model…')).toBeTruthy();
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(screen.getByText('Tools or the model are taking a while. You can stop the run at any time.')).toBeTruthy();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

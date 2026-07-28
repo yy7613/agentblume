@@ -6,6 +6,7 @@ import { DraftRestoreBanner } from '../components/DraftRestoreBanner';
 import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
 import { useReportUnsavedChanges } from '../unsaved-changes';
 import { useI18n } from '../i18n';
+import { ScreenLink } from '../navigation';
 import { FlowCanvas } from './FlowCanvas';
 import { MetadataBar } from './MetadataBar';
 import { NodeInspector } from './NodeInspector';
@@ -87,7 +88,7 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
       </header>
       {listError !== undefined && <div className="api-error">{listError}</div>}
       <section className="workspace-card agent-list">
-        {tools.length === 0 ? <p className="empty-state">{text('No tools yet.', 'ツールはまだありません。')}</p> : <div className="agent-list-rows">{tools.map((item) => <article className="agent-list-row" key={item.internalId}>
+        {tools.length === 0 ? <p className="empty-state"><span>{text('No tools yet.', 'ツールはまだありません。')}</span> <span>{text('A Tool reads a registered data source, so register one first.', 'ツールは登録済みのデータソースを読むので、先にデータソースを登録してください。')}</span> <ScreenLink to="Data">{text('Open the Data sources screen', 'データソース画面を開く')}</ScreenLink></p> : <div className="agent-list-rows">{tools.map((item) => <article className="agent-list-row" key={item.internalId}>
           <div><strong>{item.displayName}</strong><code>{item.publishName}@{item.latestVersion}</code><small>{item.sideEffect} · {item.state}</small></div>
           <div className="agent-list-actions">
             <button type="button" className="secondary" disabled={busy} onClick={() => void openTool(item.internalId)}>{text('Open', '開く')}</button>

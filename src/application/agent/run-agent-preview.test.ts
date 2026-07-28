@@ -303,12 +303,15 @@ describe('RunAgentPreviewUseCase', () => {
       expect(result).toContain('Carol');
     });
 
-    it('nullableでない引数の省略は従来どおり拒否する', async () => {
+    it('nullableでない引数の省略は、1回差し戻しても直らなければ従来どおり拒否する', async () => {
       const model = new QueueModel([
         { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_scores', arguments: { region: 'Tokyo' } }] }, finishReason: 'tool_calls' },
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search-2', name: 'search_scores', arguments: { region: 'Tokyo' } }] }, finishReason: 'tool_calls' },
       ]);
       await expect(useCase(optionalTool(), model).execute({ ...input, toolId: 'optional-search' }))
         .rejects.toThrow(/required argument missing: minimumScore/);
+      // 差し戻しはツール結果としてモデルへ返る（次の往復でエラー内容が見えている）。
+      expect(JSON.stringify(model.requests[1]?.messages)).toContain('required argument missing: minimumScore');
     });
   });
 
@@ -1412,5 +1415,114 @@ describe('RunAgentPreviewUseCase MCP tools', () => {
       .executeSaved({ scope, agentId: 'mcp-budget', message: 'go', mode: 'preview', budget: { remainingToolCalls: 2 } }))
       .rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/budget exhausted: tool calls/) }) });
     expect(mcpClient.calls).toHaveLength(2);
+  });
+});
+
+/**
+ * モデルの1回きりの間違い（不正JSON・引数の作り間違い）でRunを丸ごと失敗させない修復ループ。
+ * 修復は「新しいモデル往復」として発行するので、上限・バジェットの消費も併せて確認する。
+ */
+describe('RunAgentPreviewUseCase 自動リトライ（修復ループ）', () => {
+  const structuredCaps: readonly ModelCapability[] = ['chat', 'tool-calling', 'structured-output'];
+  const structuredAgent = () => createAgent({
+    metadata: agentMeta('structured'), kind: 'normal', systemPrompt: 'Return JSON.', tools: [],
+    output: { name: 'agent_response', fields: [{ name: 'answer', type: 'string', required: true }] },
+  });
+  function structuredUseCase(model: ModelProviderPort, runs: RunRepository): RunAgentPreviewUseCase {
+    return new RunAgentPreviewUseCase(new StaticRepository(null), new EtlEngine(createDefaultRegistry()), model, runs, () => 'run-1', undefined, new StaticAgents(structuredAgent()));
+  }
+
+  it('構造化出力が1回不正でも、エラーを添えて作り直させ2回目で完走する', async () => {
+    const model = new QueueModel([stop('{}'), stop('{"answer":"ok"}')], structuredCaps);
+    const runs = new MemoryRuns();
+    const run = await structuredUseCase(model, runs).executeSaved({ scope, agentId: 'structured', message: 'go', mode: 'preview' });
+
+    expect(run.structuredResponse).toEqual({ answer: 'ok' });
+    expect(runs.records.get('run-1')?.status).toBe('succeeded');
+    // 修復依頼には「何が悪かったか」と「期待する形」の両方が入る。
+    const repairPrompt = String(model.requests[1]?.messages.at(-1)?.content);
+    expect(repairPrompt).toContain("structured response is missing required field 'answer'");
+    expect(repairPrompt).toContain('answer: string (required)');
+    // 修復は通常のモデル往復として発行される（model-request が2件）。
+    expect(run.trace.filter((event) => event.kind === 'model-request')).toHaveLength(2);
+  });
+
+  it('リトライしたことをtraceへ残す（沈黙してやり直さない）', async () => {
+    const model = new QueueModel([stop('{}'), stop('{"answer":"ok"}')], structuredCaps);
+    const run = await structuredUseCase(model, new MemoryRuns()).executeSaved({ scope, agentId: 'structured', message: 'go', mode: 'preview' });
+
+    expect(run.trace.filter((event) => event.kind === 'error')).toMatchObject([
+      { kind: 'error', code: 'AGENT_RUN', message: expect.stringContaining('retrying 1/1') },
+    ]);
+  });
+
+  it('修復上限（既定1回）まで失敗したら従来どおりRunを失敗させる', async () => {
+    const model = new QueueModel([stop('{}'), stop('{"other":1}')], structuredCaps);
+    const runs = new MemoryRuns();
+    await expect(structuredUseCase(model, runs).executeSaved({ scope, agentId: 'structured', message: 'go', mode: 'preview' }))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/unknown field 'other'/) }) });
+    // 修復は1回だけ（無限に往復しない）。
+    expect(model.requests).toHaveLength(2);
+    expect(runs.records.get('run-1')?.status).toBe('failed');
+  });
+
+  it('残り往復が無いときは修復せず、往復上限ではなく本来の検証エラーを見せる', async () => {
+    const model = new QueueModel([stop('{}')], structuredCaps);
+    await expect(structuredUseCase(model, new MemoryRuns()).executeSaved({ scope, agentId: 'structured', message: 'go', mode: 'preview', budget: { remainingModelRounds: 1 } }))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/missing required field 'answer'/) }) });
+    expect(model.requests).toHaveLength(1);
+  });
+
+  it('ツール引数の作り間違いはツール結果として差し戻し、呼び直しで完走する', async () => {
+    const model = new QueueModel([
+      toolCall('c1', 'score_lookup', { name: 'Alice' }),
+      toolCall('c2', 'score_lookup', { name: 'Alice', score: 42 }),
+      stop('Alice: 42'),
+    ]);
+    const runs = new MemoryRuns();
+    const run = await new RunAgentPreviewUseCase(new StaticRepository(makeTool()), new EtlEngine(createDefaultRegistry()), model, runs, () => 'run-1').execute(input);
+
+    expect(run.response).toBe('Alice: 42');
+    expect(runs.records.get('run-1')?.status).toBe('succeeded');
+    expect(run.trace.filter((event) => event.kind === 'error')).toMatchObject([
+      { kind: 'error', code: 'TOOL_ARGUMENTS', message: expect.stringContaining('retrying 1/1') },
+    ]);
+    // 差し戻しはツール結果としてモデルへ返る。
+    expect(JSON.stringify(model.requests[1]?.messages)).toContain('required argument missing: score');
+  });
+});
+
+/** 中断（クライアント切断 / 中断ボタン）は「失敗」ではなく「利用者が止めた」として記録する。 */
+class SignalAwareModel implements ModelProviderPort {
+  private resolveStarted!: () => void;
+  /** complete() に入ったことを待てるようにする（中断のタイミングをテストで固定するため）。 */
+  readonly started: Promise<void> = new Promise((resolve) => { this.resolveStarted = resolve; });
+  capabilities(): readonly ModelCapability[] { return ['chat', 'tool-calling']; }
+  async complete(_request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion> {
+    // 実プロバイダ（mastra / LM Studio）と同じく、abort で失敗する応答待ちを再現する。
+    return new Promise<ModelCompletion>((_resolve, reject) => {
+      if (signal?.aborted === true) { reject(new Error('model request aborted')); return; }
+      signal?.addEventListener('abort', () => reject(new Error('model request aborted')), { once: true });
+      this.resolveStarted();
+    });
+  }
+}
+
+describe('RunAgentPreviewUseCase 実行の中断', () => {
+  it('signalがabortされたRunは failed + RUN_CANCELLED として記録される', async () => {
+    const controller = new AbortController();
+    const model = new SignalAwareModel();
+    const runs = new MemoryRuns();
+    const pending = new RunAgentPreviewUseCase(new StaticRepository(makeTool()), new EtlEngine(createDefaultRegistry()), model, runs, () => 'run-cancel')
+      .execute(input, controller.signal);
+
+    await model.started;
+    controller.abort();
+    await expect(pending).rejects.toBeInstanceOf(RunFailedError);
+
+    const record = runs.records.get('run-cancel');
+    expect(record?.status).toBe('failed');
+    expect(record?.failure).toEqual({ code: 'RUN_CANCELLED', message: 'run cancelled by the user' });
+    expect(record?.trace.at(-1)).toMatchObject({ kind: 'error', code: 'RUN_CANCELLED' });
   });
 });

@@ -43,6 +43,7 @@ const HEADINGS: Record<string, Bilingual> = {
   AGENT_VERSION_CONFLICT: ['That agent version already exists. Bump the version, then save again', '同じエージェントバージョンが既に存在します。バージョンを上げて保存し直してください'],
   AGENT_VALIDATION: ['Please check the agent definition', 'エージェント定義を確認してください'],
   AGENT_RUN: ['The agent run failed', 'エージェントの実行に失敗しました'],
+  RUN_CANCELLED: ['The run was cancelled', '実行を中断しました'],
 
   SKILL_NOT_FOUND: ['The skill was not found', 'スキルが見つかりませんでした'],
   SKILL_VERSION_CONFLICT: ['That skill version already exists. Bump the version, then save again', '同じスキルバージョンが既に存在します。バージョンを上げて保存し直してください'],
@@ -393,6 +394,232 @@ function localizeEtlDetail(message: string, language: ErrorLanguage): string | u
 }
 
 /**
+ * エージェント実行の内部エラー（`AGENT_RUN` / `TOOL_ARGUMENTS` / `UNSAFE_TOOL`）の定型文。
+ *
+ * `src/application/agent/**` が投げる英語メッセージはそのままだと「何が起きたか」しか分からず、
+ * **次に何をすればよいか**が書かれていない（これがこの層の一番の空白だった）。ここでは
+ * 原因の言い換えに加えて必ず次の一手（モデルを替える / ツールを繋ぐ / 質問を分ける等）を添える。
+ *
+ * `modelMessage()` と同じく **en / ja 両方**を返す（原文は「何が起きたか」しか語らないので、
+ * 英語UIでも原文のままでは次の一手が分からない）。未知の形は undefined を返し、
+ * 呼び出し側が原文を括弧で残す。
+ */
+function localizeAgentRunDetail(message: string, language: ErrorLanguage): string | undefined {
+  const ja = language === 'ja';
+
+  // --- モデルがツールを呼び間違えた / 呼べない ---------------------------------
+  let matched = /^(?:model requested unknown tool|unknown MCP tool|unknown runtime harness tool): (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `モデルが存在しないツール「${matched[1]}」を呼ぼうとしました。エージェントに必要なツールが接続されているか確認してください`
+      : `the model called a tool named '${matched[1]}' that is not connected. Check the tools attached to this agent`;
+  }
+
+  matched = /^MCP tool '(.+)' is unavailable: its MCP server could not be resolved for this run$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `MCPツール「${matched[1]}」のMCPサーバーへ接続できませんでした。MCP設定画面で接続をテストしてから、もう一度実行してください`
+      : `the MCP server behind '${matched[1]}' could not be reached. Test the connection in MCP settings, then run again`;
+  }
+
+  if (message === 'model reported tool_calls without a tool call') {
+    return ja
+      ? 'モデルが「ツールを呼ぶ」と応答しながら呼び出す内容を返しませんでした。ツール呼び出しに対応したモデルを選び直してください'
+      : 'the model said it would call a tool but returned no call. Pick a model with reliable tool-calling support';
+  }
+  if (message === 'model requested a tool call but function invocation is disabled for this agent') {
+    return ja
+      ? 'このエージェントはツールの自動実行が無効ですが、モデルがツールを呼ぼうとしました。ハーネス設定でツール実行を有効にするか、ツールの接続を外してください'
+      : 'tool execution is turned off for this agent but the model tried to call a tool. Enable tool execution in the harness settings, or detach the tools';
+  }
+
+  // --- 上限・予算 -------------------------------------------------------------
+  matched = /^tool call limit exceeded: maximum (\d+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `1回の実行で使えるツール呼び出しの上限（${matched[1]}回）に達しました。目的を分けて質問するか、エージェントのハーネス設定で上限を広げてください`
+      : `the run hit its tool-call limit (${matched[1]}). Split the request into smaller questions, or raise the limit in the agent harness settings`;
+  }
+
+  matched = /^model round limit exceeded: maximum (\d+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `モデルとの往復回数の上限（${matched[1]}回）に達しました。手順が少なく済むよう指示を具体的にするか、エージェントのハーネス設定で上限を広げてください`
+      : `the run hit its model round limit (${matched[1]}). Make the request more specific so it needs fewer steps, or raise the limit in the agent harness settings`;
+  }
+
+  matched = /^run budget exhausted: (model rounds|tool calls)$/.exec(message);
+  if (matched !== null) {
+    const what = matched[1] === 'model rounds' ? (ja ? 'モデル往復' : 'model rounds') : (ja ? 'ツール呼び出し' : 'tool calls');
+    return ja
+      ? `実行全体の${what}の予算を使い切りました。サブエージェントへの委譲を減らすか、質問を分けて実行してください`
+      : `the run used up its shared budget for ${what}. Delegate to fewer sub-agents, or split the request`;
+  }
+
+  // --- 構造化出力 -------------------------------------------------------------
+  matched = /^structured response is missing required field '(.+)'$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `モデルの応答に必要な項目「${matched[1]}」がありませんでした。別のモデルを試すか、構造化出力の項目を減らしてください`
+      : `the model response was missing the required field '${matched[1]}'. Try another model, or reduce the structured output fields`;
+  }
+
+  matched = /^structured response contains unknown field '(.+)'$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `モデルの応答に定義していない項目「${matched[1]}」が含まれていました。構造化出力の定義を見直すか、別のモデルを試してください`
+      : `the model response contained an undeclared field '${matched[1]}'. Review the structured output definition, or try another model`;
+  }
+
+  matched = /^structured response field '(.+)' must be (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `モデルの応答の項目「${matched[1]}」の型が違います（${matched[2]} が必要）。別のモデルを試すか、構造化出力の型を見直してください`
+      : `the model returned the wrong type for '${matched[1]}' (expected ${matched[2]}). Try another model, or review the field type`;
+  }
+
+  if (message === 'structured response is not valid JSON' || message === 'structured response must be a JSON object') {
+    return ja
+      ? 'モデルの応答をJSONとして解釈できませんでした。構造化出力に対応したモデルを選び直すか、構造化出力の項目を減らしてください'
+      : 'the model response could not be read as JSON. Pick a model that supports structured output, or reduce the fields';
+  }
+
+  // --- モデルの能力不足 -------------------------------------------------------
+  matched = /^configured model provider does not support (tool-calling|structured output|image input)$/.exec(message);
+  if (matched !== null) {
+    if (matched[1] === 'tool-calling') {
+      return ja
+        ? '選択中のモデルはツール呼び出しに対応していません。設定画面でツール呼び出しに対応したモデルへ切り替えてください'
+        : 'the selected model does not support tool calling. Switch to a tool-capable model in model settings';
+    }
+    if (matched[1] === 'structured output') {
+      return ja
+        ? '選択中のモデルは構造化出力に対応していません。設定画面で対応モデルへ切り替えるか、エージェントの構造化出力を外してください'
+        : 'the selected model does not support structured output. Switch models in model settings, or remove the structured output from this agent';
+    }
+    return ja
+      ? '選択中のモデルは画像入力に対応していません。画像を外して送るか、設定画面で画像対応のモデルへ切り替えてください'
+      : 'the selected model does not accept images. Send without the attachments, or switch to a vision model in model settings';
+  }
+
+  // --- ツール引数（TOOL_ARGUMENTS） -------------------------------------------
+  matched = /^required argument missing: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `モデルがツールの必須引数「${matched[1]}」を渡しませんでした。ツールの引数の説明を具体的にするか、指示の中でその値を明示してください`
+      : `the model omitted the required tool argument '${matched[1]}'. Describe that argument more concretely in the tool, or state its value in your request`;
+  }
+
+  matched = /^invalid argument '(.+)': expected (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `ツールの引数「${matched[1]}」の型が違います（${matched[2]} が必要）。ツールの引数の説明を具体的にするか、指示の中でその値を明示してください`
+      : `the tool argument '${matched[1]}' had the wrong type (expected ${matched[2]}). Describe that argument more concretely in the tool, or state its value in your request`;
+  }
+
+  matched = /^unknown argument\(s\): (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `モデルがツールに存在しない引数「${matched[1]}」を渡しました。ツールの引数定義とプロンプトの説明を見直してください`
+      : `the model passed arguments the tool does not accept: ${matched[1]}. Review the tool argument definition and its description`;
+  }
+
+  // --- 副作用ガード（UNSAFE_TOOL） --------------------------------------------
+  matched = /^Agent preview refuses (\S+) effective side-effect for (?:additional sub-)?agent '(.+)'$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `エージェント「${matched[2]}」は副作用「${matched[1]}」を持つためプレビュー実行できません。読み取り専用（read-only / session-write）のツールだけを接続してください`
+      : `agent '${matched[2]}' has the '${matched[1]}' side effect, which preview runs refuse. Attach only read-only or session-write tools`;
+  }
+
+  matched = /^Agent preview refuses (\S+) tool '(.+)'$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `ツール「${matched[2]}」は副作用「${matched[1]}」を持つためプレビュー実行できません。読み取り専用（read-only / session-write）のツールへ差し替えてください`
+      : `tool '${matched[2]}' has the '${matched[1]}' side effect, which preview runs refuse. Replace it with a read-only or session-write tool`;
+  }
+
+  // --- 承認・セッション・記憶 -------------------------------------------------
+  matched = /^run '(.+)' is not waiting for approval$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `実行「${matched[1]}」は承認待ちではありません。画面を開き直して最新の状態を確認してください`
+      : `run '${matched[1]}' is not waiting for approval. Reopen the screen to see its current state`;
+  }
+
+  matched = /^(?:run '.+' )?approval checkpoint expired at (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `ツール承認の期限（${matched[1]}）が切れました。同じ指示をもう一度送り直してください`
+      : `the tool approval expired at ${matched[1]}. Send the same request again`;
+  }
+
+  if (message === 'agent session belongs to a different Agent version') {
+    return ja
+      ? 'このセッションは別バージョンのエージェントのものです。「新しいチャット」を開始してください'
+      : 'this session belongs to a different agent version. Start a new chat';
+  }
+
+  matched = /^memory page '(.+)' is outside Agent wiki allowlist$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `記憶ページ「${matched[1]}」はこのエージェントが参照できるWikiの範囲外です。エージェントの参照Wiki設定を確認してください`
+      : `memory page '${matched[1]}' is outside the wikis this agent may read. Check the agent's wiki settings`;
+  }
+
+  matched = /^workspace artifact not found: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `セッション内の成果物「${matched[1]}」が見つかりませんでした。「新しいチャット」を開始してやり直してください`
+      : `the session artifact '${matched[1]}' no longer exists. Start a new chat and try again`;
+  }
+
+  if (message === 'web_search has no configured search provider') {
+    return ja
+      ? 'Web検索に使う検索プロバイダが設定されていません。設定画面で検索プロバイダを登録してください'
+      : 'no search provider is configured for web search. Register one in settings';
+  }
+
+  // --- 構成・定義の不整合 -----------------------------------------------------
+  if (message === 'saved Agent execution is not configured') {
+    return ja
+      ? '保存済みエージェントを実行できる構成になっていません。サーバーの起動設定を確認してください'
+      : 'saved agent execution is not wired up on this server. Check the server startup configuration';
+  }
+
+  matched = /^additional sub-agent not found: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `委譲先のサブエージェント「${matched[1]}」が見つかりませんでした。該当バージョンが削除されていないか確認してください`
+      : `the sub-agent '${matched[1]}' was not found. Check whether that version was deleted`;
+  }
+
+  matched = /^filter node '(.+)' references an unavailable Agent input$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `ツールのフィルタ「${matched[1]}」が受け取れない引数を参照しています。ツール画面で引数（Agent Input）の宣言と接続を見直してください`
+      : `the filter node '${matched[1]}' references an argument the tool never receives. Review the Agent Input declaration and its wiring`;
+  }
+
+  matched = /^tool inputSchema does not match agent-input node '(.+)'$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `ツールの引数定義とAgent Inputノード「${matched[1]}」の列が一致していません。ツール画面で引数を保存し直してください`
+      : `the tool argument definition does not match the Agent Input node '${matched[1]}'. Save the arguments again in the tool screen`;
+  }
+
+  if (message === 'tool declares inputSchema but has no agent-input node') {
+    return ja
+      ? 'ツールが引数を宣言していますが、受け取るAgent Inputノードがありません。ツール画面で引数ノードを追加してください'
+      : 'the tool declares arguments but has no Agent Input node to receive them. Add the argument node in the tool screen';
+  }
+
+  if (message === 'run cancelled by the user') return ja ? '実行を中断しました' : 'the run was cancelled';
+
+  return undefined;
+}
+
+/**
  * モデル設定（`src/domain/model-settings`）の検証定型文。`MODEL_SETTINGS_VALIDATION` の見出しに続く
  * 詳細として出るため、「何をどう直すか」が分かる文へ置き換える（実行エラー文言とは別系統）。
  */
@@ -424,6 +651,11 @@ function localizeModelSettingsDetail(message: string, language: ErrorLanguage): 
 function localizeMessageText(message: string, language: ErrorLanguage): string | undefined {
   const etl = localizeEtlDetail(message, language);
   if (etl !== undefined) return etl;
+
+  // 汎用の `... not found: id` / `already exists: id` より先に判定する（実行エラーの具体的な
+  // 言い換えを、後段の「ID: x」だけの薄い変換に食われないようにする）。
+  const agentRun = localizeAgentRunDetail(message, language);
+  if (agentRun !== undefined) return agentRun;
 
   const modelSettings = localizeModelSettingsDetail(message, language);
   if (modelSettings !== undefined) return modelSettings;

@@ -3,6 +3,7 @@ import type { ToolApiClient } from '../api/tool-api';
 import type { AgentSummaryDto, CreateFactoryRunDto, DataSourceDto, FactoryEventDto, FactoryPromptStrategyDto, FactoryRunDto } from '../api/types';
 import { useI18n } from '../i18n';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ScreenLink } from '../navigation';
 
 const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 const TERMINAL_STATUSES: ReadonlySet<FactoryRunDto['status']> = new Set(['succeeded', 'failed', 'cancelled']);
@@ -282,7 +283,7 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
             </label>
           </fieldset>
           {isEnhanceMode && (agents.length === 0
-            ? <p className="empty-state">{text('No agents to enhance. Create one first.', '強化できるエージェントがありません。先に作成してください。')}</p>
+            ? <p className="empty-state"><span>{text('No agents to enhance. Create one first.', '強化できるエージェントがありません。先に作成してください。')}</span> <ScreenLink to="Agent">{text('Open the Agent screen', 'エージェント画面を開く')}</ScreenLink></p>
             : <label>{text('Agent to enhance', '強化する対象エージェント')}
               <select aria-label={text('Factory base agent', 'Factory強化対象エージェント')} value={baseAgentId} onChange={(event) => setBaseAgentId(event.target.value)}>
                 <option value="">{text('Select an agent', 'エージェントを選択')}</option>
@@ -300,7 +301,7 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
           <fieldset className="factory-source-select">
             <legend>{text('Data sources', 'データソース')}</legend>
             {isEnhanceMode && <p className="factory-field-hint">{text('Optional — add data sources only if the agent needs new tools.', '任意 — 新しいツールが必要な場合だけ選んでください。')}</p>}
-            {dataSources.length === 0 && <p className="empty-state">{text('No data sources yet. Register one in the Data sources screen.', 'データソースがまだありません。データソース画面で登録してください。')}</p>}
+            {dataSources.length === 0 && <p className="empty-state"><span>{text('No data sources yet. Register one in the Data sources screen.', 'データソースがまだありません。データソース画面で登録してください。')}</span> <ScreenLink to="Data">{text('Open the Data sources screen', 'データソース画面を開く')}</ScreenLink></p>}
             {dataSources.map((source) => <label className="agent-tool-option" key={source.id}>
               <input type="checkbox" checked={selectedSourceIds.has(source.id)} disabled={sourceLimitReached && !selectedSourceIds.has(source.id)} onChange={() => toggleSource(source.id)} />
               <span><strong>{source.name}</strong><code>{source.id}</code></span>
@@ -414,6 +415,13 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
               'All generated assets are drafts. Open them in the Agent, Tool, Skill, or Validation screen to review or edit, and promote them through the existing Validation / Quality gate screens. There is no promotion action here.',
               'すべての生成資産はdraftです。エージェント・ツール・スキル・検証の各画面から開いて確認・編集し、既存の検証／品質ゲート画面から昇格してください。この画面に昇格操作はありません。',
             )}</p>
+            <p className="factory-asset-links">
+              <ScreenLink to="Agent">{text('Agent', 'エージェント')}</ScreenLink>
+              <ScreenLink to="Tool">{text('Tool', 'ツール')}</ScreenLink>
+              <ScreenLink to="Skill">{text('Skill', 'スキル')}</ScreenLink>
+              <ScreenLink to="Validation">{text('Validation', '検証')}</ScreenLink>
+              <ScreenLink to="Chat">{text('Chat', 'チャット')}</ScreenLink>
+            </p>
           </div>}
           <ConfirmDialog
             open={confirmCancel}

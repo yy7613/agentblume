@@ -1,8 +1,11 @@
-import type { FastifyInstance } from 'fastify';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { AddressInfo } from 'node:net';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider';
+import { ModelProviderError, type ModelCapability, type ModelCompletion, type ModelCompletionRequest, type ModelProviderPort } from '../application/model/model-provider';
 import { SemVer } from '../domain/tool/semver';
 import { createApp, type App } from '../composition/root';
+import { clientAbortSignal } from './run-routes';
 import { buildServer } from './server';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
@@ -202,7 +205,22 @@ describe('POST /runs', () => {
     const trace = await server.inject({ method: 'GET', url: `/runs/${response.json().run.runId}/trace?tenantId=tenant&workspaceId=workspace` });
     expect(trace.json().run.structuredResponse).toEqual({ answer: 'done', score: 9 });
 
-    model.enqueue({ message: { role: 'assistant', content: '{"answer":"missing score"}' }, finishReason: 'stop' });
+    // 1回目が不正でも修復往復で作り直させ、2回目が通れば完走する（Runは失敗しない）。
+    model.enqueue(
+      { message: { role: 'assistant', content: '{"answer":"missing score"}' }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: '{"answer":"repaired","score":3}' }, finishReason: 'stop' },
+    );
+    const repaired = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, agent: { internalId: 'structured-agent' }, message: 'Invalid once', mode: 'preview',
+    } });
+    expect(repaired.statusCode).toBe(200);
+    expect(repaired.json().run.structuredResponse).toEqual({ answer: 'repaired', score: 3 });
+
+    // 修復上限（既定1回）まで失敗したら従来どおり AGENT_RUN で失敗させる。
+    model.enqueue(
+      { message: { role: 'assistant', content: '{"answer":"missing score"}' }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: '{"answer":"still missing"}' }, finishReason: 'stop' },
+    );
     const invalid = await server.inject({ method: 'POST', url: '/runs', payload: {
       scope, agent: { internalId: 'structured-agent' }, message: 'Invalid', mode: 'preview',
     } });
@@ -362,5 +380,93 @@ describe('POST /runs', () => {
     } });
     expect(response.statusCode).toBe(403);
     expect(response.json().error.code).toBe('UNSAFE_TOOL');
+  });
+});
+
+/**
+ * 実行の中断。UIの中断ボタンは「HTTPを切る → サーバーがモデル呼び出しをabortする」という
+ * 1本の鎖でしか効かないので、その鎖の両端をここで押さえる。
+ */
+class HangingModel implements ModelProviderPort {
+  private resolveStarted!: () => void;
+  /** complete() に入ったことを待てるようにする（切断のタイミングを固定するため）。 */
+  readonly started: Promise<void> = new Promise((resolve) => { this.resolveStarted = resolve; });
+  capabilities(): readonly ModelCapability[] { return ['chat', 'tool-calling', 'structured-output', 'vision']; }
+  async complete(_request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion> {
+    return new Promise<ModelCompletion>((_resolve, reject) => {
+      if (signal?.aborted === true) { reject(new ModelProviderError('aborted before start')); return; }
+      signal?.addEventListener('abort', () => reject(new ModelProviderError('model request aborted')), { once: true });
+      this.resolveStarted();
+    });
+  }
+}
+
+describe('clientAbortSignal', () => {
+  function fakeReply(): { readonly reply: FastifyReply; close: (writableEnded: boolean) => void } {
+    const listeners: (() => void)[] = [];
+    const raw = {
+      writableEnded: false,
+      once(event: string, listener: () => void) { if (event === 'close') listeners.push(listener); return raw; },
+    };
+    return {
+      reply: { raw } as unknown as FastifyReply,
+      close: (writableEnded: boolean) => { raw.writableEnded = writableEnded; for (const listener of listeners) listener(); },
+    };
+  }
+
+  it('request.raw.signal がある実行環境（Node 26+）ではそれをそのまま使う', () => {
+    const native = new AbortController().signal;
+    const request = { raw: { signal: native } } as unknown as FastifyRequest;
+    expect(clientAbortSignal(request, fakeReply().reply)).toBe(native);
+  });
+
+  it('request.raw.signal が無い実行環境（Node 22）でも、応答を書き終える前の切断でabortする', () => {
+    const { reply, close } = fakeReply();
+    const signal = clientAbortSignal({ raw: {} } as unknown as FastifyRequest, reply);
+    expect(signal.aborted).toBe(false);
+    close(false);
+    expect(signal.aborted).toBe(true);
+  });
+
+  it('応答を書き終えた後のcloseではabortしない（正常終了を中断と誤認しない）', () => {
+    const { reply, close } = fakeReply();
+    const signal = clientAbortSignal({ raw: {} } as unknown as FastifyRequest, reply);
+    close(true);
+    expect(signal.aborted).toBe(false);
+  });
+});
+
+describe('POST /runs の中断', () => {
+  it('クライアントが切断するとモデル呼び出しをabortし、Runを RUN_CANCELLED で確定する', async () => {
+    const hanging = new HangingModel();
+    const cancelApp = createApp({ profile: 'test', modelProvider: hanging });
+    const cancelServer = buildServer(cancelApp);
+    try {
+      await cancelApp.saveAgent.execute({
+        scope, internalId: 'cancel-agent', workingName: 'cancel', displayName: 'Cancel Agent', publishName: 'cancel_agent',
+        owner: 'owner', kind: 'normal', systemPrompt: 'Think slowly.', tools: [],
+      });
+      await cancelServer.listen({ port: 0, host: '127.0.0.1' });
+      const port = (cancelServer.server.address() as AddressInfo).port;
+      const controller = new AbortController();
+      const pending = fetch(`http://127.0.0.1:${port}/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scope, agent: { internalId: 'cancel-agent' }, message: 'go', mode: 'preview' }),
+        signal: controller.signal,
+      });
+
+      await hanging.started;
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+
+      await vi.waitFor(async () => {
+        const runs = await cancelApp.queryRuns.list(scope, { limit: 5 });
+        expect(runs[0]).toMatchObject({ status: 'failed', failure: { code: 'RUN_CANCELLED', message: 'run cancelled by the user' } });
+      });
+    } finally {
+      await cancelServer.close();
+      cancelApp.close();
+    }
   });
 });
