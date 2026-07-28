@@ -6,6 +6,7 @@ import type { PreviewResultDto, PropagationResultDto, SerializedToolDto } from '
 import { draftKey, readDraft } from '../hooks/useDraftPersistence';
 import { ToolBuilder } from './ToolBuilder';
 import { useToolBuilderStore } from './store';
+import { scope } from '../scope';
 
 vi.mock('./FlowCanvas', () => ({ FlowCanvas: () => <div aria-label="ETL canvas" /> }));
 vi.mock('./NodePalette', () => ({ NodePalette: () => <aside aria-label="Node palette" /> }));
@@ -164,7 +165,8 @@ describe('ToolBuilder preview integration', () => {
       { from: 'left-1', to: 'join-1', toInput: 0 },
       { from: 'right-1', to: 'join-1', toInput: 1 },
     ]);
-    expect(previewDraft).toHaveBeenCalledWith(sentGraph, 100, expect.any(AbortSignal), { tenantId: 't', workspaceId: 'w' });
+    // 送るスコープはToolのメタデータではなく、UI共通の（＝サーバーが返した自分の）スコープ。
+    expect(previewDraft).toHaveBeenCalledWith(sentGraph, 100, expect.any(AbortSignal), scope);
 
     // join結果の期待行が描画される。
     expect(screen.getByRole('cell', { name: 'Alice' })).toBeTruthy();

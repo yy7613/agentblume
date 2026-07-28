@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { McpClientError, type McpClientPort, type McpToolDescriptor } from '../application/mcp/mcp-client';
+import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp, type App } from '../composition/root';
 import { buildServer } from './server';
 
@@ -22,7 +23,7 @@ describe('mcp routes', () => {
   beforeEach(() => {
     client = new FakeMcpClient();
     app = createApp({ profile: 'test', mcpClient: client });
-    server = buildServer(app);
+    server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
   });
   afterEach(async () => { await server.close(); app.close(); });
 
@@ -147,7 +148,12 @@ describe('mcp routes', () => {
   it('テナント分離: 別ワークスペースの設定は見えない', async () => {
     await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: stdioServer } });
     const other = { tenantId: 'tenant', workspaceId: 'other' };
-    expect((await server.inject({ method: 'GET', url: '/mcp-servers', query: other })).json()).toEqual({ servers: [] });
-    expect((await server.inject({ method: 'DELETE', url: '/mcp-servers/filesystem', query: other })).statusCode).toBe(404);
+    // 境界を決めるのはPrincipalなので、別ワークスペースのPrincipalでサーバーを立てて確認する。
+    const otherServer = buildServer(app, { authentication: new SingleUserAuthentication(other) });
+    expect((await otherServer.inject({ method: 'GET', url: '/mcp-servers', query: scope })).json()).toEqual({ servers: [] });
+    expect((await otherServer.inject({ method: 'DELETE', url: '/mcp-servers/filesystem', query: scope })).statusCode).toBe(404);
+    // 逆に、所有者側が別ワークスペースを名乗っても自分のデータしか見えない（申告は無視される）。
+    expect((await server.inject({ method: 'GET', url: '/mcp-servers', query: other })).json().servers).toHaveLength(1);
+    await otherServer.close();
   });
 });

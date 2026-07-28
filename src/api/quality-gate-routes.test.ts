@@ -3,6 +3,7 @@ import { createAgent } from '../domain/agent/agent';
 import { createEvaluationDataset } from '../domain/evaluation/evaluation-dataset';
 import { createExperiment, createExperimentCaseResult, type ExperimentCaseResult } from '../domain/evaluation/experiment';
 import { SemVer } from '../domain/tool/semver';
+import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp, type App } from '../composition/root';
 import { buildServer } from './server';
 import type { FastifyInstance } from 'fastify';
@@ -17,7 +18,7 @@ const result = (experimentId: string, score: number): ExperimentCaseResult => cr
 describe('quality gate routes', () => {
   let app: App; let server: FastifyInstance;
   beforeEach(async () => {
-    app = createApp({ profile: 'test' }); server = buildServer(app);
+    app = createApp({ profile: 'test' }); server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
     await app.agentRepo.save(createAgent({ metadata: metadata('agent', v1), kind: 'normal', systemPrompt: 'baseline', tools: [] }));
     await app.agentRepo.save(createAgent({ metadata: metadata('agent', v2), kind: 'normal', systemPrompt: 'candidate', tools: [] }));
     await app.evaluationDatasetRepo.save(createEvaluationDataset({ metadata: metadata('set'), cases: [{ id: 'critical', kind: 'turn', input: 'x', tags: ['critical'], source: 'manual' }] }));

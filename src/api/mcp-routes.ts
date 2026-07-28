@@ -11,6 +11,7 @@ import type { TestMcpServerUseCase } from '../application/mcp/test-mcp-server';
 import type { McpServerConfig, McpTransportConfig } from '../domain/mcp/mcp-server';
 import { serializeMcpServerConfig, type SerializedMcpServerConfig } from '../domain/mcp/serialization';
 import { clientAbortSignal } from './client-abort';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { mcpServerListQuerySchema, replaceMcpServersBodySchema, saveMcpServerBodySchema, scopeQuerySchema, testMcpServerBodySchema } from './schemas';
 
@@ -33,14 +34,14 @@ function toDto(config: McpServerConfig): SerializedMcpServerConfig { return seri
 
 export function registerMcpRoutes(app: FastifyInstance, deps: McpRouteDeps): void {
   app.get('/mcp-servers', async (request) => {
-    const query = parseWith(mcpServerListQuerySchema, request.query, 'invalid query');
-    return { servers: (await deps.listMcpServers.execute(query)).map(toDto) };
+    parseWith(mcpServerListQuerySchema, request.query, 'invalid query');
+    return { servers: (await deps.listMcpServers.execute(scopeOf(request))).map(toDto) };
   });
 
   app.post('/mcp-servers', async (request, reply) => {
     const body = parseWith(saveMcpServerBodySchema, request.body, 'invalid body');
     const server = await deps.saveMcpServer.execute({
-      scope: body.scope,
+      scope: scopeOf(request),
       server: {
         name: body.server.name,
         transport: body.server.transport as McpTransportConfig,
@@ -53,20 +54,20 @@ export function registerMcpRoutes(app: FastifyInstance, deps: McpRouteDeps): voi
   // JSONタブのApply。スコープ内の設定を丸ごと置き換える（標準 mcpServers ドキュメント互換）。
   app.put('/mcp-servers', async (request) => {
     const body = parseWith(replaceMcpServersBodySchema, request.body, 'invalid body');
-    const servers = await deps.replaceMcpServers.execute(body.scope, { mcpServers: body.mcpServers });
+    const servers = await deps.replaceMcpServers.execute(scopeOf(request), { mcpServers: body.mcpServers });
     return { servers: servers.map(toDto) };
   });
 
   app.delete<{ Params: McpServerParams }>('/mcp-servers/:name', async (request, reply) => {
-    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
-    await deps.deleteMcpServer.execute(query, request.params.name);
+    parseWith(scopeQuerySchema, request.query, 'invalid query');
+    await deps.deleteMcpServer.execute(scopeOf(request), request.params.name);
     return reply.status(204).send();
   });
 
   // 接続テストは「設定が正しいか確かめる」機能なので、接続失敗も200で ok:false として返す
   // （HTTPエラーにすると、UIが通信障害と設定ミスを区別できなくなる）。
   app.post<{ Params: McpServerParams }>('/mcp-servers/:name/test', async (request, reply) => {
-    const body = parseWith(testMcpServerBodySchema, request.body, 'invalid body');
-    return deps.testMcpServer.execute(body.scope, request.params.name, clientAbortSignal(request, reply));
+    parseWith(testMcpServerBodySchema, request.body, 'invalid body');
+    return deps.testMcpServer.execute(scopeOf(request), request.params.name, clientAbortSignal(request, reply));
   });
 }

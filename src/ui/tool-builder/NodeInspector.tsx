@@ -6,6 +6,7 @@ import { useToolBuilderStore } from './store';
 import { useModalBehavior } from '../hooks/useModalBehavior';
 import { useI18n } from '../i18n';
 import { DATA_TYPES, cellText, coerceCell, coerceScalar, columnsText, parseColumns, parsePairs, parseReplaceRules, parseSortKeys, splitList, type FillRuleDraft, type JoinKeyDraft, type ReplaceRuleDraft, type SortKeyDraft } from './node-config-utils';
+import { scope } from '../scope';
 
 const EMPTY_COLUMNS: readonly ColumnDto[] = [];
 const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'rename', 'cast', 'join', 'sort', 'fill-null', 'replace', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output']);
@@ -43,9 +44,6 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
   const [dataSources, setDataSources] = useState<readonly DataSourceDto[]>([]);
   const [searchProviders, setSearchProviders] = useState<readonly SearchProviderDto[]>([]);
   const [analysisAssistantAvailable, setAnalysisAssistantAvailable] = useState(false);
-  const tenantId = useToolBuilderStore((state) => state.metadata.tenantId);
-  const workspaceId = useToolBuilderStore((state) => state.metadata.workspaceId);
-  const scope = { tenantId, workspaceId };
   const builderNodes = useToolBuilderStore((state) => state.nodes);
   const builderEdges = useToolBuilderStore((state) => state.edges);
   const graph = useMemo<ToolGraphDto>(() => ({
@@ -62,10 +60,10 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
   }, [node?.id, node?.data.config]);
   useEffect(() => {
     if (client === undefined || typeof client.listDataSources !== 'function') return;
-    void client.listDataSources({ tenantId, workspaceId }).then(setDataSources).catch(() => setDataSources([]));
+    void client.listDataSources(scope).then(setDataSources).catch(() => setDataSources([]));
     void client.listSearchProviders().then(setSearchProviders).catch(() => setSearchProviders([]));
     void client.analysisAssistantCapability().then(setAnalysisAssistantAvailable).catch(() => setAnalysisAssistantAvailable(false));
-  }, [client, tenantId, workspaceId]);
+  }, [client]);
 
   if (node === undefined) return <aside className="inspector empty"><h2>{text('Inspector', 'インスペクター')}</h2><p>{text('Select a node.', 'ノードを選択してください。')}</p></aside>;
   const config = node.data.config;

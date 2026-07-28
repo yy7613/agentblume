@@ -7,10 +7,9 @@ import { InlineFeedback } from '../components/InlineFeedback';
 import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
 import { useReportUnsavedChanges } from '../unsaved-changes';
 import { useI18n } from '../i18n';
+import { scope } from '../scope';
 
 type Translate = (english: string, japanese: string) => string;
-
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
 /** 下書きへ退避する編集内容（保存対象の定義だけ。秘密情報は持たない）。 */
 interface SkillDraft {

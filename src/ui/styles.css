@@ -33,6 +33,9 @@ button:disabled { cursor: default; }
 .metadata-bar details { position: relative; }
 .metadata-bar summary { cursor: pointer; font-size: 13px; color: #4f5d76; }
 .metadata-grid { position: absolute; z-index: 20; top: 30px; left: 0; width: 620px; background: white; box-shadow: 0 18px 55px #1e2b4b33; padding: 18px; border: 1px solid #dce1eb; border-radius: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* テナント/ワークスペースは読み取り専用の表示（サーバーのPrincipalが決めるので編集させない）。 */
+.metadata-readonly { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #4f5d76; }
+.metadata-readonly code { font-size: 12px; color: #1e2b4b; background: #f2f4f9; padding: 6px 8px; border-radius: 6px; }
 label { display: flex; flex-direction: column; gap: 5px; color: #526078; font-size: 12px; font-weight: 650; }
 input, textarea, select { border: 1px solid #ccd3e0; border-radius: 7px; background: white; color: #202a3e; padding: 8px 9px; outline: none; }
 input:focus, textarea:focus, select:focus { border-color: #697aff; box-shadow: 0 0 0 3px #697aff20; }

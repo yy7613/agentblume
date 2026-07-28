@@ -15,6 +15,7 @@ import type { DeleteWikiSpaceUseCase, QueryWikiSpacesUseCase, SaveWikiSpaceUseCa
 import { serializeMemoryProposal } from '../domain/memory/serialization';
 import { serializeWikiPage } from '../domain/memory/serialization';
 import { serializeWikiSpace } from '../domain/memory/serialization';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { proposalDecisionBodySchema, proposalListQuerySchema, reflectRunBodySchema, saveWikiBodySchema, saveWikiSpaceBodySchema, scopeQuerySchema, wikiSearchQuerySchema } from './schemas';
 
@@ -40,29 +41,29 @@ function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
 
 export function registerMemoryRoutes(app: FastifyInstance, deps: MemoryRouteDeps): void {
   app.get('/wikis', async (request) => {
-    const query = parse(wikiSearchQuerySchema, request.query);
-    return { wikis: await deps.queryWikiSpaces.list({ tenantId: query.tenantId, workspaceId: query.workspaceId }) };
+    parse(wikiSearchQuerySchema, request.query);
+    return { wikis: await deps.queryWikiSpaces.list(scopeOf(request)) };
   });
 
   app.get<{ Params: { id: string } }>('/wikis/:id', async (request) => {
-    const query = parse(wikiSearchQuerySchema, request.query);
-    return { wiki: serializeWikiSpace(await deps.queryWikiSpaces.get({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.id)) };
+    parse(wikiSearchQuerySchema, request.query);
+    return { wiki: serializeWikiSpace(await deps.queryWikiSpaces.get(scopeOf(request), request.params.id)) };
   });
 
   app.post('/wikis', async (request, reply) => {
     const body = parse(saveWikiSpaceBodySchema, request.body);
-    return reply.status(201).send({ wiki: serializeWikiSpace(await deps.saveWikiSpace.execute(body)) });
+    return reply.status(201).send({ wiki: serializeWikiSpace(await deps.saveWikiSpace.execute({ ...body, scope: scopeOf(request) })) });
   });
 
   app.delete<{ Params: { id: string } }>('/wikis/:id', async (request, reply) => {
-    const query = parse(scopeQuerySchema, request.query);
-    await deps.deleteWikiSpace.execute(query, request.params.id);
+    parse(scopeQuerySchema, request.query);
+    await deps.deleteWikiSpace.execute(scopeOf(request), request.params.id);
     return reply.status(204).send();
   });
 
   app.get('/wiki', async (request) => {
     const query = parse(wikiSearchQuerySchema, request.query);
-    const scope = { tenantId: query.tenantId, workspaceId: query.workspaceId };
+    const scope = scopeOf(request);
     const pages = query.q !== undefined
       ? await deps.queryWiki.search(scope, query.q, query.limit ?? 10, query.wikiId === undefined ? undefined : [query.wikiId])
       : await deps.queryWiki.list(scope, query.wikiId);
@@ -70,21 +71,21 @@ export function registerMemoryRoutes(app: FastifyInstance, deps: MemoryRouteDeps
   });
 
   app.get<{ Params: { id: string } }>('/wiki/:id', async (request) => {
-    const query = parse(wikiSearchQuerySchema, request.query);
-    const page = await deps.queryWiki.get({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.id);
+    parse(wikiSearchQuerySchema, request.query);
+    const page = await deps.queryWiki.get(scopeOf(request), request.params.id);
     return { page: serializeWikiPage(page) };
   });
 
   app.delete<{ Params: { id: string } }>('/wiki/:id', async (request, reply) => {
-    const query = parse(scopeQuerySchema, request.query);
-    await deps.deleteWikiPage.execute(query, request.params.id);
+    parse(scopeQuerySchema, request.query);
+    await deps.deleteWikiPage.execute(scopeOf(request), request.params.id);
     return reply.status(204).send();
   });
 
   app.post('/wiki', async (request, reply) => {
     const body = parse(saveWikiBodySchema, request.body);
     const page = await deps.saveWikiPage.execute({
-      scope: body.scope,
+      scope: scopeOf(request),
       ...(body.id !== undefined ? { id: body.id } : {}),
       ...(body.wikiId !== undefined ? { wikiId: body.wikiId } : {}),
       title: body.title,
@@ -97,28 +98,28 @@ export function registerMemoryRoutes(app: FastifyInstance, deps: MemoryRouteDeps
 
   app.get<{ Params: { wikiId: string } }>('/wikis/:wikiId/pages', async (request) => {
     const query = parse(wikiSearchQuerySchema, request.query);
-    const scope = { tenantId: query.tenantId, workspaceId: query.workspaceId };
+    const scope = scopeOf(request);
     const pages = query.q === undefined ? await deps.queryWiki.list(scope, request.params.wikiId) : await deps.queryWiki.search(scope, query.q, query.limit ?? 10, [request.params.wikiId]);
     return { pages };
   });
 
   app.get<{ Params: { wikiId: string; id: string } }>('/wikis/:wikiId/pages/:id', async (request) => {
-    const query = parse(wikiSearchQuerySchema, request.query);
-    const page = await deps.queryWiki.get({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.id);
+    parse(wikiSearchQuerySchema, request.query);
+    const page = await deps.queryWiki.get(scopeOf(request), request.params.id);
     if ((page.wikiId ?? 'default') !== request.params.wikiId) throw new BadRequestError('wiki page does not belong to requested wiki');
     return { page: serializeWikiPage(page) };
   });
 
   app.post<{ Params: { wikiId: string } }>('/wikis/:wikiId/pages', async (request, reply) => {
     const body = parse(saveWikiBodySchema, request.body);
-    const page = await deps.saveWikiPage.execute({ scope: body.scope, ...(body.id !== undefined ? { id: body.id } : {}), wikiId: request.params.wikiId, title: body.title, tags: body.tags, body: body.body, ...(body.sourceRunId !== undefined ? { sourceRunId: body.sourceRunId } : {}) });
+    const page = await deps.saveWikiPage.execute({ scope: scopeOf(request), ...(body.id !== undefined ? { id: body.id } : {}), wikiId: request.params.wikiId, title: body.title, tags: body.tags, body: body.body, ...(body.sourceRunId !== undefined ? { sourceRunId: body.sourceRunId } : {}) });
     return reply.status(201).send({ page: serializeWikiPage(page) });
   });
 
   app.post('/memory/reflect', async (request) => {
     const body = parse(reflectRunBodySchema, request.body);
     const proposals = await deps.reflectRun.execute({
-      scope: body.scope,
+      scope: scopeOf(request),
       input: body.input,
       output: body.output,
       ...(body.sourceRunId !== undefined ? { sourceRunId: body.sourceRunId } : {}),
@@ -132,21 +133,21 @@ export function registerMemoryRoutes(app: FastifyInstance, deps: MemoryRouteDeps
   app.get('/memory/proposals', async (request) => {
     const query = parse(proposalListQuerySchema, request.query);
     const proposals = await deps.listProposals.list(
-      { tenantId: query.tenantId, workspaceId: query.workspaceId },
+      scopeOf(request),
       query.state,
     );
     return { proposals: proposals.map(serializeMemoryProposal) };
   });
 
   app.post<{ Params: { id: string } }>('/memory/proposals/:id/approve', async (request) => {
-    const body = parse(proposalDecisionBodySchema, request.body);
-    const proposal = await deps.reviewProposal.approve(body.scope, request.params.id);
+    parse(proposalDecisionBodySchema, request.body);
+    const proposal = await deps.reviewProposal.approve(scopeOf(request), request.params.id);
     return { proposal: serializeMemoryProposal(proposal) };
   });
 
   app.post<{ Params: { id: string } }>('/memory/proposals/:id/reject', async (request) => {
-    const body = parse(proposalDecisionBodySchema, request.body);
-    const proposal = await deps.reviewProposal.reject(body.scope, request.params.id);
+    parse(proposalDecisionBodySchema, request.body);
+    const proposal = await deps.reviewProposal.reject(scopeOf(request), request.params.id);
     return { proposal: serializeMemoryProposal(proposal) };
   });
 }

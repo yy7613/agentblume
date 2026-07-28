@@ -21,6 +21,7 @@ import type { DeleteToolUseCase, GetToolUseCase, ListToolVersionsUseCase, ListTo
 import type { SaveToolUseCase } from '../application/tool/save-tool';
 import { serializeTool } from '../domain/tool/serialization';
 import { SemVer } from '../domain/tool/semver';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { previewBodySchema, saveToolBodySchema, scopeQuerySchema, versionQuerySchema } from './schemas';
 
@@ -73,8 +74,8 @@ function previewOptions(version: SemVer | undefined, rowLimit?: number): Preview
 export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): void {
   // GET /tools — workspace内の各Toolのlatest summary。
   app.get('/tools', async (request) => {
-    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
-    const tools = await deps.listTools.execute({ tenantId: query.tenantId, workspaceId: query.workspaceId });
+    parseWith(scopeQuerySchema, request.query, 'invalid query');
+    const tools = await deps.listTools.execute(scopeOf(request));
     return { tools: tools.map((tool) => ({ ...tool, latestVersion: tool.latestVersion.toString() })) };
   });
 
@@ -82,7 +83,7 @@ export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): v
   app.post('/tools', async (request, reply) => {
     const body = parseWith(saveToolBodySchema, request.body, 'invalid body');
     const tool = await deps.saveTool.execute({
-      scope: body.scope,
+      scope: scopeOf(request),
       internalId: body.internalId,
       workingName: body.workingName,
       displayName: body.displayName,
@@ -102,7 +103,7 @@ export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): v
   // GET /tools/:internalId — version 指定あり→そのバージョン / なし→latest。
   app.get<{ Params: ToolParams }>('/tools/:internalId', async (request) => {
     const query = parseWith(versionQuerySchema, request.query, 'invalid query');
-    const scope = { tenantId: query.tenantId, workspaceId: query.workspaceId };
+    const scope = scopeOf(request);
     const version = parseVersion(query.version);
     const tool =
       version !== undefined
@@ -113,16 +114,15 @@ export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): v
 
   // GET /tools/:internalId/versions — 昇順の文字列配列（未存在→[]）。
   app.get<{ Params: ToolParams }>('/tools/:internalId/versions', async (request) => {
-    const query = parseWith(versionQuerySchema, request.query, 'invalid query');
-    const scope = { tenantId: query.tenantId, workspaceId: query.workspaceId };
-    const versions = await deps.listToolVersions.execute(scope, request.params.internalId);
+    parseWith(versionQuerySchema, request.query, 'invalid query');
+    const versions = await deps.listToolVersions.execute(scopeOf(request), request.params.internalId);
     return { versions: versions.map((v) => v.toString()) };
   });
 
   // DELETE /tools/:internalId — 論理削除。未存在/削除済みは deleteTool が ToolNotFoundError → 404 へ変換される。
   app.delete<{ Params: ToolParams }>('/tools/:internalId', async (request, reply) => {
-    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
-    await deps.deleteTool.execute({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.internalId);
+    parseWith(scopeQuerySchema, request.query, 'invalid query');
+    await deps.deleteTool.execute(scopeOf(request), request.params.internalId);
     return reply.status(204).send();
   });
 
@@ -131,7 +131,7 @@ export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): v
     const body = parseWith(previewBodySchema, request.body, 'invalid body');
     const version = parseVersion(body.version);
     const { tool, propagation } = await deps.previewTool.inspect(
-      body.scope,
+      scopeOf(request),
       request.params.internalId,
       previewOptions(version),
     );
@@ -143,7 +143,7 @@ export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): v
     const body = parseWith(previewBodySchema, request.body, 'invalid body');
     const version = parseVersion(body.version);
     const { tool, result } = await deps.previewTool.preview(
-      body.scope,
+      scopeOf(request),
       request.params.internalId,
       previewOptions(version, body.rowLimit),
     );

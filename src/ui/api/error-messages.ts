@@ -27,6 +27,11 @@ function pick(bilingual: Bilingual, language: ErrorLanguage): string {
  */
 const HEADINGS: Record<string, Bilingual> = {
   BAD_REQUEST: ['Please check your input', '入力内容を確認してください'],
+  // 401。トークンを入れる場所（設定 → アクセス）まで案内する。
+  UNAUTHENTICATED: [
+    'Sign-in is required. Open Settings → Access and enter your access token',
+    '認証が必要です。設定画面の「アクセス」でアクセストークンを入力してください',
+  ],
   NOT_FOUND: ['The requested item was not found', '対象が見つかりませんでした'],
   CONFLICT: ['The request conflicts with the current state. Reload the latest data, then retry', '現在の状態と競合しました。最新の内容を読み込んでから再試行してください'],
   INTERNAL: ['The server hit an internal error. Wait a moment, then retry', 'サーバー内部でエラーが発生しました。時間をおいて再試行してください'],

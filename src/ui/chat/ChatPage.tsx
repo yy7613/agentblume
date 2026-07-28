@@ -6,8 +6,7 @@ import { useI18n } from '../i18n';
 import { useElapsedSeconds } from './useElapsedSeconds';
 import { buildHistory } from './agent-history';
 import { appendTurn, emptyThread, type TurnThread } from './turn-limit';
-
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
+import { scope } from '../scope';
 
 type Translate = (english: string, japanese: string) => string;
 

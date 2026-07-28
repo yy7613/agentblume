@@ -7,8 +7,7 @@ import { useElapsedSeconds } from '../chat/useElapsedSeconds';
 import { runProgressHint } from '../chat/ChatPage';
 import { buildHistory } from '../chat/agent-history';
 import { appendTurn, emptyThread, type TurnThread } from '../chat/turn-limit';
-
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
+import { scope } from '../scope';
 
 type Translate = (english: string, japanese: string) => string;
 

@@ -5,8 +5,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { InlineFeedback } from '../components/InlineFeedback';
 import { useI18n } from '../i18n';
 import { ScreenLink } from '../navigation';
-
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
+import { scope } from '../scope';
 
 function errorText(error: unknown): string { return error instanceof Error ? error.message : 'Request failed'; }
 function sourceFormat(file: File): 'csv' | 'json' | undefined {

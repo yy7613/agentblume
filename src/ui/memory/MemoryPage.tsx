@@ -4,8 +4,8 @@ import type { MemoryProposalDto, MemoryProposalStateDto, WikiPageSummaryDto, Wik
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { InlineFeedback } from '../components/InlineFeedback';
 import { useI18n } from '../i18n';
+import { scope } from '../scope';
 
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 type Tab = 'wiki' | 'proposals';
 
 interface EditorState {

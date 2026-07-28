@@ -4,6 +4,7 @@ import type { RunAgentPreviewUseCase } from '../application/agent/run-agent-prev
 import type { QueryRunsUseCase } from '../application/agent/query-runs';
 import { SemVer } from '../domain/tool/semver';
 import { clientAbortSignal } from './client-abort';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { resumeRunBodySchema, runAgentBodySchema, runListQuerySchema, runTraceQuerySchema } from './schemas';
 import type { RunApprovalCheckpoint, RunRecord } from '../domain/run/run';
@@ -54,7 +55,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
     if ('agent' in body) {
       const version = parseVersion(body.agent.version);
       run = await deps.runAgentPreview.executeSaved({
-        scope: body.scope,
+        scope: scopeOf(request),
         agentId: body.agent.internalId,
         ...(version !== undefined ? { version } : {}),
         message: body.message,
@@ -69,7 +70,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
     } else {
       const version = parseVersion(body.tool.version);
       run = await deps.runAgentPreview.execute({
-        scope: body.scope,
+        scope: scopeOf(request),
         toolId: body.tool.internalId,
         ...(version !== undefined ? { version } : {}),
         systemPrompt: body.systemPrompt,
@@ -89,7 +90,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
   app.post<{ Params: { runId: string } }>('/runs/:runId/resume', async (request, reply) => {
     const body = parseWith(resumeRunBodySchema, request.body);
     const run = await deps.runAgentPreview.resumeSavedRun({
-      scope: body.scope,
+      scope: scopeOf(request),
       runId: request.params.runId,
       decision: body.decision,
       ...(body.feedback !== undefined ? { feedback: body.feedback } : {}),
@@ -99,8 +100,7 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
 
   app.get('/runs', async (request) => {
     const query = parseWith(runListQuerySchema, request.query);
-    const scope = { tenantId: query.tenantId, workspaceId: query.workspaceId };
-    const records = await deps.queryRuns.list(scope, {
+    const records = await deps.queryRuns.list(scopeOf(request), {
       ...(query.limit !== undefined ? { limit: query.limit } : {}),
       ...(query.status !== undefined ? { status: query.status } : {}),
     });
@@ -114,8 +114,8 @@ export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): voi
   });
 
   app.get<{ Params: { runId: string } }>('/runs/:runId/trace', async (request) => {
-    const query = parseWith(runTraceQuerySchema, request.query);
-    const run = await deps.queryRuns.get({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.runId);
+    parseWith(runTraceQuerySchema, request.query);
+    const run = await deps.queryRuns.get(scopeOf(request), request.params.runId);
     return { run: runView(run) };
   });
 }

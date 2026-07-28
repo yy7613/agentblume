@@ -6,6 +6,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp } from '../composition/root';
 import type { App } from '../composition/root';
 import type { ToolGraph } from '../domain/etl/graph';
@@ -56,7 +57,8 @@ describe('tool routes', () => {
 
   beforeEach(() => {
     app = createApp({ profile: 'test' });
-    server = buildServer(app);
+    // スコープはPrincipal由来。テストのSCOPEを持つ単一ユーザーとして認証させる。
+    server = buildServer(app, { authentication: new SingleUserAuthentication(SCOPE) });
   });
 
   afterEach(async () => {
@@ -214,11 +216,19 @@ describe('tool routes', () => {
       expect(res.json().error.code).toBe('BAD_REQUEST');
     });
 
-    it('query の tenantId 欠落 → 400 BAD_REQUEST', async () => {
+    it('query に scope が無くても Principal のスコープで解決する', async () => {
+      // scope はもうクライアントが決めるものではないので、送らなくても成立する。
+      await postTool(saveBody());
+      const res = await server.inject({ method: 'GET', url: '/tools/users-tool' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().tool.metadata.tenant).toEqual(SCOPE);
+    });
+
+    it('query の tenantId が空文字なら 400 BAD_REQUEST（形は従来どおり検証する）', async () => {
       const res = await server.inject({
         method: 'GET',
         url: '/tools/users-tool',
-        query: { workspaceId: SCOPE.workspaceId },
+        query: { tenantId: '', workspaceId: SCOPE.workspaceId },
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().error.code).toBe('BAD_REQUEST');
@@ -370,33 +380,61 @@ describe('tool routes', () => {
     });
   });
 
+  /**
+   * テナント境界は**Principalが決める**。以前はここをクライアントが body/query で自己申告していたため、
+   * `tenantId` を書き換えるだけで他テナントのデータへ届いた。
+   *
+   * 2種類を分けて確かめる。
+   * 1. なりすまし: 自分のトークンで別テナントを名乗っても、見えるのは自分のデータだけ。
+   * 2. 分離: 別テナントのPrincipalからは、同じリポジトリを見ても 404 / 空になる。
+   */
   describe('テナント分離', () => {
+    /** 同じ app（＝同じリポジトリ）を別テナントのPrincipalで見るサーバー。 */
+    let otherTenantServer: FastifyInstance;
+
     beforeEach(async () => {
       await postTool(saveBody());
+      otherTenantServer = buildServer(app, { authentication: new SingleUserAuthentication(OTHER_SCOPE) });
     });
 
-    it('別 scope からの GET は 404', async () => {
-      const res = await server.inject({
-        method: 'GET',
-        url: '/tools/users-tool',
-        query: { ...OTHER_SCOPE },
-      });
+    afterEach(async () => { await otherTenantServer.close(); });
+
+    it('別テナントを名乗っても自分のデータしか見えない（申告scopeは無視される）', async () => {
+      const res = await server.inject({ method: 'GET', url: '/tools/users-tool', query: { ...OTHER_SCOPE } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().tool.metadata.tenant).toEqual(SCOPE);
+    });
+
+    it('なりすましのDELETEは自テナントにしか効かない', async () => {
+      // OTHER_SCOPE を名乗った削除でも、消えるのは自分のTool。相手のデータは無傷でなければならない。
+      await otherTenantServer.inject({ method: 'POST', url: '/tools', payload: saveBody({ scope: SCOPE }) });
+      const deleted = await server.inject({ method: 'DELETE', url: '/tools/users-tool', query: { ...OTHER_SCOPE } });
+      expect(deleted.statusCode).toBe(204);
+
+      const victim = await otherTenantServer.inject({ method: 'GET', url: '/tools/users-tool', query: { ...SCOPE } });
+      expect(victim.statusCode).toBe(200);
+      expect(victim.json().tool.metadata.tenant).toEqual(OTHER_SCOPE);
+    });
+
+    it('別テナントのPrincipalからの GET は 404', async () => {
+      // 相手のscopeを正しく送っても、Principalが違えば見えない。
+      const res = await otherTenantServer.inject({ method: 'GET', url: '/tools/users-tool', query: { ...SCOPE } });
       expect(res.statusCode).toBe(404);
       expect(res.json().error.code).toBe('TOOL_NOT_FOUND');
     });
 
-    it('別 scope からの preview は 404、versions は空配列', async () => {
-      const preview = await server.inject({
+    it('別テナントのPrincipalからの preview は 404、versions は空配列', async () => {
+      const preview = await otherTenantServer.inject({
         method: 'POST',
         url: '/tools/users-tool/preview',
-        payload: { scope: OTHER_SCOPE },
+        payload: { scope: SCOPE },
       });
       expect(preview.statusCode).toBe(404);
 
-      const versions = await server.inject({
+      const versions = await otherTenantServer.inject({
         method: 'GET',
         url: '/tools/users-tool/versions',
-        query: { ...OTHER_SCOPE },
+        query: { ...SCOPE },
       });
       expect(versions.json()).toEqual({ versions: [] });
     });

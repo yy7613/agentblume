@@ -4,6 +4,7 @@ import type { SideEffectDto } from '../api/types';
 import { InlineFeedback } from '../components/InlineFeedback';
 import { currentGraph, missingRequiredMetadata, useToolBuilderStore, type RequiredMetadataKey } from './store';
 import { useI18n } from '../i18n';
+import { scope } from '../scope';
 
 /** onSaved: 保存が成功した直後に呼ぶ（ToolBuilder側で退避中の下書きを消すために使う）。 */
 export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClient; readonly onSaved?: () => void }) {
@@ -23,7 +24,6 @@ export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClien
   const dismissNotice = useCallback(() => setSavedNotice(undefined), []);
   const { text } = useI18n();
 
-  const scope = { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId };
   const label: Record<RequiredMetadataKey, string> = {
     internalId: text('Internal ID', '内部ID'),
     workingName: text('Working name', '作業名'),
@@ -86,8 +86,11 @@ export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClien
           <label>{text('Working name', '作業名')}<span className="required-mark">*</span><input aria-label={text('Working name', '作業名')} placeholder={text('e.g. Customer search draft', '例: 顧客検索の下書き')} value={metadata.workingName} onChange={(event) => setMetadata('workingName', event.target.value)} /></label>
           <label>{text('Publish name', '公開名')}<span className="required-mark">*</span><input aria-label={text('Publish name', '公開名')} placeholder={text('e.g. customer_search', '例: customer_search')} value={metadata.publishName} onChange={(event) => setMetadata('publishName', event.target.value)} /></label>
           <label>{text('Owner', '所有者')}<span className="required-mark">*</span><input aria-label={text('Owner', '所有者')} placeholder={text('e.g. team@example.com', '例: team@example.com')} value={metadata.owner} onChange={(event) => setMetadata('owner', event.target.value)} /></label>
-          <label>{text('Tenant', 'テナント')}<input value={metadata.tenantId} onChange={(event) => setMetadata('tenantId', event.target.value)} /></label>
-          <label>{text('Workspace', 'ワークスペース')}<input value={metadata.workspaceId} onChange={(event) => setMetadata('workspaceId', event.target.value)} /></label>
+          {/* テナント／ワークスペースは編集させない。保存先は認証済みPrincipalがサーバー側で決めるので、
+              ここで入力できても効かないうえ、以前は書き換えた瞬間にToolが他画面から見えなくなる罠だった。
+              現在地の確認のためだけに読み取り専用で出す。 */}
+          <div className="metadata-readonly"><span>{text('Tenant', 'テナント')}</span><code>{scope.tenantId}</code></div>
+          <div className="metadata-readonly"><span>{text('Workspace', 'ワークスペース')}</span><code>{scope.workspaceId}</code></div>
           <label>{text('Side effect', '副作用')}<select value={metadata.sideEffect} onChange={(event) => setMetadata('sideEffect', event.target.value as SideEffectDto)}><option>read-only</option><option>session-write</option><option>write</option><option>external-action</option></select></label>
         </div>
       </details>

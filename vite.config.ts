@@ -11,6 +11,7 @@ export default defineConfig({
     proxy: {
       '/health': apiTarget,
       '/ready': apiTarget,
+      '/auth': apiTarget,
       '/tools': apiTarget,
       '/tool-drafts': apiTarget,
       '/runs': apiTarget,

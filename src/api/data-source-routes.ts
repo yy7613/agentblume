@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { DeleteDataSourceUseCase, QueryDataSourcesUseCase, QueryDatabaseConnectionsUseCase, RegisterDatabaseDataSourceUseCase, SaveFileDataSourceUseCase } from '../application/data-source/manage-data-sources';
 import type { WebSearchUseCase } from '../application/search/web-search';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { dataSourceListQuerySchema, databaseConnectionTestBodySchema, registerDatabaseDataSourceBodySchema, saveFileDataSourceBodySchema, webSearchFetchBodySchema } from './schemas';
 
@@ -23,8 +24,8 @@ function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
 /** CSV/JSON payloadはserverで保持し、DBには接続IDだけを登録する。 */
 export function registerDataSourceRoutes(app: FastifyInstance, deps: DataSourceRouteDeps): void {
   app.get('/data-sources', async (request) => {
-    const query = parse(dataSourceListQuerySchema, request.query);
-    return { sources: await deps.queryDataSources.list({ tenantId: query.tenantId, workspaceId: query.workspaceId }) };
+    parse(dataSourceListQuerySchema, request.query);
+    return { sources: await deps.queryDataSources.list(scopeOf(request)) };
   });
 
   app.get('/data-sources/connections', async () => ({ connections: deps.queryDatabaseConnections.list() }));
@@ -34,19 +35,19 @@ export function registerDataSourceRoutes(app: FastifyInstance, deps: DataSourceR
 
   app.post('/web-searches', async (request, reply) => {
     const body = parse(webSearchFetchBodySchema, request.body);
-    const search = await deps.webSearch.fetch(body.scope, body);
+    const search = await deps.webSearch.fetch(scopeOf(request), body);
     return reply.status(201).send({ search });
   });
 
   app.post('/data-sources/files', async (request, reply) => {
     const body = parse(saveFileDataSourceBodySchema, request.body);
-    const source = await deps.saveFileDataSource.execute(body);
+    const source = await deps.saveFileDataSource.execute({ ...body, scope: scopeOf(request) });
     return reply.status(201).send({ source });
   });
 
   app.post('/data-sources/databases', async (request, reply) => {
     const body = parse(registerDatabaseDataSourceBodySchema, request.body);
-    const source = await deps.registerDatabaseDataSource.execute(body);
+    const source = await deps.registerDatabaseDataSource.execute({ ...body, scope: scopeOf(request) });
     return reply.status(201).send({ source });
   });
 
@@ -56,8 +57,8 @@ export function registerDataSourceRoutes(app: FastifyInstance, deps: DataSourceR
   });
 
   app.delete<{ Params: { id: string } }>('/data-sources/:id', async (request, reply) => {
-    const query = parse(dataSourceListQuerySchema, request.query);
-    await deps.deleteDataSource.execute({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.id);
+    parse(dataSourceListQuerySchema, request.query);
+    await deps.deleteDataSource.execute(scopeOf(request), request.params.id);
     return reply.status(204).send();
   });
 }

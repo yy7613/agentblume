@@ -4,8 +4,8 @@ import type { AgentSummaryDto, CreateFactoryRunDto, DataSourceDto, FactoryEventD
 import { useI18n } from '../i18n';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ScreenLink } from '../navigation';
+import { scope } from '../scope';
 
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 const TERMINAL_STATUSES: ReadonlySet<FactoryRunDto['status']> = new Set(['succeeded', 'failed', 'cancelled']);
 /** APIが受け付けるデータソース数の上限（factoryRunBodySchema と同じ値）。 */
 const MAX_DATA_SOURCES = 5;

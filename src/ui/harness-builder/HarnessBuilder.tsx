@@ -8,10 +8,10 @@ import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
 import { useReportUnsavedChanges } from '../unsaved-changes';
 import { useI18n } from '../i18n';
 import { ScreenLink } from '../navigation';
+import { scope } from '../scope';
 
 type Translate = (english: string, japanese: string) => string;
 
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 const patterns: readonly { readonly id: HarnessPatternDto; readonly label: string; readonly noteEn: string; readonly noteJa: string }[] = [
   { id: 'agent-as-tools', label: 'Agent as tools', noteEn: 'Coordinator delegates on demand', noteJa: '調整役が必要時だけ委譲する' },
   { id: 'sequential', label: 'Sequential', noteEn: 'Pass work through an ordered chain', noteJa: '順番に受け渡して仕上げる' },

@@ -15,6 +15,7 @@ import {
   LOG_LEVELS,
   databaseConnectionsSchema,
   environmentSchema,
+  isLoopbackHost,
   serverSettings,
   validateEnvironment,
 } from './environment';
@@ -204,6 +205,7 @@ describe('serverSettings', () => {
       retentionIntervalMs: DEFAULT_RETENTION_INTERVAL_MS,
       logLevel: 'info',
       scope: { tenantId: 'local', workspaceId: 'default' },
+      authentication: { mode: 'single-user', tokens: [] },
     });
   });
 
@@ -227,6 +229,8 @@ describe('serverSettings', () => {
       AGENTCONTEXT_WORKSPACE_ID: 'ops',
       AGENTCONTEXT_SHUTDOWN_GRACE_MS: '25000',
       AGENTCONTEXT_RETENTION_INTERVAL_MS: '3600000',
+      // 0.0.0.0 へバインドするので認証が要る（下の「バインドアドレスと認証」を参照）。
+      AGENTCONTEXT_AUTH_TOKENS: JSON.stringify([{ subject: 'alice', token: 'a'.repeat(40) }]),
     }));
     expect(settings).toEqual({
       profile: 'test',
@@ -239,6 +243,11 @@ describe('serverSettings', () => {
       retentionIntervalMs: 3_600_000,
       logLevel: 'silent',
       scope: { tenantId: 'acme', workspaceId: 'ops' },
+      authentication: {
+        mode: 'token',
+        // トークンにテナントを書かなければ、既定スコープ（AGENTCONTEXT_TENANT_ID/_WORKSPACE_ID）を引き継ぐ。
+        tokens: [{ subject: 'alice', token: 'a'.repeat(40), tenantId: 'acme', workspaceId: 'ops' }],
+      },
     });
   });
 
@@ -256,5 +265,115 @@ describe('serverSettings', () => {
   it('AGENTCONTEXT_LOG_LEVEL はプロファイル既定より優先する（test でも見たいときに戻せる）', () => {
     expect(serverSettings(validateEnvironment({ AGENTCONTEXT_PROFILE: 'test', AGENTCONTEXT_LOG_LEVEL: 'debug' })).logLevel).toBe('debug');
     expect(serverSettings(validateEnvironment({ AGENTCONTEXT_LOG_LEVEL: 'silent' })).logLevel).toBe('silent');
+  });
+});
+
+/**
+ * バインドアドレスと認証の組み合わせ。
+ *
+ * 「ローカルだから無認証でよい」という前提は、`AGENTCONTEXT_HOST` を変えた瞬間に破綻する。
+ * ここで落とさないと、`0.0.0.0` を1行足しただけで同じネットワークの誰でも全データを
+ * 読み書き・削除できる状態になる。
+ */
+describe('serverSettings 認証', () => {
+  const TOKEN = 'x'.repeat(40);
+  const tokensEnv = (entries: unknown) => JSON.stringify(entries);
+
+  it('ループバックなら認証未設定でも起動できる（単一ユーザーモード）', () => {
+    for (const host of ['127.0.0.1', '127.0.0.53', 'localhost', '::1', '[::1]', 'LOCALHOST']) {
+      const settings = serverSettings(validateEnvironment({ AGENTCONTEXT_HOST: host }));
+      expect(settings.authentication).toEqual({ mode: 'single-user', tokens: [] });
+    }
+  });
+
+  it('ループバック以外へバインドするなら認証必須（未設定は起動拒否）', () => {
+    for (const host of ['0.0.0.0', '::', '192.168.1.10', '10.0.0.5', 'api.example.com']) {
+      expect(() => serverSettings(validateEnvironment({ AGENTCONTEXT_HOST: host })))
+        .toThrow(EnvironmentValidationError);
+    }
+    // メッセージは「何をすればよいか」を含む。
+    try {
+      serverSettings(validateEnvironment({ AGENTCONTEXT_HOST: '0.0.0.0' }));
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      expect((error as EnvironmentValidationError).issues[0]).toContain('AGENTCONTEXT_AUTH_TOKENS');
+    }
+  });
+
+  it('ループバック以外でもトークンがあれば起動できる', () => {
+    const settings = serverSettings(validateEnvironment({
+      AGENTCONTEXT_HOST: '0.0.0.0',
+      AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: TOKEN }]),
+    }));
+    expect(settings.authentication.mode).toBe('token');
+    expect(settings.authentication.tokens).toHaveLength(1);
+  });
+
+  it('トークンを設定すれば AGENTCONTEXT_AUTH_MODE 未指定でも token モードになる', () => {
+    // モード指定の書き忘れで「トークンを用意したのに無認証」になる事故を防ぐ。
+    expect(serverSettings(validateEnvironment({
+      AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: TOKEN }]),
+    })).authentication.mode).toBe('token');
+  });
+
+  it('トークンごとにテナントを分けられる（省略時は既定スコープ）', () => {
+    const settings = serverSettings(validateEnvironment({
+      AGENTCONTEXT_TENANT_ID: 'acme',
+      AGENTCONTEXT_WORKSPACE_ID: 'ops',
+      AGENTCONTEXT_AUTH_TOKENS: tokensEnv([
+        { subject: 'alice', token: TOKEN },
+        { subject: 'bob', token: 'y'.repeat(40), tenantId: 'globex', workspaceId: 'main', displayName: 'Bob', roles: ['viewer'] },
+      ]),
+    }));
+    expect(settings.authentication.tokens).toEqual([
+      { subject: 'alice', token: TOKEN, tenantId: 'acme', workspaceId: 'ops' },
+      { subject: 'bob', token: 'y'.repeat(40), tenantId: 'globex', workspaceId: 'main', displayName: 'Bob', roles: ['viewer'] },
+    ]);
+  });
+
+  it('token モードなのにトークンが無ければ起動しない', () => {
+    expect(() => serverSettings(validateEnvironment({ AGENTCONTEXT_AUTH_MODE: 'token' })))
+      .toThrow(EnvironmentValidationError);
+  });
+
+  it('single-user とトークンの併記は矛盾なので起動しない', () => {
+    expect(() => serverSettings(validateEnvironment({
+      AGENTCONTEXT_AUTH_MODE: 'single-user',
+      AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: TOKEN }]),
+    }))).toThrow(EnvironmentValidationError);
+  });
+
+  it('短すぎる／空白を含むトークン、空の配列、壊れたJSONは検証で落ちる', () => {
+    const invalid = [
+      tokensEnv([{ subject: 'alice', token: 'short' }]),
+      tokensEnv([{ subject: 'alice', token: `${'x'.repeat(40)} ` }]),
+      tokensEnv([{ token: TOKEN }]),
+      tokensEnv([]),
+      '{ not json',
+    ];
+    for (const value of invalid) {
+      expect(() => validateEnvironment({ AGENTCONTEXT_AUTH_TOKENS: value })).toThrow(EnvironmentValidationError);
+    }
+  });
+
+  it('トークンの値はエラーメッセージへ出さない', () => {
+    try {
+      validateEnvironment({ AGENTCONTEXT_AUTH_TOKENS: tokensEnv([{ subject: 'alice', token: 'short' }]) });
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      const message = (error as EnvironmentValidationError).message;
+      expect(message).toContain('(値は伏せる)');
+      expect(message).not.toContain('short');
+    }
+  });
+
+  it('isLoopbackHost は 127.0.0.0/8・::1・localhost だけを認める', () => {
+    expect(isLoopbackHost('127.0.0.1')).toBe(true);
+    expect(isLoopbackHost('127.255.255.254')).toBe(true);
+    expect(isLoopbackHost(' ::1 ')).toBe(true);
+    expect(isLoopbackHost('0.0.0.0')).toBe(false);
+    // 先頭一致だけを見て通してしまわないこと（127 で始まる公開アドレスは実在する）。
+    expect(isLoopbackHost('127.0.0.1.example.com')).toBe(false);
+    expect(isLoopbackHost('1270.0.0.1')).toBe(false);
   });
 });

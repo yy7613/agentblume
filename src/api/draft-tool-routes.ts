@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { DraftToolUseCase } from '../application/tool/draft-tool';
 import type { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { analysisSuggestionBodySchema, draftInspectBodySchema, draftPreviewBodySchema } from './schemas';
 
@@ -25,7 +26,7 @@ function parseWith<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
 export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRouteDeps): void {
   app.post('/tool-drafts/infer-schema', async (request) => {
     const body = parseWith(draftInspectBodySchema, request.body);
-    return { propagation: await deps.draftTool.inspect(body.graph, body.scope) };
+    return { propagation: await deps.draftTool.inspect(body.graph, scopeOf(request)) };
   });
 
   app.post('/tool-drafts/preview', async (request) => {
@@ -33,7 +34,7 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
     const result = await deps.draftTool.preview(
       body.graph,
       body.rowLimit === undefined ? undefined : { rowLimit: body.rowLimit },
-      body.scope,
+      scopeOf(request),
     );
     return { result };
   });

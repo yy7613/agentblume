@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { ModelCatalogProviderDto, ModelSettingsDto, ModelSlotNameDto, ModelSlotSettingsDto } from '../api/types';
+import type { AuthSessionDto, ModelCatalogProviderDto, ModelSettingsDto, ModelSlotNameDto, ModelSlotSettingsDto } from '../api/types';
+import { clearAuthToken, writeAuthToken } from '../api/auth-token';
 import { useI18n } from '../i18n';
 import {
   EMPTY_MODEL_SLOT_FORM, MANUAL_MODEL_OPTION, apiKeyPlaceholder, applyFetchedModels, applyRegistryModels,
@@ -9,8 +10,7 @@ import {
   storageWarning, storedKeyUnusedNote, toModelSlotForm, toModelSlotInput, withProvider,
   type ModelSlotFormValue,
 } from './model-settings-form';
-
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
+import { scope } from '../scope';
 
 interface SlotFeedback { readonly kind: 'ok' | 'error'; readonly message: string; readonly note?: string }
 type SlotForms = Readonly<Record<ModelSlotNameDto, ModelSlotFormValue>>;
@@ -345,30 +345,110 @@ export function SettingsPage({ client }: { readonly client: ToolApiClient }) {
         <h2>{text('Connection', '接続')}</h2>
         <dl className="settings-list">
           <div><dt>API</dt><dd><span className={`health-dot ${health}`} />{healthLabel}{health === 'offline' && <button type="button" className="ghost" onClick={() => void refresh()}>{text('Retry', '再確認')}</button>}</dd></div>
-          <div><dt>{text('Scope', 'スコープ')}</dt><dd><code>local / default</code></dd></div>
-          <div><dt>{text('Mode', 'モード')}</dt><dd><code>LOCAL · PREVIEW</code></dd></div>
+          {/* スコープはサーバー（認証済みPrincipal）が決める。ここは現在地の表示だけで、変更手段は無い。 */}
+          <div><dt>{text('Scope', 'スコープ')}</dt><dd><code>{scope.tenantId} / {scope.workspaceId}</code></dd></div>
         </dl>
       </section>
-      <section className="workspace-card">
-        <h2>{text('Environment defaults', '環境変数の既定')}</h2>
-        <dl className="settings-list">
-          <div><dt>{text('Provider', 'プロバイダー')}</dt><dd>LM Studio · OpenAI compatible</dd></div>
-          <div><dt>{text('Endpoint', 'エンドポイント')}</dt><dd><code>LM_STUDIO_BASE_URL</code></dd></div>
-          <div><dt>{text('Model', 'モデル')}</dt><dd><code>LM_STUDIO_MODEL</code></dd></div>
-          <div><dt>{text('Timeout', 'タイムアウト')}</dt><dd><code>LM_STUDIO_TIMEOUT_MS</code></dd></div>
-        </dl>
-        <p className="empty-state">{text('These apply to any slot left unset below. Server-side environment variables are intentionally not editable from the browser.', '下のスロットが未設定のときに使われます。サーバー側の環境変数はブラウザから変更できません。')}</p>
-      </section>
-      <section className="workspace-card">
-        <h2>{text('Security gates', '安全ゲート')}</h2>
-        <ul className="gate-list">
-          <li className="ready">{text('Preview blocks write Tools', 'プレビューでは書き込みToolを遮断')}</li>
-          <li className="ready">{text('Run trace persistence enabled', '実行トレースの永続化が有効')}</li>
-          <li className="locked">{text('MCP publication locked until auth/audit adapters exist', '認証・監査アダプター実装までMCP公開をロック')}</li>
-          <li className="locked">{text('Production execution unavailable', '本番実行は利用不可')}</li>
-        </ul>
-      </section>
+      <AccessSection client={client} />
+      <SettingsTail />
     </div>
     <ModelSettingsSection client={client} />
   </main>;
+}
+
+/**
+ * アクセストークンの管理。
+ *
+ * 単一ユーザーモードでは何も入力させない（入れても意味が無く、「認証しているつもり」を作るだけ）。
+ * 代わりに**認証していないこと**を明記する。共有するなら `AGENTCONTEXT_AUTH_TOKENS` を設定する、
+ * という次の一手まで書く。
+ */
+function AccessSection({ client }: { readonly client: ToolApiClient }) {
+  const { text } = useI18n();
+  const [session, setSession] = useState<AuthSessionDto>();
+  const [token, setToken] = useState('');
+  const [feedback, setFeedback] = useState<{ readonly kind: 'ok' | 'error'; readonly message: string }>();
+
+  const load = useCallback(async () => {
+    try { setSession(await client.getSession()); }
+    catch { setSession(undefined); }
+  }, [client]);
+  useEffect(() => { void load(); }, [load]);
+
+  async function apply(): Promise<void> {
+    writeAuthToken(token);
+    try {
+      const next = await client.getSession();
+      setSession(next);
+      setToken('');
+      setFeedback({ kind: 'ok', message: text(`Signed in as ${next.principal.subject}.`, `${next.principal.subject} として認証しました。`) });
+    } catch (cause) {
+      setFeedback({ kind: 'error', message: cause instanceof Error ? cause.message : String(cause) });
+    }
+  }
+
+  function signOut(): void {
+    clearAuthToken();
+    setSession(undefined);
+    setFeedback({ kind: 'ok', message: text('The token was removed from this browser. Reload to sign in again.', 'このブラウザからトークンを削除しました。再読み込みしてサインインし直してください。') });
+  }
+
+  const singleUser = session?.mode === 'single-user';
+  return <section className="workspace-card">
+    <h2>{text('Access', 'アクセス')}</h2>
+    {singleUser
+      ? <>
+        <p className="empty-state">
+          {text(
+            'Single-user mode: requests are not authenticated. The server refuses to start in this mode unless it is bound to 127.0.0.1.',
+            '単一ユーザーモードです。リクエストは認証されていません。この状態では 127.0.0.1 以外へバインドするとサーバーは起動しません。',
+          )}
+        </p>
+        <p className="empty-state">
+          {text('To share this instance with your team, set AGENTCONTEXT_AUTH_TOKENS on the server and restart.', 'チームで共有する場合は、サーバーに AGENTCONTEXT_AUTH_TOKENS を設定して再起動してください。')}
+        </p>
+      </>
+      : <>
+        <dl className="settings-list">
+          <div><dt>{text('Signed in as', '認証中')}</dt><dd><code>{session === undefined ? text('not signed in', '未認証') : session.principal.displayName ?? session.principal.subject}</code></dd></div>
+        </dl>
+        <label>{text('Access token', 'アクセストークン')}
+          <input type="password" autoComplete="off" aria-label={text('Access token', 'アクセストークン')} value={token} onChange={(event) => setToken(event.target.value)} />
+        </label>
+        <div className="save-actions">
+          <button type="button" className="primary" disabled={token.trim() === ''} onClick={() => void apply()}>{text('Save token', 'トークンを保存')}</button>
+          {session !== undefined && <button type="button" className="secondary" onClick={signOut}>{text('Sign out', 'サインアウト')}</button>}
+        </div>
+        <p className="empty-state">{text('The token is stored in this browser only.', 'トークンはこのブラウザにのみ保存されます。')}</p>
+      </>}
+    {feedback !== undefined && <p className={feedback.kind === 'error' ? 'api-error' : 'empty-state'} role={feedback.kind === 'error' ? 'alert' : undefined}>{feedback.message}</p>}
+  </section>;
+}
+
+/** 参照情報だけのカード群（env 既定と安全ゲート）。状態を持たないので独立したコンポーネントにする。 */
+function SettingsTail() {
+  const { text } = useI18n();
+  return <>
+    <section className="workspace-card">
+      <h2>{text('Environment defaults', '環境変数の既定')}</h2>
+      <dl className="settings-list">
+        <div><dt>{text('Provider', 'プロバイダー')}</dt><dd>LM Studio · OpenAI compatible</dd></div>
+        <div><dt>{text('Endpoint', 'エンドポイント')}</dt><dd><code>LM_STUDIO_BASE_URL</code></dd></div>
+        <div><dt>{text('Model', 'モデル')}</dt><dd><code>LM_STUDIO_MODEL</code></dd></div>
+        <div><dt>{text('Timeout', 'タイムアウト')}</dt><dd><code>LM_STUDIO_TIMEOUT_MS</code></dd></div>
+      </dl>
+      <p className="empty-state">{text('These apply to any slot left unset below. Server-side environment variables are intentionally not editable from the browser.', '下のスロットが未設定のときに使われます。サーバー側の環境変数はブラウザから変更できません。')}</p>
+    </section>
+    <section className="workspace-card">
+      <h2>{text('Security gates', '安全ゲート')}</h2>
+      <ul className="gate-list">
+        <li className="ready">{text('Preview blocks write Tools', 'プレビューでは書き込みToolを遮断')}</li>
+        <li className="ready">{text('Run trace persistence enabled', '実行トレースの永続化が有効')}</li>
+        <li className="ready">{text('Tenant scope comes from the authenticated principal', 'テナントスコープは認証済みPrincipalから決まる')}</li>
+        <li className="locked">{text('MCP publication locked until audit adapters exist', '監査アダプター実装までMCP公開をロック')}</li>
+        <li className="locked">{text('Role-based authorization not implemented yet', 'ロールベースの認可は未実装')}</li>
+        <li className="locked">{text('Production execution unavailable', '本番実行は利用不可')}</li>
+      </ul>
+    </section>
+  </>;
 }

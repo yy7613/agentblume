@@ -9,10 +9,9 @@ import {
   EMPTY_MCP_SERVER_FORM, formatMcpServersDocument, parseMcpServersDocumentText, toMcpServerForm, toMcpTransport, transportSummary,
   type McpServerFormValue, type McpServersDocumentParseResult,
 } from './mcp-config';
+import { scope } from '../scope';
 
 type Translate = (english: string, japanese: string) => string;
-
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 
 function errorText(cause: unknown, text: Translate): string { return cause instanceof Error ? cause.message : text('Request failed', 'リクエストが失敗しました'); }
 

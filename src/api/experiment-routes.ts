@@ -6,6 +6,7 @@ import type { QueryExperimentsUseCase } from '../application/evaluation/query-ex
 import type { ResumeExperimentUseCase } from '../application/evaluation/resume-experiment';
 import { serializeExperiment, serializeExperimentCaseResult } from '../domain/evaluation/experiment-serialization';
 import { SemVer } from '../domain/tool/semver';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { createExperimentBodySchema, experimentActionBodySchema, experimentListQuerySchema, scopeQuerySchema } from './schemas';
 
@@ -21,12 +22,12 @@ function version(value: string): SemVer { try { return SemVer.parse(value); } ca
 export function registerExperimentRoutes(app: FastifyInstance, deps: ExperimentRouteDeps): void {
   app.post('/experiments', async (request, reply) => {
     const body = parse(createExperimentBodySchema, request.body);
-    const experiment = await deps.createExperiment.execute({ scope: body.scope, target: { agentId: body.target.agentId, version: version(body.target.version) }, dataset: { id: body.dataset.id, version: version(body.dataset.version) }, evaluatorProfile: { id: body.evaluatorProfile.id, version: version(body.evaluatorProfile.version) }, ...(body.repetitions !== undefined ? { repetitions: body.repetitions } : {}) });
+    const experiment = await deps.createExperiment.execute({ scope: scopeOf(request), target: { agentId: body.target.agentId, version: version(body.target.version) }, dataset: { id: body.dataset.id, version: version(body.dataset.version) }, evaluatorProfile: { id: body.evaluatorProfile.id, version: version(body.evaluatorProfile.version) }, ...(body.repetitions !== undefined ? { repetitions: body.repetitions } : {}) });
     return reply.status(202).send({ experiment: serializeExperiment(experiment) });
   });
-  app.get('/experiments', async (request) => { const query = parse(experimentListQuerySchema, request.query); return { experiments: (await deps.queryExperiments.list(query, query.status)).map(serializeExperiment) }; });
-  app.get<{ Params: { id: string } }>('/experiments/:id/results', async (request) => { const query = parse(scopeQuerySchema, request.query); return { results: (await deps.queryExperiments.results(query, request.params.id)).map(serializeExperimentCaseResult) }; });
-  app.post<{ Params: { id: string } }>('/experiments/:id/cancel', async (request) => { const body = parse(experimentActionBodySchema, request.body); return { experiment: serializeExperiment(await deps.cancelExperiment.execute(body.scope, request.params.id)) }; });
-  app.post<{ Params: { id: string } }>('/experiments/:id/resume', async (request) => { const body = parse(experimentActionBodySchema, request.body); return { experiment: serializeExperiment(await deps.resumeExperiment.execute(body.scope, request.params.id)) }; });
-  app.get<{ Params: { id: string } }>('/experiments/:id', async (request) => { const query = parse(scopeQuerySchema, request.query); return { experiment: serializeExperiment(await deps.queryExperiments.get(query, request.params.id)) }; });
+  app.get('/experiments', async (request) => { const query = parse(experimentListQuerySchema, request.query); return { experiments: (await deps.queryExperiments.list(scopeOf(request), query.status)).map(serializeExperiment) }; });
+  app.get<{ Params: { id: string } }>('/experiments/:id/results', async (request) => { parse(scopeQuerySchema, request.query); return { results: (await deps.queryExperiments.results(scopeOf(request), request.params.id)).map(serializeExperimentCaseResult) }; });
+  app.post<{ Params: { id: string } }>('/experiments/:id/cancel', async (request) => { parse(experimentActionBodySchema, request.body); return { experiment: serializeExperiment(await deps.cancelExperiment.execute(scopeOf(request), request.params.id)) }; });
+  app.post<{ Params: { id: string } }>('/experiments/:id/resume', async (request) => { parse(experimentActionBodySchema, request.body); return { experiment: serializeExperiment(await deps.resumeExperiment.execute(scopeOf(request), request.params.id)) }; });
+  app.get<{ Params: { id: string } }>('/experiments/:id', async (request) => { parse(scopeQuerySchema, request.query); return { experiment: serializeExperiment(await deps.queryExperiments.get(scopeOf(request), request.params.id)) }; });
 }

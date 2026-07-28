@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { BackupSummaryDto, OperationsStatusDto, RunFeedbackDto, RunRecordDto, RunSummaryDto, RunTraceEventDto, TenantScopeDto } from '../api/types';
-import { useToolBuilderStore } from '../tool-builder/store';
 import { useI18n } from '../i18n';
 import { InlineFeedback } from '../components/InlineFeedback';
+import { scope } from '../scope';
 
 export function StatusPage({ client }: { readonly client: ToolApiClient }) {
-  const metadata = useToolBuilderStore((state) => state.metadata);
-  const scope = { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId };
   const [runs, setRuns] = useState<readonly RunSummaryDto[]>([]);
   const [status, setStatus] = useState<OperationsStatusDto>();
   const [selected, setSelected] = useState<RunRecordDto>();
@@ -29,7 +27,7 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
       if (typeof client.getOperationsStatus === 'function') setStatus(await client.getOperationsStatus(scope, 30));
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Run lookup failed'); }
     finally { setLoading(false); }
-  }, [client, metadata.tenantId, metadata.workspaceId]);
+  }, [client]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 

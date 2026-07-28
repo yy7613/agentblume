@@ -11,6 +11,7 @@ import { PreviewPanel } from './PreviewPanel';
 import { useToolBuilderStore } from './store';
 import { AgentChatPanel } from './AgentChatPanel';
 import { NodePalette } from './NodePalette';
+import { scope } from '../scope';
 
 const propagation: PropagationResultDto = {
   order: ['source-1', 'filter-1'],
@@ -296,13 +297,24 @@ describe('MetadataBar', () => {
     fireEvent.change(screen.getByLabelText('Working name'), { target: { value: 'workspace-output-draft' } });
     fireEvent.change(screen.getByLabelText('Publish name'), { target: { value: 'workspace_output' } });
     fireEvent.change(screen.getByLabelText('Owner'), { target: { value: 'owner@example.com' } });
-    fireEvent.change(screen.getByLabelText('Tenant'), { target: { value: 'tenant-b' } });
-    fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: 'workspace-b' } });
     fireEvent.change(screen.getByLabelText('Side effect'), { target: { value: 'session-write' } });
     expect(useToolBuilderStore.getState().metadata).toMatchObject({
       displayName: 'Workspace output', internalId: 'workspace-output', workingName: 'workspace-output-draft',
-      publishName: 'workspace_output', owner: 'owner@example.com', tenantId: 'tenant-b', workspaceId: 'workspace-b', sideEffect: 'session-write',
+      publishName: 'workspace_output', owner: 'owner@example.com', sideEffect: 'session-write',
     });
+  });
+
+  /**
+   * テナント/ワークスペースは**入力欄として出さない**。
+   * 以前は自由入力で、書き換えて保存したToolは他画面から永久に見えなくなった。
+   * いま保存先を決めるのはサーバー側のPrincipalなので、ここは現在地の表示だけにする。
+   */
+  it('テナント・ワークスペースは編集できず、現在のスコープを表示するだけ', () => {
+    render(<MetadataBar client={{} as ToolApiClient} />);
+    expect(screen.queryByLabelText('Tenant')).toBeNull();
+    expect(screen.queryByLabelText('Workspace')).toBeNull();
+    expect(screen.getByText(scope.tenantId)).toBeTruthy();
+    expect(screen.getByText(scope.workspaceId)).toBeTruthy();
   });
 
   it('明示Saveだけが保存APIを呼びversion履歴を更新する', async () => {
@@ -310,7 +322,7 @@ describe('MetadataBar', () => {
     fillRequiredMetadata();
     const metadata = useToolBuilderStore.getState().metadata;
     const tool = {
-      metadata: { ...metadata, tenant: { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId }, version: '1.0.0', state: 'draft' },
+      metadata: { ...metadata, tenant: scope, version: '1.0.0', state: 'draft' },
       sideEffect: metadata.sideEffect,
       graph: { nodes: [], edges: [] },
     } as unknown as SerializedToolDto;
@@ -330,11 +342,11 @@ describe('MetadataBar', () => {
     const metadata = useToolBuilderStore.getState().metadata;
     const input = { columns: [{ name: 'query', type: 'string' as const, nullable: false }] };
     useToolBuilderStore.getState().loadTool({
-      metadata: { internalId: metadata.internalId, workingName: metadata.workingName, displayName: metadata.displayName, publishName: metadata.publishName, owner: metadata.owner, version: '1.0.0', state: 'draft', tenant: { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId } },
+      metadata: { internalId: metadata.internalId, workingName: metadata.workingName, displayName: metadata.displayName, publishName: metadata.publishName, owner: metadata.owner, version: '1.0.0', state: 'draft', tenant: scope },
       sideEffect: 'read-only', graph: { nodes: [{ id: 'args', type: 'agent-input', config: { schema: input, sample: { query: 'x' } } }], edges: [] },
     });
     useToolBuilderStore.getState().setPropagation({ order: ['args'], hasErrors: false, nodes: { args: { nodeId: 'args', state: 'confirmed', issues: [], schema: input } } });
-    const saved = { metadata: { ...metadata, version: '1.0.1', state: 'draft', tenant: { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId } }, sideEffect: 'read-only', graph: { nodes: [], edges: [] } } as unknown as SerializedToolDto;
+    const saved = { metadata: { ...metadata, version: '1.0.1', state: 'draft', tenant: scope }, sideEffect: 'read-only', graph: { nodes: [], edges: [] } } as unknown as SerializedToolDto;
     const client = { saveTool: vi.fn().mockResolvedValue(saved), listVersions: vi.fn().mockResolvedValue(['1.0.0', '1.0.1']) } as unknown as ToolApiClient;
     render(<MetadataBar client={client} />);
     await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
@@ -346,7 +358,7 @@ describe('MetadataBar', () => {
     useToolBuilderStore.getState().setVersions(['1.0.0']);
     const metadata = useToolBuilderStore.getState().metadata;
     const tool = {
-      metadata: { internalId: 'loaded', workingName: 'w', displayName: 'Loaded', publishName: 'loaded', owner: 'o', version: '1.0.0', state: 'draft', tenant: { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId } },
+      metadata: { internalId: 'loaded', workingName: 'w', displayName: 'Loaded', publishName: 'loaded', owner: 'o', version: '1.0.0', state: 'draft', tenant: scope },
       sideEffect: 'read-only', graph: { nodes: [{ id: 'loaded-source', type: 'json-source', config: { rows: [] } }], edges: [] },
     } as SerializedToolDto;
     const client = { getTool: vi.fn().mockResolvedValue(tool) } as unknown as ToolApiClient;
@@ -405,7 +417,7 @@ describe('MetadataBar', () => {
     fillRequiredMetadata();
     const metadata = useToolBuilderStore.getState().metadata;
     const tool = {
-      metadata: { ...metadata, tenant: { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId }, version: '1.0.1', state: 'draft' },
+      metadata: { ...metadata, tenant: scope, version: '1.0.1', state: 'draft' },
       sideEffect: metadata.sideEffect, graph: { nodes: [], edges: [] },
     } as unknown as SerializedToolDto;
     const client = { saveTool: vi.fn().mockResolvedValue(tool), listVersions: vi.fn().mockResolvedValue(['1.0.0', '1.0.1']) } as unknown as ToolApiClient;

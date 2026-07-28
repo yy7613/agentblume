@@ -19,10 +19,29 @@ import { EVALUATION_CASE_SOURCES } from '../domain/evaluation/evaluation-dataset
 import { JUDGE_REFERENCE_POLICIES } from '../domain/evaluation/judge-rubric';
 import { MODEL_BASE_URL_MAX_LENGTH, MODEL_ID_MAX_LENGTH, MODEL_SLOT_NAMES, isHttpBaseUrl } from '../domain/model-settings/model-settings';
 
-/** テナントスコープ（tenantId / workspaceId 非空）。 */
+/**
+ * テナントスコープ。**サーバーはこの値を読まない**。
+ *
+ * ## なぜ「受け取るが無視する」のか
+ *
+ * 以前はこの値がテナント境界そのものだった（クライアントの自己申告）。今はスコープの唯一の
+ * 供給源が認証済み `Principal`（`scopeOf(request)`・`src/api/authentication.ts`）で、
+ * ここに書かれた値はどのルートからも参照されない。
+ *
+ * 「不一致なら403」ではなく「無視」を選んだ理由:
+ *
+ * - **安全性は同じ**。どちらもクライアントの申告を権威にしない。403 が増やすのは
+ *   セキュリティではなく、クライアント側が自分のテナントIDを知っている必要という制約だけ。
+ * - 403 にすると全クライアントが「送信前に自分のPrincipalを知る」必要が生まれ、
+ *   起動直後（セッション取得前）や設定変更直後のタブが一斉に403で死ぬ経路ができる。
+ * - 既存クライアント（UIの10画面・外部スクリプト）は送り続けても壊れない。
+ *
+ * 値の形だけは従来どおり検証する（空文字は打ち間違いなので400のまま）。
+ * 新しいクライアントは**送らなくてよい**ので、両フィールドとも任意にした。
+ */
 export const tenantScopeSchema = z.object({
-  tenantId: z.string().min(1),
-  workspaceId: z.string().min(1),
+  tenantId: z.string().min(1).optional(),
+  workspaceId: z.string().min(1).optional(),
 });
 
 /**
@@ -290,9 +309,7 @@ export const closeAgentSessionBodySchema = z.object({ scope: tenantScopeSchema }
 export const sessionScopeQuerySchema = tenantScopeSchema;
 export const sessionArtifactQuerySchema = tenantScopeSchema.extend({ limit: z.coerce.number().int().min(1).max(100).optional(), offset: z.coerce.number().int().min(0).max(1_000_000).optional(), section: z.enum(['nodes', 'edges']).optional() });
 
-export const runListQuerySchema = z.object({
-  tenantId: z.string().min(1),
-  workspaceId: z.string().min(1),
+export const runListQuerySchema = tenantScopeSchema.extend({
   limit: z.coerce.number().int().min(1).max(100).optional(),
   status: z.enum(['running', 'succeeded', 'failed', 'waiting-approval']).optional(),
 });
@@ -304,10 +321,7 @@ export const resumeRunBodySchema = z.object({
   feedback: z.string().max(2_000).optional(),
 });
 
-export const runTraceQuerySchema = z.object({
-  tenantId: z.string().min(1),
-  workspaceId: z.string().min(1),
-});
+export const runTraceQuerySchema = tenantScopeSchema;
 
 /** POST /personas の body（v16 §5）。 */
 export const savePersonaBodySchema = z.object({
@@ -360,23 +374,17 @@ export const runScenarioBodySchema = z.object({
 });
 
 /** GET /scenario-runs の query。 */
-export const scenarioRunListQuerySchema = z.object({
-  tenantId: z.string().min(1),
-  workspaceId: z.string().min(1),
+export const scenarioRunListQuerySchema = tenantScopeSchema.extend({
   scenarioId: z.string().optional(),
 });
 
 /** GET /tools/:id 系の query（version は任意文字列、妥当性はルート側）。 */
-export const versionQuerySchema = z.object({
-  tenantId: z.string().min(1),
-  workspaceId: z.string().min(1),
+export const versionQuerySchema = tenantScopeSchema.extend({
   version: z.string().optional(),
 });
 
-export const scopeQuerySchema = z.object({
-  tenantId: z.string().min(1),
-  workspaceId: z.string().min(1),
-});
+/** スコープだけを受けるクエリ。中身は `tenantScopeSchema` と同じで、どちらも読まれない。 */
+export const scopeQuerySchema = tenantScopeSchema;
 
 /** GET /agents のクエリ（任意で kind フィルタ）。 */
 export const agentListQuerySchema = scopeQuerySchema.extend({

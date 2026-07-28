@@ -17,6 +17,7 @@ import type { GetModelSettingsUseCase, SaveModelSettingsUseCase } from '../appli
 import type { QueryModelCatalogUseCase } from '../application/model-settings/query-model-catalog';
 import type { TestModelSettingsUseCase } from '../application/model-settings/test-model-settings';
 import { clientAbortSignal } from './client-abort';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { modelCatalogProviderParamsSchema, modelSettingsQuerySchema, openAiCompatibleModelsBodySchema, saveModelSettingsBodySchema, testModelSettingsBodySchema } from './schemas';
 
@@ -35,8 +36,8 @@ function parseWith<S extends z.ZodType>(schema: S, value: unknown, label: string
 
 export function registerModelSettingsRoutes(app: FastifyInstance, deps: ModelSettingsRouteDeps): void {
   app.get('/model-settings', async (request) => {
-    const query = parseWith(modelSettingsQuerySchema, request.query, 'invalid query');
-    return { settings: await deps.getModelSettings.execute(query) };
+    parseWith(modelSettingsQuerySchema, request.query, 'invalid query');
+    return { settings: await deps.getModelSettings.execute(scopeOf(request)) };
   });
 
   // スロット省略 = 変更なし、null = 設定を消して env 既定へ戻す。
@@ -44,7 +45,7 @@ export function registerModelSettingsRoutes(app: FastifyInstance, deps: ModelSet
     const body = parseWith(saveModelSettingsBodySchema, request.body, 'invalid body');
     return {
       settings: await deps.saveModelSettings.execute({
-        scope: body.scope,
+        scope: scopeOf(request),
         ...(body.main === undefined ? {} : { main: body.main }),
         ...(body.judge === undefined ? {} : { judge: body.judge }),
       }),
@@ -54,7 +55,7 @@ export function registerModelSettingsRoutes(app: FastifyInstance, deps: ModelSet
   app.post('/model-settings/test', async (request, reply) => {
     const body = parseWith(testModelSettingsBodySchema, request.body, 'invalid body');
     return deps.testModelSettings.execute({
-      scope: body.scope,
+      scope: scopeOf(request),
       slot: body.slot,
       ...(body.candidate === undefined ? {} : { candidate: body.candidate }),
     }, clientAbortSignal(request, reply));
@@ -75,7 +76,7 @@ export function registerModelSettingsRoutes(app: FastifyInstance, deps: ModelSet
   app.post('/model-catalog/openai-compatible-models', async (request, reply) => {
     const body = parseWith(openAiCompatibleModelsBodySchema, request.body, 'invalid body');
     return deps.queryModelCatalog.openAiCompatibleModels({
-      scope: body.scope,
+      scope: scopeOf(request),
       baseUrl: body.baseUrl,
       ...(body.slot === undefined ? {} : { slot: body.slot }),
     }, clientAbortSignal(request, reply));

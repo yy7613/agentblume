@@ -6,6 +6,7 @@ import type { QueryAgentsUseCase } from '../application/agent/query-agents';
 import type { SaveAgentUseCase } from '../application/agent/save-agent';
 import { serializeAgent } from '../domain/agent/serialization';
 import { SemVer } from '../domain/tool/semver';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { agentDraftPromptBodySchema, agentListQuerySchema, agentPromptBodySchema, saveAgentBodySchema, scopeQuerySchema, versionQuerySchema } from './schemas';
 
@@ -38,6 +39,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
     const body = parseWith(saveAgentBodySchema, request.body, 'invalid body');
     const agent = await deps.saveAgent.execute({
       ...body,
+      scope: scopeOf(request),
       skills: body.skills.map((skill) => ({ internalId: skill.internalId, version: version(skill.version) as SemVer })),
       tools: body.tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer })),
       agents: body.agents.map((sub) => ({ internalId: sub.internalId, version: version(sub.version) as SemVer, usage: sub.usage })),
@@ -50,14 +52,14 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
 
   app.get('/agents', async (request) => {
     const query = parseWith(agentListQuerySchema, request.query, 'invalid query');
-    const agents = await deps.queryAgents.list({ tenantId: query.tenantId, workspaceId: query.workspaceId }, query.kind);
+    const agents = await deps.queryAgents.list(scopeOf(request), query.kind);
     return { agents: agents.map((agent) => ({ ...agent, latestVersion: agent.latestVersion.toString() })) };
   });
 
   app.get<{ Params: AgentParams }>('/agents/:internalId', async (request) => {
     const query = parseWith(versionQuerySchema, request.query, 'invalid query');
     const agent = await deps.queryAgents.get(
-      { tenantId: query.tenantId, workspaceId: query.workspaceId },
+      scopeOf(request),
       request.params.internalId,
       version(query.version),
     );
@@ -65,15 +67,15 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
   });
 
   app.get<{ Params: AgentParams }>('/agents/:internalId/versions', async (request) => {
-    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
-    const versions = await deps.queryAgents.versions({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.internalId);
+    parseWith(scopeQuerySchema, request.query, 'invalid query');
+    const versions = await deps.queryAgents.versions(scopeOf(request), request.params.internalId);
     return { versions: versions.map((item) => item.toString()) };
   });
 
   // 論理削除。204で成功を返し、未存在/削除済みは deleteAgent が AgentNotFoundError → 404 へ変換される。
   app.delete<{ Params: AgentParams }>('/agents/:internalId', async (request, reply) => {
-    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
-    await deps.deleteAgent.execute(query, request.params.internalId);
+    parseWith(scopeQuerySchema, request.query, 'invalid query');
+    await deps.deleteAgent.execute(scopeOf(request), request.params.internalId);
     return reply.status(204).send();
   });
 
@@ -81,6 +83,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
     const body = parseWith(agentDraftPromptBodySchema, request.body, 'invalid body');
     const draft = await deps.generateAgentPrompt.execute({
       ...body,
+      scope: scopeOf(request),
       skills: body.skills.map((skill) => ({ internalId: skill.internalId, version: version(skill.version) as SemVer })),
       tools: body.tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer })),
       agents: body.agents.map((sub) => ({ internalId: sub.internalId, version: version(sub.version) as SemVer, usage: sub.usage })),
@@ -90,9 +93,9 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
 
   app.post<{ Params: AgentParams }>('/agents/:internalId/generate-prompt', async (request) => {
     const body = parseWith(agentPromptBodySchema, request.body, 'invalid body');
-    const agent = await deps.queryAgents.get(body.scope, request.params.internalId, version(body.version));
+    const agent = await deps.queryAgents.get(scopeOf(request), request.params.internalId, version(body.version));
     const draft = await deps.generateAgentPrompt.execute({
-      scope: body.scope,
+      scope: scopeOf(request),
       displayName: agent.metadata.displayName,
       kind: agent.kind,
       skills: agent.skills,

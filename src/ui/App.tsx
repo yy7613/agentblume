@@ -1,5 +1,6 @@
 import { lazy, Suspense, useState } from 'react';
 import type { ToolApiClient } from './api/tool-api';
+import type { AuthSessionDto } from './api/types';
 import { ToolBuilder } from './tool-builder/ToolBuilder';
 import { StatusPage } from './status/StatusPage';
 import { AgentBuilder } from './agent-builder/AgentBuilder';
@@ -37,7 +38,19 @@ type Screen = ScreenName;
 const NAV_LABEL_EN_OVERRIDES: Readonly<Record<string, string>> = { Harness: 'Multi-Agent' };
 function navLabel(id: string): string { return NAV_LABEL_EN_OVERRIDES[id] ?? id; }
 
-export function App({ client }: { readonly client: ToolApiClient }) {
+/**
+ * ナビ下部の稼働モード表示。
+ *
+ * 単一ユーザーモードは**誰でも既定テナントの全データを触れる**構成なので、そうと分かるように出す
+ * （以前は構成に関係なく `LOCAL · PREVIEW` 固定だった）。トークン構成では「誰として繋がっているか」を出す。
+ */
+function ModeBadge({ session }: { readonly session?: AuthSessionDto }) {
+  if (session === undefined || session.mode === 'single-user') return <small>LOCAL · PREVIEW</small>;
+  const who = session.principal.displayName ?? session.principal.subject;
+  return <small title={`${session.principal.tenantId} / ${session.principal.workspaceId}`}>{who} · {session.principal.tenantId}</small>;
+}
+
+export function App({ client, session }: { readonly client: ToolApiClient; readonly session?: AuthSessionDto }) {
   const [screen, navigate] = useHashScreen(SCREENS, DEFAULT_SCREEN);
   // 未保存の編集を持つ画面から離れようとしたときの確認先。undefinedなら確認中でない。
   const [pendingScreen, setPendingScreen] = useState<Screen>();
@@ -62,7 +75,7 @@ export function App({ client }: { readonly client: ToolApiClient }) {
       {/* ヘルプは画面ごとにヘッダーへ13個置かず、表示中の画面に追従する1つのボタンにまとめる
           (ChatPage / AgentInspectorPage を含む全画面を、それらのファイルを触らずに網羅できる)。 */}
       <button type="button" className="nav-help" aria-label={text('Help for this screen', 'この画面のヘルプ')} onClick={() => setHelpOpen(true)}><span aria-hidden="true">?</span>{text('Help', 'ヘルプ')}</button>
-      <small>LOCAL · PREVIEW</small></nav>
+      <ModeBadge {...(session === undefined ? {} : { session })} /></nav>
     <NavigationProvider navigate={requestScreen}>
       <UnsavedChangesProvider value={unsavedChanges.value}>
         {screen === 'Tool' ? <ToolBuilder client={client} /> : screen === 'Agent' ? <AgentBuilder client={client} /> : screen === 'Harness' ? <HarnessBuilder client={client} /> : screen === 'Skill' ? <SkillBuilder client={client} /> : screen === 'Chat' ? <ChatPage client={client} /> : screen === 'Inspect' ? <AgentInspectorPage client={client} /> : screen === 'Data' ? <DataSourcesPage client={client} /> : screen === 'MCP' ? <McpPage client={client} /> : screen === 'Validation' ? <Suspense fallback={<main className="workspace-page"><p className="empty-state">{text('Loading validation…', '検証画面を読み込み中…')}</p></main>}><ValidationPage client={client} /></Suspense> : screen === 'Factory' ? <FactoryPage client={client} /> : screen === 'Memory' ? <MemoryPage client={client} /> : screen === 'Settings' ? <SettingsPage client={client} /> : <StatusPage client={client} />}

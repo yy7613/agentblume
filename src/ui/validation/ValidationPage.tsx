@@ -4,12 +4,12 @@ import { useI18n } from '../i18n';
 import { PersonasTab } from './PersonasTab';
 import { RunsTab } from './RunsTab';
 import { ScenariosTab } from './ScenariosTab';
+import { scope } from '../scope';
 
 const DatasetsTab = lazy(async () => ({ default: (await import('./DatasetsTab')).DatasetsTab }));
 const ExperimentsTab = lazy(async () => ({ default: (await import('./ExperimentsTab')).ExperimentsTab }));
 const QualityTab = lazy(async () => ({ default: (await import('./QualityTab')).QualityTab }));
 
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
 type Tab = 'personas' | 'scenarios' | 'datasets' | 'experiments' | 'quality' | 'runs';
 
 export function ValidationPage({ client }: { readonly client: ToolApiClient }) {

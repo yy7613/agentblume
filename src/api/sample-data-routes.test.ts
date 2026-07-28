@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp, type App } from '../composition/root';
 import { buildServer } from './server';
 
@@ -48,18 +49,28 @@ describe('sample data routes', () => {
     expect(tools.json().tools[0].latestVersion).toBe('1.0.0');
   });
 
-  it('scopeが無い/空のbodyは400にする', async () => {
-    expect((await server.inject({ method: 'POST', url: '/sample-data', payload: {} })).statusCode).toBe(400);
+  it('scope 無しのbodyでも Principal のスコープへ投入する', async () => {
+    // 投入先はPrincipalが決めるので、bodyのscopeは省略できる。
+    expect((await server.inject({ method: 'POST', url: '/sample-data', payload: {} })).statusCode).toBe(200);
+    const agents = await server.inject({ method: 'GET', url: '/agents', query: scope });
+    expect(agents.json().agents).toMatchObject([{ internalId: 'sample-product-assistant' }]);
+  });
+
+  it('空文字のscopeは400にする（形の検証は従来どおり）', async () => {
     expect((await server.inject({ method: 'POST', url: '/sample-data', payload: { scope: { tenantId: '', workspaceId: 'default' } } })).statusCode).toBe(400);
   });
 
-  it('workspaceごとに独立して投入できる', async () => {
+  it('workspaceごとに独立して投入できる（境界はPrincipalが決める）', async () => {
     await server.inject({ method: 'POST', url: '/sample-data', payload: { scope } });
     const other = { tenantId: 'local', workspaceId: 'other' };
-    const response = await server.inject({ method: 'POST', url: '/sample-data', payload: { scope: other } });
+    const otherServer = buildServer(app, { authentication: new SingleUserAuthentication(other) });
+    const response = await otherServer.inject({ method: 'POST', url: '/sample-data', payload: {} });
 
     expect(response.json().sample.created).toBe(8);
-    const agents = await server.inject({ method: 'GET', url: '/agents', query: other });
+    const agents = await otherServer.inject({ method: 'GET', url: '/agents' });
     expect(agents.json().agents).toMatchObject([{ internalId: 'sample-product-assistant' }]);
+    // 元のworkspaceは1件のまま（投入が混ざらない）。
+    expect((await server.inject({ method: 'GET', url: '/agents', query: scope })).json().agents).toHaveLength(1);
+    await otherServer.close();
   });
 });

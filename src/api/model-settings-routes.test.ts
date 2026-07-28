@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ModelCatalogError, type ModelCatalogPort, type ModelCatalogProvider } from '../application/model-settings/model-catalog';
 import type { ModelProviderFactoryPort, ResolvedSlotOptions } from '../application/model-settings/model-provider-factory';
 import { ModelProviderError, type ModelCapability, type ModelCompletion, type ModelProviderPort } from '../application/model/model-provider';
+import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp, type App } from '../composition/root';
 import { buildServer } from './server';
 
@@ -51,7 +52,7 @@ describe('model settings routes', () => {
     factory = new FakeFactory();
     catalog = new FakeCatalog();
     app = createApp({ profile: 'test', modelProviderFactory: factory, modelCatalog: catalog });
-    server = buildServer(app);
+    server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
   });
   afterEach(async () => { await server.close(); app.close(); });
 
@@ -113,8 +114,9 @@ describe('model settings routes', () => {
     expect(response.statusCode).toBe(400);
     expect(response.json().error.code).toBe('BAD_REQUEST');
 
-    const missingScope = await server.inject({ method: 'GET', url: '/model-settings', query: { tenantId: 'tenant' } });
-    expect(missingScope.statusCode).toBe(400);
+    // scope 自体はもう読まれないが、空文字のような明らかな打ち間違いは従来どおり400で返す。
+    const blankScope = await server.inject({ method: 'GET', url: '/model-settings', query: { tenantId: '' } });
+    expect(blankScope.statusCode).toBe(400);
   });
 
   it('疎通テストは成功も失敗も200（ok フラグで区別する）', async () => {

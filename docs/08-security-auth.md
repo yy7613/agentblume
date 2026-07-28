@@ -4,6 +4,60 @@
 
 ---
 
+## 0. 実装状況（2026-07）
+
+このドキュメントは目標像を書いている。**現時点で動いているのは認証（Authentication）とテナント境界だけ**で、認可（RBAC）と監査は未実装である。
+
+| 項目 | 状態 | 実体 |
+|---|---|---|
+| `AuthenticationPort` | ✅ 実装 | `src/application/security/authentication.ts`（Port）/ `src/adapters/security/*`（実装2種） |
+| `Principal` | ✅ 実装 | `src/domain/security/principal.ts` |
+| テナント境界の決定 | ✅ 実装 | `scopeOf(request)`（`src/api/authentication.ts`）が唯一の供給源 |
+| 単一ユーザーモード | ✅ 実装 | `SingleUserAuthentication`。**ループバック以外へのバインドでは起動を拒否** |
+| 共有トークン認証 | ✅ 実装 | `TokenAuthentication`（Bearer・人ごとに1本） |
+| OIDC / PKCE | ❌ 未実装 | `AuthenticationPort` の別実装として追加できる |
+| `AuthorizationProvider`（RBAC） | ❌ 未実装 | `Principal.roles` は運ぶだけで判定に使っていない |
+| `AuditSink` | ❌ 未実装 | 運用ログのマスキングのみ（§1 の注記） |
+| `AuthFeatureProvider` / `AuthUiExtension` / `PrincipalMapper` | ❌ 未実装 | — |
+
+### 0.1 テナント境界の決まりかた（重要）
+
+以前は**全APIがボディ／クエリの `tenantId` / `workspaceId` をそのまま境界として使っていた**。リポジトリ層は正しく `WHERE tenant_id = ? AND workspace_id = ?` を適用していたので、壊れていたのは「境界の実装」ではなく **「境界を決める主体」** だった。`tenantId` を書き換えれば任意テナントのデータを読み書き・削除できた。
+
+現在の流れ:
+
+```mermaid
+flowchart LR
+  REQ["HTTPリクエスト"] --> HOOK["onRequest フック<br/>(src/api/authentication.ts)"]
+  HOOK -->|資格情報| AN["AuthenticationPort"]
+  AN -->|解決| P["request.principal"]
+  AN -->|解決できない| DENY["401 UNAUTHENTICATED"]
+  P --> SCOPE["scopeOf(request)"]
+  SCOPE --> UC["ユースケース / リポジトリ"]
+  BODY["body.scope / query.tenantId"] -.受理するが読まない.-> X["（無視）"]
+
+  classDef deny fill:#ffebee,stroke:#c62828,color:#b71c1c;
+  class DENY,X deny;
+```
+
+- リクエストの `scope` は**後方互換のために受理を続けるが、どのルートからも参照されない**。
+  「不一致なら403」ではなく「無視」を選んだのは、安全性が同じ（どちらもクライアントの申告を権威にしない）一方で、403 は全クライアントに「送信前に自分のテナントIDを知っている」ことを強いるため。詳細な根拠は `src/api/schemas.ts` の `tenantScopeSchema` にある。
+- 認証不要なのは `/health` `/ready` と、APIが所有しないパスへの GET/HEAD（＝ビルド済みUIのシェル）だけ。ここを閉じるとトークン入力画面そのものが開けなくなる。
+- `GET /auth/session` は**認証必須**。401 が返ること自体が「トークンが要る構成だ」という合図になり、UIはこれで単一ユーザーモードかを判別する。
+
+### 0.2 バインドアドレスと認証の関係
+
+「ローカルだから無認証でよい」という前提は、`AGENTCONTEXT_HOST` を変えた瞬間に破綻する。そこで `serverSettings`（`src/config/environment.ts`）が起動時に次を強制する。
+
+| バインド先 | 認証未設定 | 認証あり（`AGENTCONTEXT_AUTH_TOKENS`） |
+|---|---|---|
+| `127.0.0.0/8` · `::1` · `localhost` | ✅ 単一ユーザーモードで起動 | ✅ 起動 |
+| それ以外（`0.0.0.0` · LAN IP · ホスト名） | ❌ **起動を拒否** | ✅ 起動 |
+
+ホスト名は解決しない。解決結果に依存させると、DNSの都合で認証の要否が変わってしまうため。
+
+---
+
 ## 1. セキュリティ最低要件
 
 DB/API接続・カスタムコード・MCP公開・Webhookを提供する前に、次を満たす。
@@ -217,6 +271,18 @@ flowchart LR
 ---
 
 ## 8. 認証・認可の拡張インターフェース一覧
+
+| インターフェース | 責務 | 状態 |
+|---|---|---|
+| `AuthenticationPort` | 資格情報 → 内部Principal の解決 | ✅ 実装（`single-user` / `token`） |
+| `AuthorizationProvider` | Principal・resource・action・context → 許可/拒否 | ❌ 次Wave |
+| `AuditSink` | 認証イベント・認可拒否・承認・公開・実行を外部監査基盤へ転送 | ❌ 次Wave |
+| `PrincipalMapper` | IdP固有claimを内部Principalへ変換 | ❌ OIDC実装時 |
+| `AuthFeatureProvider` | 登録・招待・メール確認・パスワード再設定・MFA・セッション一覧の対応可否と実行 | ❌ 未着手 |
+| `AuthUiExtension` | ログイン・登録・アカウント・セッション・メンバー管理画面の差し替え | ❌ 未着手 |
+| `SecretProvider` | 接続情報の参照と実行時取得 | 部分実装（`SecretCipherPort` が保存時の封緘のみ担当） |
+
+以下は当初の設計時に想定していた分割（参考）。
 
 | インターフェース | 責務 |
 |---|---|

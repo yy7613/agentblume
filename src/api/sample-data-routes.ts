@@ -8,6 +8,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { SampleDataSummary } from '../application/onboarding/seed-sample-data';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 
 /** 投入ユースケース（composition が配線する）。 */
@@ -22,9 +23,10 @@ export interface SampleDataRouteDeps {
 /**
  * 他のルートと同じ `{ scope: { tenantId, workspaceId } }` 形。
  * schemas.ts へ足さずここで閉じているのは、この経路が他と共有する入力を持たないため。
+ * 投入先は `scopeOf(request)`（Principal）で決まるので、この値は形だけ検証して捨てる。
  */
 const seedSampleDataBodySchema = z.object({
-  scope: z.object({ tenantId: z.string().min(1), workspaceId: z.string().min(1) }),
+  scope: z.object({ tenantId: z.string().min(1).optional(), workspaceId: z.string().min(1).optional() }).optional(),
 });
 
 export function registerSampleDataRoutes(app: FastifyInstance, deps: SampleDataRouteDeps): void {
@@ -34,7 +36,7 @@ export function registerSampleDataRoutes(app: FastifyInstance, deps: SampleDataR
       const issues = parsed.error.issues.map((issue) => `${issue.path.length > 0 ? issue.path.join('.') : '(root)'}: ${issue.message}`).join('; ');
       throw new BadRequestError(`invalid body: ${issues}`);
     }
-    const sample = await deps.seedSampleData.execute(parsed.data.scope);
+    const sample = await deps.seedSampleData.execute(scopeOf(request));
     // 新規作成が無かった回も「既に揃っている」という成功なので 201 ではなく 200 を返す。
     return reply.status(200).send({ sample });
   });

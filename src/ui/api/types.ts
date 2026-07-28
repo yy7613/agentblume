@@ -40,6 +40,24 @@ export interface PreviewResultDto {
 }
 
 export interface TenantScopeDto { readonly tenantId: string; readonly workspaceId: string }
+
+/** 認証方式。`single-user` は「資格情報を求めない」構成（ループバック限定）。 */
+export type AuthModeDto = 'single-user' | 'token';
+
+/** `GET /auth/session` の応答。テナント境界を決めている主体そのもの。 */
+export interface AuthSessionDto {
+  readonly mode: AuthModeDto;
+  /** `false` なら単一ユーザーモード（トークン入力は不要）。 */
+  readonly authenticationRequired: boolean;
+  readonly principal: {
+    readonly subject: string;
+    readonly tenantId: string;
+    readonly workspaceId: string;
+    readonly displayName?: string;
+    /** 次Wave（RBAC）用。現時点では表示にしか使わない。 */
+    readonly roles: readonly string[];
+  };
+}
 export type SideEffectDto = 'read-only' | 'session-write' | 'write' | 'external-action';
 export interface SerializedToolDto {
   readonly metadata: {

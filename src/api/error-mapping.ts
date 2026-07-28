@@ -6,6 +6,7 @@
  * 基底 ToolError を継承する ToolValidationError より先に判定して意図を明示する）。
  * 未知の例外は 500 とし、message は 'internal error' 固定（詳細を漏らさない）。
  */
+import { UnauthenticatedError } from './authentication';
 import { GraphError, ConfigError, SchemaError } from '../domain/etl/errors';
 import {
   ToolNotFoundError,
@@ -84,6 +85,8 @@ export function toHttpError(err: unknown): HttpError {
     return { status: mapped.status, body: { error: { ...mapped.body.error, runId: err.runId } } };
   }
   if (err instanceof BadRequestError) return httpError(400, err.code, err.message);
+  // 認証フックを通っていないのにスコープを要求した（＝公開パスの設定ミス）。
+  if (err instanceof UnauthenticatedError) return httpError(401, err.code, err.message);
 
   // Tool ドメイン: 具象クラスを ToolValidationError より先に判定する。
   if (err instanceof ToolNotFoundError) return httpError(404, err.code, err.message);

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp, type App } from '../composition/root';
 import { buildServer } from './server';
 
@@ -11,7 +12,7 @@ describe('agent routes', () => {
 
   beforeEach(async () => {
     app = createApp({ profile: 'test' });
-    server = buildServer(app);
+    server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
     await server.inject({ method: 'POST', url: '/tools', payload: {
       scope, internalId: 'scores', workingName: 'Scores', displayName: 'Score filter', publishName: 'filter_scores', owner: 'owner', sideEffect: 'read-only',
       graph: { nodes: [{ id: 'source', type: 'agent-input', config: { schema: { columns: [{ name: 'score', type: 'number', nullable: false }] }, sample: { score: 1 } } }], edges: [] },
@@ -114,9 +115,12 @@ describe('agent routes', () => {
     expect(missing.statusCode).toBe(400);
     expect(missing.json().error.code).toBe('AGENT_VALIDATION');
     await server.inject({ method: 'POST', url: '/agents', payload: body() });
-    const hidden = await server.inject({ method: 'GET', url: '/agents/assistant', query: { tenantId: 'other', workspaceId: 'workspace' } });
+    // 別テナントのPrincipalからは見えない。**同じリポジトリ**（同じapp）を別Principalのサーバーで見る。
+    const otherServer = buildServer(app, { authentication: new SingleUserAuthentication({ tenantId: 'other', workspaceId: 'workspace' }) });
+    const hidden = await otherServer.inject({ method: 'GET', url: '/agents/assistant', query: scope });
     expect(hidden.statusCode).toBe(404);
     expect(hidden.json().error.code).toBe('AGENT_NOT_FOUND');
+    await otherServer.close();
   });
 
   it('保存済みAgentを論理削除できる（listからは除外、GETはfindLatestのため404、pinned versionはfindVersionで残る）', async () => {

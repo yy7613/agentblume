@@ -3,6 +3,7 @@ import { ApiError, type ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, RunRecordDto, RunTraceEventDto } from '../api/types';
 import { useToolBuilderStore } from './store';
 import { useI18n } from '../i18n';
+import { scope } from '../scope';
 
 export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
   const metadata = useToolBuilderStore((state) => state.metadata);
@@ -26,7 +27,7 @@ export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
     setLoading(true); setError(undefined);
     try {
       const result = await client.runAgent({
-        scope: { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId },
+        scope,
         tool: { internalId: metadata.internalId, version: currentVersion },
         systemPrompt, message, mode: 'preview',
       }, request.signal);
@@ -35,7 +36,7 @@ export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
     } catch (cause) {
       if (request.signal.aborted) return;
       if (cause instanceof ApiError && cause.runId !== undefined) {
-        try { setFailedRun(await client.getRunTrace(cause.runId, { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId })); }
+        try { setFailedRun(await client.getRunTrace(cause.runId, scope)); }
         catch { setFailedRun(undefined); }
         setError(`${cause.message} · run ${cause.runId}`);
       } else setError(cause instanceof Error ? cause.message : 'Agent run failed');

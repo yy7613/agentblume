@@ -9,6 +9,8 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
 import type { LogLevel } from '../config/environment';
+import type { AuthenticationPort } from '../application/security/authentication';
+import { defaultAuthentication, registerAuthRoutes, registerAuthentication } from './authentication';
 import { loggerOptions } from './logging';
 import { registerDraftToolRoutes } from './draft-tool-routes';
 import type { DraftToolRouteDeps } from './draft-tool-routes';
@@ -105,6 +107,14 @@ export interface ServerOptions {
   readonly readiness?: readonly ReadinessCheck[];
   /** `/health` `/ready` に載せるソース版（`AGENTCONTEXT_SOURCE_REVISION`）。 */
   readonly revision?: string;
+  /**
+   * 資格情報 → Principal の解決。**省略時は単一ユーザーモード**（既定テナントを常に返す）。
+   *
+   * 本番経路（`src/server.ts`）は composition が env から組み立てた実装を必ず渡す。
+   * 省略はテストと埋め込み利用のための互換動作で、`127.0.0.1` 以外へバインドする構成では
+   * `serverSettings`（`src/config/environment.ts`）が起動を拒否する。
+   */
+  readonly authentication?: AuthenticationPort;
 }
 
 /** `/foo/bar?x=1` → `/foo`。ルートパスや空文字は `undefined`。 */
@@ -150,10 +160,27 @@ export function buildServer(
   // UIは「JSONでない応答」で失敗して原因が分からなくなる）。
   // 接頭辞そのものが未知の `/toolz` はUIのルートと区別できないため、SPAへ倒すのが正しい。
   const apiPrefixes = new Set<string>();
+  /**
+   * 収集を止めるタイミングが要る。`@fastify/static` は `wildcard: false` のときファイル単位で
+   * ルートを張るため、止めないと `/assets` まで「APIの接頭辞」に混ざる。そうなると
+   * 認証フックが `/assets/*.js` を保護対象と見なし、**トークン入力画面のJSが401で落ちて
+   * 誰もサインインできなくなる**（復旧不能な締め出し）。
+   */
+  let collectingApiPrefixes = true;
   app.addHook('onRoute', (route) => {
+    if (!collectingApiPrefixes) return;
     const prefix = firstSegment(route.url);
     if (prefix !== undefined) apiPrefixes.add(prefix);
   });
+
+  /**
+   * 認証は**ルート登録より前**に置く（Fastify のフックは、そのインスタンスへ後から登録される
+   * ルートに適用される）。`apiPrefixes` は上の onRoute が埋めるSetの参照をそのまま渡すので、
+   * リクエストが来る時点では全ルート分が入っている。
+   */
+  const authentication = options?.authentication ?? defaultAuthentication();
+  registerAuthentication(app, authentication, apiPrefixes);
+  registerAuthRoutes(app, authentication);
 
   registerToolRoutes(app, deps);
   registerDraftToolRoutes(app, deps);
@@ -203,8 +230,8 @@ export function buildServer(
   });
 
   // ここまでに登録されたものがAPIのパス。以降（静的ファイル）はUI側として扱う。
-  const ownedPrefixes = new Set(apiPrefixes);
-  if (options?.uiRoot !== undefined) registerUi(app, options.uiRoot, ownedPrefixes);
+  collectingApiPrefixes = false;
+  if (options?.uiRoot !== undefined) registerUi(app, options.uiRoot, apiPrefixes);
 
   return app;
 }

@@ -359,3 +359,40 @@ describe('ToolApiClient', () => {
     expect(String(fetcher.mock.calls[0]?.[0])).not.toContain('version=');
   });
 });
+
+describe('ToolApiClient の認証ヘッダ', () => {
+  it('トークン未設定なら Authorization を付けない', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ tools: [] }));
+    await new ToolApiClient('', fetcher as typeof fetch).listTools(scope);
+    expect((fetcher.mock.calls[0]?.[1] as RequestInit).headers).not.toHaveProperty('authorization');
+  });
+
+  it('トークンがあれば全リクエストへ Bearer を付ける', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ tools: [] }));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    client.setAuthTokenProvider(() => 'secret-token');
+    await client.listTools(scope);
+    expect((fetcher.mock.calls[0]?.[1] as RequestInit).headers).toMatchObject({ authorization: 'Bearer secret-token' });
+  });
+
+  it('トークンは毎回読み直す（設定画面での入れ替えに追従する）', async () => {
+    // Response は1回しか読めないので毎回新しく作る。
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ tools: [] })));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    let token = 'first';
+    client.setAuthTokenProvider(() => token);
+    await client.listTools(scope);
+    token = 'second';
+    await client.listTools(scope);
+    expect((fetcher.mock.calls[1]?.[1] as RequestInit).headers).toMatchObject({ authorization: 'Bearer second' });
+  });
+
+  it('GET /auth/session はセッションを返し、401 は ApiError（UNAUTHENTICATED）になる', async () => {
+    const session = { mode: 'token', authenticationRequired: true, principal: { subject: 'alice', tenantId: 'acme', workspaceId: 'ops', roles: [] } };
+    const ok = vi.fn().mockResolvedValue(jsonResponse({ session }));
+    await expect(new ToolApiClient('', ok as typeof fetch).getSession()).resolves.toEqual(session);
+
+    const denied = vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'UNAUTHENTICATED', message: 'nope' } }, 401));
+    await expect(new ToolApiClient('', denied as typeof fetch).getSession()).rejects.toMatchObject({ status: 401, code: 'UNAUTHENTICATED' });
+  });
+});

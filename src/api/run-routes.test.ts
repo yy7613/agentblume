@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider';
 import { ModelProviderError, type ModelCapability, type ModelCompletion, type ModelCompletionRequest, type ModelProviderPort } from '../application/model/model-provider';
 import { SemVer } from '../domain/tool/semver';
+import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp, type App } from '../composition/root';
 import { clientAbortSignal } from './client-abort';
 import { buildServer } from './server';
@@ -22,7 +23,7 @@ describe('POST /runs', () => {
   beforeEach(async () => {
     model = new ScriptedModelProvider();
     app = createApp({ profile: 'test', modelProvider: model });
-    server = buildServer(app);
+    server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
     await app.saveTool.execute({
       scope, internalId: 'score-tool', workingName: 'draft', displayName: 'Score', publishName: 'score_lookup', owner: 'owner', sideEffect: 'read-only',
       graph: { nodes: [{ id: 'input', type: 'agent-input', config: { schema, sample: { name: 'sample', score: 0 } } }], edges: [] },
@@ -271,8 +272,14 @@ describe('POST /runs', () => {
     const list = await server.inject({ method: 'GET', url: '/runs?tenantId=tenant&workspaceId=workspace&status=succeeded&limit=10' });
     expect(list.statusCode).toBe(200);
     expect(list.json().runs).toEqual([expect.objectContaining({ status: 'succeeded', traceEventCount: 2 })]);
-    const other = await server.inject({ method: 'GET', url: '/runs?tenantId=other&workspaceId=workspace' });
+    // scope分離の主体はPrincipal。別テナントのPrincipalからは同じリポジトリでも空に見える。
+    const otherServer = buildServer(app, { authentication: new SingleUserAuthentication({ tenantId: 'other', workspaceId: 'workspace' }) });
+    const other = await otherServer.inject({ method: 'GET', url: '/runs' });
     expect(other.json().runs).toEqual([]);
+    // 逆に、自分のPrincipalで別テナントを名乗っても自分のRunしか見えない（申告は無視される）。
+    const impersonated = await server.inject({ method: 'GET', url: '/runs?tenantId=other&workspaceId=workspace' });
+    expect(impersonated.json().runs).toHaveLength(1);
+    await otherServer.close();
     const missing = await server.inject({ method: 'GET', url: '/runs/nope/trace?tenantId=tenant&workspaceId=workspace' });
     expect(missing.statusCode).toBe(404);
   });
@@ -440,7 +447,7 @@ describe('POST /runs の中断', () => {
   it('クライアントが切断するとモデル呼び出しをabortし、Runを RUN_CANCELLED で確定する', async () => {
     const hanging = new HangingModel();
     const cancelApp = createApp({ profile: 'test', modelProvider: hanging });
-    const cancelServer = buildServer(cancelApp);
+    const cancelServer = buildServer(cancelApp, { authentication: new SingleUserAuthentication(scope) });
     try {
       await cancelApp.saveAgent.execute({
         scope, internalId: 'cancel-agent', workingName: 'cancel', displayName: 'Cancel Agent', publishName: 'cancel_agent',

@@ -100,6 +100,7 @@ import type {
   OpenAiCompatibleModelsResultDto,
   SaveModelSettingsDto,
   SampleDataSummaryDto,
+  AuthSessionDto,
 } from './types';
 import { localizeApiErrorMessage } from './error-messages';
 
@@ -135,6 +136,12 @@ type Fetcher = typeof fetch;
 export class ToolApiClient {
   private readonly fetcher: Fetcher;
 
+  /**
+   * 認証トークンの供給元。**値ではなく関数**で持つ。
+   * 設定画面でトークンを入れ替えた直後の呼び出しにも、クライアントを作り直さずに追従させるため。
+   */
+  private authToken: () => string | undefined = () => undefined;
+
   constructor(
     private readonly baseUrl = '',
     fetcher: Fetcher = fetch,
@@ -144,8 +151,21 @@ export class ToolApiClient {
     this.fetcher = fetcher.bind(globalThis);
   }
 
+  /** 以降の全リクエストへ `Authorization: Bearer <token>` を付ける。 */
+  setAuthTokenProvider(provider: () => string | undefined): void {
+    this.authToken = provider;
+  }
+
   async health(): Promise<{ readonly status: string }> {
     return this.request<{ status: string }>('/health');
+  }
+
+  /**
+   * 認証済みの主体と認証方式。**401 が返ること自体が「トークンが要る構成だ」という合図**になる。
+   * UIはこれで単一ユーザーモードかを判定し、自分のテナントを知る。
+   */
+  async getSession(signal?: AbortSignal): Promise<AuthSessionDto> {
+    return (await this.request<{ session: AuthSessionDto }>('/auth/session', { signal })).session;
   }
 
   async inferDraft(graph: ToolGraphDto, signal?: AbortSignal, scope?: TenantScopeDto): Promise<PropagationResultDto> {
@@ -846,10 +866,15 @@ export class ToolApiClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const token = this.authToken();
     // body 無し（DELETE 等）に content-type を付けると Fastify が空JSON本文として 400/500 にする。
     const response = await this.fetcher(`${this.baseUrl}${path}`, {
       ...init,
-      headers: { ...(init.body === undefined || init.body === null ? {} : { 'content-type': 'application/json' }), ...init.headers },
+      headers: {
+        ...(init.body === undefined || init.body === null ? {} : { 'content-type': 'application/json' }),
+        ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+        ...init.headers,
+      },
     });
     let body: unknown = {};
     if (response.status !== 204) {

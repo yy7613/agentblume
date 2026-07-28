@@ -17,6 +17,7 @@ import { serializeAgent } from '../domain/agent/serialization';
 import { serializePersona, serializeScenario, serializeScenarioRun } from '../domain/validation/serialization';
 import { SemVer } from '../domain/tool/semver';
 import { clientAbortSignal } from './client-abort';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import {
   registerPseudoUserAgentBodySchema, runScenarioBodySchema, savePersonaBodySchema, saveScenarioBodySchema,
@@ -55,33 +56,33 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
   // Persona: Save / 一覧 / 取得（latest・version）/ バージョン列挙。
   app.post('/personas', async (request, reply) => {
     const body = parse(savePersonaBodySchema, request.body);
-    const persona = await deps.savePersona.execute(body);
+    const persona = await deps.savePersona.execute({ ...body, scope: scopeOf(request) });
     return reply.status(201).send({ persona: serializePersona(persona) });
   });
   app.get('/personas', async (request) => {
-    const query = parse(scopeQuerySchema, request.query);
-    const personas = await deps.queryPersonas.list(query);
+    parse(scopeQuerySchema, request.query);
+    const personas = await deps.queryPersonas.list(scopeOf(request));
     return { personas: personas.map((persona) => ({ ...persona, latestVersion: persona.latestVersion.toString() })) };
   });
   app.get<{ Params: IdParams }>('/personas/:internalId', async (request) => {
     const query = parse(versionQuerySchema, request.query);
-    const persona = await deps.queryPersonas.get({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.internalId, version(query.version));
+    const persona = await deps.queryPersonas.get(scopeOf(request), request.params.internalId, version(query.version));
     return { persona: serializePersona(persona) };
   });
   app.get<{ Params: IdParams }>('/personas/:internalId/versions', async (request) => {
-    const query = parse(scopeQuerySchema, request.query);
-    return { versions: (await deps.queryPersonas.versions(query, request.params.internalId)).map(String) };
+    parse(scopeQuerySchema, request.query);
+    return { versions: (await deps.queryPersonas.versions(scopeOf(request), request.params.internalId)).map(String) };
   });
   app.delete<{ Params: IdParams }>('/personas/:internalId', async (request, reply) => {
-    const query = parse(scopeQuerySchema, request.query);
-    await deps.deletePersona.execute(query, request.params.internalId);
+    parse(scopeQuerySchema, request.query);
+    await deps.deletePersona.execute(scopeOf(request), request.params.internalId);
     return reply.status(204).send();
   });
   // Persona → 疑似ユーザーAgent 登録（v18）。
   app.post<{ Params: IdParams }>('/personas/:internalId/register-agent', async (request, reply) => {
     const body = parse(registerPseudoUserAgentBodySchema, request.body);
     const agent = await deps.registerPseudoUserAgent.execute({
-      scope: body.scope,
+      scope: scopeOf(request),
       personaId: request.params.internalId,
       ...(body.personaVersion !== undefined ? { personaVersion: version(body.personaVersion) as SemVer } : {}),
       ...(body.agentInternalId !== undefined ? { agentInternalId: body.agentInternalId } : {}),
@@ -97,6 +98,7 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
     const { persona, pseudoUser, ...rest } = body;
     const scenario = await deps.saveScenario.execute({
       ...rest,
+      scope: scopeOf(request),
       target: { agentId: body.target.agentId, version: version(body.target.version) as SemVer },
       ...(persona !== undefined ? { persona: { personaId: persona.personaId, version: version(persona.version) as SemVer } } : {}),
       ...(pseudoUser !== undefined ? { pseudoUser: { agentId: pseudoUser.agentId, version: version(pseudoUser.version) as SemVer } } : {}),
@@ -104,22 +106,22 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
     return reply.status(201).send({ scenario: serializeScenario(scenario) });
   });
   app.get('/scenarios', async (request) => {
-    const query = parse(scopeQuerySchema, request.query);
-    const scenarios = await deps.queryScenarios.list(query);
+    parse(scopeQuerySchema, request.query);
+    const scenarios = await deps.queryScenarios.list(scopeOf(request));
     return { scenarios: scenarios.map((scenario) => ({ ...scenario, latestVersion: scenario.latestVersion.toString() })) };
   });
   app.get<{ Params: IdParams }>('/scenarios/:internalId', async (request) => {
     const query = parse(versionQuerySchema, request.query);
-    const scenario = await deps.queryScenarios.get({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.internalId, version(query.version));
+    const scenario = await deps.queryScenarios.get(scopeOf(request), request.params.internalId, version(query.version));
     return { scenario: serializeScenario(scenario) };
   });
   app.get<{ Params: IdParams }>('/scenarios/:internalId/versions', async (request) => {
-    const query = parse(scopeQuerySchema, request.query);
-    return { versions: (await deps.queryScenarios.versions(query, request.params.internalId)).map(String) };
+    parse(scopeQuerySchema, request.query);
+    return { versions: (await deps.queryScenarios.versions(scopeOf(request), request.params.internalId)).map(String) };
   });
   app.delete<{ Params: IdParams }>('/scenarios/:internalId', async (request, reply) => {
-    const query = parse(scopeQuerySchema, request.query);
-    await deps.deleteScenario.execute(query, request.params.internalId);
+    parse(scopeQuerySchema, request.query);
+    await deps.deleteScenario.execute(scopeOf(request), request.params.internalId);
     return reply.status(204).send();
   });
 
@@ -128,7 +130,7 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
     const body = parse(runScenarioBodySchema, request.body);
     const parsedVersion = version(body.version);
     const run = await deps.runScenario.execute({
-      scope: body.scope,
+      scope: scopeOf(request),
       scenarioId: request.params.internalId,
       ...(parsedVersion !== undefined ? { version: parsedVersion } : {}),
       mode: body.mode,
@@ -140,14 +142,14 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
   app.get('/scenario-runs', async (request) => {
     const query = parse(scenarioRunListQuerySchema, request.query);
     const runs = await deps.queryScenarioRuns.list(
-      { tenantId: query.tenantId, workspaceId: query.workspaceId },
+      scopeOf(request),
       query.scenarioId !== undefined ? { scenarioId: query.scenarioId } : undefined,
     );
     return { runs: runs.map(serializeScenarioRun) };
   });
   app.get<{ Params: { id: string } }>('/scenario-runs/:id', async (request) => {
-    const query = parse(scopeQuerySchema, request.query);
-    const run = await deps.queryScenarioRuns.get(query, request.params.id);
+    parse(scopeQuerySchema, request.query);
+    const run = await deps.queryScenarioRuns.get(scopeOf(request), request.params.id);
     return { run: serializeScenarioRun(run) };
   });
 }

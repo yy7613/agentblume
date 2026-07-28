@@ -3,6 +3,7 @@ import type { z } from 'zod';
 import type { QueryHarnessRunsUseCase, RunHarnessUseCase } from '../application/harness/run-harness';
 import { SemVer } from '../domain/tool/semver';
 import { clientAbortSignal } from './client-abort';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { cancelHarnessRunBodySchema, harnessRunListQuerySchema, harnessRunQuerySchema, resumeHarnessRunBodySchema, runHarnessBodySchema } from './schemas';
 
@@ -17,27 +18,27 @@ export function registerHarnessRunRoutes(app: FastifyInstance, deps: HarnessRunR
   app.post('/harness-runs', async (request, reply) => {
     const body = parseWith(runHarnessBodySchema, request.body, 'invalid body');
     const requestedVersion = version(body.harness.version);
-    return { run: await deps.runHarness.execute({ scope: body.scope, harnessId: body.harness.internalId, ...(requestedVersion === undefined ? {} : { version: requestedVersion }), message: body.message, mode: body.mode }, clientAbortSignal(request, reply)) };
+    return { run: await deps.runHarness.execute({ scope: scopeOf(request), harnessId: body.harness.internalId, ...(requestedVersion === undefined ? {} : { version: requestedVersion }), message: body.message, mode: body.mode }, clientAbortSignal(request, reply)) };
   });
   app.post<{ Params: { runId: string } }>('/harness-runs/:runId/responses', async (request, reply) => {
     const body = parseWith(resumeHarnessRunBodySchema, request.body, 'invalid body');
-    return { run: await deps.runHarness.resume({ scope: body.scope, runId: request.params.runId, response: body.response }, clientAbortSignal(request, reply)) };
+    return { run: await deps.runHarness.resume({ scope: scopeOf(request), runId: request.params.runId, response: body.response }, clientAbortSignal(request, reply)) };
   });
   app.post<{ Params: { runId: string } }>('/harness-runs/:runId/cancel', async (request) => {
-    const body = parseWith(cancelHarnessRunBodySchema, request.body, 'invalid body');
-    return { run: await deps.runHarness.cancel(body.scope, request.params.runId) };
+    parseWith(cancelHarnessRunBodySchema, request.body, 'invalid body');
+    return { run: await deps.runHarness.cancel(scopeOf(request), request.params.runId) };
   });
   app.get('/harness-runs', async (request) => {
     const query = parseWith(harnessRunListQuerySchema, request.query, 'invalid query');
-    return { runs: await deps.queryHarnessRuns.list({ tenantId: query.tenantId, workspaceId: query.workspaceId }, { ...(query.limit === undefined ? {} : { limit: query.limit }), ...(query.status === undefined ? {} : { status: query.status }) }) };
+    return { runs: await deps.queryHarnessRuns.list(scopeOf(request), { ...(query.limit === undefined ? {} : { limit: query.limit }), ...(query.status === undefined ? {} : { status: query.status }) }) };
   });
   app.get<{ Params: { runId: string } }>('/harness-runs/:runId', async (request) => {
-    const query = parseWith(harnessRunQuerySchema, request.query, 'invalid query');
-    return { run: await deps.queryHarnessRuns.get(query, request.params.runId) };
+    parseWith(harnessRunQuerySchema, request.query, 'invalid query');
+    return { run: await deps.queryHarnessRuns.get(scopeOf(request), request.params.runId) };
   });
   app.get<{ Params: { runId: string } }>('/harness-runs/:runId/events', async (request) => {
-    const query = parseWith(harnessRunQuerySchema, request.query, 'invalid query');
-    const run = await deps.queryHarnessRuns.get(query, request.params.runId);
+    parseWith(harnessRunQuerySchema, request.query, 'invalid query');
+    const run = await deps.queryHarnessRuns.get(scopeOf(request), request.params.runId);
     return { events: run.events };
   });
 }

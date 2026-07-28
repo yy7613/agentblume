@@ -14,6 +14,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
+import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp, type App } from '../composition/root';
 import { buildServer } from './server';
 import { SemVer } from '../domain/tool/semver';
@@ -289,7 +290,7 @@ describe('factory pipeline integration（実データ・実疑似ユーザー会
   it('A: 本物の成功（1イテレーション）— 疑似ユーザーが目標達成し、生成資産一式が実データに紐づく', async () => {
     const model = new RoutingModelProvider();
     app = createApp({ profile: 'test', modelProvider: model });
-    server = buildServer(app);
+    server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
     const sourceId = await seedSalesDataSource(server);
 
     model.configure({
@@ -347,7 +348,7 @@ describe('factory pipeline integration（実データ・実疑似ユーザー会
   it('B: 改善ループで成功（2イテレーション）— Analystのsystem-prompt-revisionが適用され2周目で目標達成する', async () => {
     const model = new RoutingModelProvider();
     app = createApp({ profile: 'test', modelProvider: model });
-    server = buildServer(app);
+    server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
     const sourceId = await seedSalesDataSource(server);
 
     model.configure({
@@ -398,7 +399,7 @@ describe('factory pipeline integration（実データ・実疑似ユーザー会
   it('C: 計画承認 → 承認後に本物の成功した会話でsucceededへ到達する', async () => {
     const model = new RoutingModelProvider();
     app = createApp({ profile: 'test', modelProvider: model });
-    server = buildServer(app);
+    server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
     const sourceId = await seedSalesDataSource(server);
 
     model.configure({
@@ -433,7 +434,7 @@ describe('factory pipeline integration（実データ・実疑似ユーザー会
   it('D: 生成失敗（全Toolが不合格）— 修復ループを尽くしてfailedへ落ちる', async () => {
     const model = new RoutingModelProvider();
     app = createApp({ profile: 'test', modelProvider: model });
-    server = buildServer(app);
+    server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
     const sourceId = await seedSalesDataSource(server);
 
     model.configure({
@@ -453,7 +454,7 @@ describe('factory pipeline integration（実データ・実疑似ユーザー会
   it('E: 生成Toolが実データを読む（動作確認）— previewが seed済みCSVの実データを返す', async () => {
     const model = new RoutingModelProvider();
     app = createApp({ profile: 'test', modelProvider: model });
-    server = buildServer(app);
+    server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
     const sourceId = await seedSalesDataSource(server);
 
     model.configure({

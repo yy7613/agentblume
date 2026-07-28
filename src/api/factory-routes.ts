@@ -10,6 +10,7 @@ import type { QueryFactoryRunsUseCase } from '../application/factory/query-facto
 import type { ResumeFactoryRunUseCase } from '../application/factory/resume-factory-run';
 import type { RetryFactoryRunUseCase } from '../application/factory/retry-factory-run';
 import { clientAbortSignal } from './client-abort';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { cancelFactoryRunBodySchema, factoryRunBodySchema, factoryRunListQuerySchema, factoryRunQuerySchema, resumeFactoryRunBodySchema, retryFactoryRunBodySchema } from './schemas';
 
@@ -31,7 +32,7 @@ export function registerFactoryRoutes(app: FastifyInstance, deps: FactoryRouteDe
   app.post('/factory-runs', async (request, reply) => {
     const body = parseWith(factoryRunBodySchema, request.body, 'invalid body');
     const run = await deps.createFactoryRun.execute({
-      scope: body.scope,
+      scope: scopeOf(request),
       goal: body.goal,
       dataSourceIds: body.dataSourceIds,
       ...(body.baseAgent === undefined ? {} : { baseAgent: body.baseAgent }),
@@ -42,36 +43,36 @@ export function registerFactoryRoutes(app: FastifyInstance, deps: FactoryRouteDe
 
   app.get('/factory-runs', async (request) => {
     const query = parseWith(factoryRunListQuerySchema, request.query, 'invalid query');
-    const runs = await deps.queryFactoryRuns.list({ tenantId: query.tenantId, workspaceId: query.workspaceId }, { ...(query.limit === undefined ? {} : { limit: query.limit }), ...(query.status === undefined ? {} : { status: query.status }) });
+    const runs = await deps.queryFactoryRuns.list(scopeOf(request), { ...(query.limit === undefined ? {} : { limit: query.limit }), ...(query.status === undefined ? {} : { status: query.status }) });
     return { runs };
   });
 
   app.get<{ Params: { runId: string } }>('/factory-runs/:runId', async (request) => {
-    const query = parseWith(factoryRunQuerySchema, request.query, 'invalid query');
-    return { run: await deps.queryFactoryRuns.get(query, request.params.runId) };
+    parseWith(factoryRunQuerySchema, request.query, 'invalid query');
+    return { run: await deps.queryFactoryRuns.get(scopeOf(request), request.params.runId) };
   });
 
   app.get<{ Params: { runId: string } }>('/factory-runs/:runId/events', async (request) => {
-    const query = parseWith(factoryRunQuerySchema, request.query, 'invalid query');
-    const run = await deps.queryFactoryRuns.get(query, request.params.runId);
+    parseWith(factoryRunQuerySchema, request.query, 'invalid query');
+    const run = await deps.queryFactoryRuns.get(scopeOf(request), request.params.runId);
     return { events: run.events };
   });
 
   app.post<{ Params: { runId: string } }>('/factory-runs/:runId/responses', async (request, reply) => {
     const body = parseWith(resumeFactoryRunBodySchema, request.body, 'invalid body');
-    const run = await deps.resumeFactoryRun.execute({ scope: body.scope, runId: request.params.runId, decision: body.response.decision, ...(body.response.feedback === undefined ? {} : { feedback: body.response.feedback }) }, clientAbortSignal(request, reply));
+    const run = await deps.resumeFactoryRun.execute({ scope: scopeOf(request), runId: request.params.runId, decision: body.response.decision, ...(body.response.feedback === undefined ? {} : { feedback: body.response.feedback }) }, clientAbortSignal(request, reply));
     return { run };
   });
 
   // 失敗Runの再実行: 元Runは書き換えず、同じ入力の新しいRunを起票するため POST /factory-runs と同じ202を返す。
   app.post<{ Params: { runId: string } }>('/factory-runs/:runId/retry', async (request, reply) => {
-    const body = parseWith(retryFactoryRunBodySchema, request.body, 'invalid body');
-    const run = await deps.retryFactoryRun.execute({ scope: body.scope, runId: request.params.runId });
+    parseWith(retryFactoryRunBodySchema, request.body, 'invalid body');
+    const run = await deps.retryFactoryRun.execute({ scope: scopeOf(request), runId: request.params.runId });
     return reply.status(202).send({ run });
   });
 
   app.post<{ Params: { runId: string } }>('/factory-runs/:runId/cancel', async (request) => {
-    const body = parseWith(cancelFactoryRunBodySchema, request.body, 'invalid body');
-    return { run: await deps.cancelFactoryRun.execute(body.scope, request.params.runId) };
+    parseWith(cancelFactoryRunBodySchema, request.body, 'invalid body');
+    return { run: await deps.cancelFactoryRun.execute(scopeOf(request), request.params.runId) };
   });
 }

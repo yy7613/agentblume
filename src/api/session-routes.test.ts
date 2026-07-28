@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildServer } from './server';
+import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp, type App } from '../composition/root';
 import { createSessionArtifact } from '../domain/session/session-artifact';
 
@@ -10,7 +11,7 @@ afterEach(async () => { while (apps.length > 0) { const app = apps.pop() as App;
 async function setup() {
   const app = createApp({ profile: 'test' }); apps.push(app);
   await app.saveAgent.execute({ scope, internalId: 'agent', workingName: 'agent', displayName: 'Agent', publishName: 'agent', owner: 'owner', kind: 'normal', systemPrompt: 'help', tools: [] });
-  const server = buildServer(app);
+  const server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
   return { app, server };
 }
 
@@ -35,8 +36,11 @@ describe('agent session routes', () => {
     await app.sessionArtifactRepo.save(artifact, { ok: true }, 'idem');
     const list = await server.inject({ method: 'GET', url: `/agent-sessions/${session.id}/artifacts?tenantId=tenant&workspaceId=workspace` });
     expect((list.json() as { artifacts: { id: string }[] }).artifacts).toEqual([expect.objectContaining({ id: 'artifact' })]);
-    const other = await server.inject({ method: 'GET', url: `/agent-sessions/${session.id}/artifacts?tenantId=other&workspaceId=workspace` });
+    // 別テナントのPrincipalからは、同じセッションIDを知っていても届かない。
+    const otherServer = buildServer(app, { authentication: new SingleUserAuthentication({ tenantId: 'other', workspaceId: 'workspace' }) });
+    const other = await otherServer.inject({ method: 'GET', url: `/agent-sessions/${session.id}/artifacts`, query: scope });
     expect(other.statusCode).toBe(404);
+    await otherServer.close();
   });
 
   it('reads bounded artifacts, deletes them, and validates session versions', async () => {

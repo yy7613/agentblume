@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { buildServer } from './api/server';
 import { seedBuiltinTools } from './builtin-tools';
 import { EnvironmentValidationError, serverSettings, validateEnvironment, type ServerSettings } from './config/environment';
+import { createAuthentication } from './composition/authentication';
 import { createApp } from './composition/root';
 import type { LoggerPort } from './application/operations/logger';
 import { RetentionScheduler } from './application/operations/retention-scheduler';
@@ -65,8 +66,14 @@ const telemetry = await startTelemetry();
 
 const app = createApp();
 const uiRoot = resolveUiRoot(settings.uiRootOverride);
+/**
+ * 認証は**必ず**明示的に渡す。`buildServer` の省略時既定（単一ユーザー）に暗黙で頼ると、
+ * 配線の抜けが「無認証で公開されている」という形でしか現れない。
+ */
+const authentication = createAuthentication(settings.authentication, settings.scope);
 const server = buildServer(app, {
   logger: { level: settings.logLevel },
+  authentication,
   ...(uiRoot === undefined ? {} : { uiRoot }),
   ...(settings.revision === undefined ? {} : { revision: settings.revision }),
   // DBは必須依存。読み取りが1本通ることを readiness の条件にする。
@@ -171,9 +178,22 @@ try {
       retentionIntervalMs: settings.retentionIntervalMs,
       logLevel: settings.logLevel,
       telemetry: telemetry.enabled ? 'opentelemetry' : 'disabled',
+      authentication: settings.authentication.mode,
+      ...(settings.authentication.mode === 'token' ? { authenticatedSubjects: settings.authentication.tokens.length } : {}),
     },
     'agentblume API started',
   );
+  /**
+   * 単一ユーザーモードは「誰でも既定テナントの全データを触れる」状態なので、
+   * 稼働中であることを1行で明言する（バインド先がループバックであることは検証済み）。
+   */
+  if (settings.authentication.mode === 'single-user') {
+    server.log.warn(
+      { scope: settings.scope },
+      `agentblume is running in SINGLE-USER mode: requests are not authenticated (bound to ${settings.host}). `
+      + 'Set AGENTCONTEXT_AUTH_TOKENS before sharing this instance.',
+    );
+  }
 } catch (err) {
   server.log.error(err);
   app.close();

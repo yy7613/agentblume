@@ -7,7 +7,9 @@ import { buildHarness, type SaveHarnessInput, type SaveHarnessUseCase } from '..
 import type { ValidateHarnessUseCase } from '../application/harness/validate-harness';
 import { serializeAgentHarness } from '../domain/harness/serialization';
 import type { HarnessTopology } from '../domain/harness/agent-harness';
+import type { TenantScope } from '../domain/tool/ids';
 import { SemVer } from '../domain/tool/semver';
+import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { harnessListQuerySchema, saveHarnessBodySchema, scopeQuerySchema, versionQuerySchema } from './schemas';
 
@@ -29,9 +31,10 @@ function parseVersion(value: string | undefined): SemVer | undefined {
   if (value === undefined) return undefined;
   try { return SemVer.parse(value); } catch { throw new BadRequestError(`invalid version string: "${value}"`); }
 }
-function inputFrom(body: z.infer<typeof saveHarnessBodySchema>): SaveHarnessInput {
+function inputFrom(body: z.infer<typeof saveHarnessBodySchema>, scope: TenantScope): SaveHarnessInput {
   return {
     ...body,
+    scope,
     slots: body.slots.map((slot) => ({
       ...slot,
       assignment: { internalId: slot.assignment.internalId, version: parseVersion(slot.assignment.version) as SemVer },
@@ -42,33 +45,33 @@ function inputFrom(body: z.infer<typeof saveHarnessBodySchema>): SaveHarnessInpu
 
 export function registerHarnessRoutes(app: FastifyInstance, deps: HarnessRouteDeps): void {
   app.post('/harnesses', async (request, reply) => {
-    const harness = await deps.saveHarness.execute(inputFrom(parseWith(saveHarnessBodySchema, request.body, 'invalid body')));
+    const harness = await deps.saveHarness.execute(inputFrom(parseWith(saveHarnessBodySchema, request.body, 'invalid body'), scopeOf(request)));
     return reply.status(201).send({ harness: serializeAgentHarness(harness) });
   });
   app.get('/harnesses', async (request) => {
-    const query = parseWith(harnessListQuerySchema, request.query, 'invalid query');
-    const harnesses = await deps.queryHarnesses.list(query);
+    parseWith(harnessListQuerySchema, request.query, 'invalid query');
+    const harnesses = await deps.queryHarnesses.list(scopeOf(request));
     return { harnesses: harnesses.map((item) => ({ ...item, latestVersion: item.latestVersion.toString() })) };
   });
   app.get<{ Params: HarnessParams }>('/harnesses/:internalId', async (request) => {
     const query = parseWith(versionQuerySchema, request.query, 'invalid query');
-    const harness = await deps.queryHarnesses.get({ tenantId: query.tenantId, workspaceId: query.workspaceId }, request.params.internalId, parseVersion(query.version));
+    const harness = await deps.queryHarnesses.get(scopeOf(request), request.params.internalId, parseVersion(query.version));
     return { harness: serializeAgentHarness(harness) };
   });
   app.get<{ Params: HarnessParams }>('/harnesses/:internalId/versions', async (request) => {
-    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
-    const versions = await deps.queryHarnesses.versions(query, request.params.internalId);
+    parseWith(scopeQuerySchema, request.query, 'invalid query');
+    const versions = await deps.queryHarnesses.versions(scopeOf(request), request.params.internalId);
     return { versions: versions.map((item) => item.toString()) };
   });
   // 論理削除（docs §10）。204で成功を返し、未存在/削除済みは deleteHarness が HarnessNotFoundError → 404 へ変換される。
   app.delete<{ Params: HarnessParams }>('/harnesses/:internalId', async (request, reply) => {
-    const query = parseWith(scopeQuerySchema, request.query, 'invalid query');
-    await deps.deleteHarness.execute(query, request.params.internalId);
+    parseWith(scopeQuerySchema, request.query, 'invalid query');
+    await deps.deleteHarness.execute(scopeOf(request), request.params.internalId);
     return reply.status(204).send();
   });
-  app.post('/harness-drafts/validate', async (request) => ({ validation: await deps.validateHarness.execute(inputFrom(parseWith(saveHarnessBodySchema, request.body, 'invalid body'))) }));
+  app.post('/harness-drafts/validate', async (request) => ({ validation: await deps.validateHarness.execute(inputFrom(parseWith(saveHarnessBodySchema, request.body, 'invalid body'), scopeOf(request))) }));
   app.post('/harness-drafts/compile', async (request) => {
-    const input = inputFrom(parseWith(saveHarnessBodySchema, request.body, 'invalid body'));
+    const input = inputFrom(parseWith(saveHarnessBodySchema, request.body, 'invalid body'), scopeOf(request));
     const validation = await deps.validateHarness.execute(input);
     if (!validation.valid) return { validation };
     // Draftは保存versionを持たないため、compileは保存済みHarnessと同じ不変条件を通した一時versionを返す。

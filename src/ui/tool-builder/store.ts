@@ -30,8 +30,6 @@ export type ToolFlowNode = Node<ToolNodeData, 'tool'>;
 interface CanvasPosition { readonly x: number; readonly y: number }
 
 export interface ToolMetadataState {
-  readonly tenantId: string;
-  readonly workspaceId: string;
   readonly internalId: string;
   readonly workingName: string;
   readonly displayName: string;
@@ -112,8 +110,6 @@ function changesSavePayload(changes: readonly NodeChange<ToolFlowNode>[]): boole
 }
 
 const initialMetadata: ToolMetadataState = {
-  tenantId: 'local',
-  workspaceId: 'default',
   internalId: '',
   workingName: '',
   displayName: '',
@@ -242,7 +238,7 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
   setMetadata: (key, value) => set((state) => ({
     metadata: { ...state.metadata, [key]: value },
     ...clearSaveError,
-    ...(['tenantId', 'workspaceId', 'internalId'].includes(key) ? { currentVersion: undefined, versions: [] } : {}),
+    ...(key === 'internalId' ? { currentVersion: undefined, versions: [] } : {}),
   })),
   addNode: (type) => set((state) => {
     const id = uniqueNodeId(type, state.nodes);
@@ -295,8 +291,6 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
     const positions = loadedPositions(tool.graph.nodes);
     return {
       metadata: {
-        tenantId: tool.metadata.tenant.tenantId,
-        workspaceId: tool.metadata.tenant.workspaceId,
         internalId: tool.metadata.internalId,
         workingName: tool.metadata.workingName,
         displayName: tool.metadata.displayName,

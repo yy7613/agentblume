@@ -7,8 +7,7 @@ import {
   dismissWelcome, isWelcomeDismissed, onboardingProgressRatio, onboardingSteps, shouldShowWelcome,
   type OnboardingProgress, type OnboardingStepId,
 } from './onboarding-state';
-
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
+import { scope } from '../scope';
 
 type Translate = (english: string, japanese: string) => string;
 

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider';
 import { AesGcmSecretCipher } from '../adapters/security/aes-gcm-secret-cipher';
 import type { TelemetryPort } from '../application/operations/telemetry';
+import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp, type App } from '../composition/root';
 import { SemVer } from '../domain/tool/semver';
 import { buildServer } from './server';
@@ -16,7 +17,7 @@ const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
 describe('LLMOps operations API', () => {
   let model: ScriptedModelProvider; let app: App; let server: FastifyInstance;
   beforeEach(async () => {
-    model = new ScriptedModelProvider(); app = createApp({ profile: 'test', modelProvider: model }); server = buildServer(app);
+    model = new ScriptedModelProvider(); app = createApp({ profile: 'test', modelProvider: model }); server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
     await app.saveAgent.execute({ scope, internalId: 'agent', workingName: 'agent', displayName: 'Agent', publishName: 'agent', owner: 'owner', kind: 'normal', systemPrompt: 'Answer.', tools: [] });
   });
   afterEach(async () => { await server.close(); app.close(); });
@@ -55,7 +56,7 @@ describe('LLMOps operations API', () => {
     await server.close(); app.close();
     const failingTelemetry: TelemetryPort = { startSpan: () => { throw new Error('exporter unavailable'); } };
     model = new ScriptedModelProvider();
-    app = createApp({ profile: 'test', modelProvider: model, telemetry: failingTelemetry, modelSnapshot: { provider: 'unknown', model: 'unknown', modelConfigHash: 'hash' } }); server = buildServer(app);
+    app = createApp({ profile: 'test', modelProvider: model, telemetry: failingTelemetry, modelSnapshot: { provider: 'unknown', model: 'unknown', modelConfigHash: 'hash' } }); server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
     await app.saveAgent.execute({ scope, internalId: 'agent-2', workingName: 'agent', displayName: 'Agent', publishName: 'agent_2', owner: 'owner', kind: 'normal', systemPrompt: 'Answer.', tools: [] });
     model.enqueue({ message: { role: 'assistant', content: 'ok' }, finishReason: 'stop', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } });
     const response = await server.inject({ method: 'POST', url: '/runs', payload: { scope, agent: { internalId: 'agent-2', version: SemVer.parse('1.0.0').toString() }, message: 'hello', mode: 'preview' } });
@@ -88,7 +89,7 @@ describe('backup API (永続DB配線)', () => {
       modelProvider: new ScriptedModelProvider(),
       judgeModelProvider: new ScriptedModelProvider(),
     });
-    server = buildServer(app);
+    server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
     await app.saveAgent.execute({ scope, internalId: 'agent', workingName: 'agent', displayName: 'Agent', publishName: 'agent', owner: 'owner', kind: 'normal', systemPrompt: 'Answer.', tools: [] });
   });
   afterEach(async () => { await server.close(); app.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -154,6 +155,6 @@ describe('backup API (永続DB配線)', () => {
 
     // afterEach の二重 close を避けるため、閉じ済みの App を差し替える。
     app = createApp({ profile: 'test' });
-    server = buildServer(app);
+    server = buildServer(app, { authentication: new SingleUserAuthentication(scope) });
   });
 });

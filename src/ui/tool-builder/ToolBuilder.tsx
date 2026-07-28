@@ -15,8 +15,7 @@ import { PreviewPanel } from './PreviewPanel';
 import { useDraftPreview } from './use-draft-preview';
 import { AgentToolContextPanel } from './AgentToolContextPanel';
 import { useToolBuilderStore, type ToolBuilderDraft } from './store';
-
-const scope = { tenantId: 'local', workspaceId: 'default' } as const;
+import { scope } from '../scope';
 
 function message(cause: unknown): string { return cause instanceof Error ? cause.message : 'Request failed'; }
 
@@ -40,7 +39,7 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
   // 保存済みTool（currentVersionあり）はinternalIdで、未保存の新規は '__new__' でキーを分ける。
   // 新規編集中のinternalIdは入力途中で変わるためキーに使わない（下書きが散らばるのを避ける）。
   const draft = useDraftPersistence<ToolBuilderDraft>({
-    key: draftKey('tool-builder', { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId }, currentVersion === undefined ? undefined : metadata.internalId),
+    key: draftKey('tool-builder', scope, currentVersion === undefined ? undefined : metadata.internalId),
     value: draftValue,
     enabled: view === 'editor',
   });

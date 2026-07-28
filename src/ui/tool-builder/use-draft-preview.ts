@@ -3,12 +3,11 @@ import type { ToolApiClient } from '../api/tool-api';
 import { useI18n } from '../i18n';
 import { incompleteConfigNodeIds } from './draft-readiness';
 import { flowToGraph, useToolBuilderStore } from './store';
+import { scope } from '../scope';
 
 export function useDraftPreview(client: ToolApiClient, delayMs = 300): void {
   const nodes = useToolBuilderStore((state) => state.nodes);
   const edges = useToolBuilderStore((state) => state.edges);
-  const metadata = useToolBuilderStore((state) => state.metadata);
-  const scope = { tenantId: metadata.tenantId, workspaceId: metadata.workspaceId };
   const requestSequence = useRef(0);
   const { text } = useI18n();
 
@@ -63,5 +62,5 @@ export function useDraftPreview(client: ToolApiClient, delayMs = 300): void {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [client, delayMs, edges, metadata.tenantId, metadata.workspaceId, nodes, text]);
+  }, [client, delayMs, edges, nodes, text]);
 }

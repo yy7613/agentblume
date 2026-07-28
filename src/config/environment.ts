@@ -39,6 +39,15 @@ export type LogLevel = (typeof LOG_LEVELS)[number];
 export const DEFAULT_PORT = 3030;
 /** listen ホストの既定。ローカルIDEなのでループバックに閉じる。 */
 export const DEFAULT_HOST = '127.0.0.1';
+/** 認証方式の値域（`application/security/authentication.ts` の `AuthenticationMode` と同じ値）。 */
+export const AUTH_MODES = ['single-user', 'token'] as const;
+/** `AUTH_MODES` の要素。 */
+export type AuthMode = (typeof AUTH_MODES)[number];
+/**
+ * 共有トークンの最小長（`adapters/security/token-authentication.ts` と同じ値）。
+ * 起動時に弾くためここでも持つ（adapters を import しない leaf モジュールなので値を写す）。
+ */
+export const MINIMUM_AUTH_TOKEN_LENGTH = 32;
 /**
  * shutdown で実行中ジョブの完了を待つ既定の猶予（ミリ秒）。
  *
@@ -150,6 +159,27 @@ const databaseConnectionSchema = z.object({
 /** 接続ID → 接続定義。 */
 export const databaseConnectionsSchema = z.record(nonEmpty, databaseConnectionSchema);
 
+/**
+ * `AGENTCONTEXT_AUTH_TOKENS` の1エントリ。
+ *
+ * **人ごとに1本**にしておくと、誰の操作かを監査に残せ、1人分だけ失効させられる。
+ * `tenantId` / `workspaceId` を省略すると `AGENTCONTEXT_TENANT_ID` / `_WORKSPACE_ID`（既定 local/default）。
+ * トークンの値そのものはエラーメッセージへ出さない（`isSecretName` が `TOKENS` を拾う）。
+ */
+const authTokenSchema = z.object({
+  subject: nonEmpty,
+  token: z.string()
+    .min(MINIMUM_AUTH_TOKEN_LENGTH, `token は${MINIMUM_AUTH_TOKEN_LENGTH}文字以上`)
+    .refine((value) => !/\s/.test(value), 'token に空白・改行を含めない'),
+  tenantId: optional(nonEmpty),
+  workspaceId: optional(nonEmpty),
+  displayName: optional(nonEmpty),
+  roles: z.array(nonEmpty).optional(),
+});
+
+/** `AGENTCONTEXT_AUTH_TOKENS`（1本以上のトークン）。 */
+export const authTokensSchema = z.array(authTokenSchema).min(1);
+
 /** `AGENTCONTEXT_MODEL_PRICING_JSON` の1エントリ（`composition/root.ts` の受理条件と同じ）。 */
 const pricingEntrySchema = z.object({
   provider: nonEmpty,
@@ -181,6 +211,9 @@ export const environmentSchema = z.object({
   AGENTCONTEXT_SHUTDOWN_GRACE_MS: optional(nonNegativeInteger),
   AGENTCONTEXT_RETENTION_INTERVAL_MS: optional(nonNegativeInteger),
   AGENTCONTEXT_LOG_LEVEL: optional(z.enum(LOG_LEVELS)),
+  // 認証（未設定なら単一ユーザーモード。ただし非ループバックへのバインドでは設定必須）
+  AGENTCONTEXT_AUTH_MODE: optional(z.enum(AUTH_MODES)),
+  AGENTCONTEXT_AUTH_TOKENS: optional(json(authTokensSchema)),
   // モデル（main / judge スロットの env 既定）
   LM_STUDIO_BASE_URL: optional(httpUrl),
   LM_STUDIO_MODEL: optional(nonEmpty),
@@ -233,6 +266,8 @@ const EXPECTATIONS: Readonly<Record<string, string>> = {
   AGENTCONTEXT_SHUTDOWN_GRACE_MS: '0以上の整数（ミリ秒・0 は「待たずに中断」）',
   AGENTCONTEXT_RETENTION_INTERVAL_MS: '0以上の整数（ミリ秒・既定 86400000＝24時間・0 は自動実行を無効化）',
   AGENTCONTEXT_LOG_LEVEL: `${LOG_LEVELS.join(' / ')} のいずれか（既定は local=info・test=silent）`,
+  AGENTCONTEXT_AUTH_MODE: `${AUTH_MODES.join(' / ')} のいずれか（既定: AGENTCONTEXT_AUTH_TOKENS があれば token、無ければ single-user）`,
+  AGENTCONTEXT_AUTH_TOKENS: `[{subject, token, tenantId?, workspaceId?, displayName?, roles?}] のJSON配列（token は${MINIMUM_AUTH_TOKEN_LENGTH}文字以上・空白を含まない）`,
   LM_STUDIO_BASE_URL: 'URL（例 http://127.0.0.1:1234/v1）',
   LM_STUDIO_MODEL: '空でない文字列',
   LM_STUDIO_API_KEY: '空でない・空白や改行を含まない文字列',
@@ -302,6 +337,35 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Valid
   throw new EnvironmentValidationError(issues);
 }
 
+/** 認証トークン1本ぶんの解決済み設定（`adapters/security/token-authentication.ts` の `TokenCredential` と同形）。 */
+export interface AuthTokenSettings {
+  readonly subject: string;
+  readonly token: string;
+  readonly tenantId: string;
+  readonly workspaceId: string;
+  readonly displayName?: string;
+  readonly roles?: readonly string[];
+}
+
+/** 認証の起動設定。`mode === 'single-user'` なら `tokens` は空。 */
+export interface AuthSettings {
+  readonly mode: AuthMode;
+  readonly tokens: readonly AuthTokenSettings[];
+}
+
+/**
+ * ループバック（＝このマシンからしか届かない）アドレスか。
+ *
+ * `127.0.0.0/8` 全体・`::1`・`localhost` を認める。`0.0.0.0` / `::` / LAN のIPは**含まない**
+ * （そこへ bind した瞬間、同じネットワークの誰でもAPIへ到達できる）。
+ * ホスト名は解決しない。解決結果に依存すると、DNSの都合で認証の要否が変わってしまう。
+ */
+export function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (normalized === 'localhost' || normalized === '::1') return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized);
+}
+
 /** エントリポイントが listen までに必要とする設定。 */
 export interface ServerSettings {
   readonly profile: (typeof PROFILES)[number];
@@ -319,24 +383,79 @@ export interface ServerSettings {
   /** Fastify（pino）のログレベル。`silent` は1行も出さない。 */
   readonly logLevel: LogLevel;
   readonly scope: { readonly tenantId: string; readonly workspaceId: string };
+  /** 認証方式と登録済みトークン。`single-user` は「認証しない」を意味する。 */
+  readonly authentication: AuthSettings;
+}
+
+/**
+ * 認証設定を解決する。矛盾した組み合わせはここで落とす。
+ *
+ * - `AGENTCONTEXT_AUTH_TOKENS` があれば既定で `token` モード（モード指定の書き忘れで
+ *   トークンを用意したのに無認証で起動する、という事故を防ぐ）。
+ * - `AGENTCONTEXT_AUTH_MODE=token` なのにトークンが無い → 起動しない。
+ * - `AGENTCONTEXT_AUTH_MODE=single-user` なのにトークンがある → どちらの意図か決められないので起動しない。
+ */
+function resolveAuthentication(env: ValidatedEnvironment, scope: { tenantId: string; workspaceId: string }): AuthSettings {
+  const declared = env.AGENTCONTEXT_AUTH_MODE;
+  const rawTokens = env.AGENTCONTEXT_AUTH_TOKENS;
+  const mode: AuthMode = declared ?? (rawTokens === undefined ? 'single-user' : 'token');
+  if (mode === 'token' && rawTokens === undefined) {
+    throw new EnvironmentValidationError([
+      'AGENTCONTEXT_AUTH_TOKENS: AGENTCONTEXT_AUTH_MODE=token では1本以上のトークンが必要（受け取った値: (未設定)）',
+    ]);
+  }
+  if (mode === 'single-user' && rawTokens !== undefined) {
+    throw new EnvironmentValidationError([
+      'AGENTCONTEXT_AUTH_MODE: トークンを設定したまま single-user は指定できない（token にするか AGENTCONTEXT_AUTH_TOKENS を消す）',
+    ]);
+  }
+  const tokens = (rawTokens ?? []).map((entry) => ({
+    subject: entry.subject,
+    token: entry.token,
+    tenantId: entry.tenantId ?? scope.tenantId,
+    workspaceId: entry.workspaceId ?? scope.workspaceId,
+    ...(entry.displayName === undefined ? {} : { displayName: entry.displayName }),
+    ...(entry.roles === undefined ? {} : { roles: entry.roles }),
+  }));
+  return { mode, tokens };
 }
 
 /** 検証済み env に既定値を当てて、起動に必要な設定へまとめる。 */
 export function serverSettings(env: ValidatedEnvironment): ServerSettings {
   const profile = env.AGENTCONTEXT_PROFILE ?? 'local';
+  const scope = {
+    tenantId: env.AGENTCONTEXT_TENANT_ID ?? 'local',
+    workspaceId: env.AGENTCONTEXT_WORKSPACE_ID ?? 'default',
+  };
+  const host = env.AGENTCONTEXT_HOST ?? DEFAULT_HOST;
+  const authentication = resolveAuthentication(env, scope);
+
+  /**
+   * 「ローカルだから無認証でよい」という前提は、公開した瞬間に破綻する。
+   *
+   * 単一ユーザーモードは**誰でも既定テナントの全データを読み書きできる**構成なので、
+   * ループバック以外へ bind するなら認証を必須にする。ここで落とさないと、
+   * `AGENTCONTEXT_HOST=0.0.0.0` を足しただけでLAN全体へ無防備に公開される。
+   */
+  if (!isLoopbackHost(host) && authentication.mode === 'single-user') {
+    throw new EnvironmentValidationError([
+      `AGENTCONTEXT_HOST: ${JSON.stringify(host)} は 127.0.0.1 以外へのバインドなので認証が必須。`
+      + ' AGENTCONTEXT_AUTH_TOKENS を設定するか、AGENTCONTEXT_HOST=127.0.0.1 に戻すこと'
+      + '（単一ユーザーモードは資格情報を一切求めない）',
+    ]);
+  }
+
   return {
     profile,
     port: env.AGENTCONTEXT_PORT ?? DEFAULT_PORT,
-    host: env.AGENTCONTEXT_HOST ?? DEFAULT_HOST,
+    host,
     sampleData: env.AGENTCONTEXT_SAMPLE_DATA === 'true',
     uiRootOverride: env.AGENTCONTEXT_UI_ROOT,
     revision: env.AGENTCONTEXT_SOURCE_REVISION,
     shutdownGraceMs: env.AGENTCONTEXT_SHUTDOWN_GRACE_MS ?? DEFAULT_SHUTDOWN_GRACE_MS,
     retentionIntervalMs: env.AGENTCONTEXT_RETENTION_INTERVAL_MS ?? DEFAULT_RETENTION_INTERVAL_MS,
     logLevel: env.AGENTCONTEXT_LOG_LEVEL ?? DEFAULT_LOG_LEVELS[profile],
-    scope: {
-      tenantId: env.AGENTCONTEXT_TENANT_ID ?? 'local',
-      workspaceId: env.AGENTCONTEXT_WORKSPACE_ID ?? 'default',
-    },
+    scope,
+    authentication,
   };
 }
