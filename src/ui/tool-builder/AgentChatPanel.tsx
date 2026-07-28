@@ -45,7 +45,7 @@ export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
   }
 
   return <section className="agent-chat-panel" aria-label={text('Agent chat', 'エージェントチャット')}>
-    <div className="panel-title"><div><span className="eyebrow">{text('Agent preview', 'エージェントプレビュー')}</span><h2>LM Studio {text('chat', 'チャット')}</h2></div><span className="version-chip">{currentVersion === undefined ? text('Save first', '先に保存してください') : `Tool v${currentVersion}`}</span></div>
+    <div className="panel-title"><div><span className="eyebrow">{text('Agent preview', 'エージェントプレビュー')}</span><h2>{text('Model chat', 'モデルとのチャット')}</h2></div><span className="version-chip">{currentVersion === undefined ? text('Save first', '先に保存してください') : `Tool v${currentVersion}`}</span></div>
     <label>{text('System prompt', 'システムプロンプト')}<textarea rows={2} placeholder={text('Explain how the Agent should use this Tool.', 'エージェントがこのツールを使う方針を記述します。')} value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} /></label>
     <div className="chat-compose"><textarea aria-label={text('Chat message', 'チャットメッセージ')} rows={2} placeholder={text('Ask the Agent to use this Tool…', 'このツールを使うようエージェントに依頼…')} value={message} onChange={(event) => setMessage(event.target.value)} /><button type="button" className="primary" disabled={currentVersion === undefined || loading || message.trim() === ''} onClick={() => void send()}>{loading ? text('Running…', '実行中…') : text('Run agent', 'エージェントを実行')}</button></div>
     {currentVersion === undefined && <p className="empty-state">{text('Save a validated Tool before connecting it to an Agent.', '検証済みツールを保存するとエージェントへ接続できます。')}</p>}

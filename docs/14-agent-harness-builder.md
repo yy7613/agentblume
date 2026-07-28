@@ -1,10 +1,16 @@
-# 14. Agent Harness Builder
+# 14. マルチエージェントビルダー（Agent Harness Builder）
 
 > Status: Implemented (M1–M5 core preview、および interactive runtime の Handoff会話再開・Magentic計画承認・永続checkpoint)。
 >
 > 関連: [12-multi-agent.md](./12-multi-agent.md) / [07-execution-model.md](./07-execution-model.md) / [ADR-0032](./adr/0032-versioned-agent-harness-orchestration.md)
 
-操作手順は[マルチエージェントHarnessチュートリアル](./15-agent-harness-tutorial.md)を参照する。
+> **用語について**
+>
+> - UI表記は「**マルチエージェント**」、英語UIでは `Multi-Agent` である。本書が使う `Harness` / `AgentHarness` は型名・API・ドメイン用語として残す。画面IDは `Harness`、ルートは `#/harness` のまま変更しない。
+> - **別概念の注意**: Agent単位の実行時機能トグル（ファイルメモリ／TODO／コンパクション／Web検索／ツール承認／ツール自動実行）は、以前「ハーネス」と呼んでいたが、現在のUIでは「**実行オプション（`Runtime options`）**」である。Agentビルダー内のダイアログであり、本書が扱うマルチエージェント（`AgentHarness`）とは**別概念**である。
+> - ファイル名を変更しないのは、バックエンドのソースコメント（`sqlite-harness-repository.ts`、`delete-harness.ts`、`harness-repository.ts`）が `docs/14-agent-harness-builder.md` を参照しているためである。
+
+操作手順は[マルチエージェントの操作チュートリアル](./15-agent-harness-tutorial.md)を参照する。
 
 保存済みAgentを図上の役割へ割り当て、複数のオーケストレーション方式をノーコードで構成・検証・実行する機能を定義する。
 
@@ -36,14 +42,14 @@ flowchart LR
 
 [12-multi-agent.md](./12-multi-agent.md) の `Agent.agents` はAgent-as-Tools方式である。親Agentがサブタスクを委譲し、処理後は必ず親へ制御が戻る。この単純な委譲は引き続きAgent Builderで構成する。
 
-Harnessは次の場合に使用する。
+マルチエージェント（`AgentHarness`）は次の場合に使用する。
 
 | 要求 | 使用する構成 |
 |---|---|
-| 親が必要時だけ専門家へ問い合わせる | 既存のAgent-as-Tools |
-| 順序、並列、話者選択、所有権移譲を図で明示する | Agent Harness |
-| 複雑なタスクをManagerが計画・再計画する | Magentic Harness |
-| Tool、分岐、ループ、cronを含む業務自動化 | 将来の汎用Workflow Builder |
+| 親が必要時だけ専門家へ問い合わせる | Agentのサブエージェント（Agent-as-Tools） |
+| 順序、並列、話者選択、所有権移譲を図で明示する | マルチエージェント |
+| 複雑なタスクをManagerが計画・再計画する | マルチエージェントのMagenticパターン |
+| Tool、分岐、ループ、cronを含む業務自動化 | 将来の汎用Workflow Builder（未実装） |
 
 Harnessは「Team」という会話主体ではなく、複数Agentを1つの実行対象へコンパイルするバージョン付き定義である。将来はHarnessを通常のAgent interfaceへ包み、他AgentからToolとして呼べるようにする。初期版ではHarnessの入れ子を許可しない。
 
@@ -58,7 +64,7 @@ Harnessは「Team」という会話主体ではなく、複数Agentを1つの実
 | `group-chat` | Manager/Selector | 共有会話履歴 | 最大roundまたはManager判定 | 討議、反復レビュー |
 | `magentic` | Planner/Manager Agent | 計画・進捗台帳・共有結果 | 満足判定または上限 | 解法が事前に決まらない複雑タスク |
 
-`claw` は独立した制御方式にはしない。`agent-as-tools` または `magentic` のテンプレートに、計画、記憶、承認、background実行、観測のPolicyを設定したStarter Templateとして提供する。
+`claw` は独立した制御方式にはしない。`agent-as-tools` または `magentic` のテンプレートに、計画、記憶、承認、background実行、観測のPolicyを設定したStarter Templateとして提供する。**未実装**（§13のM7で扱う。現在のUIのパターン一覧には上記6パターンだけが並び、Claw用のStarterは存在しない）。
 
 ### 3.1 Agent-as-Tools
 
@@ -81,8 +87,8 @@ flowchart LR
   U[Input] --> W["Writer slot"] --> R["Reviewer slot"] --> P["Publisher slot"] --> O[Output]
 ```
 
-- slotは2個以上。ドラッグで順序変更できる。
-- `contextMode` は `full-conversation` または `previous-response`。
+- slotは2個以上。順序は左から右の並び順である。ドラッグによる並べ替えは**未実装**で、現在は末尾への追加と削除だけを行える。
+- `contextMode` は `full-conversation` または `previous-response`。UIから保存する場合は `full-conversation` 固定である。
 - 各段の失敗は既定で停止。詳細設定で `continue-with-error` を選べる。
 
 ### 3.3 Concurrent
@@ -317,44 +323,94 @@ waiting状態のRunには`checkpoint`を同じroot recordへ保存する。check
 - abort時は実行中の全childへSignalを伝播する。
 - retryは同じAgent versionと入力snapshotで行い、回数をイベントへ残す。
 
-## 7. Harness Builder UI
+## 7. マルチエージェントビルダーUI
 
-ナビゲーションへ「Harness」を追加する。初期画面は空の自由CanvasではなくPreset Galleryとする。
+ナビゲーションの「作る」グループへ `Multi-Agent` / `マルチエージェント` を置く。画面IDは `Harness`、ルートは `#/harness` である（英語ラベルだけを `App.tsx` の `NAV_LABEL_EN_OVERRIDES` で差し替えている）。実装は `src/ui/harness-builder/HarnessBuilder.tsx` にある。
+
+画面は一覧（Layer 1）と編集（Layer 2）の2層である。空の自由Canvasは提供しない。
+
+### 7.1 Layer 1: 一覧
+
+eyebrowは `Multi-Agent Builder` / `マルチエージェントビルダー`、見出しは `Multi-Agents` / `マルチエージェント一覧`、右上に `New multi-agent` / `新規作成` を置く。各行は表示名、`{publishName}@{latestVersion}`、`{pattern} · {state}` を示し、`Open` / `開く` と `Delete` / `削除` を持つ。削除は確認ダイアログを経由し、一覧から消えるだけで保存済みversionは履歴に残る（§10の論理削除）。
+
+保存済みが無い場合は `No multi-agents yet.` / `マルチエージェントはまだありません。` と、各slotに保存済みAgentが要る旨、そして `Open the Agent screen` / `エージェント画面を開く` のリンクを出す。
+
+### 7.2 Layer 2: 編集
+
+`Back to list` / `一覧へ戻る` で一覧へ戻る。見出しは表示名、未入力なら `New Multi-Agent` / `新しいマルチエージェント`。ヘッダ操作は `Validate` / `検証` と `Save version` / `バージョンを保存` の2つである。
 
 ```text
-┌ Presets ─────────┬──────────── Harness canvas ────────────┬ Inspector ───────┐
-│ Agent as tools   │             [Manager]                  │ Pattern          │
-│ Sequential       │          ↙      ↓      ↘              │ Group Chat       │
-│ Concurrent       │   [Writer] [Reviewer] [Expert]         │                  │
-│ Handoff          │          ↘      ↑      ↙              │ Selected slot    │
-│ Group Chat       │             [Output]                   │ Reviewer         │
-│ Magentic         │                                        │ Agent: foo@1.2.0 │
-│ Claw starter     │                                        │ Purpose: ...     │
-├ Agent palette ───┤────────────────────────────────────────┤ Context / limits │
-│ Search agents... │ Validation: 1未割当 / side-effect read │ maxRounds: 6     │
-│ ○ Writer@1.0.0   │ [Validate] [Save version] [Preview]    │ [Advanced]       │
-└──────────────────┴────────────────────────────────────────┴──────────────────┘
+┌ Patterns ────────┬──── Multi-agent canvas ─────┬ Pattern inspector ───┐
+│ Agent as tools   │ 内部ID / 表示名 / 所有者     │ Sequential           │
+│ Sequential       │                             │ Failure policy       │
+│ Concurrent       │ [入力]→[作成者]→[レビュアー] │  fail-fast (固定)    │
+│ Handoff          │      →[公開担当]→[出力]     │ Max parallelism      │
+│ Group Chat       │  各slot: 名前 / 目的 /       │  4 (固定)            │
+│ Magentic         │  Assign saved Agent… / 未割当│ Aggregation (※)      │
+│                  │ [+ 参加者を追加]             │ previewで実行可能    │
+├──────────────────┴─────────────────────────────┴──────────────────────┤
+│ 保存済みマルチエージェントのプレビュー  {internalId}@{version}          │
+│ [マルチエージェントへ依頼…]                        [previewを実行]     │
+└───────────────────────────────────────────────────────────────────────┘
+※ Aggregation行はConcurrentのときだけ表示する。
 ```
 
-操作規則:
+### 7.3 左レール（Patterns）
 
-1. Presetを選ぶと必要slotと接続が生成される。
-2. Agent Paletteからslotへドラッグ、またはslot選択後にAgent/versionを選択する。
-3. slotには表示名、目的、割当version、実効副作用を表示する。
-4. Pattern Inspectorで順序、handoff edge、selector、Aggregator、上限を編集する。
-5. 保存前ValidateでCanvas上の該当slot/edgeを赤表示する。
-6. Previewでは実行中node、待機、失敗、budgetをCanvasへ重ねて表示する。
+見出しは `Patterns` / `パターン`。ボタンは6つで、ラベルは日本語UIでも英語のままである: `Agent as tools`、`Sequential`、`Concurrent`、`Handoff`、`Group Chat`、`Magentic`。各ボタンは1行の説明を併記する。Agentを検索して置くPaletteやドラッグ&ドロップは持たない。パターンを切り替えるとslotのpresetを入れ替え、割当は先頭から位置単位で引き継ぐ。
 
-Agentの割当を変更しても元Agentは変更しない。Harnessを保存すると新しいHarness versionが発行される。
+### 7.4 Canvas
+
+`aria-label` は `Multi-agent canvas` / `マルチエージェントキャンバス`。canvasの上に内部ID、表示名、所有者の必須入力を置く。内部IDは保存済みを開いた場合は読み取り専用である（変更すると別資産になるため）。
+
+slotカードはpatternごとに異なる2D配置で描く（sequentialは一列、concurrentはfan-out、agent-as-tools／group-chat／magenticはhub&spoke、handoffは分岐）。各カードは編集可能なslot名とslot目的、割当用の `<select>`、割当結果の `{internalId}@{version}` または `unassigned` / `未割当` を持つ。`<select>` の `aria-label` は `Assign agent to {slot.label}` / `Agentを割り当て {slot.label}`、先頭optionは `Assign saved Agent…` / `保存済みAgentを割り当て…` である。
+
+参加者の増減は `+ Add participant` / `+ 参加者を追加` と、カード右上の `Remove slot {label}` / `Slotを削除 {label}` で行う。pattern最小slot数を下回る削除と、固定先頭slot（coordinator／start／manager）の削除は許可しない。固定先頭slotにはロールバッジを出す: `Coordinator` / `調整役`、`Start` / `開始`、`Manager` / `マネージャ`。Concurrentで `agent` 集約を選んだときだけ、fan-in位置に `Aggregator` / `集約役` カードが加わる。
+
+### 7.5 Pattern inspector
+
+eyebrowは `Pattern inspector` / `パターン設定`、`<h2>` は選択中パターンの英語ラベルである。表示する項目は次のとおり。
+
+| 項目 | 表示 | 備考 |
+|---|---|---|
+| `Failure policy` / `失敗時の方針` | `fail-fast` | 読み取り専用。§4の他modeはUI未実装 |
+| `Max parallelism` / `最大並列数` | `4` | 読み取り専用 |
+| `Aggregation` / `集約方法` | `Concatenate mechanically (collect)` / `機械的に連結 (collect)`、`Majority vote (vote)` / `投票で決定 (vote)`、`Synthesize with an Agent (agent)` / `Agentで統合 (agent)` | Concurrentのときだけ表示し、唯一編集できる |
+| status行 | `Executable in preview` / `previewで実行可能`、`Validation failed` / `検証エラーあり`、`Not validated yet` / `未検証`、`Definition incomplete` / `定義が未完成` | 検証結果と入力充足から決まる |
+| topology要約 | `contextMode`、`Selector` / `話者選択`、`Max rounds` / `最大round` 等 | pattern別の読み取り専用行 |
+
+`maxRounds`、`maxStalls`、`maxResets`、handoff transition、selectorを編集するUIは**未実装**である。現在は§4のtopology既定値（Group Chatは `round-robin` と `maxRounds: 3`、Magenticは `maxRounds: 6` / `maxStalls: 2` / `maxResets: 1` / `requirePlanSignoff: false`、Handoffは `autonomous: false`）で保存する。`agent-as-tools` を選んだときだけ、同じことをAgent画面のサブエージェントでも作れる旨の補足文を出す。
+
+### 7.6 検証、保存、プレビュー
+
+保存できない理由（必須入力の空、未割当slot、集約役の未割当）は `Validate` を押さなくてもボタン近傍へ常時表示する。`Validate` は `POST /harness-drafts/validate` を呼び、結果を `path: message` の一覧として画面下へ出す。Canvas上のslot/edgeを赤表示する強調は**未実装**である。保存が成功すると `Saved · version {version}` / `保存しました バージョン {version}` を出し、下書きを消す。
+
+プレビュー欄のeyebrowは `Saved multi-agent preview` / `保存済みマルチエージェントのプレビュー`。`<h2>` は保存前が `Save to run` / `保存後に実行`、保存後は `{internalId}@{version}` になる。入力欄のplaceholderは `Ask the multi-agent…` / `マルチエージェントへ依頼…`、実行は `Run preview` / `previewを実行` である。結果はstatus、応答本文、`participant runs` / `参加Agent実行` の件数を表示する。実行中node、待機、失敗、budgetをCanvasへ重ねる表示は**未実装**である。
+
+### 7.7 下書きと離脱防止
+
+編集内容（pattern、slot構成、内部ID、表示名、所有者、集約設定）はlocalStorageへ自動保存する。キーは `agentblume.draft.v1.harness-builder.<tenant>.<workspace>.<targetId|__new__>` である。下書きは自動適用せず、復元バナーで「復元／破棄」を選ばせる。未保存の編集を残したまま画面を離れようとすると確認ダイアログを出す。
+
+Agentの割当を変更しても元Agentは変更しない。保存すると新しいHarness versionが発行される。
 
 ## 8. ChatとStatus
 
-Chatの対象選択を`Agent | Harness`を含むRunnable一覧へ拡張する。ユーザーは常に1つのRunnableへ話しかける。
+Chatの対象選択をAgentとマルチエージェントを含むRunnable一覧へ拡張する。ユーザーは常に1つのRunnableへ話しかける。
+
+対象選択の`<select>`は `aria-label` が `Chat agent` / `チャット対象エージェント`、先頭optionが `Select an agent` / `エージェントを選択` である。構成は次のとおりである。
+
+- 単体Agentはトップレベルのoptionとして `{displayName} · {latestVersion}` の形で並べる。単体Agent用の`optgroup`は作らない。
+- `optgroup`は1つだけで、ラベルは `Multi-Agents` / `マルチエージェント`。項目は `{displayName} · {latestVersion} · {pattern}` の形で、option値は `harness:` 接頭辞を付ける。保存済みマルチエージェントが0件のときは`optgroup`ごと出さない。
+
+実行の扱いは次のとおりである。
 
 - Agent選択時は既存`POST /runs`を使う。
-- Harness選択時はroot Harness Runを開始する。`waiting-input`なら次の送信を同じRun IDの`input` responseとして送る。`waiting-approval`では承認・却下ボタン、またはテキストによる修正依頼を表示する。
-- 中間出力は折り畳み表示、最終応答だけを通常のAssistant bubbleにする。
-- Handoffでは現在の担当Agent名を表示するが、チャット相手のHarness名は変えない。
+- マルチエージェント選択時はroot Harness Runを開始する。`waiting-input`なら次の送信を同じRun IDの`input` responseとして送る。`waiting-approval`では`Approve plan` / `計画を承認`、`Reject and cancel` / `却下して中止`のボタンを出し、テキスト送信は`revise`（修正依頼）として扱う。
+- 実行中は送信ボタンを中断ボタンへ差し替える。`aria-label`と`title`は `Stop run` / `実行を中断` である。中断すると入力内容をコンポーザーへ戻し、`Run cancelled. Your message is back in the composer.` / `実行を中断しました。入力内容はそのまま残しています。` をシステム通知行として出す（エラー表示にはしない）。
+- 中間の参加Agent実行はイベント種別（`participant_started` など）とslot IDのチップ列として並べ、最終応答だけを通常のAssistant bubbleにする。折り畳みUIは持たない。
+- `waiting-input` のときはcheckpointのpromptをバナーへ出し、コンポーザーのplaceholderを `Reply to continue the handoff…` / `Handoffを続ける返信を入力…` に変える。`Cancel run` / `実行を中止` でRunを打ち切れる。
+- Assistant bubbleの名前は常にチャット相手のマルチエージェントの表示名である。Handoffで現在の担当Agent名を出し分ける表示は**未実装**である。
+- 画像添付はマルチエージェントpreviewでは使えない。
 - StatusはHarness root → participant child Run → Tool traceの3段ドリルダウンを提供する。
 
 ## 9. REST API
@@ -410,7 +466,7 @@ Resume要求はcheckpoint種別と一致する型付きresponseだけを受け�
 - checkpointは`HarnessRunRepository`のroot recordへ埋め込む。SQLiteでは既存のrecord JSONとして原子的に保存する。
 - 参加Agentの詳細は既存`RunRepository`へ保存し、Harness eventは`childRunId`だけを持つ。
 
-保存済みHarnessの削除は参照Runを壊さない論理削除とする。Agent versionを削除する場合はHarness参照を調べ、使用中なら拒否する。
+保存済みHarness（マルチエージェント）の削除は参照Runを壊さない論理削除とする。一覧の `Delete` / `削除` はこの論理削除を呼ぶため、保存済みversionは履歴に残る。Agent versionを削除する場合はHarness参照を調べ、使用中なら拒否する。
 
 ## 11. セキュリティと承認
 
@@ -423,7 +479,7 @@ Resume要求はcheckpoint種別と一致する型付きresponseだけを受け�
 
 ## 12. 検証と評価
 
-ScenarioへHarness refを指定できるようにし、最終品質だけでなく経路も評価する。
+ScenarioへHarness ref（マルチエージェントの参照）を指定できるようにし、最終品質だけでなく経路も評価する。以下は**未実装**である。現在のScenario実行は単体Agentだけを対象にしており、evaluation側にHarnessの取り扱いは無い。
 
 - 必須participantが呼ばれたか、禁止participantが呼ばれていないか。
 - Sequentialの順序適合率。
@@ -438,13 +494,13 @@ Fake runtimeで経路を決定的に再現するcontract testを各patternに用
 ## 13. 実装順序
 
 1. **M1 Definition**: Domain、serialization、repository、CRUD、型付きCompiler、Validation。
-2. **M2 Builder**: Preset Gallery、Canvas、Agent割当、pattern inspector、保存。
+2. **M2 Builder**: パターン一覧（Patterns rail）、Canvas、Agent割当、pattern inspector、一覧・保存。
 3. **M3 Deterministic patterns**: Sequential、Concurrent、root/child trace、Preview。
 4. **M4 Interactive patterns**: Handoff／Group Chatのone-shot preview、許可transition、話者選択、round上限を実装。
 5. **M5 Magentic**: Plan/Progress protocol、delegate/final、stall/reset、最終合成を実装。
 6. **M6 Interactive runtime**: Handoffの会話再開、Magenticの計画承認、24時間の永続checkpoint、resume/cancel APIとChat操作を実装。
-7. **M7 Harness policies**: Claw Starter、memory、Tool approval、background実行、観測強化。
-8. **M8 Adapter/export**: Microsoft Agent Framework adapterまたはコードexport。Local Runtimeとのcontract testを共有する。
+7. **M7 Harness policies**（未実装）: Claw Starter、memory、Tool approval、background実行、観測強化。
+8. **M8 Adapter/export**（未実装）: Microsoft Agent Framework adapterまたはコードexport。Local Runtimeとのcontract testを共有する。
 
 全patternはversion固定のAgent slot、共通予算、時間上限、root/child Runイベントを使ってpreviewできる。interactive runtimeはHandoffとMagenticに限定して同じRun契約を実装済みであり、Group ChatやTool承認は同じcheckpoint unionを拡張して追加する。
 

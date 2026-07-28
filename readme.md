@@ -1,9 +1,26 @@
 # agentblume
 
-ノーコードでAIエージェントを組み立て・実行・検証するためのローカルIDE。ETLツールエンジンを中心に、エージェント／スキル／ツールの定義、動作確認、検証を1つのUIから行える。
+ノーコードでAIエージェントを組み立て・実行・検証するためのローカル開発スタジオ。ETLツールエンジンを中心に、エージェント／スキル／ツールの定義、動作確認、検証を1つのUIから行える。
 
 - **スタック**: TypeScript / React 19 / Fastify / Vite / Vitest / Playwright
-- **状態**: プレビュー（ローカル実行向け）
+- **状態**: プレビュー（ローカル実行向け・**認証機能は未実装**）
+
+> **はじめての方へ** → **[クイックスタート](docs/18-quickstart.md)**（インストール → 起動 → モデル設定 → サンプル → 自分のデータ）
+> **動かない** → [トラブルシューティング](docs/19-troubleshooting.md)
+
+## できること
+
+| | |
+|---|---|
+| **データを繋ぐ** | CSV/JSONのアップロード、読み取り専用のPostgreSQL接続、Web検索（要APIキー） |
+| **ツールを作る** | ETLノードをつないで、決定的で再実行可能なデータ処理を作る。LLMを使わないのでプレビューが速く、結果が毎回同じ |
+| **エージェントを組み立てる** | スキル・ツール・Wikiを割り当て、システムプロンプトを自動生成。バージョン付きで保存する |
+| **複数エージェントを連携させる** | Sequential / Concurrent / Handoff / Group Chat / Magentic / Agent-as-tools の6パターン |
+| **自動生成する** | 「やりたいこと」とデータソースから、ツール・スキル・エージェント・検証資産一式をAgent Factoryが生成し、疑似ユーザー検証で自動改善する |
+| **検証する** | ペルソナ×シナリオの疑似ユーザー会話、バッチ実験、LLM-as-judge採点、品質ゲートと昇格承認 |
+| **運用する** | 実行トレース、長期記憶（Wiki）、MCPサーバー設定、バックアップ／復元 |
+
+モデルは**ローカル（LM Studio等のOpenAI互換サーバー）でもクラウドAPIでも**動く。プロバイダとモデルは設定画面から選べ、APIキーは暗号化して保存される。
 
 ## 画面
 
@@ -11,8 +28,8 @@
 
 | | |
 |---|---|
-| **チャット** — 保存済みAgentがToolを呼び出して応答（ライブモデル実行） ![チャット実行結果](docs/assets/demo-manual/07-chat-result.png) | **Tool Builder** — ETLノードフローの編集と固定サンプルプレビュー ![Tool Builder](docs/assets/demo-manual/02-tool-preview.png) |
-| **Harness Builder** — マルチエージェント構成をパターン別の構造図で編集（Concurrentのfan-out＋集約） ![Harness Builder](docs/assets/demo-manual/08-harness-builder.png) | **Agent Factory** — やりたいこと＋データソースからAgent一式を自動生成・自動改善 ![Agent Factory](docs/assets/demo-manual/09-factory.png) |
+| **チャット** — 保存済みAgentがToolを呼び出して応答（ライブモデル実行） ![チャット実行結果](docs/assets/demo-manual/07-chat-result.png) | **ツールビルダー** — ETLノードフローの編集と固定サンプルプレビュー ![ツールビルダー](docs/assets/demo-manual/02-tool-preview.png) |
+| **マルチエージェント** — 複数Agentの連携をパターン別の構造図で編集（Concurrentのfan-out＋集約） ![マルチエージェントビルダー](docs/assets/demo-manual/08-harness-builder.png) | **Agent Factory** — やりたいこと＋データソースからAgent一式を自動生成・自動改善 ![Agent Factory](docs/assets/demo-manual/09-factory.png) |
 | **データソース** — CSV/JSON登録とDB接続カタログ ![データソース](docs/assets/demo-manual/01-data-sources.png) | **長期記憶** — Wikiページの編集・検索とAgentへのアタッチ ![長期記憶](docs/assets/demo-manual/04-wiki-memory.png) |
 
 ## 必要なもの
@@ -22,7 +39,7 @@
 | **Node.js** | **22.9.0 以上**（`.nvmrc` は 22.19.0） | 組み込みSQLite（`node:sqlite`）が 22.5.0 以降、`.env` 読み込みに使う `--env-file-if-exists` が 22.9.0 以降。`package.json` の `engines` にも明記している |
 | **npm** | Node 同梱のもの | |
 | **PowerShell 7+** (`pwsh`) | 開発用スクリプトのみ | 本番起動（`npm start`）には不要 |
-| **LM Studio**（任意） | Agent実行・Factory・評価を動かす場合 | OpenAI互換サーバーを起動し、モデルをロードしておく。既定の接続先は `http://127.0.0.1:1234/v1`。未設定でもUI・Tool Builder・データソースは動く |
+| **LLMの接続先**（任意） | Agent実行・Factory・評価を動かす場合 | **ローカル**（[LM Studio](https://lmstudio.ai/) 等のOpenAI互換サーバー。既定の接続先は `http://127.0.0.1:1234/v1`）か、**クラウドAPI**（OpenAI等。APIキーが要る）のどちらか。**Tool Calling対応モデル**が必要。未設定でもUI・ツールビルダー・データソースは動く |
 
 セットアップ:
 
@@ -53,6 +70,8 @@ npm run dev:sample
 ```
 
 サンプルデータは既定の永続DBへ投入される（既存データは上書きしない）。使い捨てにしたい場合は `AGENTCONTEXT_DB_PATH=:memory:` を指定する。
+
+起動オプションを使わなくても、**画面からサンプルを投入できる**（「チャット」画面の「サンプルを読み込んで試す」、または「データソース」画面の「サンプルを読み込む」）。
 
 画面付きの起動・操作・ライブAgent実行手順は[デモデータ操作マニュアル](docs/13-demo-operation-manual.md)を参照。
 
@@ -110,7 +129,7 @@ npm start       # dist/server/server.js を node が直接実行する（tsx は
 
 - 既定のlistenは `127.0.0.1:3030`。別マシンから触らせる場合は `AGENTCONTEXT_HOST=0.0.0.0`。
   **認証はまだ実装していない**ので、公開網へは直接出さないこと。
-- Agent実行・Harness実行（最大1時間）はHTTPリクエストの中で動く。この経路を切らないため、
+- Agent実行・マルチエージェント実行（最大1時間）はHTTPリクエストの中で動く。この経路を切らないため、
   Fastifyの `connectionTimeout`（無通信でソケットを切る設定）は無効のままにしている。
   リバースプロキシを挟む場合は、そちらのタイムアウトも長時間実行に合わせる必要がある。
 - ビルド成果物（`dist/`）は `.gitignore` 済み。
@@ -175,6 +194,35 @@ CSV/JSONは「データソース」画面で登録し、Tool Builderのsourceノ
 設計上の安全境界は[ADR-0029](docs/adr/0029-data-source-registry.md)を参照。
 
 Web検索sourceは、Tavily、TinyFish、Google Custom Searchのキーをbackend環境変数で有効化して利用する。設定されていないproviderはTool Builderに表示されず、検索は作成者の「検索結果を取得」操作でだけ実行する。結果は15分のサーバー内キャッシュとしてTool graphから参照する。自動更新・永続キャッシュ・利用量予算は後続範囲であり、詳細は[ADR-0030](docs/adr/0030-optional-web-search-providers.md)を参照。
+
+## モデルの設定
+
+プロバイダとモデルは**画面から選べる**（「設定」画面 →「モデルプロバイダ」）。スロットは2つある。
+
+- **メインモデル** (`main`) … エージェントの実行に使う。**これを設定しないとエージェントは応答できない。**
+- **評価モデル** (`judge`) … 検証画面のLLM採点に使う。
+
+「ソース」で **プロバイダレジストリ**（OpenAI等。モデル一覧はカタログから取得）か **OpenAI互換エンドポイント**（LM Studio等。「モデル一覧を取得」で列挙）を選ぶ。どちらもモデル名の手入力に切り替えられる。「テスト」で接続を確認できる。
+
+未設定のスロットは環境変数の既定（`LM_STUDIO_BASE_URL` / `LM_STUDIO_MODEL` / `LM_STUDIO_TIMEOUT_MS`）を使う。**サーバー側の環境変数はブラウザから変更できない。**
+
+APIキーは暗号化して保存され、**ブラウザへ戻されることはない**（末尾4文字だけ表示）。鍵は `~/.agentblume/secret.key`（`AGENTCONTEXT_SECRET_KEY_PATH` で変更可）に置く。
+
+手順の詳細は[クイックスタート §3](docs/18-quickstart.md#3-モデルを設定する)を参照。
+
+## ドキュメント
+
+| | |
+|---|---|
+| **[クイックスタート](docs/18-quickstart.md)** | インストールから自分のデータでエージェントを作るまで（非エンジニア向け） |
+| [トラブルシューティング](docs/19-troubleshooting.md) | 症状別の対処 |
+| [デモデータ操作マニュアル](docs/13-demo-operation-manual.md) | サンプルデータを1画面ずつ確認する |
+| [マルチエージェントの操作チュートリアル](docs/15-agent-harness-tutorial.md) | 複数エージェントの連携を組む |
+| [運用 runbook](docs/17-operations-runbook.md) | バックアップ・復元・引っ越し・ディスク管理 |
+| [仕様書の索引・用語集](docs/README.md) | 設計文書の全体像 |
+| [CHANGELOG](CHANGELOG.md) | 主要な機能追加の履歴 |
+
+アプリ内にも画面ごとのヘルプがある（左ナビ下部の「**? ヘルプ**」）。
 
 ## ライセンス
 

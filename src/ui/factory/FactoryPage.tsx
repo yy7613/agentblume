@@ -393,7 +393,8 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
             <p>{text('Candidate', '候補')}: <strong>{selectedRun.report.candidate.agentId}@{selectedRun.report.candidate.version}</strong></p>
             <p>{selectedRun.report.summary}</p>
             <div className="table-wrap"><table>
-              <thead><tr><th>{text('Iteration', 'イテレーション')}</th><th>goalAchievedRate</th><th>avgSatisfaction</th><th>toolHitRate</th></tr></thead>
+              {/* APIのフィールド名（goalAchievedRate 等）をそのまま出さず、利用者に意味が通る見出しにする。 */}
+              <thead><tr><th>{text('Iteration', 'イテレーション')}</th><th>{text('Goal achieved rate', '目標達成率')}</th><th>{text('Avg. satisfaction', '平均満足度')}</th><th>{text('Tool hit rate', 'ツール命中率')}</th></tr></thead>
               <tbody>{selectedRun.report.metricsByIteration.map((metrics) => <tr key={metrics.iteration}><td>{metrics.iteration}</td><td>{Math.round(metrics.goalAchievedRate * 100)}%</td><td>{metrics.avgSatisfaction.toFixed(1)}</td><td>{Math.round(metrics.toolHitRate * 100)}%</td></tr>)}</tbody>
             </table></div>
             <h4>{text('Open findings', '未解決の指摘')}</h4>

@@ -1,107 +1,134 @@
-# マルチエージェントHarnessチュートリアル
+# 15. マルチエージェントの操作チュートリアル
 
-このチュートリアルでは、保存済みAgentを3つの役割へ割り当て、Sequential Harnessとして保存し、チャットの実行対象に選ぶまでを説明する。対象は、すでにAgent BuilderでAgentを保存した利用者である。
+> **用語について**: 画面表記は「**マルチエージェント**」（英語UIでは `Multi-Agent`）である。
+> 設計文書や API・型名では同じ概念を `Harness` / `AgentHarness` と呼び、画面IDとURLも `Harness` / `#/harness` のままである（本ファイル名が旧称なのはそのため）。
+> **エージェント画面にある「実行オプション（Runtime options）」は別の機能**である。あちらは1つのエージェントに対する実行時機能（ファイルメモリ・TODO・コンパクション等）のトグルで、本書の複数エージェント連携とは関係しない。
+
+このチュートリアルでは、保存済みエージェントを3つの役割へ割り当て、Sequentialパターンのマルチエージェントとして保存し、チャットの実行対象に選ぶまでを説明する。対象は、すでにエージェント画面でエージェントを保存した利用者である。
 
 すべてのパターンをpreview実行できる。さらに`autonomous: false`のHandoffは会話を再開でき、`requirePlanSignoff: true`のMagenticは人手による計画承認を待機できる。待機状態はHarness Runのcheckpointとして24時間保存される。
 
-掲載画像は2026年7月16日にPlaywrightで実画面を操作して取得した。画像では、Writer、Reviewer、Publisherの3 Agentを新規作成して各slotへversion固定で割り当てている。モデルへの実際の問い合わせ結果は含めない。
+掲載画像はPlaywrightで実画面を操作して取得している（更新手順は§10）。画像では、Writer、Reviewer、Publisherの3エージェントを新規作成して各slotへversion固定で割り当てている。モデルへの実際の問い合わせ結果は含めない。
 
 ## 1. このチュートリアルで作る構成
 
-Sequential Harnessは、前の役割の出力を次の役割へ渡す固定順序の構成である。ここでは商品紹介文を作成し、レビューして、公開用の最終文に整える流れを作る。
+Sequentialは、前の役割の出力を次の役割へ渡す固定順序の構成である。ここでは商品紹介文を作成し、レビューして、公開用の最終文に整える流れを作る。
 
 ```text
-入力 → Writer → Reviewer → Publisher → 最終応答
+入力 → 作成者 → レビュアー → 公開担当 → 最終応答
 ```
 
-| slot | 割り当てるAgentの責務 | 受け取るもの |
+| slot（画面上の表示） | 割り当てるエージェントの責務 | 受け取るもの |
 |---|---|---|
-| Writer | 商品紹介文の初稿を作る | ユーザーの依頼 |
-| Reviewer | 表現や事実関係を確認する | 初稿と元の依頼 |
-| Publisher | 最終回答を整える | レビュー結果と元の依頼 |
+| 作成者 (Author) | 商品紹介文の初稿を作る | ユーザーの依頼 |
+| レビュアー (Reviewer) | 表現や事実関係を確認する | 初稿と元の依頼 |
+| 公開担当 (Publisher) | 最終回答を整える | レビュー結果と元の依頼 |
 
-この順序をHarnessへ保存するため、各slotはAgentの`internalId`だけでなく保存済みversionを参照する。Agentの新versionを後で作っても、Harnessの既存versionの実行内容は変わらない。
+この順序を保存するため、各slotはエージェントの`internalId`だけでなく保存済みversionを参照する。エージェントの新versionを後で作っても、保存済みマルチエージェントの既存versionの実行内容は変わらない。
 
 ## 2. 事前準備
 
-Node.jsと依存パッケージを準備する。初回だけPlaywright用Chromiumもインストールする。
+Node.jsと依存パッケージを準備する。初回だけPlaywright用Chromiumもインストールする（画像の再取得やE2Eを行う場合のみ）。
 
 ```powershell
 npm install
 npm run test:e2e:install
 ```
 
-次に、Writer、Reviewer、Publisherとして使う通常Agentを3つ保存する。各Agentには最低限、表示名、公開名、所有者、システムプロンプトを指定する。ToolやSkillは必要な場合だけ割り当てればよい。
+次に、作成者・レビュアー・公開担当として使う通常エージェントを3つ保存する。左ナビの「エージェント」→「新規作成」から、最低限、内部ID・表示名・所有者・システムプロンプトを指定して「バージョンを保存」を押す。ツールやスキルは必要な場合だけ割り当てればよい。
 
-Harnessの定義・保存・画面確認だけならモデルは不要である。preview実行まで行う場合は、Tool Calling対応モデルをLM Studioで起動し、[デモデータ操作マニュアル](./13-demo-operation-manual.md#1-事前準備)と同じ手順でローカル設定を作成する。
+定義・保存・画面確認だけならモデル設定は不要である。preview実行まで行う場合は、先に「設定」画面の**モデルプロバイダ**で `main` スロットのモデルを保存しておく（手順は[クイックスタート §3](./18-quickstart.md#3-モデルを設定する)）。
 
-## 3. Sequentialパターンを選び、Agentを割り当てる
+## 3. マルチエージェントを新規作成し、パターンとエージェントを決める
 
-1. 左サイドバーの「Harness」を選択する。
-2. Patternsから「Sequential」を選択する。
-3. `内部ID`、`表示名`、`所有者`を入力する。この例では`tutorial-content-review`、`商品紹介レビュー`を使う。
-4. AuthorへWriter、ReviewerへReviewer、PublisherへPublisherの保存済みAgentを選ぶ。
+1. 左ナビの「**マルチエージェント**」を選択する。「マルチエージェント一覧」が開く。
+2. 「**新規作成**」を押す。編集画面へ移動する。
+3. 左の「**パターン**」から使うパターンを選ぶ。**既定では Sequential が選ばれている**ので、この例では変更しなくてよい。
+4. 「**内部ID**」「**表示名**」「**所有者**」を入力する。この例では`tutorial-content-review`、`商品紹介レビュー`、`tutorial@example.com`を使う。内部IDは保存後は変更できない（変更すると別資産になるため）。
+5. キャンバス上の各slotのプルダウン（「保存済みAgentを割り当て…」）から、**作成者**・**レビュアー**・**公開担当**へそれぞれ保存済みエージェントを選ぶ。
 
-![Sequential Harnessへ3つのAgent versionを割り当てた画面](./assets/harness-tutorial/01-harness-agent-assignment.png)
+![Sequentialへ3つのAgent versionを割り当てた画面](./assets/harness-tutorial/01-harness-agent-assignment.png)
 
-canvasは保存形式そのものではなく、選択したパターンとslot割り当ての投影である。Sequentialでは左から右へ進む順序が`orderedSlotIds`として保存される。Agentを割り当てていないslotがある場合は保存できない。
+キャンバスは保存形式そのものではなく、選択したパターンとslot割り当ての投影である。Sequentialでは左から右へ進む順序が`orderedSlotIds`として保存される。エージェントを割り当てていないslotがあると保存ボタンは押せず、右側のステータスは「**定義が未完成**」のままになる。不足している項目は保存ボタンの近くに理由として表示される。
+
+参加者を増やす場合は「**+ 参加者を追加**」でslotを追加できる。slotの表示名と目的はその場で編集できる。
 
 ## 4. 定義を検証してversion保存する
 
-1. 「検証」を押す。
-2. 「定義は有効です」と表示されたら「バージョンを保存」を押す。
-3. Saved Harness previewに`<内部ID>@1.0.0`が表示されることを確認する。
+1. 「**検証**」を押す。
+2. 「**定義は有効です**」と表示されたら「**バージョンを保存**」を押す。
+3. 「**保存済みマルチエージェントのプレビュー**」の見出しが`<内部ID>@1.0.0`（この例では`tutorial-content-review@1.0.0`）に変わることを確認する。
 
-![検証済みのSequential Harnessをversion保存した画面](./assets/harness-tutorial/02-harness-saved.png)
+![検証済みのSequential定義をversion保存した画面](./assets/harness-tutorial/02-harness-saved.png)
 
-検証では、slot IDの重複、Sequentialの順序、参照したAgent versionの存在、予算と失敗方針を確認する。保存済みAgentが見つからない場合は、該当slotの割り当てを修正してから再検証する。
+検証では、slot IDの重複、Sequentialの順序、参照したエージェントversionの存在、予算と失敗方針を確認する。保存済みエージェントが見つからない場合は、該当slotの割り当てを修正してから再検証する。
 
-## 5. チャットからHarnessを選ぶ
+保存すると右側のステータスが「**previewで実行可能**」になる。この画面のまま「マルチエージェントへのメッセージ」に依頼を書いて「**previewを実行**」を押せば、チャット画面へ移らずに動作を試せる。
 
-1. 左サイドバーの「チャット」を選択する。
-2. 「チャット対象エージェント」のHarnessグループから`商品紹介レビュー · 1.0.0 · sequential`を選択する。
+> 編集途中の内容はブラウザのローカル下書きとして自動保存される。保存せずに別画面へ移ろうとすると確認ダイアログが出る。次にこの画面を開いたときは「未保存の編集内容があります」バナーから「復元」か「破棄」を選ぶ。
+
+## 5. チャットから選んで実行する
+
+1. 左ナビの「**チャット**」を選択する。
+2. 「**チャット対象エージェント**」のプルダウンを開き、「**マルチエージェント**」グループから`商品紹介レビュー · 1.0.0 · sequential`を選択する。単体のエージェントはグループに入らず、その上に並ぶ。
 3. 依頼を入力して送信する。
 
-![チャットの実行対象として保存済みHarnessを選んだ画面](./assets/harness-tutorial/03-chat-harness-target.png)
+![チャットの実行対象として保存済みマルチエージェントを選んだ画面](./assets/harness-tutorial/03-chat-harness-target.png)
 
-Sequential実行ではWriter、Reviewer、Publisherの順にchild Runが作られ、Harness Runが最終応答と参加Agentのイベントを保持する。チャット画面では最終応答を表示し、中間の参加結果はHarness Runのイベントとして追跡できる。
+Sequential実行では作成者・レビュアー・公開担当の順にchild Runが作られ、Harness Runが最終応答と参加エージェントのイベントを保持する。チャット画面では最終応答を表示し、中間の参加結果はHarness Runのイベントとして追跡できる。
+
+実行が長引く場合は、送信ボタンが停止ボタンへ変わっているので押せば中断できる（「実行を中断」）。中断すると入力内容は入力欄へ戻る。
+
+> マルチエージェントを対象にしているときは画像の添付はできない。
 
 ## 6. Concurrentを使う場合
 
-複数の観点を独立して集めたいときは、Patternsから「Concurrent」を選ぶ。たとえば、編集、法務、マーケティングの各Agentへ同じ依頼を渡し、結果をslot順で収集する。
+複数の観点を独立して集めたいときは、「パターン」から「**Concurrent**」を選ぶ。既定では調査・法務・マーケティングの3 slotが用意され、同じ依頼を各エージェントへ渡して結果を集める。
 
-`collect`では各Agentの結果をまとめて返す。集約用Agentを割り当てる`agent`集約は、独立した結果を渡して最終回答を作る。並列数はHarness policyの`maxParallelism`で上限を持つ。
+Concurrentのときだけ、右の「パターン設定」に「**集約方法**」が現れる。
 
-## 7. 他のマルチエージェントパターンを実行する
+| 集約方法（画面表記） | 動作 |
+|---|---|
+| 機械的に連結 (collect) | 各エージェントの結果をそのまま束ねて返す |
+| 投票で決定 (vote) | 多数決で1つの結果を選ぶ |
+| Agentで統合 (agent) | 集約役のslotへ割り当てたエージェントが最終回答を作る |
 
-| Pattern | 実行方法 | 終了条件 |
+「Agentで統合 (agent)」を選ぶと集約役のslotが追加されるので、そこにも保存済みエージェントを割り当てないと保存できない。並列数は`maxParallelism`で上限を持つ（現時点では画面から変更できない）。
+
+## 7. 他のパターンを実行する
+
+| パターン（画面表記） | 実行方法 | 終了条件 |
 |---|---|---|
-| Agent as tools | Coordinatorが必要なslotを委譲Toolとして呼ぶ | Coordinatorの最終応答 |
-| Handoff | 担当Agentが`[[handoff:slot-id]]`で許可済みの次担当へ引き継ぐ。`autonomous: false`では通常応答の後に入力待ちになる | autonomous時は最終応答、非自律時は次の入力または予算上限 |
+| Agent as tools | 調整役が必要なslotを委譲Toolとして呼ぶ | 調整役の最終応答 |
+| Handoff | 担当エージェントが`[[handoff:slot-id]]`で許可済みの次担当へ引き継ぐ。`autonomous: false`では通常応答の後に入力待ちになる | autonomous時は最終応答、非自律時は次の入力または予算上限 |
 | Group Chat | round-robin／fixed-order、またはManagerの`[[speaker:slot-id]]`で発話者を選ぶ | `maxRounds`、または`[[final]]` |
 | Magentic | Managerが`[[delegate:slot-id]]`で作業を委譲し、`[[final]]`で完了を宣言する。`requirePlanSignoff`時は委譲前に承認を待つ | `[[final]]`、cancel、またはround・stall・reset上限 |
 
 制御マーカーはHarness Runtimeだけが解釈し、指定先が保存済みTopologyに含まれない場合はRunを失敗として記録する。通常の最終文にはマーカーを含めない。
 
+> **Agent as tools を選ぶ前に**: 1つのエージェントから他エージェントへ委譲するだけなら、エージェント画面の「サブエージェント」でも同じことができる。エージェント定義を変えずに版固定・予算・実行イベントを付けたい場合にこのパターンを使う（画面上にも同じヒントが表示される）。
+
 ## 8. Handoffの会話再開とMagenticの計画承認
 
-Handoffで利用者と複数回やり取りしたい場合は、HarnessのTopologyで`autonomous`をオフにする。担当Agentがhandoffせずに応答すると、チャットには応答と「入力待ち」が表示される。続きのメッセージを送信すると、同じHarness Run ID・同じ担当slot・保存済みの会話履歴で再開される。不要になったRunは「実行を中止」でcancelできる。
+Handoffで利用者と複数回やり取りしたい場合は、Topologyで`autonomous`をオフにする。担当エージェントがhandoffせずに応答すると、チャットには応答と入力待ちが表示され、入力欄のプレースホルダが「Handoffを続ける返信を入力…」に変わる。続きのメッセージを送信すると、同じHarness Run ID・同じ担当slot・保存済みの会話履歴で再開される。不要になったRunは「**実行を中止**」でcancelできる。
 
-Magenticで人の確認を入れる場合は`requirePlanSignoff`をオンにする。Managerがparticipantとinstructionを選択した時点で、チャットに計画と「計画を承認」「却下して中止」が表示される。
+Magenticで人の確認を入れる場合は`requirePlanSignoff`をオンにする。Managerがparticipantとinstructionを選択した時点で、チャットに計画と「**計画を承認**」「**却下して中止**」が表示される。
 
 - 承認: 保存済みのparticipant/instructionを実行して次のroundへ進む。
-- 修正依頼: 入力欄にfeedbackを入力して送信する。Managerはそのfeedbackを含むLedgerで再計画する。
+- 修正依頼: 入力欄にfeedbackを入力して送信する（プレースホルダは「計画の修正内容を入力…」）。Managerはそのfeedbackを含むLedgerで再計画する。
 - 却下: Runをcancelledにしてcheckpointを破棄する。
 
 checkpointには公開会話、選択slot、残予算、期限だけを保存する。内部Tool出力やモデルの非公開思考はcheckpointへ保存されない。期限は開始・再開からではなく、checkpointを作った時点から24時間である。
 
 ## 9. 実行前の確認項目
 
-- すべてのslotに保存済みAgent versionを割り当てた。
-- Sequentialでは順序、Concurrentでは参加Agentと集約方法を確認した。
+- すべてのslotに保存済みエージェントversionを割り当てた（ステータスが「previewで実行可能」になっている）。
+- Sequentialでは順序、Concurrentでは参加エージェントと集約方法を確認した。
 - Handoff、Group Chat、Magenticでは、保存済みTopologyにあるslot IDだけを制御マーカーで指定する。
-- preview実行で副作用を持つToolを使う場合は、既存Agentのpreview制約も確認した。
+- preview実行で副作用を持つToolを使う場合は、既存エージェントのpreview制約も確認した。
 - 長い処理はparticipant run数、model round数、並列数の上限内に収めた。
+
+うまく動かない場合は[トラブルシューティング](./19-troubleshooting.md)を参照する。
 
 ## 10. スクリーンショットと画面操作を再実行する
 
@@ -117,4 +144,11 @@ npm run docs:screenshots
 npm run test:e2e
 ```
 
-Harnessの割り当て、検証、保存、チャット選択を確認するE2Eは[builder-flows.spec.ts](../e2e/builder-flows.spec.ts)にある。スクリーンショット用の操作は[harness-tutorial-screenshots.spec.ts](../e2e/harness-tutorial-screenshots.spec.ts)にある。
+割り当て、検証、保存、チャット選択を確認するE2Eは[builder-flows.spec.ts](../e2e/builder-flows.spec.ts)にある。スクリーンショット用の操作は[harness-tutorial-screenshots.spec.ts](../e2e/harness-tutorial-screenshots.spec.ts)にある。**このspecが本書の手順と同じ順序で画面を操作している**ので、手順が変わったときは両方を一緒に直す。
+
+## 関連ドキュメント
+
+- [14-agent-harness-builder.md](./14-agent-harness-builder.md) — 設計仕様（パターン定義・ドメインモデル・REST API）
+- [12-multi-agent.md](./12-multi-agent.md) — サブエージェント委譲（Agent-as-Tools）方式
+- [18-quickstart.md](./18-quickstart.md) — 初回セットアップ
+- [19-troubleshooting.md](./19-troubleshooting.md) — トラブルシューティング
