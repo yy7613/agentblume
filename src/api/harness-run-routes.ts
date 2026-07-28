@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { QueryHarnessRunsUseCase, RunHarnessUseCase } from '../application/harness/run-harness';
 import { SemVer } from '../domain/tool/semver';
+import { clientAbortSignal } from './client-abort';
 import { BadRequestError } from './error-mapping';
 import { cancelHarnessRunBodySchema, harnessRunListQuerySchema, harnessRunQuerySchema, resumeHarnessRunBodySchema, runHarnessBodySchema } from './schemas';
 
@@ -13,14 +14,14 @@ function parseWith<S extends z.ZodType>(schema: S, value: unknown, label: string
 }
 function version(value: string | undefined): SemVer | undefined { if (value === undefined) return undefined; try { return SemVer.parse(value); } catch { throw new BadRequestError(`invalid version string: "${value}"`); } }
 export function registerHarnessRunRoutes(app: FastifyInstance, deps: HarnessRunRouteDeps): void {
-  app.post('/harness-runs', async (request) => {
+  app.post('/harness-runs', async (request, reply) => {
     const body = parseWith(runHarnessBodySchema, request.body, 'invalid body');
     const requestedVersion = version(body.harness.version);
-    return { run: await deps.runHarness.execute({ scope: body.scope, harnessId: body.harness.internalId, ...(requestedVersion === undefined ? {} : { version: requestedVersion }), message: body.message, mode: body.mode }, request.raw.signal) };
+    return { run: await deps.runHarness.execute({ scope: body.scope, harnessId: body.harness.internalId, ...(requestedVersion === undefined ? {} : { version: requestedVersion }), message: body.message, mode: body.mode }, clientAbortSignal(request, reply)) };
   });
-  app.post<{ Params: { runId: string } }>('/harness-runs/:runId/responses', async (request) => {
+  app.post<{ Params: { runId: string } }>('/harness-runs/:runId/responses', async (request, reply) => {
     const body = parseWith(resumeHarnessRunBodySchema, request.body, 'invalid body');
-    return { run: await deps.runHarness.resume({ scope: body.scope, runId: request.params.runId, response: body.response }, request.raw.signal) };
+    return { run: await deps.runHarness.resume({ scope: body.scope, runId: request.params.runId, response: body.response }, clientAbortSignal(request, reply)) };
   });
   app.post<{ Params: { runId: string } }>('/harness-runs/:runId/cancel', async (request) => {
     const body = parseWith(cancelHarnessRunBodySchema, request.body, 'invalid body');

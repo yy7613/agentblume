@@ -1,8 +1,9 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { RunAgentPreviewUseCase } from '../application/agent/run-agent-preview';
 import type { QueryRunsUseCase } from '../application/agent/query-runs';
 import { SemVer } from '../domain/tool/semver';
+import { clientAbortSignal } from './client-abort';
 import { BadRequestError } from './error-mapping';
 import { resumeRunBodySchema, runAgentBodySchema, runListQuerySchema, runTraceQuerySchema } from './schemas';
 import type { RunApprovalCheckpoint, RunRecord } from '../domain/run/run';
@@ -43,26 +44,6 @@ function parseVersion(value: string | undefined): SemVer | undefined {
   if (value === undefined) return undefined;
   try { return SemVer.parse(value); }
   catch { throw new BadRequestError(`invalid version string: "${value}"`); }
-}
-
-/**
- * クライアント切断で abort する AbortSignal。**UIの「中断」はこれ1本に懸かっている**。
- *
- * `request.raw.signal` は Node 26.1 で入った新しいAPIで、`@types/node` が 26 系のため
- * 型検査は通るが、このリポジトリが動かす Node 22（.nvmrc / engines >=22.9）では
- * **実行時に undefined** になる。素で参照するとユースケースへ `undefined` が渡り、
- * ブラウザが fetch を abort してもモデル呼び出しは最大10分走り続ける。
- *
- * そのため未提供の実行環境では、応答ストリームが「書き終える前に閉じた」＝クライアントが
- * 切断した、という古典的な判定で同等のシグナルを自前で作る。
- */
-export function clientAbortSignal(request: FastifyRequest, reply: FastifyReply): AbortSignal {
-  const native = (request.raw as Partial<{ signal: AbortSignal }>).signal;
-  if (native !== undefined) return native;
-  const controller = new AbortController();
-  const raw = reply.raw;
-  raw.once('close', () => { if (!raw.writableEnded) controller.abort(); });
-  return controller.signal;
 }
 
 export function registerRunRoutes(app: FastifyInstance, deps: RunRouteDeps): void {

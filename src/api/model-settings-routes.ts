@@ -16,6 +16,7 @@ import type { z } from 'zod';
 import type { GetModelSettingsUseCase, SaveModelSettingsUseCase } from '../application/model-settings/manage-model-settings';
 import type { QueryModelCatalogUseCase } from '../application/model-settings/query-model-catalog';
 import type { TestModelSettingsUseCase } from '../application/model-settings/test-model-settings';
+import { clientAbortSignal } from './client-abort';
 import { BadRequestError } from './error-mapping';
 import { modelCatalogProviderParamsSchema, modelSettingsQuerySchema, openAiCompatibleModelsBodySchema, saveModelSettingsBodySchema, testModelSettingsBodySchema } from './schemas';
 
@@ -50,13 +51,13 @@ export function registerModelSettingsRoutes(app: FastifyInstance, deps: ModelSet
     };
   });
 
-  app.post('/model-settings/test', async (request) => {
+  app.post('/model-settings/test', async (request, reply) => {
     const body = parseWith(testModelSettingsBodySchema, request.body, 'invalid body');
     return deps.testModelSettings.execute({
       scope: body.scope,
       slot: body.slot,
       ...(body.candidate === undefined ? {} : { candidate: body.candidate }),
-    }, request.raw.signal);
+    }, clientAbortSignal(request, reply));
   });
 
   // 登録簿はオフラインの静的データなのでスコープ非依存で返す。
@@ -71,12 +72,12 @@ export function registerModelSettingsRoutes(app: FastifyInstance, deps: ModelSet
   });
 
   // GET ではなく POST。保存済みキーを使い得る操作を単純リクエストにしない（CSRF緩和）。
-  app.post('/model-catalog/openai-compatible-models', async (request) => {
+  app.post('/model-catalog/openai-compatible-models', async (request, reply) => {
     const body = parseWith(openAiCompatibleModelsBodySchema, request.body, 'invalid body');
     return deps.queryModelCatalog.openAiCompatibleModels({
       scope: body.scope,
       baseUrl: body.baseUrl,
       ...(body.slot === undefined ? {} : { slot: body.slot }),
-    }, request.raw.signal);
+    }, clientAbortSignal(request, reply));
   });
 }

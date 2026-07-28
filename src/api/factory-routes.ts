@@ -9,6 +9,7 @@ import type { CreateFactoryRunUseCase } from '../application/factory/create-fact
 import type { QueryFactoryRunsUseCase } from '../application/factory/query-factory-runs';
 import type { ResumeFactoryRunUseCase } from '../application/factory/resume-factory-run';
 import type { RetryFactoryRunUseCase } from '../application/factory/retry-factory-run';
+import { clientAbortSignal } from './client-abort';
 import { BadRequestError } from './error-mapping';
 import { cancelFactoryRunBodySchema, factoryRunBodySchema, factoryRunListQuerySchema, factoryRunQuerySchema, resumeFactoryRunBodySchema, retryFactoryRunBodySchema } from './schemas';
 
@@ -56,9 +57,9 @@ export function registerFactoryRoutes(app: FastifyInstance, deps: FactoryRouteDe
     return { events: run.events };
   });
 
-  app.post<{ Params: { runId: string } }>('/factory-runs/:runId/responses', async (request) => {
+  app.post<{ Params: { runId: string } }>('/factory-runs/:runId/responses', async (request, reply) => {
     const body = parseWith(resumeFactoryRunBodySchema, request.body, 'invalid body');
-    const run = await deps.resumeFactoryRun.execute({ scope: body.scope, runId: request.params.runId, decision: body.response.decision, ...(body.response.feedback === undefined ? {} : { feedback: body.response.feedback }) }, request.raw.signal);
+    const run = await deps.resumeFactoryRun.execute({ scope: body.scope, runId: request.params.runId, decision: body.response.decision, ...(body.response.feedback === undefined ? {} : { feedback: body.response.feedback }) }, clientAbortSignal(request, reply));
     return { run };
   });
 

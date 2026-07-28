@@ -10,6 +10,7 @@ import type { DeleteMcpServerUseCase, ListMcpServersUseCase, ReplaceMcpServersUs
 import type { TestMcpServerUseCase } from '../application/mcp/test-mcp-server';
 import type { McpServerConfig, McpTransportConfig } from '../domain/mcp/mcp-server';
 import { serializeMcpServerConfig, type SerializedMcpServerConfig } from '../domain/mcp/serialization';
+import { clientAbortSignal } from './client-abort';
 import { BadRequestError } from './error-mapping';
 import { mcpServerListQuerySchema, replaceMcpServersBodySchema, saveMcpServerBodySchema, scopeQuerySchema, testMcpServerBodySchema } from './schemas';
 
@@ -64,8 +65,8 @@ export function registerMcpRoutes(app: FastifyInstance, deps: McpRouteDeps): voi
 
   // 接続テストは「設定が正しいか確かめる」機能なので、接続失敗も200で ok:false として返す
   // （HTTPエラーにすると、UIが通信障害と設定ミスを区別できなくなる）。
-  app.post<{ Params: McpServerParams }>('/mcp-servers/:name/test', async (request) => {
+  app.post<{ Params: McpServerParams }>('/mcp-servers/:name/test', async (request, reply) => {
     const body = parseWith(testMcpServerBodySchema, request.body, 'invalid body');
-    return deps.testMcpServer.execute(body.scope, request.params.name, request.raw.signal);
+    return deps.testMcpServer.execute(body.scope, request.params.name, clientAbortSignal(request, reply));
   });
 }

@@ -16,6 +16,7 @@ import type { SaveScenarioUseCase } from '../application/validation/save-scenari
 import { serializeAgent } from '../domain/agent/serialization';
 import { serializePersona, serializeScenario, serializeScenarioRun } from '../domain/validation/serialization';
 import { SemVer } from '../domain/tool/semver';
+import { clientAbortSignal } from './client-abort';
 import { BadRequestError } from './error-mapping';
 import {
   registerPseudoUserAgentBodySchema, runScenarioBodySchema, savePersonaBodySchema, saveScenarioBodySchema,
@@ -123,7 +124,7 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
   });
 
   // シナリオ実行（同期）: 疑似ユーザー × 対象Agent の会話 + アンケート。
-  app.post<{ Params: IdParams }>('/scenarios/:internalId/run', async (request) => {
+  app.post<{ Params: IdParams }>('/scenarios/:internalId/run', async (request, reply) => {
     const body = parse(runScenarioBodySchema, request.body);
     const parsedVersion = version(body.version);
     const run = await deps.runScenario.execute({
@@ -131,7 +132,7 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
       scenarioId: request.params.internalId,
       ...(parsedVersion !== undefined ? { version: parsedVersion } : {}),
       mode: body.mode,
-    }, request.raw.signal);
+    }, clientAbortSignal(request, reply));
     return { run: serializeScenarioRun(run) };
   });
 

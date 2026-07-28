@@ -5,7 +5,7 @@ import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider
 import { ModelProviderError, type ModelCapability, type ModelCompletion, type ModelCompletionRequest, type ModelProviderPort } from '../application/model/model-provider';
 import { SemVer } from '../domain/tool/semver';
 import { createApp, type App } from '../composition/root';
-import { clientAbortSignal } from './run-routes';
+import { clientAbortSignal } from './client-abort';
 import { buildServer } from './server';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
