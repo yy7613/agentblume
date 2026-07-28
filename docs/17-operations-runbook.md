@@ -83,7 +83,7 @@ npm run backup -- --help
 Windows のタスクスケジューラで毎日取る例（`pwsh` から）:
 
 ```powershell
-$action  = New-ScheduledTaskAction -Execute 'npm' -Argument 'run backup' -WorkingDirectory 'E:\vscode\AgentContext'
+$action  = New-ScheduledTaskAction -Execute 'npm' -Argument 'run backup' -WorkingDirectory 'C:\path\to\agentblume'
 $trigger = New-ScheduledTaskTrigger -Daily -At 3am
 Register-ScheduledTask -TaskName 'agentblume-backup' -Action $action -Trigger $trigger
 ```
