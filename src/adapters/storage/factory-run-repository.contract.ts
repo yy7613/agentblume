@@ -39,6 +39,12 @@ export async function factoryRunRepositoryContract(repo: FactoryRunRepository): 
   await repo.save(cancelled);
   expect(await repo.find(scope, 'first')).toMatchObject({ status: 'cancelled', finishedAt: '2026-07-10T00:10:00Z' });
 
+  // listAllByStatus: 起動時の孤児Run回収が使う横断クエリ。テナント境界を越え、startedAt 昇順で返す
+  // （回収は「このプロセスが持っていた全ジョブ」が対象なので、スコープで絞ってはならない）。
+  expect((await repo.listAllByStatus('queued')).map((run) => run.id)).toEqual(['second', 'hidden']);
+  expect((await repo.listAllByStatus('cancelled')).map((run) => run.id)).toEqual(['first']);
+  expect(await repo.listAllByStatus('running')).toEqual([]);
+
   // tenant isolation on find + missing run
   expect(await repo.find({ tenantId: 'other', workspaceId: 'w' }, 'first')).toBeNull();
   expect(await repo.find(scope, 'missing')).toBeNull();

@@ -99,6 +99,8 @@ class MemoryRuns implements RunRepository {
   async save(record: RunRecord): Promise<void> { this.records.set(record.runId, structuredClone(record)); }
   async find(_scope: TenantScope, runId: string): Promise<RunRecord | null> { return this.records.get(runId) ?? null; }
   async list(): Promise<RunRecord[]> { return [...this.records.values()]; }
+  async listAllByStatus(status: RunRecord['status']): Promise<RunRecord[]> { return [...this.records.values()].filter((record) => record.status === status); }
+  async listScopes(): Promise<TenantScope[]> { return [...new Map([...this.records.values()].map((record) => [`${record.scope.tenantId} ${record.scope.workspaceId}`, record.scope])).values()]; }
 }
 
 class StaticTools implements ToolRepository {

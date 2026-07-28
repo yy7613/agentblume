@@ -120,6 +120,9 @@ import type { ModelPriceSnapshot, PricingPort } from '../application/operations/
 import { SubmitRunFeedbackUseCase, QueryRunFeedbackUseCase } from '../application/operations/feedback';
 import { QueryOperationsStatusUseCase } from '../application/operations/query-operations-status';
 import { RetentionUseCase } from '../application/operations/retention';
+import { NOOP_LOGGER, type LoggerPort } from '../application/operations/logger';
+import { ConsoleLogger } from '../adapters/observability/console-logger';
+import { RecoverInterruptedRunsUseCase } from '../application/operations/recover-interrupted-runs';
 import { DeleteWikiSpaceUseCase, QueryWikiSpacesUseCase, SaveWikiSpaceUseCase } from '../application/memory/wiki-spaces';
 import { InMemoryAgentSessionRepository } from '../adapters/storage/in-memory-agent-session-repository';
 import { SqliteAgentSessionRepository } from '../adapters/storage/sqlite-agent-session-repository';
@@ -233,6 +236,13 @@ export interface AppOptions {
   readonly modelCatalog?: ModelCatalogPort;
   /** モデル設定を読むスコープ。既定は env AGENTCONTEXT_TENANT_ID / _WORKSPACE_ID。 */
   readonly modelSettingsScope?: TenantScope;
+  /**
+   * 握り潰した障害・運用イベントの出力先（`LoggerPort`）。
+   *
+   * 既定は local プロファイルなら `ConsoleLogger`、test プロファイルなら無音。
+   * `logger`（起動時の保存先メッセージ1行だけを受け取る関数）とは別物である点に注意。
+   */
+  readonly errorLogger?: LoggerPort;
 }
 
 /** 配線済みアプリケーション。 */
@@ -354,6 +364,11 @@ export interface App {
   readonly queryRunFeedback: QueryRunFeedbackUseCase;
   readonly queryOperationsStatus: QueryOperationsStatusUseCase;
   readonly retention: RetentionUseCase;
+  /**
+   * 起動時に1回だけ呼ぶ孤児Run回収。`running` のまま固まったRunを終端させ、`queued` をワーカーへ戻す。
+   * `createApp` は**呼ばない**（回収はプロセス起動という事象に紐づくもので、App生成の副作用ではない）。
+   */
+  readonly recoverInterruptedRuns: RecoverInterruptedRunsUseCase;
   readonly saveWikiPage: SaveWikiPageUseCase;
   readonly queryWiki: QueryWikiUseCase;
   readonly deleteWikiPage: DeleteWikiPageUseCase;
@@ -375,7 +390,8 @@ export interface App {
    * shutdown猶予（`AGENTCONTEXT_SHUTDOWN_GRACE_MS`）。ワーカーの新規受付を止め、
    * 実行中のジョブを最大 `graceMs` だけ待ってから abort する。**`close()` の前に呼ぶ**
    * （`close()` は待たずに即 abort する最終手段）。戻り値は猶予内に全て終わったか。
-   * ジョブの永続化・再起動復旧はまだ無いため、abort されたジョブは再開されない。
+   * キューはメモリ内なので abort されたジョブの途中経過は失われる（次の起動で
+   * `recoverInterruptedRuns` が終端へ確定させ、retry / resume で流し直せる）。
    */
   drainWorkers(graceMs: number): Promise<boolean>;
   /** SqliteToolRepository の close を委譲する（InMemory は no-op）。 */
@@ -505,7 +521,16 @@ export function createApp(options?: AppOptions): App {
   const qualityGateAdapter = { repo: pickRepository<QualityGateRepository>(options?.qualityGateRepository, database, (db) => new SqliteQualityGateRepository(db), () => new InMemoryQualityGateRepository()) };
   const judgeRubricAdapter = { repo: pickRepository<JudgeRubricRepository>(options?.judgeRubricRepository, database, (db) => new SqliteJudgeRubricRepository(db), () => new InMemoryJudgeRubricRepository()) };
   const operationsAdapter = { repo: pickRepository<OperationsRepository>(options?.operationsRepository, database, (db) => new SqliteOperationsRepository(db), () => new InMemoryOperationsRepository()) };
-  experimentAdapter.repo.interruptRunning(new Date().toISOString());
+  /**
+   * 握り潰した障害の出力先。以前は「observability の失敗は業務へ伝播させない」という正しい方針の下で
+   * **何も残していなかった**ため、メトリクスが1件も保存されていないような障害が完全に不可視だった。
+   * testプロファイルは無音（テスト出力を汚さない）。
+   *
+   * かつてここで `experimentAdapter.repo.interruptRunning(...)` を呼んでいたが、
+   * 「どの状態をどう扱うか」は回収の方針なので `RecoverInterruptedRunsUseCase` へ移した
+   * （`queued` の再投入も含めてエントリポイントが起動時に1回だけ呼ぶ）。
+   */
+  const errorLogger: LoggerPort = options?.errorLogger ?? (profile === 'test' ? NOOP_LOGGER : new ConsoleLogger());
 
   const engine = new EtlEngine(createDefaultRegistry());
   const modelMaxTokens = resolveModelMaxTokens();
@@ -578,14 +603,14 @@ export function createApp(options?: AppOptions): App {
   const webSearch = new WebSearchUseCase(options?.searchProviderCatalog ?? new EnvironmentSearchProviderCatalog());
   const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections, webSearch);
 
-  const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot, ...(resolveModelSnapshot === undefined ? {} : { resolveModel: resolveModelSnapshot }) }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient);
+  const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot, logger: errorLogger, ...(resolveModelSnapshot === undefined ? {} : { resolveModel: resolveModelSnapshot }) }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient);
   const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);
   const saveWikiPage = new SaveWikiPageUseCase(wikiAdapter.repo);
   const runScenario = new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo);
   const evaluator = new MastraEvalsEvaluator();
-  const runExperiment = new RunExperimentUseCase(experimentAdapter.repo, evaluationDatasetAdapter.repo, evaluatorProfileAdapter.repo, agentAdapter.repo, scenarioAdapter.repo, runAgentPreview, runScenario, evaluator, undefined, undefined, { rubrics: judgeRubricAdapter.repo, evaluator: judgeEvaluator, ...(resolveJudgeSnapshot === undefined ? {} : { resolveSnapshot: resolveJudgeSnapshot }) }, telemetry);
-  const experimentWorker = new InProcessExperimentWorker(runExperiment);
-  const submitRunFeedback = new SubmitRunFeedbackUseCase(runAdapter.repo, operationsAdapter.repo);
+  const runExperiment = new RunExperimentUseCase(experimentAdapter.repo, evaluationDatasetAdapter.repo, evaluatorProfileAdapter.repo, agentAdapter.repo, scenarioAdapter.repo, runAgentPreview, runScenario, evaluator, undefined, undefined, { rubrics: judgeRubricAdapter.repo, evaluator: judgeEvaluator, ...(resolveJudgeSnapshot === undefined ? {} : { resolveSnapshot: resolveJudgeSnapshot }) }, telemetry, errorLogger);
+  const experimentWorker = new InProcessExperimentWorker(runExperiment, errorLogger);
+  const submitRunFeedback = new SubmitRunFeedbackUseCase(runAdapter.repo, operationsAdapter.repo, undefined, undefined, errorLogger);
 
   // Agent Factory（v33）: Stage 0（決定的プロファイル）+ Stage 1（Plannerロール）+ 承認checkpoint +
   // Stage 2-4（ToolSmith/SkillWriter/Assemblerロール + 既存Save系ユースケースの資産生成、M2）+
@@ -612,7 +637,7 @@ export function createApp(options?: AppOptions): App {
     { toolSmith: toolSmithRole, resolveDataSources, profiler: profileDataSources }, undefined, unitOfWork,
   );
   const runFactory = new RunFactoryUseCase(factoryRunAdapter.repo, profileDataSources, plannerRole, generateAgentAssets, runScenario, savePersona, registerPseudoUserAgent, saveScenario, analystRole, applyImprovements, agentAdapter.repo, skillAdapter.repo, repo);
-  const factoryWorker = new InProcessFactoryWorker(runFactory);
+  const factoryWorker = new InProcessFactoryWorker(runFactory, errorLogger);
   const createFactoryRun = new CreateFactoryRunUseCase(factoryRunAdapter.repo, factoryWorker);
   const resumeFactoryRun = new ResumeFactoryRunUseCase(factoryRunAdapter.repo, runFactory, factoryWorker);
   // 失敗Runの再実行は「同じ入力で新しいRunを起票する」ため CreateFactoryRunUseCase へ委譲する。
@@ -736,7 +761,13 @@ export function createApp(options?: AppOptions): App {
     submitRunFeedback,
     queryRunFeedback: new QueryRunFeedbackUseCase(operationsAdapter.repo),
     queryOperationsStatus: new QueryOperationsStatusUseCase(operationsAdapter.repo),
-    retention: new RetentionUseCase(runAdapter.repo, operationsAdapter.repo),
+    retention: new RetentionUseCase(runAdapter.repo, operationsAdapter.repo, undefined, errorLogger),
+    recoverInterruptedRuns: new RecoverInterruptedRunsUseCase({
+      factoryRuns: factoryRunAdapter.repo, factoryWorker,
+      experiments: experimentAdapter.repo, experimentWorker,
+      runs: runAdapter.repo, harnessRuns: harnessRunAdapter.repo,
+      logger: errorLogger,
+    }),
     // 長期記憶（v21）。reflectRun は modelProvider（振り返り）を使用。承認は Wiki 保存 / Skill 蒸留へ委譲。
     saveWikiPage,
     queryWiki: new QueryWikiUseCase(wikiAdapter.repo),

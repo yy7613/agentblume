@@ -9,6 +9,8 @@ class FakeRuns implements RunRepository {
   async save(): Promise<void> {}
   async find(): Promise<RunRecord | null> { return this.record; }
   async list(): Promise<RunRecord[]> { return this.record === null ? [] : [this.record]; }
+  async listAllByStatus(): Promise<RunRecord[]> { return []; }
+  async listScopes(): Promise<[]> { return []; }
 }
 
 const record = startRun({ runId: 'run-1', scope: { tenantId: 't', workspaceId: 'w' }, mode: 'preview', tool: { internalId: 'tool' }, startedAt: 'now' });

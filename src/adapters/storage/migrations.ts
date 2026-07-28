@@ -34,7 +34,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 /** このコードが理解できるスキーマの最新版。 */
-export const LATEST_SCHEMA_VERSION = 1;
+export const LATEST_SCHEMA_VERSION = 2;
 
 /** version 1 で作られるテーブル（列定義は「ALTER適用後の最終形」）。 */
 const BASELINE_TABLES: readonly string[] = [
@@ -245,6 +245,21 @@ function addColumnIfMissing(db: DatabaseSync, table: string, column: string, def
   return true;
 }
 
+/**
+ * version 2 のインデックス。**スコープを伴わない status 検索**のためのもの。
+ *
+ * 起動時の孤児Run回収（`RecoverInterruptedRunsUseCase`）は「どのテナントに中断Runが残っているか」を
+ * 事前に知り得ないため、`WHERE status = ?` をテナント横断で引く。version 1 のインデックスは全て
+ * `(tenant_id, workspace_id, …)` 始まりで使えず、`runs` は放置すると無制限に増えるテーブルなので、
+ * 起動のたびに全表走査になる。
+ */
+const STATUS_INDEXES: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (status)`,
+  `CREATE INDEX IF NOT EXISTS idx_harness_runs_status ON harness_runs (status)`,
+  `CREATE INDEX IF NOT EXISTS idx_factory_runs_status ON factory_runs (status)`,
+  `CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments (status)`,
+];
+
 /** 適用順のマイグレーション一覧（version は 1 から連番）。 */
 export const MIGRATIONS: readonly SchemaMigration[] = [
   {
@@ -254,6 +269,13 @@ export const MIGRATIONS: readonly SchemaMigration[] = [
       for (const statement of BASELINE_TABLES) db.exec(statement);
       for (const { table, column, definition } of BASELINE_COLUMNS) addColumnIfMissing(db, table, column, definition);
       for (const statement of BASELINE_INDEXES) db.exec(statement);
+    },
+  },
+  {
+    version: 2,
+    description: 'status indexes for cross-tenant orphan run recovery',
+    apply(db) {
+      for (const statement of STATUS_INDEXES) db.exec(statement);
     },
   },
 ];

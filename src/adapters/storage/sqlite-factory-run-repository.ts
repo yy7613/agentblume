@@ -18,4 +18,7 @@ export class SqliteFactoryRunRepository extends SqliteRepositoryBase implements 
       : this.db.prepare(`SELECT record_json FROM factory_runs WHERE tenant_id = ? AND workspace_id = ? AND status = ? ORDER BY started_at DESC LIMIT ?`).all(scope.tenantId, scope.workspaceId, options.status, options?.limit ?? 100);
     return rows.map((row) => deserializeFactoryRun(String(row['record_json'])));
   }
+  async listAllByStatus(status: FactoryRunStatus): Promise<FactoryRun[]> {
+    return this.db.prepare(`SELECT record_json FROM factory_runs WHERE status = ? ORDER BY started_at ASC`).all(status).map((row) => deserializeFactoryRun(String(row['record_json'])));
+  }
 }

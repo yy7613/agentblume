@@ -19,6 +19,19 @@ describe('InProcessExperimentWorker', () => {
     expect(signal?.aborted).toBe(true); worker.shutdown();
   });
 
+  it('握り潰した失敗をloggerへ残しつつ、キューの処理を続ける', async () => {
+    const warns: { message: string; context?: Record<string, unknown> }[] = [];
+    const logger = { info: () => {}, warn: (message: string, context?: Record<string, unknown>) => { warns.push({ message, ...(context === undefined ? {} : { context: { ...context } }) }); }, error: () => {} };
+    const execute = vi.fn().mockRejectedValueOnce(new Error('experiment record could not be saved')).mockResolvedValue(undefined);
+    const worker = new InProcessExperimentWorker({ execute } as unknown as RunExperimentUseCase, logger);
+    const scope = { tenantId: 't', workspaceId: 'w' };
+    worker.enqueue(scope, 'first'); worker.enqueue(scope, 'second');
+    await tick(); await tick(); await tick();
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(warns).toEqual([{ message: 'experiment ended with an unhandled error', context: { experimentId: 'first', reason: 'experiment record could not be saved' } }]);
+    worker.shutdown();
+  });
+
   describe('drainInFlight（shutdown猶予）', () => {
     const scope = { tenantId: 't', workspaceId: 'w' };
 

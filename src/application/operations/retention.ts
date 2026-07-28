@@ -1,12 +1,26 @@
 import { DEFAULT_RETENTION_DAYS, type RetentionPolicy } from '../../domain/operations/operations';
 import type { OperationsRepository } from '../../domain/operations/operations-repository';
 import type { RunRepository, RunRetentionResult } from '../../domain/run/run-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { describeError, type LoggerPort } from './logger';
 
 export interface RetentionApplyResult extends RunRetentionResult { readonly feedbackDeleted: number; readonly aggregateBucketsDeleted: number }
 
+/** 全スコープ一括適用の合計。定期実行のログへそのまま載せる。 */
+export interface RetentionSweepResult extends RetentionApplyResult {
+  /** 実際に適用できたスコープ数。 */
+  readonly scopes: number;
+  /** 適用に失敗したスコープ数（1スコープの失敗で残りを止めない）。 */
+  readonly failures: number;
+}
+
 export class RetentionUseCase {
-  constructor(private readonly runs: RunRepository, private readonly operations: OperationsRepository, private readonly now: () => Date = () => new Date()) {}
+  constructor(
+    private readonly runs: RunRepository,
+    private readonly operations: OperationsRepository,
+    private readonly now: () => Date = () => new Date(),
+    private readonly logger?: LoggerPort,
+  ) {}
 
   async get(scope: TenantScope): Promise<RetentionPolicy> {
     return await this.operations.getRetentionPolicy(scope) ?? { scope: { ...scope }, payloadDays: DEFAULT_RETENTION_DAYS.payload, traceDays: DEFAULT_RETENTION_DAYS.trace, aggregateDays: DEFAULT_RETENTION_DAYS.aggregate, updatedAt: this.now().toISOString() };
@@ -24,5 +38,37 @@ export class RetentionUseCase {
     const feedbackDeleted = await this.operations.deleteFeedbackBefore(scope, payloadBefore);
     const aggregateBucketsDeleted = await this.operations.deleteMetricsBefore(scope, cutoff(policy.aggregateDays));
     return { ...runResult, feedbackDeleted, aggregateBucketsDeleted };
+  }
+
+  /**
+   * 保存されている全スコープへ順に `apply` する（定期実行の入口）。
+   *
+   * 対象スコープは `runs` から引く。retentionが本当に抑えたいのは**無制限に増える `runs`** であり、
+   * feedback / 日次集計は必ずRunの後に生まれるので、Runを1件でも持ったスコープを見れば漏れない。
+   * ただし「全Runを削除し切ったあとに残る集計だけのスコープ」は列挙できなくなるため、
+   * 設定済みの既定スコープを `always` として渡せるようにしてある（composition が起動スコープを渡す）。
+   *
+   * 1スコープの失敗で残りを止めない。定期実行は「次回もう一度走る」のが前提で、
+   * 1つの壊れたスコープのために他のスコープが永久に掃除されないほうが有害である。
+   */
+  async applyAll(always: readonly TenantScope[] = []): Promise<RetentionSweepResult> {
+    const targets = new Map<string, TenantScope>();
+    for (const scope of always) targets.set(tenantKey(scope), { ...scope });
+    for (const scope of await this.runs.listScopes()) targets.set(tenantKey(scope), { ...scope });
+
+    let scopes = 0; let failures = 0;
+    let payloadRedacted = 0; let traceRedacted = 0; let deleted = 0; let feedbackDeleted = 0; let aggregateBucketsDeleted = 0;
+    for (const scope of targets.values()) {
+      try {
+        const result = await this.apply(scope);
+        scopes += 1;
+        payloadRedacted += result.payloadRedacted; traceRedacted += result.traceRedacted; deleted += result.deleted;
+        feedbackDeleted += result.feedbackDeleted; aggregateBucketsDeleted += result.aggregateBucketsDeleted;
+      } catch (error) {
+        failures += 1;
+        this.logger?.warn('retention failed for one scope', { scope: tenantKey(scope), reason: describeError(error) });
+      }
+    }
+    return { scopes, failures, payloadRedacted, traceRedacted, deleted, feedbackDeleted, aggregateBucketsDeleted };
   }
 }

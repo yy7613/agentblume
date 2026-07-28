@@ -13,6 +13,7 @@ import { ModelProviderError } from '../model/model-provider';
 import type { RunScenarioUseCase } from '../validation/run-scenario';
 import type { AgentEvaluatorPort } from './evaluator';
 import { RunExperimentUseCase } from './run-experiment';
+import type { LoggerPort } from '../operations/logger';
 import { createJudgeRubric } from '../../domain/evaluation/judge-rubric';
 import { JudgeEvaluationError } from '../../domain/evaluation/errors';
 import type { JudgeEvaluatorPort } from './judge-evaluator';
@@ -21,7 +22,7 @@ const scope = { tenantId: 't', workspaceId: 'w' }; const v = SemVer.of(1, 0, 0);
 class Experiments implements ExperimentRepository {
   experiment = createExperiment({ id: 'exp', scope, target: { agentId: 'agent', version: v }, dataset: { id: 'set', version: v }, evaluatorProfile: { id: 'profile', version: v }, repetitions: 1, status: 'queued', snapshot: { provider: 'test', model: 'model', modelConfigHash: 'hash' }, progress: { completed: 0, total: 1 }, createdAt: 'created' });
   results: import('../../domain/evaluation/experiment').ExperimentCaseResult[] = [];
-  async create(): Promise<void> {} async update(value: typeof this.experiment): Promise<void> { this.experiment = value; } async find(): Promise<typeof this.experiment> { return this.experiment; } async list(): Promise<typeof this.experiment[]> { return [this.experiment]; } async saveCaseResult(value: typeof this.results[number]): Promise<void> { this.results.push(value); } async listCaseResults(): Promise<typeof this.results> { return this.results; } interruptRunning(): number { return 0; }
+  async create(): Promise<void> {} async update(value: typeof this.experiment): Promise<void> { this.experiment = value; } async find(): Promise<typeof this.experiment> { return this.experiment; } async list(): Promise<typeof this.experiment[]> { return [this.experiment]; } async saveCaseResult(value: typeof this.results[number]): Promise<void> { this.results.push(value); } async listCaseResults(): Promise<typeof this.results> { return this.results; } async listAllByStatus(): Promise<typeof this.experiment[]> { return []; }
 }
 
 describe('RunExperimentUseCase', () => {
@@ -98,13 +99,13 @@ describe('RunExperimentUseCase', () => {
 
   describe('judge指紋の事前解決', () => {
     /** judge メトリクス1件だけのプロファイルで RunExperimentUseCase を組む。 */
-    function judgeRunner(judge: JudgeEvaluatorPort, resolveSnapshot?: () => Promise<{ provider: string; model: string; modelConfigHash: string }>) {
+    function judgeRunner(judge: JudgeEvaluatorPort, resolveSnapshot?: () => Promise<{ provider: string; model: string; modelConfigHash: string }>, logger?: LoggerPort) {
       const experiments = new Experiments();
       const dataset = createEvaluationDataset({ metadata: { internalId: 'set', workingName: 's', displayName: 's', publishName: 's', version: v, owner: 'o', state: 'draft', tenant: scope }, cases: [{ id: 'case', kind: 'turn', input: 'question', tags: [], source: 'manual' }] });
       const profile = createEvaluatorProfile({ metadata: { ...dataset.metadata, internalId: 'profile' }, metrics: [{ id: 'judge-optional', kind: 'judge', rubric: { id: 'rubric', version: v }, weight: 1, required: false }] });
       const rubric = createJudgeRubric({ metadata: { ...dataset.metadata, internalId: 'rubric' }, instructions: 'Judge.', referencePolicy: 'optional', reasonRequired: true, criteria: [{ id: 'q', label: 'Q', description: 'Quality', weight: 1, levels: [{ score: 0, label: 'Bad', description: 'Bad' }, { score: 1, label: 'Good', description: 'Good' }] }] });
       const runAgent = { executeSaved: vi.fn().mockResolvedValue({ runId: 'run', response: 'answer', trace: [], usage: {} }) } as unknown as RunAgentPreviewUseCase;
-      const runner = new RunExperimentUseCase(experiments, { findVersion: async () => dataset } as unknown as EvaluationDatasetRepository, { findVersion: async () => profile } as unknown as EvaluatorProfileRepository, { findVersion: async () => ({ kind: 'normal' }) } as unknown as AgentRepository, {} as ScenarioRepository, runAgent, {} as RunScenarioUseCase, { evaluate: vi.fn().mockResolvedValue([]) }, () => new Date(), vi.fn(), { rubrics: { findVersion: async () => rubric } as unknown as JudgeRubricRepository, evaluator: judge, ...(resolveSnapshot === undefined ? {} : { resolveSnapshot }) });
+      const runner = new RunExperimentUseCase(experiments, { findVersion: async () => dataset } as unknown as EvaluationDatasetRepository, { findVersion: async () => profile } as unknown as EvaluatorProfileRepository, { findVersion: async () => ({ kind: 'normal' }) } as unknown as AgentRepository, {} as ScenarioRepository, runAgent, {} as RunScenarioUseCase, { evaluate: vi.fn().mockResolvedValue([]) }, () => new Date(), vi.fn(), { rubrics: { findVersion: async () => rubric } as unknown as JudgeRubricRepository, evaluator: judge, ...(resolveSnapshot === undefined ? {} : { resolveSnapshot }) }, undefined, logger);
       return { runner, experiments };
     }
 
@@ -132,6 +133,18 @@ describe('RunExperimentUseCase', () => {
       expect((await runner.execute(scope, 'exp')).status).toBe('completed');
 
       expect(experiments.results[0]?.judgeEvaluations?.[0]).toMatchObject({ status: 'failed', model: last });
+    });
+
+    it('事前解決の失敗を握り潰したままにせず、loggerへ残す', async () => {
+      const warns: { message: string; context?: Record<string, unknown> }[] = [];
+      const logger: LoggerPort = { info: () => {}, warn: (message, context) => { warns.push({ message, ...(context === undefined ? {} : { context: { ...context } }) }); }, error: () => {} };
+      const last = { provider: 'openai-compatible', model: 'last-resolved-judge', modelConfigHash: 'last' };
+      const judge = { snapshot: () => last, evaluate: vi.fn().mockResolvedValue({ score: 1, reason: 'ok', model: last }), compare: vi.fn() } as JudgeEvaluatorPort;
+      const { runner } = judgeRunner(judge, async () => { throw new Error('key file changed'); }, logger);
+
+      await runner.execute(scope, 'exp');
+
+      expect(warns).toEqual([{ message: 'judge model settings could not be resolved; falling back to the last known snapshot', context: { reason: 'key file changed' } }]);
     });
 
     it('事前解決が配線されていなければ従来どおり同期の指紋を使う', async () => {

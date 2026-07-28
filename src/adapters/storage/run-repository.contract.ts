@@ -49,6 +49,18 @@ export async function runRepositoryContract(repo: RunRepository): Promise<void> 
   await expect(repo.find(scope, 'run-waiting')).resolves.toEqual(waiting);
   await expect(repo.list(scope, { status: 'waiting-approval' })).resolves.toMatchObject([{ runId: 'run-waiting', status: 'waiting-approval' }]);
 
+  // listAllByStatus / listScopes: 起動時の孤児Run回収とretentionの定期実行が使う横断クエリ。
+  // どちらもスコープ境界を越える（起動時点でどのテナントに中断Runが残っているかは分からない）。
+  await repo.save(running('run-orphan', '2026-07-03T00:00:05.000Z'));
+  await repo.save(startRun({ runId: 'run-other', scope: { tenantId: 'other', workspaceId: 'workspace' }, mode: 'preview', tool: { internalId: 'tool', version: '1.0.0' }, startedAt: '2026-07-03T00:00:06.000Z' }));
+  await expect(repo.listAllByStatus('running')).resolves.toMatchObject([{ runId: 'run-orphan' }, { runId: 'run-other' }]);
+  // waiting-approval は「人間の承認待ち」という正常な状態。running とは別物として引ける必要がある。
+  await expect(repo.listAllByStatus('waiting-approval')).resolves.toMatchObject([{ runId: 'run-waiting' }]);
+  const scopes = await repo.listScopes();
+  expect(scopes).toHaveLength(2);
+  expect(scopes).toContainEqual({ tenantId: 'tenant', workspaceId: 'workspace' });
+  expect(scopes).toContainEqual({ tenantId: 'other', workspaceId: 'workspace' });
+
   const retained = succeedRun(running('run-retained', '2026-07-03T12:00:00.000Z'), { response: 'sensitive payload', trace: [{ sequence: 1, kind: 'model-response', content: 'sensitive trace' }], usage: { totalTokens: 1 }, completedAt: '2026-07-03T12:00:01.000Z' });
   await repo.save(retained);
   expect(repo.applyRetention).toBeTypeOf('function');

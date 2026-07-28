@@ -29,6 +29,7 @@ import { safeStartSpan } from '../operations/telemetry';
 import type { PricingPort } from '../operations/pricing';
 import type { OperationsRepository } from '../../domain/operations/operations-repository';
 import { estimateRunCost, recordRunMetricSafely } from '../operations/run-observability';
+import { logSwallowed, type LoggerPort } from '../operations/logger';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';
 import { effectiveWikiId, type WikiPage } from '../../domain/memory/wiki-page';
 import { createAgentSession, expireAgentSession, type AgentSession } from '../../domain/session/agent-session';
@@ -241,6 +242,8 @@ export interface RunObservabilityOptions {
    */
   readonly resolveModel?: () => Promise<RunModelSnapshot>;
   readonly monotonicNow?: () => number;
+  /** 握り潰した観測系の障害を残す先（未指定なら従来どおり無音）。 */
+  readonly logger?: LoggerPort;
 }
 
 function subAgentToolDefinition(sub: ResolvedSubAgent): ModelToolDefinition {
@@ -506,7 +509,8 @@ export class RunAgentPreviewUseCase {
     const resolve = this.observability?.resolveModel;
     if (resolve === undefined) return this.observability?.model;
     try { return await resolve(); }
-    catch { return this.observability?.model; }
+    // 実行は続けるが無音にはしない: 記録される指紋が実際に使ったモデルとずれ続けると追跡できなくなる。
+    catch (error) { logSwallowed(this.observability?.logger, 'model settings could not be resolved; falling back to the last known snapshot', error); return this.observability?.model; }
   }
 
   /**
@@ -525,12 +529,12 @@ export class RunAgentPreviewUseCase {
     const sessionId = started.sessionId;
     const model = started.model ?? this.observability?.model;
     const startedTick = this.monotonicNow();
-    const span = safeStartSpan(this.observability?.telemetry, 'agent.run', { 'run.id': runId, 'run.mode': mode, 'run.purpose': purpose, 'scope.tenant_id': scope.tenantId, 'scope.workspace_id': scope.workspaceId });
+    const span = safeStartSpan(this.observability?.telemetry, 'agent.run', { 'run.id': runId, 'run.mode': mode, 'run.purpose': purpose, 'scope.tenant_id': scope.tenantId, 'scope.workspace_id': scope.workspaceId }, this.observability?.logger);
     try {
       const result = await work(trace, timing, runId);
       const completedAt = this.now().toISOString();
       const latency = this.latency(startedTick, timing, baseTotalMs);
-      const estimatedCost = await estimateRunCost(this.observability?.pricing, model, result.usage, completedAt);
+      const estimatedCost = await estimateRunCost(this.observability?.pricing, model, result.usage, completedAt, this.observability?.logger);
       const completed = succeedRun(started, {
         ...(result.tool !== undefined ? { tool: result.tool } : {}),
         ...(result.tools !== undefined ? { tools: result.tools } : {}),
@@ -544,7 +548,7 @@ export class RunAgentPreviewUseCase {
         completedAt,
       });
       await this.runRepo.save(completed);
-      await recordRunMetricSafely(this.observability?.operations, completed);
+      await recordRunMetricSafely(this.observability?.operations, completed, this.observability?.logger);
       span.setAttribute('run.status', 'succeeded'); span.setAttribute('run.latency_ms', latency.totalMs); span.end();
       return { runId, mode, purpose, ...(sessionId === undefined ? {} : { sessionId }), ...(model !== undefined ? { model } : {}), ...result, latency, ...(estimatedCost !== undefined ? { estimatedCost } : {}), trace };
     } catch (error) {
@@ -580,7 +584,7 @@ export class RunAgentPreviewUseCase {
       const latency = this.latency(startedTick, timing, baseTotalMs);
       const failed = failRun(started, { trace: sanitizeRunTrace(trace), failure, latency, completedAt: this.now().toISOString() });
       await this.runRepo.save(failed);
-      await recordRunMetricSafely(this.observability?.operations, failed);
+      await recordRunMetricSafely(this.observability?.operations, failed, this.observability?.logger);
       span.setAttribute('run.status', 'failed'); span.setAttribute('run.latency_ms', latency.totalMs); span.end(error);
       throw new RunFailedError(runId, error);
     }
@@ -932,7 +936,7 @@ export class RunAgentPreviewUseCase {
 
   /** ランタイムハーネスの組み込みツール実行。workspace_* と同じく tool-call / tool-result をトレースへ残す。 */
   private async executeHarnessToolTimed(runtime: AgentRuntimeHarnessRuntime, call: ModelToolCall, trace: RunTraceEvent[], timing: RunTiming): Promise<ModelMessage> {
-    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'tool.execute', { 'tool.name': call.name, 'tool.kind': 'runtime-harness' }); let failure: unknown;
+    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'tool.execute', { 'tool.name': call.name, 'tool.kind': 'runtime-harness' }, this.observability?.logger); let failure: unknown;
     try {
       trace.push({ sequence: trace.length + 1, kind: 'tool-call', name: call.name, arguments: call.arguments });
       const result = await runtime.execute(call);
@@ -948,7 +952,7 @@ export class RunAgentPreviewUseCase {
    * サーバー側の実行エラー（isError:true）も接続失敗も、内容をツール結果としてモデルへ返しRunを続ける。
    */
   private async executeMcpToolTimed(loop: LoopContext, call: ModelToolCall, trace: RunTraceEvent[], timing: RunTiming): Promise<ModelMessage> {
-    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'tool.execute', { 'tool.name': call.name, 'tool.kind': 'mcp' }); let failure: unknown;
+    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'tool.execute', { 'tool.name': call.name, 'tool.kind': 'mcp' }, this.observability?.logger); let failure: unknown;
     try {
       trace.push({ sequence: trace.length + 1, kind: 'tool-call', name: call.name, arguments: call.arguments });
       const result = await loop.mcp.execute(call, loop.signal);
@@ -960,21 +964,21 @@ export class RunAgentPreviewUseCase {
   }
 
   private async completeModel(request: Parameters<ModelProviderPort['complete']>[0], timing: RunTiming, signal?: AbortSignal): Promise<ModelCompletion> {
-    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'model.complete', { 'model.provider': this.observability?.model?.provider ?? 'unknown', 'model.name': this.observability?.model?.model ?? 'unknown' }); let failure: unknown;
+    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'model.complete', { 'model.provider': this.observability?.model?.provider ?? 'unknown', 'model.name': this.observability?.model?.model ?? 'unknown' }, this.observability?.logger); let failure: unknown;
     try { return await this.model.complete(request, signal); }
     catch (error) { failure = error; throw error; }
     finally { timing.modelMs += Math.max(0, this.monotonicNow() - started); span.end(failure); }
   }
 
   private async delegateTimed(sub: ResolvedSubAgent, call: ModelToolCall, trace: RunTraceEvent[], timing: RunTiming, ctx: NodeContext, signal?: AbortSignal): Promise<ModelMessage> {
-    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'tool.execute', { 'tool.name': call.name, 'tool.kind': 'agent-delegation' }); let failure: unknown;
+    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'tool.execute', { 'tool.name': call.name, 'tool.kind': 'agent-delegation' }, this.observability?.logger); let failure: unknown;
     try { return await this.delegate(sub, call, trace, ctx, signal); }
     catch (error) { failure = error; throw error; }
     finally { timing.toolMs += Math.max(0, this.monotonicNow() - started); span.end(failure); }
   }
 
   private async executeToolTimed(tool: Tool, call: ModelToolCall, trace: RunTraceEvent[], timing: RunTiming, ctx: NodeContext, agent?: RunRecord['agent']): Promise<ModelMessage> {
-    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'tool.execute', { 'tool.name': call.name, 'tool.kind': 'etl' }); let failure: unknown;
+    const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'tool.execute', { 'tool.name': call.name, 'tool.kind': 'etl' }, this.observability?.logger); let failure: unknown;
     try { return await this.executeTool(tool, call, trace, ctx, agent); }
     catch (error) { failure = error; throw error; }
     finally { timing.toolMs += Math.max(0, this.monotonicNow() - started); span.end(failure); }

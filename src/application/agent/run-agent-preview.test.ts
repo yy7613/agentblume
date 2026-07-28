@@ -75,6 +75,8 @@ class MemoryRuns implements RunRepository {
   async save(record: RunRecord): Promise<void> { this.records.set(record.runId, structuredClone(record)); }
   async find(_scope: TenantScope, runId: string): Promise<RunRecord | null> { return this.records.get(runId) ?? null; }
   async list(): Promise<RunRecord[]> { return [...this.records.values()]; }
+  async listAllByStatus(status: RunRecord['status']): Promise<RunRecord[]> { return [...this.records.values()].filter((record) => record.status === status); }
+  async listScopes(): Promise<TenantScope[]> { return [...new Map([...this.records.values()].map((record) => [`${record.scope.tenantId} ${record.scope.workspaceId}`, record.scope])).values()]; }
 }
 
 class StaticAgents implements AgentRepository {
@@ -1061,6 +1063,24 @@ describe('RunAgentPreviewUseCase tool approval', () => {
     expect(resumed.response).toBe('Alice: 42');
     expect(resolved).toBe(true);
     expect(runs.records.get(paused.runId)?.status).toBe('succeeded');
+  });
+
+  it('モデル設定の解決に失敗しても実行は続け、握り潰さずloggerへ残す', async () => {
+    const warns: { message: string; context?: Record<string, unknown> }[] = [];
+    const logger = { info: () => {}, warn: (message: string, context?: Record<string, unknown>) => { warns.push({ message, ...(context === undefined ? {} : { context: { ...context } }) }); }, error: () => {} };
+    const runs = new MemoryRuns();
+    const stale = { provider: 'openai-compatible', model: 'stale', modelConfigHash: 'stale' };
+    const usecase = harnessUseCase({
+      agent: approvalAgent(), model: new QueueModel([stop('done')]), tool: makeTool('session-write'), runs,
+      observability: { model: stale, resolveModel: async () => { throw new Error('key file changed'); }, logger },
+    });
+
+    const run = await usecase.executeSaved({ scope, agentId: 'approver', message: 'go', mode: 'preview' });
+
+    expect(run.response).toBe('done');
+    // 実行は止めず、記録は既知の指紋へフォールバックする。
+    expect(runs.records.get(run.runId)?.model).toEqual(stale);
+    expect(warns).toEqual([{ message: 'model settings could not be resolved; falling back to the last known snapshot', context: { reason: 'key file changed' } }]);
   });
 
   it('reject再開は拒否結果をモデルへ渡し、代替案で完走できる', async () => {

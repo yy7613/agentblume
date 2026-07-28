@@ -28,6 +28,9 @@ import { SqliteRunRepository } from '../adapters/storage/sqlite-run-repository';
 import type { ToolGraph } from '../domain/etl/graph';
 import { ToolValidationError } from '../domain/tool/errors';
 import type { TenantScope } from '../domain/tool/ids';
+import { beginFactoryRun, DEFAULT_FACTORY_OPTIONS, startFactoryRun, type FactoryRun } from '../domain/factory/factory-run';
+import { createExperiment, startExperiment } from '../domain/evaluation/experiment';
+import { SemVer } from '../domain/tool/semver';
 import { createApp, resolveDatabasePath } from './root';
 import type { App } from './root';
 
@@ -427,6 +430,76 @@ describe('createApp', () => {
         const unguarded = new ReviewProposalUseCase(failingProposals, app.saveWikiPage, app.skillRepo, app.saveSkill, new NoopUnitOfWork());
         await expect(unguarded.approve(scope, 'proposal-1')).rejects.toThrow('proposal store crashed');
         expect(await app.wikiRepo.find(scope, 'page-1')).not.toBeNull();
+      } finally {
+        app.close();
+      }
+    });
+  });
+
+  describe('起動時の孤児Run回収（RecoverInterruptedRuns）', () => {
+    /** 未実行の `queued` Factory Run と、固まった `running` Factory Run を1件ずつ入れる。 */
+    async function seedInterrupted(app: App): Promise<void> {
+      const make = (id: string): FactoryRun => startFactoryRun({
+        id, scope,
+        input: { goal: { goal: '売上の質問に答える', language: 'ja' }, dataSourceIds: [], options: DEFAULT_FACTORY_OPTIONS },
+        startedAt: '2026-07-28T08:00:00.000Z',
+      });
+      await app.factoryRunRepo.save(beginFactoryRun(make('stuck')));
+      await app.factoryRunRepo.save(make('queued'));
+      await app.experimentRepo.create(startExperiment(createExperiment({
+        id: 'stuck-experiment', scope, target: { agentId: 'agent', version: SemVer.of(1, 0, 0) },
+        dataset: { id: 'set', version: SemVer.of(1, 0, 0) }, evaluatorProfile: { id: 'profile', version: SemVer.of(1, 0, 0) },
+        repetitions: 1, status: 'queued', snapshot: { provider: 'p', model: 'm', modelConfigHash: 'h' },
+        progress: { completed: 0, total: 1 }, createdAt: '2026-07-28T08:00:00.000Z',
+      }), '2026-07-28T08:00:01.000Z'));
+    }
+
+    it('createApp 自身は状態を書き換えない（回収はエントリポイントが明示的に呼ぶ）', async () => {
+      const app = createApp({ profile: 'test' });
+      try {
+        await seedInterrupted(app);
+        // 同じ保存先で App をもう1つ作っても、既存Runの状態は変わらない。
+        expect(await app.factoryRunRepo.find(scope, 'stuck')).toMatchObject({ status: 'running' });
+        expect(await app.experimentRepo.find(scope, 'stuck-experiment')).toMatchObject({ status: 'running' });
+      } finally {
+        app.close();
+      }
+    });
+
+    it('recoverInterruptedRuns が配線済みのリポジトリとワーカーへ届く', async () => {
+      const app = createApp({ profile: 'test' });
+      try {
+        await seedInterrupted(app);
+
+        const summary = await app.recoverInterruptedRuns.execute();
+
+        expect(summary).toMatchObject({ factoryRunsFailed: 1, factoryRunsRequeued: 1, experimentsInterrupted: 1 });
+        // running は retry できる終端（failed）へ、queued はそのまま（ワーカーが拾い直す）。
+        expect(await app.factoryRunRepo.find(scope, 'stuck')).toMatchObject({ status: 'failed' });
+        // 再投入された `queued` は**本物のワーカー**が拾って動き出す（配線が届いている証拠）。
+        expect(await app.factoryRunRepo.find(scope, 'queued')).not.toMatchObject({ status: 'queued' });
+        expect(await app.experimentRepo.find(scope, 'stuck-experiment')).toMatchObject({ status: 'interrupted', error: { code: 'PROCESS_INTERRUPTED' } });
+      } finally {
+        app.close();
+      }
+    });
+
+    it('errorLogger は test プロファイルで無音、明示すればそれを使う', async () => {
+      const warns: string[] = [];
+      const app = createApp({ profile: 'test', errorLogger: { info: () => {}, warn: (message) => { warns.push(message); }, error: () => {} } });
+      try {
+        // 再投入で本物のワーカーが動き出すと非同期のログが混ざるため、ここは running のRunだけを置く。
+        await app.factoryRunRepo.save(beginFactoryRun(startFactoryRun({
+          id: 'stuck', scope,
+          input: { goal: { goal: '売上の質問に答える', language: 'ja' }, dataSourceIds: [], options: DEFAULT_FACTORY_OPTIONS },
+          startedAt: '2026-07-28T08:00:00.000Z',
+        })));
+        app.factoryRunRepo.save = async (): Promise<void> => { throw new Error('disk is full'); };
+
+        const summary = await app.recoverInterruptedRuns.execute();
+
+        expect(summary.failures).toBe(1);
+        expect(warns).toEqual(['failed to recover factory run']);
       } finally {
         app.close();
       }

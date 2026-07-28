@@ -1,5 +1,5 @@
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
-import { redactRun, type RunRecord } from '../../domain/run/run';
+import { redactRun, type RunRecord, type RunStatus } from '../../domain/run/run';
 import type { ListRunsOptions, RunRepository, RunRetentionOptions, RunRetentionResult } from '../../domain/run/run-repository';
 import { deserializeRun, serializeRun } from '../../domain/run/serialization';
 import type { TenantScope } from '../../domain/tool/ids';
@@ -35,6 +35,15 @@ export class SqliteRunRepository extends SqliteRepositoryBase implements RunRepo
       ? this.db.prepare(`SELECT record_json FROM runs WHERE tenant_id = ? AND workspace_id = ? ORDER BY started_at DESC LIMIT ?`).all(scope.tenantId, scope.workspaceId, limit)
       : this.db.prepare(`SELECT record_json FROM runs WHERE tenant_id = ? AND workspace_id = ? AND status = ? ORDER BY started_at DESC LIMIT ?`).all(scope.tenantId, scope.workspaceId, options.status, limit);
     return rows.map((row) => fromJson(row['record_json']));
+  }
+
+  async listAllByStatus(status: RunStatus): Promise<RunRecord[]> {
+    return this.db.prepare(`SELECT record_json FROM runs WHERE status = ? ORDER BY started_at ASC`).all(status).map((row) => fromJson(row['record_json']));
+  }
+
+  async listScopes(): Promise<TenantScope[]> {
+    return this.db.prepare(`SELECT DISTINCT tenant_id, workspace_id FROM runs ORDER BY tenant_id, workspace_id`).all()
+      .map((row) => ({ tenantId: String(row['tenant_id']), workspaceId: String(row['workspace_id']) }));
   }
 
   async applyRetention(scope: TenantScope, options: RunRetentionOptions): Promise<RunRetentionResult> {

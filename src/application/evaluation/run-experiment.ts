@@ -18,6 +18,7 @@ import { JudgeEvaluationError } from '../../domain/evaluation/errors';
 import type { ExperimentModelSnapshot, JudgeEvaluationRecord } from '../../domain/evaluation/experiment';
 import type { TelemetryPort } from '../operations/telemetry';
 import { safeStartSpan } from '../operations/telemetry';
+import { logSwallowed, type LoggerPort } from '../operations/logger';
 
 /**
  * judge スロットの配線。`resolveSnapshot` は「これから実際に使う設定」を**評価の前に**解決する。
@@ -59,6 +60,7 @@ export class RunExperimentUseCase {
     private readonly delay: Delay = defaultDelay,
     private readonly judgeOptions?: JudgeSlotOptions,
     private readonly telemetry?: TelemetryPort,
+    private readonly logger?: LoggerPort,
   ) {}
 
   async execute(scope: TenantScope, id: string, signal?: AbortSignal): Promise<Experiment> {
@@ -88,7 +90,7 @@ export class RunExperimentUseCase {
   }
 
   private async executeWithRetry(experiment: Experiment, entry: EvaluationCase, repetition: number, profile: EvaluatorProfile, signal?: AbortSignal): Promise<ExperimentCaseResult> {
-    const span = safeStartSpan(this.telemetry, 'evaluation.case', { 'experiment.id': experiment.id, 'evaluation.case_id': entry.id, 'evaluation.case_kind': entry.kind, 'evaluation.repetition': repetition }); let failure: unknown;
+    const span = safeStartSpan(this.telemetry, 'evaluation.case', { 'experiment.id': experiment.id, 'evaluation.case_id': entry.id, 'evaluation.case_kind': entry.kind, 'evaluation.repetition': repetition }, this.logger); let failure: unknown;
     try { return await this.executeWithRetryInner(experiment, entry, repetition, profile, signal); }
     catch (error) { failure = error; throw error; }
     finally { span.end(failure); }
@@ -156,8 +158,10 @@ export class RunExperimentUseCase {
     const options = this.judgeOptions;
     if (options === undefined) return UNCONFIGURED_JUDGE;
     if (options.resolveSnapshot !== undefined) {
+      // 設定が壊れていても評価は続ける。指紋は同期値へフォールバックする。
+      // ただし無音にはしない: 記録される指紋が実際に使ったモデルとずれ続けるのは追跡不能な事故になる。
       try { return await options.resolveSnapshot(); }
-      catch { /* 設定が壊れていても評価は続ける。指紋は同期値へフォールバックする。 */ }
+      catch (error) { logSwallowed(this.logger, 'judge model settings could not be resolved; falling back to the last known snapshot', error); }
     }
     return options.evaluator.snapshot();
   }

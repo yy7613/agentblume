@@ -1,5 +1,5 @@
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
-import type { HarnessRunRecord } from '../../domain/harness/harness-run';
+import type { HarnessRunRecord, HarnessRunStatus } from '../../domain/harness/harness-run';
 import type { HarnessRunRepository } from '../../domain/harness/harness-run-repository';
 import type { TenantScope } from '../../domain/tool/ids';
 
@@ -17,5 +17,8 @@ export class SqliteHarnessRunRepository extends SqliteRepositoryBase implements 
       ? this.db.prepare(`SELECT record_json FROM harness_runs WHERE tenant_id = ? AND workspace_id = ? ORDER BY started_at DESC LIMIT ?`).all(scope.tenantId, scope.workspaceId, options?.limit ?? 100)
       : this.db.prepare(`SELECT record_json FROM harness_runs WHERE tenant_id = ? AND workspace_id = ? AND status = ? ORDER BY started_at DESC LIMIT ?`).all(scope.tenantId, scope.workspaceId, options.status, options?.limit ?? 100);
     return rows.map((row) => fromJson(row['record_json']));
+  }
+  async listAllByStatus(status: HarnessRunStatus): Promise<HarnessRunRecord[]> {
+    return this.db.prepare(`SELECT record_json FROM harness_runs WHERE status = ? ORDER BY started_at ASC`).all(status).map((row) => fromJson(row['record_json']));
   }
 }

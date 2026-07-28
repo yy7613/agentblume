@@ -37,6 +37,17 @@ describe('InProcessFactoryWorker', () => {
     worker.shutdown();
   });
 
+  it('握り潰した失敗をloggerへ残す（無音だと「キューは回っているのに何も進まない」が見えない）', async () => {
+    const warns: { message: string; context?: Record<string, unknown> }[] = [];
+    const logger = { info: () => {}, warn: (message: string, context?: Record<string, unknown>) => { warns.push({ message, ...(context === undefined ? {} : { context: { ...context } }) }); }, error: () => {} };
+    const execute = vi.fn().mockRejectedValue(new Error('run record could not be saved'));
+    const worker = new InProcessFactoryWorker(runner(execute), logger);
+    worker.enqueue(scope, 'run');
+    await tick(); await tick();
+    expect(warns).toEqual([{ message: 'factory run ended with an unhandled error', context: { runId: 'run', reason: 'run record could not be saved' } }]);
+    worker.shutdown();
+  });
+
   describe('drainInFlight（shutdown猶予）', () => {
     it('実行中が無ければ即trueで返る', async () => {
       const worker = new InProcessFactoryWorker(runner(vi.fn()));

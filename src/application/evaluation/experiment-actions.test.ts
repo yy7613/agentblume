@@ -17,7 +17,7 @@ const scope = { tenantId: 't', workspaceId: 'w' }; const v = SemVer.of(1, 0, 0);
 const makeExperiment = () => createExperiment({ id: 'exp', scope, target: { agentId: 'agent', version: v }, dataset: { id: 'set', version: v }, evaluatorProfile: { id: 'profile', version: v }, repetitions: 1, status: 'queued', snapshot: { provider: 'test', model: 'model', modelConfigHash: 'hash' }, progress: { completed: 0, total: 1 }, createdAt: 'created' });
 class Repo implements ExperimentRepository {
   value: Experiment | null = null; results: ExperimentCaseResult[] = [];
-  async create(value: Experiment): Promise<void> { this.value = value; } async update(value: Experiment): Promise<void> { this.value = value; } async find(): Promise<Experiment | null> { return this.value; } async list(): Promise<Experiment[]> { return this.value === null ? [] : [this.value]; } async saveCaseResult(value: ExperimentCaseResult): Promise<void> { this.results.push(value); } async listCaseResults(): Promise<ExperimentCaseResult[]> { return this.results; } interruptRunning(): number { return 0; }
+  async create(value: Experiment): Promise<void> { this.value = value; } async update(value: Experiment): Promise<void> { this.value = value; } async find(): Promise<Experiment | null> { return this.value; } async list(): Promise<Experiment[]> { return this.value === null ? [] : [this.value]; } async saveCaseResult(value: ExperimentCaseResult): Promise<void> { this.results.push(value); } async listCaseResults(): Promise<ExperimentCaseResult[]> { return this.results; } async listAllByStatus(): Promise<Experiment[]> { return []; }
 }
 
 describe('experiment action use cases', () => {

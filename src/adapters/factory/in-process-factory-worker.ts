@@ -4,6 +4,7 @@
  */
 import type { RunFactoryUseCase } from '../../application/factory/run-factory';
 import type { FactoryWorkerPort } from '../../application/factory/factory-worker';
+import { logSwallowed, type LoggerPort } from '../../application/operations/logger';
 import { tenantKey, type TenantScope } from '../../domain/tool/ids';
 import { IdleLatch } from '../worker/idle-latch';
 
@@ -18,7 +19,7 @@ export class InProcessFactoryWorker implements FactoryWorkerPort {
   private draining = false;
   private stopped = false;
 
-  constructor(private readonly runner: RunFactoryUseCase) {}
+  constructor(private readonly runner: RunFactoryUseCase, private readonly logger?: LoggerPort) {}
 
   enqueue(scope: TenantScope, runId: string): void {
     if (this.stopped) return;
@@ -68,7 +69,10 @@ export class InProcessFactoryWorker implements FactoryWorkerPort {
         const controller = new AbortController();
         this.active.set(item.key, controller);
         try { await this.runner.execute(item.scope, item.id, controller.signal); }
-        catch { /* RunFactory persists terminal failure; worker keeps processing the queue. */ }
+        // RunFactory persists terminal failure; worker keeps processing the queue.
+        // ここまで例外が漏れてくるのは**Runの永続化自体が壊れている**ときで、無音だと
+        // 「キューが動いているのに何も進まない」状態になる。握り潰す方針は保ったままログへ残す。
+        catch (error) { logSwallowed(this.logger, 'factory run ended with an unhandled error', error, { runId: item.id }); }
         // 実行中が空になった合図は drainInFlight の待ち合わせに使う（待っていなければ no-op）。
         finally { this.active.delete(item.key); this.known.delete(item.key); if (this.active.size === 0) this.idle.release(); }
       }

@@ -5,6 +5,7 @@ import type { OperationsRepository } from '../../domain/operations/operations-re
 import { RunNotFoundError } from '../../domain/run/errors';
 import type { RunRepository } from '../../domain/run/run-repository';
 import type { TenantScope } from '../../domain/tool/ids';
+import { logSwallowed, type LoggerPort } from './logger';
 
 export interface SubmitRunFeedbackInput {
   readonly scope: TenantScope;
@@ -16,7 +17,7 @@ export interface SubmitRunFeedbackInput {
 }
 
 export class SubmitRunFeedbackUseCase {
-  constructor(private readonly runs: RunRepository, private readonly operations: OperationsRepository, private readonly makeId: () => string = randomUUID, private readonly now: () => Date = () => new Date()) {}
+  constructor(private readonly runs: RunRepository, private readonly operations: OperationsRepository, private readonly makeId: () => string = randomUUID, private readonly now: () => Date = () => new Date(), private readonly logger?: LoggerPort) {}
 
   async execute(input: SubmitRunFeedbackInput): Promise<RunFeedback> {
     const run = await this.runs.find(input.scope, input.runId);
@@ -35,7 +36,8 @@ export class SubmitRunFeedbackUseCase {
     };
     await this.operations.saveFeedback(record);
     if (existing === null) {
-      try { await this.operations.recordFeedbackMetric(input.scope, timestamp); } catch { /* aggregate failure is non-fatal */ }
+      // 集計の失敗でフィードバック本体を落とさない（本体は既に保存済み）。痕跡だけ残す。
+      try { await this.operations.recordFeedbackMetric(input.scope, timestamp); } catch (error) { logSwallowed(this.logger, 'feedback metric was not recorded', error, { runId: input.runId }); }
     }
     return record;
   }

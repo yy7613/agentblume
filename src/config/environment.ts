@@ -35,9 +35,19 @@ export const DEFAULT_HOST = '127.0.0.1';
  *
  * Agent実行は分単位かかることもあるが、`Ctrl+C` が10秒以上戻ってこないのは操作として耐えがたい。
  * 「短いジョブなら待ちきれる」ところに置き、長いジョブは従来どおり abort する。
- * ジョブの永続化・再起動復旧が入れば、この猶予は短くできる。
+ * 猶予を過ぎて中断されたジョブは、次の起動で `RecoverInterruptedRunsUseCase` が終端状態へ確定させる
+ * （Factory Runは `failed` → retry、実験は `interrupted` → resume）。取り残しは残らないが、
+ * **途中経過は失われる**ので、待てるものは待つ価値がある。
  */
 export const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
+/**
+ * retention（保持期限にもとづく削除・伏せ字化）を自動実行する間隔（ミリ秒）。既定は24時間。
+ *
+ * 保持期限は日単位の設定なので、これ以上細かく回しても削除対象は増えない。
+ * `0` を指定すると自動実行を無効にする（掃除は `POST /operations/retention/apply` の手動実行だけになる）。
+ * 初回は起動直後ではなく1インターバル後に走る（理由は `RetentionScheduler` のコメント）。
+ */
+export const DEFAULT_RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** `public.sales_daily` のような識別子だけを許す（adapters/database/environment-postgres と同じ規則）。 */
 const TABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$/;
@@ -147,6 +157,7 @@ export const environmentSchema = z.object({
   AGENTCONTEXT_SECRET_KEY_PATH: optional(nonEmpty),
   AGENTCONTEXT_UI_ROOT: optional(nonEmpty),
   AGENTCONTEXT_SHUTDOWN_GRACE_MS: optional(nonNegativeInteger),
+  AGENTCONTEXT_RETENTION_INTERVAL_MS: optional(nonNegativeInteger),
   // モデル（main / judge スロットの env 既定）
   LM_STUDIO_BASE_URL: optional(httpUrl),
   LM_STUDIO_MODEL: optional(nonEmpty),
@@ -191,6 +202,7 @@ const EXPECTATIONS: Readonly<Record<string, string>> = {
   AGENTCONTEXT_SECRET_KEY_PATH: '鍵ファイルのパス',
   AGENTCONTEXT_UI_ROOT: 'ビルド済みUI（index.html を含むディレクトリ）のパス',
   AGENTCONTEXT_SHUTDOWN_GRACE_MS: '0以上の整数（ミリ秒・0 は「待たずに中断」）',
+  AGENTCONTEXT_RETENTION_INTERVAL_MS: '0以上の整数（ミリ秒・既定 86400000＝24時間・0 は自動実行を無効化）',
   LM_STUDIO_BASE_URL: 'URL（例 http://127.0.0.1:1234/v1）',
   LM_STUDIO_MODEL: '空でない文字列',
   LM_STUDIO_API_KEY: '空でない・空白や改行を含まない文字列',
@@ -270,6 +282,8 @@ export interface ServerSettings {
   readonly revision: string | undefined;
   /** shutdown時に実行中ジョブの完了を待つ上限（ミリ秒）。 */
   readonly shutdownGraceMs: number;
+  /** retentionの自動実行間隔（ミリ秒）。`0` は自動実行を行わない。 */
+  readonly retentionIntervalMs: number;
   readonly scope: { readonly tenantId: string; readonly workspaceId: string };
 }
 
@@ -283,6 +297,7 @@ export function serverSettings(env: ValidatedEnvironment): ServerSettings {
     uiRootOverride: env.AGENTCONTEXT_UI_ROOT,
     revision: env.AGENTCONTEXT_SOURCE_REVISION,
     shutdownGraceMs: env.AGENTCONTEXT_SHUTDOWN_GRACE_MS ?? DEFAULT_SHUTDOWN_GRACE_MS,
+    retentionIntervalMs: env.AGENTCONTEXT_RETENTION_INTERVAL_MS ?? DEFAULT_RETENTION_INTERVAL_MS,
     scope: {
       tenantId: env.AGENTCONTEXT_TENANT_ID ?? 'local',
       workspaceId: env.AGENTCONTEXT_WORKSPACE_ID ?? 'default',

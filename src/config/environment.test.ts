@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_HOST,
   DEFAULT_PORT,
+  DEFAULT_RETENTION_INTERVAL_MS,
   DEFAULT_SHUTDOWN_GRACE_MS,
   EnvironmentValidationError,
   databaseConnectionsSchema,
@@ -174,8 +175,13 @@ describe('serverSettings', () => {
       uiRootOverride: undefined,
       revision: undefined,
       shutdownGraceMs: DEFAULT_SHUTDOWN_GRACE_MS,
+      retentionIntervalMs: DEFAULT_RETENTION_INTERVAL_MS,
       scope: { tenantId: 'local', workspaceId: 'default' },
     });
+  });
+
+  it('AGENTCONTEXT_RETENTION_INTERVAL_MS=0 は既定値に落ちず「自動実行しない」として通る', () => {
+    expect(serverSettings(validateEnvironment({ AGENTCONTEXT_RETENTION_INTERVAL_MS: '0' })).retentionIntervalMs).toBe(0);
   });
 
   it('AGENTCONTEXT_SHUTDOWN_GRACE_MS=0 は既定値に落ちず「待たない」として通る', () => {
@@ -193,6 +199,7 @@ describe('serverSettings', () => {
       AGENTCONTEXT_TENANT_ID: 'acme',
       AGENTCONTEXT_WORKSPACE_ID: 'ops',
       AGENTCONTEXT_SHUTDOWN_GRACE_MS: '25000',
+      AGENTCONTEXT_RETENTION_INTERVAL_MS: '3600000',
     }));
     expect(settings).toEqual({
       profile: 'test',
@@ -202,6 +209,7 @@ describe('serverSettings', () => {
       uiRootOverride: '/srv/ui',
       revision: 'deadbeef',
       shutdownGraceMs: 25_000,
+      retentionIntervalMs: 3_600_000,
       scope: { tenantId: 'acme', workspaceId: 'ops' },
     });
   });

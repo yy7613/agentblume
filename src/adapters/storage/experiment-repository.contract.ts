@@ -1,5 +1,5 @@
 import { expect } from 'vitest';
-import { createExperiment, createExperimentCaseResult, startExperiment } from '../../domain/evaluation/experiment';
+import { createExperiment, createExperimentCaseResult, interruptExperiment, startExperiment } from '../../domain/evaluation/experiment';
 import type { ExperimentRepository } from '../../domain/evaluation/experiment-repository';
 import { ExperimentConflictError } from '../../domain/evaluation/errors';
 import { SemVer } from '../../domain/tool/semver';
@@ -17,7 +17,11 @@ export async function experimentRepositoryContract(repo: ExperimentRepository): 
   const result = createExperimentCaseResult({ experimentId: 'first', scope, caseId: 'case', caseKind: 'turn', repetition: 1, status: 'succeeded', runIds: ['run'], scores: [], latencyMs: 1, usage: {} });
   await repo.saveCaseResult(result); expect(await repo.listCaseResults(scope, 'first')).toEqual([result]);
   await expect(repo.saveCaseResult(result)).rejects.toBeInstanceOf(ExperimentConflictError);
-  expect(repo.interruptRunning('restart')).toBe(1);
+  // listAllByStatus: 起動時の孤児Run回収が使う横断クエリ。テナント境界を越え、createdAt 昇順で返す。
+  expect((await repo.listAllByStatus('running')).map((item) => item.id)).toEqual(['first']);
+  expect((await repo.listAllByStatus('queued')).map((item) => item.id)).toEqual(['second', 'hidden']);
+  await repo.update(interruptExperiment(running, 'restart'));
   expect(await repo.find(scope, 'first')).toMatchObject({ status: 'interrupted', error: { code: 'PROCESS_INTERRUPTED' } });
+  expect(await repo.listAllByStatus('running')).toEqual([]);
   expect(await repo.find({ tenantId: 'other', workspaceId: 'w' }, 'first')).toBeNull();
 }

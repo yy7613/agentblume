@@ -59,6 +59,11 @@ describe('applyMigrations', () => {
       const indexes = database.handle.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'`).all().map((row) => String(row['name']));
       expect(indexes).toContain('idx_runs_scope_started');
       expect(indexes).toContain('idx_wiki_pages_scope_wiki_updated');
+      // version 2: テナント横断の status 検索（起動時の孤児Run回収）用。
+      expect(indexes).toContain('idx_runs_status');
+      expect(indexes).toContain('idx_harness_runs_status');
+      expect(indexes).toContain('idx_factory_runs_status');
+      expect(indexes).toContain('idx_experiments_status');
     } finally {
       database.close();
     }
