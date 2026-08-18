@@ -36,7 +36,11 @@ import { ConfigError } from '../errors';
 import type { EtlNode, NodeKind, SchemaInference, SchemaIssue } from '../node';
 import { zodMessage } from './zod-error';
 
-/** フィルタ演算子の正準リスト（UI・Tool公開スキーマ・実行時検証が共有する唯一の定義）。 */
+/**
+ * フィルタ演算子の正準リスト（ドメイン・アプリケーション層が共有する定義）。
+ * UI（NodeInspector）は独立レイヤーのため表示用の複製を別途持つ — UI 側テストが
+ * このリストとの一致をピン留めしている。
+ */
 export const FILTER_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull'] as const;
 
 /** フィルタ演算子。 */
@@ -46,6 +50,9 @@ export type FilterOp = (typeof FILTER_OPS)[number];
 export function isFilterOp(value: unknown): value is FilterOp {
   return typeof value === 'string' && (FILTER_OPS as readonly string[]).includes(value);
 }
+
+/** 値を要さない演算子（evaluate が value を参照しない）。application層・UIの値スキップ判定が共有する。 */
+export const VALUELESS_OPS: ReadonlySet<FilterOp> = new Set(['isNull', 'notNull']);
 
 /** 複数条件の結合方法。 */
 export type FilterCombine = 'and' | 'or';
@@ -87,8 +94,8 @@ export interface FilterConditionsConfig {
 /** `filter` の設定。旧形式（単一条件フラット）と新形式（conditions）の両方。 */
 export type FilterConfig = FilterCondition | FilterConditionsConfig;
 
-/** 順序比較を要する演算子（列型 number|date が必須）。 */
-const ORDER_OPS: ReadonlySet<FilterOp> = new Set(['gt', 'gte', 'lt', 'lte']);
+/** 順序比較を要する演算子（列型 number|date が必須）。application層のプロンプト生成・検証が共有する。 */
+export const ORDER_OPS: ReadonlySet<FilterOp> = new Set(['gt', 'gte', 'lt', 'lte']);
 
 const cellSchema: z.ZodType<Cell> = z.union([
   z.string(),
@@ -195,14 +202,18 @@ function conditionIssues(input: Schema, condition: FilterCondition): SchemaIssue
     }];
   }
   const issues: SchemaIssue[] = [];
-  if (ORDER_OPS.has(condition.op) && col.type !== 'number' && col.type !== 'date') {
+  const binding = condition.opBinding;
+  // 実行時にどの許可演算子が選ばれても成立するよう、順序演算子を許すなら列型 number|date を要求する。
+  const orderable = binding === undefined ? [] : (binding.allowed ?? FILTER_OPS).filter((op) => ORDER_OPS.has(op));
+  const orderableIssue = orderable.length > 0 && col.type !== 'number' && col.type !== 'date';
+  // 静的な op の列型エラーは、opBinding の orderable エラーが出るとき同根（op ∈ orderable）なので統合して1メッセージにする。
+  if (!orderableIssue && ORDER_OPS.has(condition.op) && col.type !== 'number' && col.type !== 'date') {
     issues.push({
       severity: 'error',
       message: `filter: operator '${condition.op}' requires column type number|date, but '${condition.column}' is '${col.type}'`,
       column: condition.column,
     });
   }
-  const binding = condition.opBinding;
   if (binding !== undefined) {
     // 既定演算子（設計時の op）は許可リストの中から選ぶ。実行時省略のフォールバック先でもあるため。
     if (binding.allowed !== undefined && !binding.allowed.includes(condition.op)) {
@@ -212,9 +223,7 @@ function conditionIssues(input: Schema, condition: FilterCondition): SchemaIssue
         column: condition.column,
       });
     }
-    // 実行時にどの許可演算子が選ばれても成立するよう、順序演算子を許すなら列型 number|date を要求する。
-    const orderable = (binding.allowed ?? FILTER_OPS).filter((op) => ORDER_OPS.has(op));
-    if (orderable.length > 0 && col.type !== 'number' && col.type !== 'date') {
+    if (orderableIssue) {
       issues.push({
         severity: 'error',
         message: `filter: opBinding on '${condition.column}' allows operator(s) ${orderable.join('|')} which require column type number|date, but '${condition.column}' is '${col.type}'; restrict opBinding.allowed`,
@@ -285,10 +294,33 @@ export interface OperatorBindingSite {
   readonly field: string;
   /** フィルタ対象の列名（未設定の config では空文字）。 */
   readonly column: string;
-  /** Agent が選べる演算子（`allowed` 省略時は全演算子へ展開済み）。 */
+  /** Agent が選べる演算子（`allowed` 省略時は全演算子へ展開済み。未知の値は除去済み）。 */
   readonly allowed: readonly FilterOp[];
   /** 設計時の既定演算子（nullable 引数が実行時に省略されたときのフォールバック）。 */
   readonly defaultOp?: FilterOp;
+  /** 同じ条件が valueBinding も持つ場合、その参照先 Agent 引数名（isNull/notNull 許可時の nullable 検証に使う）。 */
+  readonly valueField?: string;
+}
+
+/** valueBinding を持つ条件1つ分の情報（opBinding 側の `operatorBindingsOf` と対称）。 */
+export interface ValueBindingSite {
+  /** バインド先の Agent 引数名。 */
+  readonly field: string;
+  /** フィルタ対象の列名（未設定の config では空文字）。 */
+  readonly column: string;
+}
+
+/** 条件の生データから valueBinding の field を取り出す（形が壊れていれば undefined）。 */
+function valueFieldOf(condition: { valueBinding?: { source?: unknown; field?: unknown } }): string | undefined {
+  const binding = condition.valueBinding;
+  return binding?.source === 'agent-input' && typeof binding.field === 'string' && binding.field !== '' ? binding.field : undefined;
+}
+
+/** 未検証の filter config（旧フラット形式 / 新 conditions 形式）を条件の生データ配列へ正規化する。 */
+function rawConditionsOf(config: unknown): Record<string, unknown>[] {
+  const conditions = (config as { conditions?: unknown } | null)?.conditions;
+  const sources = Array.isArray(conditions) ? conditions : [config];
+  return sources.map((source) => (source ?? {}) as Record<string, unknown>);
 }
 
 /**
@@ -296,22 +328,81 @@ export interface OperatorBindingSite {
  * 実行時（`graphWithArguments`）に演算子が差し替わる対象と同じ集合を返す。
  */
 export function operatorBindingsOf(config: unknown): OperatorBindingSite[] {
-  const conditions = (config as { conditions?: unknown } | null)?.conditions;
-  const sources = Array.isArray(conditions) ? conditions : [config];
   const sites: OperatorBindingSite[] = [];
-  for (const source of sources) {
-    const condition = (source ?? {}) as { column?: unknown; op?: unknown; opBinding?: { source?: unknown; field?: unknown; allowed?: unknown } };
+  for (const raw of rawConditionsOf(config)) {
+    const condition = raw as { column?: unknown; op?: unknown; opBinding?: { source?: unknown; field?: unknown; allowed?: unknown }; valueBinding?: { source?: unknown; field?: unknown } };
     const binding = condition.opBinding;
     if (binding?.source !== 'agent-input' || typeof binding.field !== 'string' || binding.field === '') continue;
     const allowed = Array.isArray(binding.allowed) && binding.allowed.length > 0
       ? binding.allowed.filter(isFilterOp)
       : FILTER_OPS;
+    const valueField = valueFieldOf(condition);
     sites.push({
       field: binding.field,
       column: typeof condition.column === 'string' ? condition.column : '',
       allowed,
       ...(isFilterOp(condition.op) ? { defaultOp: condition.op } : {}),
+      ...(valueField === undefined ? {} : { valueField }),
     });
   }
   return sites;
+}
+
+/**
+ * 未検証の filter config から valueBinding を持つ条件を集める。実行時に value が差し替わる対象と
+ * 同じ集合を、保存検証（SaveTool）と Factory の引数消費チェックが共有する。
+ */
+export function valueBindingsOf(config: unknown): ValueBindingSite[] {
+  const sites: ValueBindingSite[] = [];
+  for (const raw of rawConditionsOf(config)) {
+    const condition = raw as { column?: unknown; valueBinding?: { source?: unknown; field?: unknown } };
+    const field = valueFieldOf(condition);
+    if (field === undefined) continue;
+    sites.push({ field, column: typeof condition.column === 'string' ? condition.column : '' });
+  }
+  return sites;
+}
+
+/** 同一 field をバインドする全条件を集約した、演算子引数1つ分の要約。 */
+export interface OperatorArgumentSummary {
+  /** Agent 引数名。 */
+  readonly field: string;
+  /** この引数が演算子を供給する列（重複排除・出現順）。 */
+  readonly columns: readonly string[];
+  /** 全条件の許可リストの積集合（FILTER_OPS の順序。空なら引数として成立しない）。 */
+  readonly allowed: readonly FilterOp[];
+  /** 全条件で一致する場合のみの既定演算子。 */
+  readonly defaultOp?: FilterOp;
+  /** 既定演算子が条件間で不一致か（不一致は保存時に拒否する対象）。 */
+  readonly defaultOpMixed: boolean;
+}
+
+/**
+ * 複数 filter ノードの config 群から、演算子引数を field 単位に集約する。
+ * 保存検証（積集合非空・既定演算子一致）、Tool 公開スキーマの enum、実行時の演算子検証が
+ * この1つの集約を共有し、「保存が通れば公開 enum は非空で、enum 内の演算子は必ず実行できる」
+ * という不変条件を1か所で定義する。
+ */
+export function operatorArgumentSummaries(configs: readonly unknown[]): OperatorArgumentSummary[] {
+  const byField = new Map<string, OperatorBindingSite[]>();
+  for (const config of configs) {
+    for (const site of operatorBindingsOf(config)) {
+      const existing = byField.get(site.field);
+      if (existing === undefined) byField.set(site.field, [site]);
+      else existing.push(site);
+    }
+  }
+  return [...byField.entries()].map(([field, sites]) => {
+    const allowed = FILTER_OPS.filter((op) => sites.every((site) => site.allowed.includes(op)));
+    const columns = [...new Set(sites.map((site) => site.column).filter((column) => column !== ''))];
+    const defaults = new Set(sites.map((site) => site.defaultOp));
+    const uniform = defaults.size === 1 ? sites[0]?.defaultOp : undefined;
+    return {
+      field,
+      columns,
+      allowed,
+      ...(uniform === undefined ? {} : { defaultOp: uniform }),
+      defaultOpMixed: defaults.size > 1,
+    };
+  });
 }

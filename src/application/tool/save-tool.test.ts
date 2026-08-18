@@ -219,6 +219,138 @@ describe('SaveToolUseCase', () => {
       .resolves.toMatchObject({ inputSchema: { columns: [{ name: 'scoreOp' }] } });
   });
 
+  it('opBindingのfieldが欠落または空文字なら保存を拒否する（F7）', async () => {
+    const { usecase, repo } = makeSut();
+    const inputSchema = { columns: [{ name: 'scoreOp', type: 'string' as const, nullable: false }] };
+    const missingFieldGraph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42 }] } },
+        { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, opBinding: { source: 'agent-input' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    const emptyFieldGraph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42 }] } },
+        { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, opBinding: { source: 'agent-input', field: '' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph: missingFieldGraph, inputSchema })))
+      .rejects.toThrow('SaveTool: operator binding is missing its input field');
+    await expect(usecase.execute(makeInput({ internalId: 'empty-field', graph: emptyFieldGraph, inputSchema })))
+      .rejects.toThrow('SaveTool: operator binding is missing its input field');
+    expect(repo.size).toBe(0);
+  });
+
+  it('valueBindingのfieldが空文字でも専用エラーで保存を拒否する（opBinding側と対称）', async () => {
+    const { usecase, repo } = makeSut();
+    const inputSchema = { columns: [{ name: 'minimumScore', type: 'number' as const, nullable: false }] };
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42 }] } },
+        { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: '' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph, inputSchema })))
+      .rejects.toThrow('SaveTool: value binding is missing its input field');
+    expect(repo.size).toBe(0);
+  });
+
+  it('同一fieldを比較値と演算子の両方にバインドしたら保存を拒否し、別fieldなら保存できる（F2）', async () => {
+    const { usecase, repo } = makeSut();
+    const sharedGraph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ region: 'Tokyo' }] } },
+        { id: 'filter', type: 'filter', config: { column: 'region', op: 'eq', value: 'Tokyo', valueBinding: { source: 'agent-input', field: 'arg' }, opBinding: { source: 'agent-input', field: 'arg', allowed: ['eq', 'neq'] } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph: sharedGraph, inputSchema: { columns: [{ name: 'arg', type: 'string', nullable: false }] } })))
+      .rejects.toThrow("SaveTool: argument 'arg' is bound as both a comparison value and an operator; declare two separate arguments");
+    expect(repo.size).toBe(0);
+
+    const separateSchema = { columns: [
+      { name: 'regionValue', type: 'string' as const, nullable: false },
+      { name: 'regionOp', type: 'string' as const, nullable: false },
+    ] };
+    const separateGraph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ region: 'Tokyo' }] } },
+        { id: 'filter', type: 'filter', config: { column: 'region', op: 'eq', value: 'Tokyo', valueBinding: { source: 'agent-input', field: 'regionValue' }, opBinding: { source: 'agent-input', field: 'regionOp', allowed: ['eq', 'neq'] } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: separateSchema, sample: { regionValue: 'Tokyo', regionOp: 'eq' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ internalId: 'separate-fields', graph: separateGraph, inputSchema: separateSchema })))
+      .resolves.toMatchObject({ inputSchema: { columns: [{ name: 'regionValue' }, { name: 'regionOp' }] } });
+  });
+
+  it('isNull/notNull許可のopBindingと同条件のvalue引数が非nullableなら保存を拒否する（F11）', async () => {
+    const { usecase, repo } = makeSut();
+    const graphWith = (allowed: readonly string[], schema: { columns: readonly { name: string; type: 'string'; nullable: boolean }[] }): ToolGraph => ({
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ region: 'Tokyo' }] } },
+        { id: 'filter', type: 'filter', config: { column: 'region', op: 'eq', value: 'Tokyo', valueBinding: { source: 'agent-input', field: 'regionValue' }, opBinding: { source: 'agent-input', field: 'regionOp', allowed } } },
+        { id: 'arguments', type: 'agent-input', config: { schema, sample: { regionValue: 'Tokyo', regionOp: 'eq' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    });
+    const nonNullableValue = { columns: [
+      { name: 'regionValue', type: 'string' as const, nullable: false },
+      { name: 'regionOp', type: 'string' as const, nullable: false },
+    ] };
+    await expect(usecase.execute(makeInput({ graph: graphWith(['eq', 'isNull'], nonNullableValue), inputSchema: nonNullableValue })))
+      .rejects.toThrow("SaveTool: operator binding allows isNull/notNull, so the value argument 'regionValue' must be nullable");
+    expect(repo.size).toBe(0);
+
+    // 境界1: valueField が nullable なら isNull/notNull を許可しても保存できる。
+    const nullableValue = { columns: [
+      { name: 'regionValue', type: 'string' as const, nullable: true },
+      { name: 'regionOp', type: 'string' as const, nullable: false },
+    ] };
+    await expect(usecase.execute(makeInput({ internalId: 'nullable-value', graph: graphWith(['eq', 'isNull'], nullableValue), inputSchema: nullableValue })))
+      .resolves.toMatchObject({ inputSchema: { columns: [{ name: 'regionValue', nullable: true }, { name: 'regionOp' }] } });
+
+    // 境界2: allowed に isNull/notNull が無ければ valueField が非 nullable でも保存できる。
+    await expect(usecase.execute(makeInput({ internalId: 'no-valueless-op', graph: graphWith(['eq', 'neq'], nonNullableValue), inputSchema: nonNullableValue })))
+      .resolves.toMatchObject({ inputSchema: { columns: [{ name: 'regionValue', nullable: false }, { name: 'regionOp' }] } });
+  });
+
+  it('同一fieldの既定演算子が条件間で不一致なら保存を拒否し、全一致なら保存できる（F12）', async () => {
+    const { usecase, repo } = makeSut();
+    const inputSchema = { columns: [{ name: 'op', type: 'string' as const, nullable: false }] };
+    const mixedGraph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42, price: 10 }] } },
+        { id: 'filter', type: 'filter', config: { conditions: [
+          { column: 'score', op: 'gt', value: 0, opBinding: { source: 'agent-input', field: 'op', allowed: ['gt', 'lt'] } },
+          { column: 'price', op: 'lt', value: 100, opBinding: { source: 'agent-input', field: 'op', allowed: ['gt', 'lt'] } },
+        ], combine: 'and' } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph: mixedGraph, inputSchema })))
+      .rejects.toThrow("SaveTool: operator binding for argument 'op' must use the same default operator in every condition");
+    expect(repo.size).toBe(0);
+
+    // 境界: 既定演算子が全条件で一致すれば保存できる。
+    const uniformGraph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42, price: 10 }] } },
+        { id: 'filter', type: 'filter', config: { conditions: [
+          { column: 'score', op: 'gt', value: 0, opBinding: { source: 'agent-input', field: 'op', allowed: ['gt', 'lt'] } },
+          { column: 'price', op: 'gt', value: 100, opBinding: { source: 'agent-input', field: 'op', allowed: ['gt', 'lt'] } },
+        ], combine: 'and' } },
+        { id: 'arguments', type: 'agent-input', config: { schema: inputSchema, sample: { op: 'gt' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ internalId: 'uniform-default', graph: uniformGraph, inputSchema })))
+      .resolves.toMatchObject({ inputSchema: { columns: [{ name: 'op' }] } });
+  });
+
   it('2回目の保存は既定 patch で 1.0.1', async () => {
     const { usecase } = makeSut();
 

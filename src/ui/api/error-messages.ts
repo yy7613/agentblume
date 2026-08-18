@@ -642,6 +642,39 @@ function localizeAgentRunDetail(message: string, language: ErrorLanguage): strin
       : `no operator is allowed by every condition that binds argument '${matched[1]}'. Align the allowed operator lists of those conditions`;
   }
 
+  if (message === 'SaveTool: operator binding is missing its input field') {
+    return ja
+      ? '演算子をエージェント入力から受け取る設定に、参照する入力フィールドが選ばれていません。フィルタ条件の「エージェント入力フィールド（演算子）」を選択してください'
+      : 'an operator binding has no input field selected. Pick the agent input field (operator) on the filter condition';
+  }
+
+  if (message === 'SaveTool: value binding is missing its input field') {
+    return ja
+      ? '条件値をエージェント入力から受け取る設定に、参照する入力フィールドが選ばれていません。フィルタ条件の「エージェント入力フィールド」を選択してください'
+      : 'a value binding has no input field selected. Pick the agent input field on the filter condition';
+  }
+
+  matched = /^SaveTool: argument '(.+)' is bound as both a comparison value and an operator; declare two separate arguments$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `引数「${matched[1]}」が比較値と演算子の両方に束縛されています。Agent Inputノードで引数を2つに分けて宣言し、それぞれを束縛してください`
+      : `the argument '${matched[1]}' is bound as both a comparison value and an operator. Declare two separate arguments on the Agent Input node and bind them individually`;
+  }
+
+  matched = /^SaveTool: operator binding allows isNull\/notNull, so the value argument '(.+)' must be nullable$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `AIに許可する演算子に isNull/notNull が含まれるため、値を受け取る引数「${matched[1]}」は任意（nullable）にする必要があります。Agent Inputノードでその引数を任意に変更してください`
+      : `the operator binding allows isNull/notNull, so the value argument '${matched[1]}' must be nullable. Mark that argument as optional on the Agent Input node`;
+  }
+
+  matched = /^SaveTool: operator binding for argument '(.+)' must use the same default operator in every condition$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `引数「${matched[1]}」で演算子を受け取る条件の間で「既定の演算子」が一致していません。各条件の既定の演算子を同じ値に揃えてください`
+      : `the conditions that bind argument '${matched[1]}' use different default operators. Set the same default operator on every condition`;
+  }
+
   if (message === 'run cancelled by the user') return ja ? '実行を中断しました' : 'the run was cancelled';
 
   return undefined;
@@ -785,6 +818,22 @@ function localizeDetail(raw: string, language: ErrorLanguage): string {
   // が原文のまま別セグメントとして残り、日本語訳と重複した表示になる。
   const etlWhole = localizeEtlDetail(stripped, language);
   if (etlWhole !== undefined) return etlWhole;
+  // SaveTool 由来の詳細もセミコロンを含む1文があり得るため、`;` 分割より先に丸ごと判定する。
+  // - `SaveTool: graph validation failed: <nodeId>: <issue>` は <issue> 部分（単一 issue）を丸ごと
+  //   和訳判定へ回し、和訳できたら `<nodeId>: <和訳文>` として返す（見出しは code 側が補う）。
+  //   複数 issue が '; ' で連結された形は `; <nodeId>: ` の有無で見分けて従来の分割動作へ
+  //   フォールバックする（連結境界の曖昧さで誤訳しないための段階的実装）。
+  // - `SaveTool: argument '...' is bound as both ...; declare two separate arguments` のような
+  //   直接メッセージも分割前に丸ごと判定する。
+  if (stripped.startsWith('SaveTool: ')) {
+    const wrapped = /^SaveTool: graph validation failed: ([^:]+): (.+)$/.exec(stripped);
+    if (wrapped !== null && !/;\s*[A-Za-z0-9_-]+:\s/.test(wrapped[2] ?? '')) {
+      const issue = localizeMessageText(wrapped[2] ?? '', language);
+      if (issue !== undefined) return `${wrapped[1]}: ${issue}`;
+    }
+    const saveToolWhole = localizeMessageText(stripped, language);
+    if (saveToolWhole !== undefined) return saveToolWhole;
+  }
   return stripped
     .split(/;\s*/)
     .map((segment) => segment.trim())

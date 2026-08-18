@@ -194,4 +194,22 @@ describe('filter opBinding の JSON Schema 公開', () => {
     expect(properties['wrongType']).toEqual({ type: 'number' });
     expect(properties['emptyOp']).toEqual({ type: 'string' });
   });
+
+  it('inputSchemaに列が無いfieldはプロパティを作らず、string型でない列のfieldは変更しない（Q7）', () => {
+    const inputSchema: Schema = { columns: [
+      { name: 'month', type: 'string', nullable: false },
+      { name: 'limit', type: 'number', nullable: false },
+    ] };
+    const tool = filterTool(inputSchema, { conditions: [
+      { column: 'price', op: 'gt', value: 1, opBinding: { source: 'agent-input', field: 'ghost', allowed: ['gt', 'lt'] } },
+      { column: 'stock', op: 'lt', value: 1, opBinding: { source: 'agent-input', field: 'limit', allowed: ['gt', 'lt'] } },
+    ], combine: 'and' });
+    const { properties } = toolToModelDefinition(tool).parameters;
+    // (a) inputSchema に列が無い field はプロパティを作らない（enum だけの幽霊引数を公開しない）。
+    expect(properties['ghost']).toBeUndefined();
+    // (b) string 型でない列の field は素の型のまま触らない。
+    expect(properties['limit']).toEqual({ type: 'number' });
+    // opバインドの無い引数は従来どおり。
+    expect(properties['month']).toEqual({ type: 'string' });
+  });
 });

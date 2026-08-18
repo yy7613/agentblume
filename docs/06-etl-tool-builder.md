@@ -204,10 +204,12 @@ control対応、Dialog layout、accessibility、node別配置は [ADR-0028](./ad
 値に加えて**演算子そのもの**もAgent引数にできる。filter条件の `opBinding = { source: 'agent-input', field, allowed? }` を設定すると、Agentは呼び出しごとに比較方法（「以降/以前」「ちょうど/含む」など）を選べる。
 
 - binding先の引数はInput Schema上 **string型**で宣言する（保存時に検証。違反は保存できない）。
-- `allowed` はAgentが選べる演算子の許可リスト（省略時は全演算子）。Tool Calling契約のJSON Schemaでは該当引数に `enum` として公開されるため、Agentは許可外の演算子を構造的に選べない。実行時に許可外・不正な値が来た場合は引数エラーとしてモデルの修復ループへ返す。
-- 設計時の `op` は設計previewのサンプルであり、引数が任意（nullable）で実行時に省略された場合の**既定演算子**にもなる（`op` は `allowed` に含まれている必要がある）。
-- 列型がnumber|date以外の列では、`allowed`（省略時は全演算子）に `gt/gte/lt/lte` を含められない（設計時スキーマ検証でerror）。
-- 実行時に演算子が `isNull`/`notNull` へ解決された条件は値を使わない（値側のnullable引数が省略されていても条件はスキップされない）。
+- `allowed` はAgentが選べる演算子の許可リスト（省略時は全演算子）。同一引数を複数条件がバインドする場合、Tool Calling契約のJSON Schemaには**全条件の積集合**が `enum` として公開され、実行時の検証とエラーメッセージも同じ積集合に基づく（公開enumに載る演算子は必ず実行できる）。許可外・不正な値は引数エラーとしてモデルの修復ループへ返す。
+- 設計時の `op` は設計previewのサンプルであり、引数が任意（nullable）で実行時に省略された場合の**既定演算子**にもなる（`op` は `allowed` に含まれている必要がある）。同一引数をバインドする複数条件の既定演算子は**全条件で一致**していなければならない（保存時に検証）。
+- 列型がnumber|date以外の列では、`allowed`（省略時は全演算子）に `gt/gte/lt/lte` を含められない（設計時スキーマ検証でerror）。UIはnumber|date列の初期許可リストから `contains`（String化部分一致）を外す — 必要ならチェックボックスで明示的に戻せる。
+- **同一の引数を条件値（valueBinding）と演算子（opBinding）の両方にはバインドできない**（保存時に拒否。値引数と演算子引数は別々に宣言する）。
+- `allowed` に `isNull`/`notNull` を含める場合、同じ条件の値引数（valueBinding先）は**nullableで宣言**しなければならない（保存時に検証）。opBinding経由で演算子が `isNull`/`notNull` へ解決された条件は値を使わない（値側のnullable引数が省略されていても条件はスキップされない）。opBindingを持たない条件は従来どおり「nullable引数の省略＝条件スキップ」が働く。
+- Input Schemaに宣言されていないフィールドを参照するopBinding（旧データ等）は実行時に不活性となり、設計時の `op` がそのまま使われる。
 - Toolの表示名・公開名と、Agentへ提示するFunction名・説明は分ける。`agentTool.name`と`agentTool.description`が設定されていれば、Function Calling定義とAgent promptはそれを使用する。
 - Tool BuilderにはETL設計用previewだけを置く。以前のAgent chat preview領域は、Agentが受け取るTool Calling契約の編集パネルに置き換える。ここで`agentTool.name`、`agentTool.description`、Agent Input由来の引数名・型・必須性、推論済みの返却schema、side effectを確認できる。LLMを使う会話previewはAgent BuilderまたはChatで実行する。
 

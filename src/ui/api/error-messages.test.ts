@@ -547,4 +547,54 @@ describe('SaveTool の opBinding 検証（TOOL_VALIDATION）の日本語化', ()
     expect(toolValidation("SaveTool: operator binding for argument 'op' has no operator that every condition allows", 'en'))
       .toContain("no operator is allowed by every condition that binds argument 'op'");
   });
+
+  it('field 未選択の演算子束縛は、フィールド選択へ誘導する', () => {
+    expect(toolValidation('SaveTool: operator binding is missing its input field'))
+      .toBe('ツール定義を確認してください（演算子をエージェント入力から受け取る設定に、参照する入力フィールドが選ばれていません。フィルタ条件の「エージェント入力フィールド（演算子）」を選択してください）');
+    expect(toolValidation('SaveTool: operator binding is missing its input field', 'en'))
+      .toContain('no input field selected');
+  });
+
+  it('field 未選択の値束縛も、フィールド選択へ誘導する（演算子側と対称）', () => {
+    expect(toolValidation('SaveTool: value binding is missing its input field'))
+      .toBe('ツール定義を確認してください（条件値をエージェント入力から受け取る設定に、参照する入力フィールドが選ばれていません。フィルタ条件の「エージェント入力フィールド」を選択してください）');
+    expect(toolValidation('SaveTool: value binding is missing its input field', 'en'))
+      .toContain('no input field selected');
+  });
+
+  it('比較値と演算子の二重束縛は、引数を分ける案内にする（セミコロンを含む1文を分割しない）', () => {
+    expect(toolValidation("SaveTool: argument 'op' is bound as both a comparison value and an operator; declare two separate arguments"))
+      .toBe('ツール定義を確認してください（引数「op」が比較値と演算子の両方に束縛されています。Agent Inputノードで引数を2つに分けて宣言し、それぞれを束縛してください）');
+    expect(toolValidation("SaveTool: argument 'op' is bound as both a comparison value and an operator; declare two separate arguments", 'en'))
+      .toContain('Declare two separate arguments on the Agent Input node');
+  });
+
+  it('isNull/notNull を許可する場合の値引数は、nullable 化へ誘導する', () => {
+    expect(toolValidation("SaveTool: operator binding allows isNull/notNull, so the value argument 'minAmount' must be nullable"))
+      .toBe('ツール定義を確認してください（AIに許可する演算子に isNull/notNull が含まれるため、値を受け取る引数「minAmount」は任意（nullable）にする必要があります。Agent Inputノードでその引数を任意に変更してください）');
+    expect(toolValidation("SaveTool: operator binding allows isNull/notNull, so the value argument 'minAmount' must be nullable", 'en'))
+      .toContain('Mark that argument as optional on the Agent Input node');
+  });
+
+  it('既定演算子の条件間不一致は、同じ値へ揃える案内にする', () => {
+    expect(toolValidation("SaveTool: operator binding for argument 'op' must use the same default operator in every condition"))
+      .toBe('ツール定義を確認してください（引数「op」で演算子を受け取る条件の間で「既定の演算子」が一致していません。各条件の既定の演算子を同じ値に揃えてください）');
+    expect(toolValidation("SaveTool: operator binding for argument 'op' must use the same default operator in every condition", 'en'))
+      .toContain('Set the same default operator on every condition');
+  });
+
+  it('SaveTool ラップ（graph validation failed: <nodeId>: <issue>）の単一 issue を丸ごと和訳する', () => {
+    // `;` を含む opBinding の1文が `; ` 分割で断片化しない（分割すると "restrict opBinding.allowed" が原文のまま残る）。
+    expect(toolValidation("SaveTool: graph validation failed: filter-1: filter: opBinding on 'region' allows operator(s) gt|gte which require column type number|date, but 'region' is 'string'; restrict opBinding.allowed"))
+      .toBe('ツール定義を確認してください（filter-1: 列「region」(文字列)では大小比較の演算子(gt|gte)をAIに許可できません。AIに許可する演算子を絞ってください）');
+    expect(toolValidation("SaveTool: graph validation failed: filter-1: filter: default operator 'gt' is not in opBinding.allowed (eq, neq)"))
+      .toBe('ツール定義を確認してください（filter-1: 既定の演算子「gt」がAIに許可する演算子(eq, neq)に含まれていません）');
+  });
+
+  it('SaveTool ラップの複数 issue 連結は丸ごと和訳せず、従来の分割動作へフォールバックする（原文を握りつぶさない）', () => {
+    const raw = "SaveTool: graph validation failed: filter-1: filter: default operator 'gt' is not in opBinding.allowed (eq, neq); filter-2: filter: column not found: age";
+    const localized = toolValidation(raw);
+    expect(localized).toContain("filter-2: filter: column not found: age");
+    expect(localized).toContain('graph validation failed');
+  });
 });

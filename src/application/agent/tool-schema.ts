@@ -1,7 +1,7 @@
 import type { Cell, Column, Row, Schema, Table } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
-import { FILTER_OPS, operatorBindingsOf } from '../../domain/etl/nodes/filter';
-import type { FilterOp, OperatorBindingSite } from '../../domain/etl/nodes/filter';
+import { operatorArgumentSummaries } from '../../domain/etl/nodes/filter';
+import type { OperatorArgumentSummary } from '../../domain/etl/nodes/filter';
 import type { Tool } from '../../domain/tool/tool';
 import { AgentRunError, ToolArgumentsError } from './errors';
 import type { JsonObject, JsonSchemaObject, JsonSchemaProperty, JsonValue, ModelToolDefinition } from '../model/model-provider';
@@ -37,81 +37,40 @@ export function schemaToJsonSchema(schema: Schema | undefined): JsonSchemaObject
   };
 }
 
-/** 1つの Agent 引数（field）へ集約した opBinding 情報。 */
-interface OperatorArgumentInfo {
-  /** Agent が選べる演算子（全条件の許可リストの積集合。FILTER_OPS の順序を保つ）。 */
-  readonly allowed: readonly FilterOp[];
-  /** この引数が演算子を差し替える列名（重複排除済み）。 */
-  readonly columns: readonly string[];
-  /** 既定演算子。全条件の設計時 op が一致する場合のみ定まる。 */
-  readonly defaultOp?: FilterOp;
-}
-
-/**
- * グラフ中の filter ノードから opBinding を集め、Agent 引数名（field）ごとに集約する。
- * 同一 field を複数条件がバインドする場合、allowed は積集合・columns は列名の和（重複排除）・
- * defaultOp は全条件で一致するときのみ採用する。
- */
-function operatorArgumentsOf(graph: ToolGraph): Map<string, OperatorArgumentInfo> {
-  const sitesByField = new Map<string, OperatorBindingSite[]>();
-  for (const node of graph.nodes) {
-    if (node.type !== 'filter') continue;
-    for (const site of operatorBindingsOf(node.config)) {
-      const sites = sitesByField.get(site.field);
-      if (sites === undefined) sitesByField.set(site.field, [site]);
-      else sites.push(site);
-    }
-  }
-  const result = new Map<string, OperatorArgumentInfo>();
-  for (const [field, sites] of sitesByField) {
-    const allowed = FILTER_OPS.filter((op) => sites.every((site) => site.allowed.includes(op)));
-    const columns = [...new Set(sites.map((site) => site.column))];
-    const defaultOp = sites[0]?.defaultOp;
-    const uniform = defaultOp !== undefined && sites.every((site) => site.defaultOp === defaultOp);
-    result.set(field, { allowed, columns, ...(uniform ? { defaultOp } : {}) });
-  }
-  return result;
-}
-
-/** `{ type: 'string' }` そのもの（format/enum/anyOf の無い素の string プロパティ）か。 */
-function isPlainString(prop: JsonSchemaProperty | undefined): boolean {
-  return prop !== undefined && prop.type === 'string'
-    && prop.format === undefined && prop.enum === undefined && prop.anyOf === undefined;
-}
-
 /** op バインドされた引数の LLM 向け説明文（英語）。nullable で既定演算子が定まる場合は省略時の挙動も伝える。 */
-function operatorDescription(info: OperatorArgumentInfo, nullable: boolean): string {
-  const columns = info.columns.map((column) => `'${column}'`).join(', ');
-  const base = `Row filter operator applied to ${info.columns.length > 1 ? 'columns' : 'column'} ${columns}.`;
-  return nullable && info.defaultOp !== undefined
-    ? `${base} Omit it to use the default operator '${info.defaultOp}'.`
+function operatorDescription(summary: OperatorArgumentSummary, nullable: boolean): string {
+  const columns = summary.columns.map((column) => `'${column}'`).join(', ');
+  const base = `Row filter operator applied to ${summary.columns.length > 1 ? 'columns' : 'column'} ${columns}.`;
+  return nullable && summary.defaultOp !== undefined
+    ? `${base} Omit it to use the default operator '${summary.defaultOp}'.`
     : base;
 }
 
 /**
- * op バインドされた引数プロパティへ許可演算子の enum と説明を付与した JSON Schema を返す。
- * - 非 nullable（`{ type:'string' }`）→ enum を直接付ける。
- * - nullable（`{ anyOf: [string, null] }`）→ anyOf 内の string 側へ enum を付ける。
- * - プロパティが string ベースでない・積集合が空（いずれも保存時に拒否される不整合な旧 Tool）は
- *   触らずそのまま返す（LLM 公開でクラッシュさせない）。
+ * op バインドされた引数プロパティを、許可演算子の enum と説明を持つ JSON Schema へ置き換える。
+ * ドメインの `operatorArgumentSummaries`（保存検証と同じ集約）を起点に、inputSchema の Column
+ * （型・nullable）から形を直接構築して代入する — `schemaToJsonSchema` の出力形状には依存しない
+ * （形状スニッフィングだと propertyFor の出力変更で enum が静かに消える）。
+ * - 非 nullable の string 列 → `{ type:'string', enum, description }`。
+ * - nullable の string 列 → `{ anyOf: [{ type:'string', enum }, { type:'null' }], description }`。
+ * - inputSchema に列が無い・string 型でない・積集合が空（いずれも保存時に拒否される不整合な
+ *   旧 Tool）はスキップして触らない（LLM 公開でクラッシュさせない）。
  */
-function withOperatorEnums(schema: JsonSchemaObject, graph: ToolGraph): JsonSchemaObject {
-  const operatorArguments = operatorArgumentsOf(graph);
-  if (operatorArguments.size === 0) return schema;
+function withOperatorEnums(schema: JsonSchemaObject, graph: ToolGraph, inputSchema: Schema | undefined): JsonSchemaObject {
+  const configs = graph.nodes
+    .filter((node) => node.type === 'filter')
+    .map((node) => node.config);
+  const summaries = operatorArgumentSummaries(configs);
+  if (summaries.length === 0) return schema;
   const properties: Record<string, JsonSchemaProperty> = { ...schema.properties };
-  for (const [field, info] of operatorArguments) {
-    if (info.allowed.length === 0) continue;
-    const prop = properties[field];
-    if (prop === undefined) continue;
-    if (isPlainString(prop)) {
-      properties[field] = { type: 'string', enum: info.allowed, description: operatorDescription(info, false) };
-    } else if (prop.anyOf !== undefined && prop.anyOf.length === 2
-      && isPlainString(prop.anyOf[0]) && prop.anyOf[1]?.type === 'null') {
-      properties[field] = {
-        anyOf: [{ type: 'string', enum: info.allowed }, { type: 'null' }],
-        description: operatorDescription(info, true),
-      };
-    }
+  for (const summary of summaries) {
+    if (summary.allowed.length === 0) continue;
+    const column = inputSchema?.columns.find((candidate) => candidate.name === summary.field);
+    if (column === undefined || column.type !== 'string') continue;
+    const description = operatorDescription(summary, column.nullable);
+    properties[summary.field] = column.nullable
+      ? { anyOf: [{ type: 'string', enum: summary.allowed }, { type: 'null' }], description }
+      : { type: 'string', enum: summary.allowed, description };
   }
   return { ...schema, properties };
 }
@@ -129,7 +88,7 @@ export function toolToModelDefinition(tool: Tool): ModelToolDefinition {
   return {
     name,
     description: tool.agentTool?.description ?? `${tool.metadata.displayName} (${tool.sideEffect})`,
-    parameters: withOperatorEnums(schemaToJsonSchema(tool.inputSchema), tool.graph),
+    parameters: withOperatorEnums(schemaToJsonSchema(tool.inputSchema), tool.graph, tool.inputSchema),
   };
 }
 

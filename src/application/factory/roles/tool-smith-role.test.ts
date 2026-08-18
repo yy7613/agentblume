@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ScriptedModelProvider } from '../../../adapters/model/scripted-model-provider';
+import { FILTER_OPS, ORDER_OPS, VALUELESS_OPS } from '../../../domain/etl/nodes/filter';
 import type { FactoryToolPlan } from '../../../domain/factory/factory-plan';
 import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../../model/model-provider';
 import type { DataProfile } from '../profile-data-sources';
@@ -127,14 +128,33 @@ describe('ToolSmithRole', () => {
     // 設計時の op は allowed に含め、nullable引数が省略されたときの既定演算子になる。
     expect(system).toMatch(/design-time "op" MUST be listed in "allowed"/);
     expect(system).toMatch(/default operator applied when a nullable operator argument is omitted/);
-    // allowed の語彙と、順序演算子の列型制約。
-    expect(system).toContain("'eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull'");
-    expect(system).toMatch(/Include 'gt'\/'gte'\/'lt'\/'lte' only when the condition's "column" is a number or date column/);
+    // allowed の語彙と順序演算子サブセットは domain の正準リスト（FILTER_OPS / ORDER_OPS）から導出される。
+    // リテラルの逐語一致ではなく導出式との一致をピン留めし、演算子追加時にプロンプトが自動追随することを保証する。
+    expect(system).toContain(`"allowed" may only contain ${FILTER_OPS.map((op) => `'${op}'`).join(', ')}.`);
+    expect(system).toContain(`Include ${[...ORDER_OPS].map((op) => `'${op}'`).join('/')} only when the condition's "column" is a number or date column`);
     // 演算子引数は opBinding が消費する（valueBinding不要）。値と演算子は別引数。
     expect(system).toMatch(/consumed by its opBinding alone; it needs no valueBinding/);
     expect(system).toMatch(/two separate arguments \(two schema columns\)/);
     // nullable時の既定演算子は agentTool.description へ明記する（既存のnullableルールと整合）。
     expect(system).toMatch(/agentTool\.description must state the default operator used when they are omitted/);
+  });
+
+  it('save-toolの保存検証と対になるopBinding追加ルール4種をsystemプロンプトへ含める', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
+    const role = new ToolSmithRole(model);
+
+    await role.propose({ toolPlan, profile });
+
+    const system = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
+    // 同一引数を valueBinding と opBinding の両方にバインドしない（値引数と演算子引数は別々に宣言）。
+    expect(system).toMatch(/Never bind the same argument to both a valueBinding and an opBinding/);
+    // allowed に isNull/notNull を含めるなら、同じ条件の値引数は nullable で宣言する（語彙は VALUELESS_OPS から導出）。
+    expect(system).toContain(`When "allowed" includes ${[...VALUELESS_OPS].map((op) => `'${op}'`).join('/')}, the value argument bound by that condition's valueBinding MUST be declared with "nullable": true`);
+    // 同一の演算子引数を複数条件で使う場合、設計時 op（既定演算子）は全条件で同一。
+    expect(system).toMatch(/their design-time "op" MUST be identical across those conditions/);
+    // contains を allowed に含めるのは対象列が string のときだけ。
+    expect(system).toMatch(/Include 'contains' in "allowed" only when the condition's "column" is a string column/);
   });
 
   it('agent-input付きの提案（引数宣言つきグラフ）をそのままパースする', async () => {

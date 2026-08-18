@@ -627,6 +627,11 @@ describe('agentToolArgumentsOf', () => {
     expect(agentToolArgumentsOf(graphWith(args, filterConfig))?.columns.map((column) => column.name)).toEqual(['minimumAmount', 'amountOp']);
   });
 
+  it('旧形式フラットconfigのvalueBindingも引数の消費として数える（domainのvalueBindingsOfへ委譲後も同じ集合）', () => {
+    const flat = { column: 'amount', op: 'gte', value: 100, valueBinding: { source: 'agent-input', field: 'minimumAmount' } };
+    expect(agentToolArgumentsOf(graphWith(validArguments, flat))).toEqual({ columns: [{ name: 'minimumAmount', type: 'number', nullable: false }] });
+  });
+
   it('旧形式フラットconfigのopBinding（allowed省略）も引数の消費として数える', () => {
     const args = { schema: { columns: [{ name: 'amountOp', type: 'string', nullable: true }] }, sample: {} };
     const flat = { column: 'amount', op: 'gte', value: 100, opBinding: { source: 'agent-input', field: 'amountOp' } };

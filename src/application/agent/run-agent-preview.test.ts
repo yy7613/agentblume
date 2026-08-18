@@ -399,6 +399,125 @@ describe('RunAgentPreviewUseCase', () => {
       expect(result).not.toContain('Alice');
       expect(result).not.toContain('Bob');
     });
+
+    it('inputSchema未宣言のfieldを指すopBindingは設計時opのまま実行される（不活性フォールバック）', async () => {
+      // 旧zodがunknownキーを無視し旧ランタイムがopBindingを読まなかった頃のデータ。
+      // valueBinding の未宣言 field はエラーだが、op には設計時既定があるため Run を止めない。
+      const ghostSchema: Schema = { columns: [{ name: 'minimumScore', type: 'number', nullable: false }] };
+      const tool = createTool({
+        metadata: { internalId: 'ghost-op', workingName: 'ghost-op', displayName: 'Ghost op', publishName: 'ghost_op', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+        sideEffect: 'read-only', inputSchema: ghostSchema,
+        agentTool: { name: 'search_scores', description: 'Filter with an opBinding to an undeclared argument.' },
+        graph: { nodes: [
+          { id: 'data', type: 'json-source', config: { rows: [{ name: 'Alice', score: 42 }, { name: 'Bob', score: 7 }] } },
+          { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: 'minimumScore' }, opBinding: { source: 'agent-input', field: 'ghostOp' } } },
+          { id: 'arguments', type: 'agent-input', config: { schema: ghostSchema, sample: { minimumScore: 0 } } },
+        ], edges: [{ from: 'data', to: 'filter' }] },
+      });
+      const model = new QueueModel([
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_scores', arguments: { minimumScore: 40 } }] }, finishReason: 'tool_calls' },
+        { message: { role: 'assistant', content: 'done' }, finishReason: 'stop' },
+      ]);
+      await useCase(tool, model).execute({ ...input, toolId: 'ghost-op' });
+      const result = String(model.requests[1]?.messages.at(-1)?.content);
+      expect(result).toContain('Alice'); // 設計時の gte 40 が効く（AgentRunErrorでRunを止めない）。
+      expect(result).not.toContain('Bob');
+    });
+  });
+
+  describe('opBindingを持たない条件のisNull（後方互換: d9c7696以前の動作）', () => {
+    // 設計時に op=isNull で固定した条件へ valueBinding が残っているツール。opBinding が無いので
+    // isNull でも value 解決（disabled 注入・欠損エラー）は従来どおり働かなければならない。
+    const noteSchema: Schema = { columns: [{ name: 'note', type: 'string', nullable: true }] };
+    const isNullTool = (valueField: string): Tool => createTool({
+      metadata: { internalId: 'isnull-tool', workingName: 'isnull-tool', displayName: 'IsNull tool', publishName: 'isnull_tool', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: noteSchema,
+      agentTool: { name: 'search_notes', description: 'Search notes.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [
+          { name: 'Alice', note: 'paid' },
+          { name: 'Bob', note: null },
+          { name: 'Carol', note: 'trial' },
+        ] } },
+        { id: 'filter', type: 'filter', config: { column: 'note', op: 'isNull', valueBinding: { source: 'agent-input', field: valueField } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: noteSchema, sample: { note: null } } },
+      ], edges: [{ from: 'data', to: 'filter' }] },
+    });
+
+    it('nullable引数の省略はisNull固定条件でもdisabled注入で全行を返す', async () => {
+      const model = new QueueModel([
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_notes', arguments: {} }] }, finishReason: 'tool_calls' },
+        { message: { role: 'assistant', content: 'done' }, finishReason: 'stop' },
+      ]);
+      await useCase(isNullTool('note'), model).execute({ ...input, toolId: 'isnull-tool' });
+      const result = String(model.requests[1]?.messages.at(-1)?.content);
+      expect(result).toContain('Alice'); // isNull として評価されてしまうと Bob だけが残る。
+      expect(result).toContain('Bob');
+      expect(result).toContain('Carol');
+    });
+
+    it('未宣言fieldを指す残留valueBindingはisNull固定条件でも従来どおり実行を拒否する', async () => {
+      const model = new QueueModel([
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_notes', arguments: {} }] }, finishReason: 'tool_calls' },
+      ]);
+      await expect(useCase(isNullTool('who'), model).execute({ ...input, toolId: 'isnull-tool' }))
+        .rejects.toThrow(/filter node 'filter' references an unavailable Agent input/);
+    });
+  });
+
+  describe('opBindingの積集合（同一fieldを複数条件がバインドする）', () => {
+    const intersectSchema: Schema = { columns: [{ name: 'textOp', type: 'string', nullable: true }] };
+    // 2つの filter ノードが同じ field を異なる allowed でバインドする。実行時検証・エラーの
+    // 修復ヒントは条件単体の allowed ではなく field 単位の積集合（公開 enum と同じ）に基づく。
+    const intersectTool = (first: { op: string; allowed: readonly string[] }, second: { op: string; allowed: readonly string[] }): Tool => createTool({
+      metadata: { internalId: 'intersect-op', workingName: 'intersect-op', displayName: 'Intersect op', publishName: 'intersect_op', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: intersectSchema,
+      agentTool: { name: 'search_rows', description: 'Search rows; textOp switches both filters.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [
+          { name: 'Alice', note: 'paid', category: 'gold' },
+          { name: 'Bob', note: 'trial', category: 'gold' },
+          { name: 'Carol', note: 'paid', category: 'silver' },
+        ] } },
+        { id: 'notefilter', type: 'filter', config: { column: 'note', op: first.op, value: 'trial', opBinding: { source: 'agent-input', field: 'textOp', allowed: first.allowed } } },
+        { id: 'categoryfilter', type: 'filter', config: { column: 'category', op: second.op, value: 'silver', opBinding: { source: 'agent-input', field: 'textOp', allowed: second.allowed } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: intersectSchema, sample: { textOp: null } } },
+      ], edges: [{ from: 'data', to: 'notefilter' }, { from: 'notefilter', to: 'categoryfilter' }] },
+    });
+
+    it('積集合外だが片方の条件では許可される演算子は、積集合を列挙して拒否する', async () => {
+      const model = new QueueModel([
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_rows', arguments: { textOp: 'contains' } }] }, finishReason: 'tool_calls' },
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search-2', name: 'search_rows', arguments: { textOp: 'contains' } }] }, finishReason: 'tool_calls' },
+      ]);
+      // contains は notefilter 単体では許可されるが categoryfilter が受理しないため積集合に無い。
+      // 条件単体の allowed を出すと公開 enum（積集合）と矛盾する修復ヒントになり Run が失敗し続ける。
+      await expect(useCase(intersectTool({ op: 'eq', allowed: ['eq', 'neq', 'contains'] }, { op: 'eq', allowed: ['neq', 'eq', 'isNull'] }), model)
+        .execute({ ...input, toolId: 'intersect-op' }))
+        .rejects.toThrow(/invalid operator 'contains' for argument 'textOp': expected one of eq, neq/);
+    });
+
+    it('積集合内の演算子は同fieldをバインドする全条件へ適用され成功する', async () => {
+      const model = new QueueModel([
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_rows', arguments: { textOp: 'neq' } }] }, finishReason: 'tool_calls' },
+        { message: { role: 'assistant', content: 'done' }, finishReason: 'stop' },
+      ]);
+      await useCase(intersectTool({ op: 'eq', allowed: ['eq', 'neq', 'contains'] }, { op: 'eq', allowed: ['neq', 'eq', 'isNull'] }), model)
+        .execute({ ...input, toolId: 'intersect-op' });
+      const result = String(model.requests[1]?.messages.at(-1)?.content);
+      expect(result).toContain('Alice'); // note≠trial かつ category≠silver。
+      expect(result).not.toContain('Bob');
+      expect(result).not.toContain('Carol');
+    });
+
+    it('積集合が空の壊れた定義は引数で直せないためAgentRunErrorで実行を止める', async () => {
+      const model = new QueueModel([
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_rows', arguments: { textOp: 'eq' } }] }, finishReason: 'tool_calls' },
+      ]);
+      await expect(useCase(intersectTool({ op: 'eq', allowed: ['eq'] }, { op: 'neq', allowed: ['neq'] }), model)
+        .execute({ ...input, toolId: 'intersect-op' }))
+        .rejects.toThrow(/operator binding for argument 'textOp' has no operator that every condition allows/);
+    });
   });
 
   it('workspace-output stores an Artifact in the Run session and returns only its descriptor to the model', async () => {

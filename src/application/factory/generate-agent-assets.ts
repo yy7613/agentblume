@@ -27,7 +27,7 @@ import { randomUUID } from 'node:crypto';
 import type { Agent } from '../../domain/agent/agent';
 import type { Column, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
-import { operatorBindingsOf } from '../../domain/etl/nodes/filter';
+import { operatorBindingsOf, valueBindingsOf } from '../../domain/etl/nodes/filter';
 import type { FactoryAgentBrief, FactoryPlan, FactoryToolPlan } from '../../domain/factory/factory-plan';
 import type { FactoryEvent, FactoryGoalInput, FactoryPromptStrategy } from '../../domain/factory/factory-run';
 import { FactoryValidationError } from '../../domain/factory/errors';
@@ -742,17 +742,16 @@ function toArgumentColumn(raw: unknown, sample: Record<string, unknown>): Column
 
 /**
  * filter config（旧形式のフラット1条件 / 新形式の conditions）が valueBinding（値）/
- * opBinding（演算子）で参照する agent-input のfield名。opBinding だけで消費される演算子引数も
- * 「filter から参照される引数」なので、未使用引数エラーの対象から外れる。
+ * opBinding（演算子）で参照する agent-input のfield名。走査は domain の
+ * `valueBindingsOf` / `operatorBindingsOf`（実行時に差し替わる対象・保存検証と同じ集合）へ委譲する。
+ * opBinding だけで消費される演算子引数も「filter から参照される引数」なので、
+ * 未使用引数エラーの対象から外れる。
  */
 function agentInputBindingFields(config: unknown): string[] {
-  const conditions = (config as { conditions?: unknown } | null)?.conditions;
-  const sources = Array.isArray(conditions) ? conditions : [config];
-  const valueFields = sources
-    .map((condition) => (condition as { valueBinding?: { source?: unknown; field?: unknown } } | null)?.valueBinding)
-    .filter((binding): binding is { source: 'agent-input'; field: string } => binding?.source === 'agent-input' && typeof binding.field === 'string')
-    .map((binding) => binding.field);
-  return [...valueFields, ...operatorBindingsOf(config).map((site) => site.field)];
+  return [
+    ...valueBindingsOf(config).map((site) => site.field),
+    ...operatorBindingsOf(config).map((site) => site.field),
+  ];
 }
 
 function describePropagationErrors(propagation: PropagationResult): string {

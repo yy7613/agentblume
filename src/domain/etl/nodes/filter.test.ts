@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Schema, Table } from '../../data/types';
 import { ConfigError } from '../errors';
-import { filterNode } from './filter';
+import { FILTER_OPS, filterNode, operatorArgumentSummaries, ORDER_OPS, valueBindingsOf, VALUELESS_OPS } from './filter';
 
 const schema: Schema = {
   columns: [
@@ -248,6 +248,140 @@ describe('filter: inferSchema', () => {
     expect(inf.state).toBe('mismatch');
     expect(inf.issues[0]?.severity).toBe('error');
     expect(inf.issues[0]?.message).toContain('is not in opBinding.allowed');
+  });
+
+  it('static order-op error merges into the opBinding orderable error when they share a root cause', () => {
+    // string 列に op:'gte' + allowed 省略（全演算子）: 静的 op エラーは orderable エラーと同根なので1件に統合される。
+    const inf = filterNode.inferSchema([schema], {
+      column: 'name', op: 'gte', value: 'x',
+      opBinding: { source: 'agent-input', field: 'nameOp' },
+    });
+    expect(inf.state).toBe('mismatch');
+    expect(inf.issues).toHaveLength(1);
+    expect(inf.issues[0]?.message).toContain('restrict opBinding.allowed');
+  });
+
+  it('op outside a non-orderable allowed on a string column -> static error plus allowed error (2 issues)', () => {
+    // allowed:['eq'] は orderable を許さないため orderable エラーは出ない。静的 op エラーと
+    // 「not in allowed」エラーは別根なので両方残る。
+    const inf = filterNode.inferSchema([schema], {
+      column: 'name', op: 'gte', value: 'x',
+      opBinding: { source: 'agent-input', field: 'nameOp', allowed: ['eq'] },
+    });
+    expect(inf.state).toBe('mismatch');
+    expect(inf.issues).toHaveLength(2);
+    expect(inf.issues[0]?.message).toContain("operator 'gte' requires column type number|date");
+    expect(inf.issues[1]?.message).toContain('is not in opBinding.allowed');
+  });
+});
+
+describe('filter: exported operator sets', () => {
+  it('VALUELESS_OPS is exactly isNull/notNull', () => {
+    expect([...VALUELESS_OPS].sort()).toEqual(['isNull', 'notNull']);
+  });
+
+  it('ORDER_OPS is exactly gt/gte/lt/lte', () => {
+    expect([...ORDER_OPS].sort()).toEqual(['gt', 'gte', 'lt', 'lte']);
+  });
+
+  it('both sets contain only canonical FILTER_OPS entries', () => {
+    for (const op of [...VALUELESS_OPS, ...ORDER_OPS]) expect(FILTER_OPS).toContain(op);
+  });
+});
+
+describe('filter: valueBindingsOf', () => {
+  it('collects the binding from the legacy flat shape', () => {
+    expect(valueBindingsOf({ column: 'age', op: 'gte', value: 18, valueBinding: { source: 'agent-input', field: 'minimumAge' } }))
+      .toEqual([{ field: 'minimumAge', column: 'age' }]);
+  });
+
+  it('collects every binding from the conditions shape in order', () => {
+    expect(valueBindingsOf({ conditions: [
+      { column: 'region', op: 'eq', value: 'Osaka', valueBinding: { source: 'agent-input', field: 'region' } },
+      { column: 'age', op: 'gte', value: 18 },
+      { column: 'month', op: 'eq', value: '2026-05', valueBinding: { source: 'agent-input', field: 'month' } },
+    ], combine: 'and' })).toEqual([
+      { field: 'region', column: 'region' },
+      { field: 'month', column: 'month' },
+    ]);
+  });
+
+  it('ignores malformed bindings and tolerates a missing column', () => {
+    expect(valueBindingsOf({ column: 'age', op: 'gte' })).toEqual([]);
+    expect(valueBindingsOf({ column: 'age', op: 'gte', valueBinding: { source: 'other', field: 'x' } })).toEqual([]);
+    expect(valueBindingsOf({ column: 'age', op: 'gte', valueBinding: { source: 'agent-input', field: 42 } })).toEqual([]);
+    expect(valueBindingsOf({ column: 'age', op: 'gte', valueBinding: { source: 'agent-input', field: '' } })).toEqual([]);
+    expect(valueBindingsOf(null)).toEqual([]);
+    // 条件が null・column 欠損でも落ちずに拾えるものだけ拾う（column は空文字で表す）。
+    expect(valueBindingsOf({ conditions: [null, { valueBinding: { source: 'agent-input', field: 'x' } }] }))
+      .toEqual([{ field: 'x', column: '' }]);
+  });
+});
+
+describe('filter: operatorArgumentSummaries', () => {
+  it('aggregates one summary per field with the FILTER_OPS-ordered intersection of allowed lists', () => {
+    const summaries = operatorArgumentSummaries([
+      { column: 'note', op: 'eq', value: 'paid', opBinding: { source: 'agent-input', field: 'textOp', allowed: ['contains', 'neq', 'eq'] } },
+      { conditions: [
+        { column: 'category', op: 'eq', value: 'gold', opBinding: { source: 'agent-input', field: 'textOp', allowed: ['isNull', 'eq', 'neq'] } },
+      ], combine: 'and' },
+    ]);
+    expect(summaries).toEqual([{ field: 'textOp', columns: ['note', 'category'], allowed: ['eq', 'neq'], defaultOp: 'eq', defaultOpMixed: false }]);
+  });
+
+  it('omitting allowed expands to every operator', () => {
+    expect(operatorArgumentSummaries([{ column: 'age', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'ageOp' } }]))
+      .toEqual([{ field: 'ageOp', columns: ['age'], allowed: [...FILTER_OPS], defaultOp: 'gte', defaultOpMixed: false }]);
+  });
+
+  it('deduplicates columns and drops empty column names', () => {
+    const summaries = operatorArgumentSummaries([
+      { conditions: [
+        { column: 'age', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'lte'] } },
+        { column: 'age', op: 'gte', value: 65, opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'lte'] } },
+        { op: 'gte', opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte'] } },
+      ], combine: 'or' },
+    ]);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.columns).toEqual(['age']);
+    expect(summaries[0]?.allowed).toEqual(['gte']);
+  });
+
+  it('an empty intersection stays representable (allowed: []) so save-time validation can reject it', () => {
+    const summaries = operatorArgumentSummaries([
+      { column: 'note', op: 'eq', value: 'a', opBinding: { source: 'agent-input', field: 'textOp', allowed: ['eq'] } },
+      { column: 'category', op: 'neq', value: 'b', opBinding: { source: 'agent-input', field: 'textOp', allowed: ['neq'] } },
+    ]);
+    expect(summaries[0]?.allowed).toEqual([]);
+    expect(summaries[0]?.defaultOp).toBeUndefined();
+    expect(summaries[0]?.defaultOpMixed).toBe(true);
+  });
+
+  it('sanitizes unknown operators inside allowed before intersecting', () => {
+    const summaries = operatorArgumentSummaries([
+      { column: 'note', op: 'eq', value: 'a', opBinding: { source: 'agent-input', field: 'textOp', allowed: ['eq', 'between'] } },
+    ]);
+    expect(summaries[0]?.allowed).toEqual(['eq']);
+  });
+
+  it('mixed default operators set defaultOpMixed and omit defaultOp', () => {
+    const summaries = operatorArgumentSummaries([
+      { column: 'age', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'lte'] } },
+      { column: 'age', op: 'lte', value: 65, opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'lte'] } },
+    ]);
+    expect(summaries[0]?.defaultOp).toBeUndefined();
+    expect(summaries[0]?.defaultOpMixed).toBe(true);
+  });
+
+  it('keeps separate fields as separate summaries and ignores conditions without an opBinding', () => {
+    const summaries = operatorArgumentSummaries([
+      { conditions: [
+        { column: 'age', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte'] } },
+        { column: 'name', op: 'eq', value: 'Alice' },
+        { column: 'name', op: 'eq', value: 'Alice', opBinding: { source: 'agent-input', field: 'nameOp', allowed: ['eq', 'contains'] } },
+      ], combine: 'and' },
+    ]);
+    expect(summaries.map((summary) => summary.field)).toEqual(['ageOp', 'nameOp']);
   });
 });
 
