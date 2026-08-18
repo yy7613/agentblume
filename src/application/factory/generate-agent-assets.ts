@@ -27,6 +27,7 @@ import { randomUUID } from 'node:crypto';
 import type { Agent } from '../../domain/agent/agent';
 import type { Column, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
+import { operatorBindingsOf } from '../../domain/etl/nodes/filter';
 import type { FactoryAgentBrief, FactoryPlan, FactoryToolPlan } from '../../domain/factory/factory-plan';
 import type { FactoryEvent, FactoryGoalInput, FactoryPromptStrategy } from '../../domain/factory/factory-run';
 import { FactoryValidationError } from '../../domain/factory/errors';
@@ -603,12 +604,14 @@ const AGENT_ARGUMENT_TYPES: readonly string[] = ['string', 'number', 'boolean', 
  *
  * これを `SaveToolUseCase.inputSchema` に渡すことで Tool Calling契約（`toolToModelDefinition` が
  * inputSchema から導出するJSON Schema）と Tool使用ガイドの `input [...]` 表記が引数付きになり、
- * 実行時は `RunAgentPreviewUseCase` が filter条件の `valueBinding` を実引数へ差し替える。
+ * 実行時は `RunAgentPreviewUseCase` が filter条件の `valueBinding`（値）/ `opBinding`（演算子）を
+ * 実引数へ差し替える。
  *
  * 宣言が壊れている場合は `FactoryValidationError` を投げ、呼び出し側の修復ループへ回す:
  * - agent-input が2つ以上（実行時に inputSchema と一致検査するノードは1つに限る）
  * - schema.columns / sample が無い、引数型が扱えない、非nullable引数のサンプル値が無い
- * - 宣言したのに filter から参照されない引数がある（エージェントに無意味な引数を要求しない）
+ * - 宣言したのに filter の valueBinding / opBinding のどちらからも参照されない引数がある
+ *   （エージェントに無意味な引数を要求しない）
  *
  * サンプル値の型不一致は `EtlEngine.propagateSchemas`/`preview`（agent-input ノード自身の検証）が
  * 先に検出するため、ここでは存在確認だけを行う。
@@ -716,7 +719,7 @@ export function agentToolArgumentsOf(graph: ToolGraph): Schema | undefined {
   const bound = new Set(graph.nodes.filter((node) => node.type === 'filter').flatMap((node) => agentInputBindingFields(node.config)));
   const unused = schema.columns.filter((column) => !bound.has(column.name)).map((column) => column.name);
   if (unused.length > 0) {
-    throw new FactoryValidationError(`agent-input argument(s) never used by a filter: ${unused.join(', ')}. Bind each argument with valueBinding { "source": "agent-input", "field": "<argument name>" }`);
+    throw new FactoryValidationError(`agent-input argument(s) never used by a filter: ${unused.join(', ')}. Bind each argument with valueBinding { "source": "agent-input", "field": "<argument name>" } (or opBinding for an operator argument)`);
   }
   return schema;
 }
@@ -737,14 +740,19 @@ function toArgumentColumn(raw: unknown, sample: Record<string, unknown>): Column
   return { name: column.name, type: column.type as Column['type'], nullable };
 }
 
-/** filter config（旧形式のフラット1条件 / 新形式の conditions）が参照する agent-input のfield名。 */
+/**
+ * filter config（旧形式のフラット1条件 / 新形式の conditions）が valueBinding（値）/
+ * opBinding（演算子）で参照する agent-input のfield名。opBinding だけで消費される演算子引数も
+ * 「filter から参照される引数」なので、未使用引数エラーの対象から外れる。
+ */
 function agentInputBindingFields(config: unknown): string[] {
   const conditions = (config as { conditions?: unknown } | null)?.conditions;
   const sources = Array.isArray(conditions) ? conditions : [config];
-  return sources
+  const valueFields = sources
     .map((condition) => (condition as { valueBinding?: { source?: unknown; field?: unknown } } | null)?.valueBinding)
     .filter((binding): binding is { source: 'agent-input'; field: string } => binding?.source === 'agent-input' && typeof binding.field === 'string')
     .map((binding) => binding.field);
+  return [...valueFields, ...operatorBindingsOf(config).map((site) => site.field)];
 }
 
 function describePropagationErrors(propagation: PropagationResult): string {

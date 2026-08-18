@@ -95,16 +95,23 @@ function validToolProposalJson(): string {
 
 /**
  * 検索条件をエージェント引数として宣言する提案。未接続の agent-input が引数を宣言し、
- * filter の各条件が `valueBinding` でそれを消費する。
+ * filter の各条件が `valueBinding`（値）/ `opBinding`（演算子）でそれを消費する。
  */
-function argumentToolProposalJson(overrides?: { readonly undeclaredBinding?: string; readonly unusedArgument?: boolean }): string {
+function argumentToolProposalJson(overrides?: { readonly undeclaredBinding?: string; readonly unusedArgument?: boolean; readonly operatorArgument?: boolean }): string {
   const columns = [{ name: 'minimumAmount', type: 'number', nullable: false }];
   const sample: Record<string, unknown> = { minimumAmount: 100 };
   if (overrides?.unusedArgument === true) {
     columns.push({ name: 'unusedFlag', type: 'boolean', nullable: false });
     sample['unusedFlag'] = true;
   }
-  const conditions: unknown[] = [{ column: 'amount', op: 'gte', value: 100, valueBinding: { source: 'agent-input', field: 'minimumAmount' } }];
+  if (overrides?.operatorArgument === true) {
+    columns.push({ name: 'amountOp', type: 'string', nullable: false });
+    sample['amountOp'] = 'gte';
+  }
+  const opBinding = overrides?.operatorArgument === true
+    ? { opBinding: { source: 'agent-input', field: 'amountOp', allowed: ['gte', 'lte'] } }
+    : {};
+  const conditions: unknown[] = [{ column: 'amount', op: 'gte', value: 100, valueBinding: { source: 'agent-input', field: 'minimumAmount' }, ...opBinding }];
   if (overrides?.undeclaredBinding !== undefined) {
     conditions.push({ column: 'id', op: 'gte', value: 1, valueBinding: { source: 'agent-input', field: overrides.undeclaredBinding } });
   }
@@ -254,6 +261,28 @@ describe('GenerateAgentAssetsUseCase', () => {
     expect(tool?.inputSchema).toBeUndefined();
     const agent = await agentRepo.findVersion(scope, result.agentRef.internalId, SemVer.parse(result.agentRef.version));
     expect(agent?.systemPrompt).toContain('input [なし]');
+  });
+
+  it('opBindingだけで消費される演算子引数は未使用エラーにならず、inputSchemaへ含めて保存する', async () => {
+    const { model, toolRepo, profiles, useCase } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: argumentToolProposalJson({ operatorArgument: true }) }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const messages: string[] = [];
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 0, onEvent: (event) => { if (event.kind === 'tool_repair_attempted') messages.push(event.message ?? ''); } });
+
+    // 演算子引数 amountOp は valueBinding を持たないが opBinding が消費するので、修復ループへ回らない。
+    expect(messages).toEqual([]);
+    const toolRef = result.toolRefs[0];
+    if (toolRef === undefined) throw new Error('expected a tool ref');
+    const tool = await toolRepo.findVersion(scope, toolRef.internalId, SemVer.parse(toolRef.version));
+    expect(tool?.inputSchema).toEqual({ columns: [
+      { name: 'minimumAmount', type: 'number', nullable: true },
+      { name: 'amountOp', type: 'string', nullable: true },
+    ] });
   });
 
   it('未宣言fieldへのbindingや未使用の引数宣言は修復ループへ回す', async () => {
@@ -582,6 +611,40 @@ describe('agentToolArgumentsOf', () => {
       { column: 'id', op: 'gte', value: 1, valueBinding: { source: 'agent-input', field: 'region' } },
     ], combine: 'and' };
     expect(agentToolArgumentsOf(graphWith(optional, filterConfig))?.columns).toHaveLength(2);
+  });
+
+  it('opBindingだけで消費される引数は「never used by a filter」エラーにならない', () => {
+    const args = {
+      schema: { columns: [
+        { name: 'minimumAmount', type: 'number', nullable: false },
+        { name: 'amountOp', type: 'string', nullable: false },
+      ] },
+      sample: { minimumAmount: 100, amountOp: 'gte' },
+    };
+    const filterConfig = { conditions: [
+      { column: 'amount', op: 'gte', value: 100, valueBinding: { source: 'agent-input', field: 'minimumAmount' }, opBinding: { source: 'agent-input', field: 'amountOp', allowed: ['gte', 'lte'] } },
+    ], combine: 'and' };
+    expect(agentToolArgumentsOf(graphWith(args, filterConfig))?.columns.map((column) => column.name)).toEqual(['minimumAmount', 'amountOp']);
+  });
+
+  it('旧形式フラットconfigのopBinding（allowed省略）も引数の消費として数える', () => {
+    const args = { schema: { columns: [{ name: 'amountOp', type: 'string', nullable: true }] }, sample: {} };
+    const flat = { column: 'amount', op: 'gte', value: 100, opBinding: { source: 'agent-input', field: 'amountOp' } };
+    expect(agentToolArgumentsOf(graphWith(args, flat))).toEqual({ columns: [{ name: 'amountOp', type: 'string', nullable: true }] });
+  });
+
+  it('valueBindingもopBindingも無い引数は従来どおり未使用エラーになる', () => {
+    const args = {
+      schema: { columns: [
+        { name: 'amountOp', type: 'string', nullable: false },
+        { name: 'unusedFlag', type: 'boolean', nullable: false },
+      ] },
+      sample: { amountOp: 'gte', unusedFlag: true },
+    };
+    const filterConfig = { conditions: [
+      { column: 'amount', op: 'gte', value: 100, opBinding: { source: 'agent-input', field: 'amountOp', allowed: ['gte', 'lte'] } },
+    ], combine: 'and' };
+    expect(() => agentToolArgumentsOf(graphWith(args, filterConfig))).toThrow(/never used by a filter: unusedFlag/);
   });
 
   it('壊れた宣言・未使用の引数は修復ループ用のFactoryValidationErrorになる', () => {

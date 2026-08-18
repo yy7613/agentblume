@@ -111,6 +111,32 @@ describe('ToolSmithRole', () => {
     expect(system).toContain('"sample": { "month": "2026-05" }');
   });
 
+  it('演算子をエージェント引数で選ばせる opBinding ルールをsystemプロンプトへ含める', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
+    const role = new ToolSmithRole(model);
+
+    await role.propose({ toolPlan, profile });
+
+    const system = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
+    // 条件は opBinding で「比較の仕方そのもの」をエージェント引数に委ねられる。
+    expect(system).toContain('"opBinding": { "source": "agent-input", "field": "<argument name>", "allowed": [ <operator strings> ] }');
+    // 演算子引数は string 型で宣言し、非nullableならsampleはallowed内の演算子文字列。
+    expect(system).toMatch(/consumed by an opBinding MUST be declared with "type": "string"/);
+    expect(system).toMatch(/its "sample" value MUST be one of the operator strings in "allowed"/);
+    // 設計時の op は allowed に含め、nullable引数が省略されたときの既定演算子になる。
+    expect(system).toMatch(/design-time "op" MUST be listed in "allowed"/);
+    expect(system).toMatch(/default operator applied when a nullable operator argument is omitted/);
+    // allowed の語彙と、順序演算子の列型制約。
+    expect(system).toContain("'eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull'");
+    expect(system).toMatch(/Include 'gt'\/'gte'\/'lt'\/'lte' only when the condition's "column" is a number or date column/);
+    // 演算子引数は opBinding が消費する（valueBinding不要）。値と演算子は別引数。
+    expect(system).toMatch(/consumed by its opBinding alone; it needs no valueBinding/);
+    expect(system).toMatch(/two separate arguments \(two schema columns\)/);
+    // nullable時の既定演算子は agentTool.description へ明記する（既存のnullableルールと整合）。
+    expect(system).toMatch(/agentTool\.description must state the default operator used when they are omitted/);
+  });
+
   it('agent-input付きの提案（引数宣言つきグラフ）をそのままパースする', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: argumentProposalJson() }, finishReason: 'stop' });

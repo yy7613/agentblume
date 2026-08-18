@@ -393,6 +393,8 @@ function CurrentDatetimeFields({ config, setConfig }: { config: Readonly<Record<
 const FILTER_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull'] as const;
 /** 値を要さない演算子。 */
 const FILTER_VALUELESS_OPS: readonly string[] = ['isNull', 'notNull'];
+/** number|date 列を要する大小比較の演算子（opBinding 許可リストの初期値の絞り込みに使う）。 */
+const FILTER_ORDER_OPS: readonly string[] = ['gt', 'gte', 'lt', 'lte'];
 /** 記号で表せる演算子の表示ラベル（option の value = op コードは変えない）。 */
 const FILTER_OP_SYMBOLS: Readonly<Record<string, string>> = { eq: '=', neq: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤' };
 
@@ -402,6 +404,7 @@ interface FilterConditionDraft {
   readonly op: string;
   readonly value?: unknown;
   readonly valueBinding?: { readonly source?: string; readonly field?: string };
+  readonly opBinding?: { readonly source?: string; readonly field?: string; readonly allowed?: readonly string[] };
 }
 
 /** 条件1つ分のキーだけを持つプレーンなconfigへ（undefinedのキーは残さない）。 */
@@ -411,6 +414,7 @@ function filterConditionConfig(condition: FilterConditionDraft): Record<string, 
     op: condition.op,
     ...(condition.value === undefined ? {} : { value: condition.value }),
     ...(condition.valueBinding === undefined ? {} : { valueBinding: condition.valueBinding }),
+    ...(condition.opBinding === undefined ? {} : { opBinding: condition.opBinding }),
   };
 }
 
@@ -421,11 +425,13 @@ function filterConditionDrafts(config: Readonly<Record<string, unknown>>): Filte
   return sources.map((source) => {
     const raw = (source !== null && typeof source === 'object' ? source : {}) as Readonly<Record<string, unknown>>;
     const binding = raw['valueBinding'] as { source?: string; field?: string } | undefined;
+    const opBinding = raw['opBinding'] as { source?: string; field?: string; allowed?: readonly string[] } | undefined;
     return {
       column: typeof raw['column'] === 'string' ? raw['column'] : '',
       op: typeof raw['op'] === 'string' ? raw['op'] : 'eq',
       ...(raw['value'] === undefined ? {} : { value: raw['value'] }),
       ...(binding === undefined ? {} : { valueBinding: binding }),
+      ...(opBinding === undefined ? {} : { opBinding }),
     };
   });
 }
@@ -433,6 +439,7 @@ function filterConditionDrafts(config: Readonly<Record<string, unknown>>): Filte
 /**
  * filter の設定UI。1条件のときは旧形式のフラットconfigを書き戻し（保存済みTool・
  * agent-input バインディングの互換を保つ）、2条件以上で `{ conditions, combine }` へ切り替える。
+ * 各条件は valueBinding（値のAI引数化）と対称の opBinding（演算子のAI引数化）を持てる。
  */
 function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { config: Readonly<Record<string, unknown>>; replaceConfig(next: Record<string, unknown>): void; columns: readonly ColumnDto[]; agentInputColumns: readonly ColumnDto[] }) {
   const { text } = useI18n();
@@ -444,6 +451,8 @@ function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { c
   const conditions = filterConditionDrafts(config);
   const combine = config['combine'] === 'or' ? 'or' : 'and';
   const multiple = conditions.length > 1;
+  /** opBinding の束縛先候補。サーバーは string 型引数への束縛だけを許可する。 */
+  const stringInputColumns = agentInputColumns.filter((input) => input.type === 'string');
   const write = (next: readonly FilterConditionDraft[], nextCombine: string = combine) => {
     const first = next[0] ?? { column: '', op: 'eq' };
     replaceConfig(next.length <= 1
@@ -460,11 +469,34 @@ function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { c
       const binding = condition.valueBinding;
       const valueSource = binding?.source === 'agent-input' ? 'agent-input' : 'constant';
       const valueField = <label>{text('Value', '値')}<input value={String(condition.value ?? '')} onChange={(event) => patch(index, { value: coerce(event.target.value) })} /></label>;
+      const opBinding = condition.opBinding;
+      const opSource = opBinding?.source === 'agent-input' ? 'agent-input' : 'fixed';
+      /** 許可済み演算子（FILTER_OPS順へ正規化。allowed省略 = 全演算子）。 */
+      const allowedSource: readonly string[] = opBinding?.allowed ?? FILTER_OPS;
+      const allowedOps: readonly string[] = FILTER_OPS.filter((candidate) => allowedSource.includes(candidate));
+      // opBindingが有効な条件は実行時にどの許可演算子が来ても値が要り得るため、許可演算子のすべてが値不要のときだけ値エリアを消す。
+      const needsValue = opSource === 'agent-input' ? !allowedOps.every((op) => FILTER_VALUELESS_OPS.includes(op)) : !FILTER_VALUELESS_OPS.includes(condition.op);
+      /** 許可リストを書き戻す。全チェックならallowedキーを省き、現在のopが外れたら先頭の許可演算子へsnapする。 */
+      const setAllowed = (next: readonly string[]) => patch(index, { op: next.includes(condition.op) ? condition.op : (next[0] ?? condition.op), opBinding: { source: 'agent-input', field: opBinding?.field ?? '', ...(next.length === FILTER_OPS.length ? {} : { allowed: next }) } });
+      /** 取得元をエージェント入力へ切り替えた瞬間の初期値（列型がnumber|date以外なら大小比較を外し、opも許可内へsnapする）。 */
+      const boundOperatorPatch = (): Partial<FilterConditionDraft> => {
+        const allowed: readonly string[] | undefined = columnType === 'number' || columnType === 'date' ? undefined : FILTER_OPS.filter((op) => !FILTER_ORDER_OPS.includes(op));
+        return { op: allowed === undefined || allowed.includes(condition.op) ? condition.op : (allowed[0] ?? condition.op), opBinding: { source: 'agent-input', field: stringInputColumns[0]?.name ?? '', ...(allowed === undefined ? {} : { allowed }) } };
+      };
       return <Fragment key={index}>
         {multiple && <strong className="rule-title">{text(`Condition ${index + 1}`, `条件${index + 1}`)}</strong>}
         <label>{text('Column', '列')}<input list="upstream-columns" value={condition.column} onChange={(event) => patch(index, { column: event.target.value })} /></label>
-        <label>{text('Operator', '演算子')}<select aria-label={text('Operator', '演算子')} value={condition.op} onChange={(event) => patch(index, { op: event.target.value })}>{FILTER_OPS.map((value) => <option key={value} value={value}>{opLabel(value)}</option>)}</select></label>
-        {!FILTER_VALUELESS_OPS.includes(condition.op) && <>
+        <label>{text('Operator source', '演算子の取得元')}<select aria-label={text('Operator source', '演算子の取得元')} value={opSource} onChange={(event) => patch(index, event.target.value === 'agent-input' ? boundOperatorPatch() : { opBinding: undefined })}><option value="fixed">{text('Fixed operator', '固定')}</option><option value="agent-input">{text('Agent input', 'エージェント入力')}</option></select></label>
+        {opSource === 'agent-input'
+          ? <>
+              <label>{text('Agent input field (operator)', 'エージェント入力フィールド（演算子）')}<select aria-label={text('Agent input field (operator)', 'エージェント入力フィールド（演算子）')} value={opBinding?.field ?? ''} onChange={(event) => patch(index, { opBinding: { ...opBinding, source: 'agent-input', field: event.target.value } })}><option value="">{text('Select an input field', '入力フィールドを選択')}</option>{stringInputColumns.map((input) => <option key={input.name} value={input.name}>{input.name} · {input.type}</option>)}</select>{stringInputColumns.length === 0 && <small className="field-error">{text('Declare a string-typed argument on the Agent Input node first.', '先にAgent Inputノードで string 型の引数を宣言してください。')}</small>}</label>
+              <strong className="rule-title">{text('Operators the agent may choose', 'AIに許可する演算子')}</strong>
+              {FILTER_OPS.map((op) => <label className="check" key={op}><input type="checkbox" checked={allowedOps.includes(op)} disabled={allowedOps.length === 1 && allowedOps.includes(op)} onChange={(event) => setAllowed(FILTER_OPS.filter((candidate) => candidate === op ? event.target.checked : allowedOps.includes(candidate)))} /> {opLabel(op)}</label>)}
+              {columnType !== 'number' && columnType !== 'date' && <small>{text('Order operators need a number or date column.', '大小比較の演算子は number または date 列でのみ使えます。')}</small>}
+              <label>{text('Default operator', '既定の演算子')}<select aria-label={text('Default operator', '既定の演算子')} value={condition.op} onChange={(event) => patch(index, { op: event.target.value })}>{allowedOps.map((op) => <option key={op} value={op}>{opLabel(op)}</option>)}</select><small>{text('The default operator is the design-time preview sample. If the argument is optional (nullable), omitting it at run time falls back to this default.', '既定の演算子は設計時プレビューのサンプルです。引数が任意 (nullable) の場合、実行時に省略されるとこの既定が使われます。')}</small></label>
+            </>
+          : <label>{text('Operator', '演算子')}<select aria-label={text('Operator', '演算子')} value={condition.op} onChange={(event) => patch(index, { op: event.target.value })}>{FILTER_OPS.map((value) => <option key={value} value={value}>{opLabel(value)}</option>)}</select></label>}
+        {needsValue && <>
           <label>{text('Condition value', '条件値の取得元')}<select value={valueSource} onChange={(event) => patch(index, event.target.value === 'agent-input' ? { valueBinding: { source: 'agent-input', field: agentInputColumns[0]?.name ?? '' } } : { valueBinding: undefined })}><option value="constant">{text('Fixed value', '固定値')}</option><option value="agent-input">{text('Agent input', 'エージェント入力')}</option></select></label>
           {valueSource === 'agent-input'
             ? <label>{text('Agent input field', 'エージェント入力フィールド')}<select aria-label={text('Agent input field', 'エージェント入力フィールド')} value={binding?.field ?? ''} onChange={(event) => patch(index, { valueBinding: { source: 'agent-input', field: event.target.value } })}><option value="">{text('Select an input field', '入力フィールドを選択')}</option>{agentInputColumns.map((input) => <option key={input.name} value={input.name}>{input.name} · {input.type}</option>)}</select>{agentInputColumns.length === 0 && <small className="field-error">{text('Add an Agent Input node and define its schema first.', '先にAgent Inputノードを追加し、スキーマを定義してください。')}</small>}<small>{text('The fixed value remains the design-time preview sample.', '固定値は設計時プレビューのサンプルとして残ります。')}</small><small>{text('If the argument is optional (nullable), leaving it out at run time skips this condition.', '引数が任意 (nullable) の場合、未指定ならこの条件はスキップされます。')}</small></label>

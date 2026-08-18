@@ -330,3 +330,121 @@ describe('NodeInspector: filter の複数条件', () => {
     expect(screen.getByLabelText('条件の結合')).toBeTruthy();
   });
 });
+
+describe('NodeInspector: filter の演算子バインディング（opBinding）', () => {
+  /** agent-input ノードを追加して filter-1 を選択し直す（スキーマ省略時は既定の query:string）。 */
+  function withAgentInput(schemaColumns?: readonly { name: string; type: 'string' | 'number'; nullable: boolean }[]): void {
+    withUpstreamColumns();
+    const agentInputId = addNode('agent-input');
+    if (schemaColumns !== undefined) useToolBuilderStore.getState().updateNodeConfig(agentInputId, { schema: { columns: schemaColumns } });
+    useToolBuilderStore.getState().selectNode('filter-1');
+  }
+
+  it('取得元をエージェント入力にすると opBinding が書かれる（number列では allowed を省く = 全演算子）', async () => {
+    withAgentInput();
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'amount', op: 'gte', value: 18 });
+    render(<NodeInspector />);
+    await userEvent.selectOptions(screen.getByLabelText('Operator source'), 'agent-input');
+    expect(configOf('filter-1')).toEqual({ column: 'amount', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'query' } });
+  });
+
+  it('number|date 以外の列では大小比較を外した allowed を初期値にし、既定演算子を許可内へsnapする', async () => {
+    withAgentInput();
+    // starter条件の column 'age' は上流スキーマ（region:string / amount:number）に無いため列型は不明扱い。
+    render(<NodeInspector />);
+    await userEvent.selectOptions(screen.getByLabelText('Operator source'), 'agent-input');
+    expect(configOf('filter-1')).toEqual({
+      column: 'age', op: 'eq', value: 18,
+      opBinding: { source: 'agent-input', field: 'query', allowed: ['eq', 'neq', 'contains', 'isNull', 'notNull'] },
+    });
+    expect(screen.getByText('Order operators need a number or date column.')).toBeTruthy();
+  });
+
+  it('演算子チェックを外すと allowed が FILTER_OPS 順の部分集合になり、全チェックへ戻すと allowed キーが消える', async () => {
+    withAgentInput();
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'amount', op: 'gte', value: 18 });
+    render(<NodeInspector />);
+    await userEvent.selectOptions(screen.getByLabelText('Operator source'), 'agent-input');
+    await userEvent.click(screen.getByRole('checkbox', { name: 'contains' }));
+    expect(configOf('filter-1')['opBinding']).toEqual({
+      source: 'agent-input', field: 'query',
+      allowed: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'isNull', 'notNull'],
+    });
+    await userEvent.click(screen.getByRole('checkbox', { name: 'contains' }));
+    expect(configOf('filter-1')['opBinding']).toEqual({ source: 'agent-input', field: 'query' });
+  });
+
+  it('フィールド候補は string 型の agent-input 列に限定され、先頭の string 列が初期値になる', async () => {
+    withAgentInput([{ name: 'limit', type: 'number', nullable: true }, { name: 'opField', type: 'string', nullable: false }]);
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'amount', op: 'gte', value: 18 });
+    render(<NodeInspector />);
+    await userEvent.selectOptions(screen.getByLabelText('Operator source'), 'agent-input');
+    const options = Array.from(screen.getByLabelText('Agent input field (operator)').querySelectorAll('option')).map((option) => option.textContent);
+    expect(options).toEqual(['Select an input field', 'opField · string']);
+    expect((configOf('filter-1')['opBinding'] as { field: string }).field).toBe('opField');
+  });
+
+  it('string 型の引数が無ければ宣言を促す案内を出し、field は空で書く', async () => {
+    withAgentInput([{ name: 'limit', type: 'number', nullable: true }]);
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'amount', op: 'gte', value: 18 });
+    render(<NodeInspector />);
+    await userEvent.selectOptions(screen.getByLabelText('Operator source'), 'agent-input');
+    expect(screen.getByText('Declare a string-typed argument on the Agent Input node first.')).toBeTruthy();
+    expect((configOf('filter-1')['opBinding'] as { field: string }).field).toBe('');
+  });
+
+  it('既定の演算子は許可演算子に限定され、除外時は先頭の許可演算子へsnapする', async () => {
+    withAgentInput();
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'amount', op: 'gte', value: 18 });
+    render(<NodeInspector />);
+    await userEvent.selectOptions(screen.getByLabelText('Operator source'), 'agent-input');
+    await userEvent.click(screen.getByRole('checkbox', { name: '=' }));
+    expect(Array.from((screen.getByLabelText('Default operator') as HTMLSelectElement).options).map((option) => option.value))
+      .toEqual(['neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull']);
+    expect((screen.getByLabelText('Default operator') as HTMLSelectElement).value).toBe('gte');
+
+    await userEvent.click(screen.getByRole('checkbox', { name: '≥' }));
+    expect((configOf('filter-1') as { op: string }).op).toBe('neq');
+    expect((screen.getByLabelText('Default operator') as HTMLSelectElement).value).toBe('neq');
+  });
+
+  it('許可演算子の最後の1つは外せない（disabledになる）', () => {
+    withAgentInput();
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'region', op: 'eq', value: 'Tokyo', opBinding: { source: 'agent-input', field: 'query', allowed: ['eq'] } });
+    render(<NodeInspector />);
+    expect((screen.getByRole('checkbox', { name: '=' }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('checkbox', { name: '≠' }) as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('固定へ戻すと opBinding キーが消える', async () => {
+    withAgentInput();
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'amount', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'query' } });
+    render(<NodeInspector />);
+    await userEvent.selectOptions(screen.getByLabelText('Operator source'), 'fixed');
+    expect(configOf('filter-1')).toEqual({ column: 'amount', op: 'gte', value: 18 });
+  });
+
+  it('許可演算子がすべて isNull/notNull のときだけ値エリアを消す', () => {
+    withAgentInput();
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'region', op: 'isNull', opBinding: { source: 'agent-input', field: 'query', allowed: ['isNull', 'notNull'] } });
+    const { unmount } = render(<NodeInspector />);
+    expect(screen.queryByLabelText('Condition value')).toBeNull();
+    expect(screen.queryByLabelText('Value')).toBeNull();
+    unmount();
+
+    // op が値不要の isNull でも、値を要する演算子が1つでも許可されていれば値エリアを出す（実行時に値が要り得る）。
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'region', op: 'isNull', opBinding: { source: 'agent-input', field: 'query', allowed: ['eq', 'isNull'] } });
+    render(<NodeInspector />);
+    expect(screen.getByLabelText('Condition value')).toBeTruthy();
+  });
+
+  it('日本語UIでは取得元・フィールド・許可演算子・既定演算子のラベルを日本語で出す', async () => {
+    withAgentInput();
+    render(<I18nProvider initialLanguage="ja"><NodeInspector /></I18nProvider>);
+    await userEvent.selectOptions(screen.getByLabelText('演算子の取得元'), 'agent-input');
+    expect(screen.getByLabelText('エージェント入力フィールド（演算子）')).toBeTruthy();
+    expect(screen.getByText('AIに許可する演算子')).toBeTruthy();
+    expect(screen.getByLabelText('既定の演算子')).toBeTruthy();
+    expect(screen.getByText('既定の演算子は設計時プレビューのサンプルです。引数が任意 (nullable) の場合、実行時に省略されるとこの既定が使われます。')).toBeTruthy();
+  });
+});

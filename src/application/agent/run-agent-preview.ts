@@ -5,6 +5,7 @@ import { AgentNotFoundError } from '../../domain/agent/errors';
 import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
 import type { Row, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
+import { FILTER_OPS, isFilterOp, type FilterOp } from '../../domain/etl/nodes/filter';
 import type { RunApprovalCheckpoint, RunCheckpointMessage, RunCheckpointToolCall, RunLatencyBreakdown, RunMode, RunModelSnapshot, RunPurpose, RunRecord, RunStatus, RunTraceEvent, RunUsage } from '../../domain/run/run';
 import { failRun, resumeRunRecord, startRun, succeedRun, waitRunForApproval } from '../../domain/run/run';
 import { RunNotFoundError } from '../../domain/run/errors';
@@ -372,31 +373,68 @@ function hasSessionStorageSink(tool: Tool): boolean {
 }
 
 /**
- * filter の1条件について `valueBinding: { source:'agent-input', field }` を実引数へ解決する。
+ * filter の1条件について `opBinding: { source:'agent-input', field, allowed? }` を実行時の演算子へ解決する。
  * バインディングが無ければ同一参照をそのまま返す（差し替えの有無を呼び出し側が判定できる）。
+ *
+ * `optionalFields`（inputSchema で nullable な引数名）に含まれる引数が省略された／null のときは
+ * 設計時の `op` を既定演算子としてそのまま使う（条件は生かす。valueBinding の disabled 注入と違い、
+ * 「演算子を任せない」だけで絞り込み自体は行う）。nullable でない引数は従来どおり欠損をエラーにする。
+ * 引数が FilterOp でない・`allowed`（省略時は全演算子）に無いときは ToolArgumentsError にして、
+ * モデルの引数修復ループ（差し戻して呼び直させる）へ乗せる。
+ */
+function conditionWithOperatorArgument(nodeId: string, condition: unknown, row: Row, optionalFields: ReadonlySet<string>): unknown {
+  const binding = (condition as { opBinding?: { source?: unknown; field?: unknown; allowed?: unknown } } | null)?.opBinding;
+  if (binding?.source !== 'agent-input') return condition;
+  const field = typeof binding.field === 'string' ? binding.field : '';
+  // 引数が渡されていれば Cell、宣言と噛み合っていなければ undefined。
+  const argument = Object.prototype.hasOwnProperty.call(row, field) ? row[field] ?? null : undefined;
+  if (optionalFields.has(field) && (argument === undefined || argument === null)) return condition;
+  if (argument === undefined) {
+    throw new AgentRunError(`filter node '${nodeId}' references an unavailable Agent input`);
+  }
+  const allowed: readonly FilterOp[] = Array.isArray(binding.allowed) && binding.allowed.length > 0
+    ? (binding.allowed as readonly FilterOp[])
+    : FILTER_OPS;
+  if (!isFilterOp(argument) || !allowed.includes(argument)) {
+    throw new ToolArgumentsError(`invalid operator '${String(argument)}' for argument '${field}': expected one of ${allowed.join(', ')}`);
+  }
+  return argument === (condition as { op?: unknown }).op ? condition : { ...(condition as Record<string, unknown>), op: argument };
+}
+
+/**
+ * filter の1条件について agent-input バインディングを実引数へ解決する。opBinding（演算子）を
+ * valueBinding（値）より先に解決し、どちらの差し替えも起きなければ同一参照をそのまま返す
+ * （差し替えの有無を呼び出し側が判定できる）。
+ *
+ * 実効演算子（opBinding 解決後の op）が isNull/notNull のとき、その条件は value を評価しないため
+ * valueBinding の解決（value 差し替え・disabled 注入・欠損エラー）を丸ごとスキップする。
+ * value 側の nullable 引数が省略されていても条件は disabled にせず isNull/notNull として評価する。
  *
  * `optionalFields`（inputSchema で nullable な引数名）に含まれる引数が省略された／null のときは
  * value を触らず `disabled: true` を注入し、その条件を実行時にスキップさせる（「全リージョン」の
  * ように絞り込み自体が不要なケース）。nullable でない引数は従来どおり欠損をエラーにする。
  */
 function conditionWithArgument(nodeId: string, condition: unknown, row: Row, optionalFields: ReadonlySet<string>): unknown {
-  const binding = (condition as { valueBinding?: { source?: unknown; field?: unknown } } | null)?.valueBinding;
-  if (binding?.source !== 'agent-input') return condition;
+  const resolved = conditionWithOperatorArgument(nodeId, condition, row, optionalFields);
+  const op = (resolved as { op?: unknown } | null)?.op;
+  if (op === 'isNull' || op === 'notNull') return resolved;
+  const binding = (resolved as { valueBinding?: { source?: unknown; field?: unknown } } | null)?.valueBinding;
+  if (binding?.source !== 'agent-input') return resolved;
   const field = typeof binding.field === 'string' ? binding.field : '';
   // 引数が渡されていれば Cell、宣言と噛み合っていなければ undefined。
   const argument = Object.prototype.hasOwnProperty.call(row, field) ? row[field] ?? null : undefined;
   if (optionalFields.has(field) && (argument === undefined || argument === null)) {
-    return { ...(condition as Record<string, unknown>), disabled: true };
+    return { ...(resolved as Record<string, unknown>), disabled: true };
   }
   if (argument === undefined) {
     throw new AgentRunError(`filter node '${nodeId}' references an unavailable Agent input`);
   }
-  return { ...(condition as Record<string, unknown>), value: argument };
+  return { ...(resolved as Record<string, unknown>), value: argument };
 }
 
 /**
  * filter config の agent-input バインディングを実行時引数で解決する。旧形式（フラットな1条件）と
- * 新形式（`{ conditions, combine }`）の両方を扱い、元の形式を保ったまま value だけを差し替える。
+ * 新形式（`{ conditions, combine }`）の両方を扱い、元の形式を保ったまま op / value だけを差し替える。
  */
 function filterConfigWithArguments(nodeId: string, config: unknown, row: Row, optionalFields: ReadonlySet<string>): unknown {
   const conditions = (config as { conditions?: unknown } | null)?.conditions;

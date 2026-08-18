@@ -98,6 +98,27 @@ describe('filter: validateConfig', () => {
     expect(() => filterNode.validateConfig({ conditions: [{ column: 'age', op: 'between' }] }))
       .toThrowError(/conditions\.0\.op: Invalid option/);
   });
+
+  it('accepts an operator binding with and without an allowed list', () => {
+    expect(filterNode.validateConfig({ column: 'age', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'ageOp' } }))
+      .toMatchObject({ opBinding: { source: 'agent-input', field: 'ageOp' } });
+    expect(filterNode.validateConfig({ column: 'age', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'lt'] } }))
+      .toMatchObject({ opBinding: { allowed: ['gte', 'lt'] } });
+  });
+
+  it('rejects an empty allowed list and an unknown operator inside allowed', () => {
+    expect(() => filterNode.validateConfig({ column: 'age', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'ageOp', allowed: [] } }))
+      .toThrowError(ConfigError);
+    expect(() => filterNode.validateConfig({ column: 'age', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'between'] } }))
+      .toThrowError(ConfigError);
+  });
+
+  it('accepts a per-condition operator binding in the conditions shape', () => {
+    expect(filterNode.validateConfig({
+      conditions: [{ column: 'age', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'lte'] } }],
+      combine: 'and',
+    })).toMatchObject({ conditions: [{ opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'lte'] } }] });
+  });
 });
 
 describe('filter: inferSchema', () => {
@@ -189,6 +210,44 @@ describe('filter: inferSchema', () => {
 
   it('disabled: false is still inspected (backward compatible with an explicit marker)', () => {
     expect(filterNode.inferSchema([schema], { column: 'nope', op: 'eq', value: 1, disabled: false }).state).toBe('mismatch');
+  });
+
+  it('opBinding without allowed on a string column -> error (any order op could be picked at runtime)', () => {
+    const inf = filterNode.inferSchema([schema], {
+      column: 'name', op: 'eq', value: 'Alice',
+      opBinding: { source: 'agent-input', field: 'nameOp' },
+    });
+    expect(inf.state).toBe('mismatch');
+    expect(inf.issues[0]?.severity).toBe('error');
+    expect(inf.issues[0]?.message).toContain('restrict opBinding.allowed');
+  });
+
+  it('opBinding on a string column restricted to non-order ops -> confirmed', () => {
+    const inf = filterNode.inferSchema([schema], {
+      column: 'name', op: 'eq', value: 'Alice',
+      opBinding: { source: 'agent-input', field: 'nameOp', allowed: ['eq', 'contains'] },
+    });
+    expect(inf.state).toBe('confirmed');
+    expect(inf.issues).toEqual([]);
+  });
+
+  it('opBinding allowing order ops on a number column -> confirmed', () => {
+    const inf = filterNode.inferSchema([schema], {
+      column: 'age', op: 'gte', value: 18,
+      opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'lte'] },
+    });
+    expect(inf.state).toBe('confirmed');
+    expect(inf.issues).toEqual([]);
+  });
+
+  it('design-time op outside opBinding.allowed -> error (it is the runtime fallback)', () => {
+    const inf = filterNode.inferSchema([schema], {
+      column: 'age', op: 'eq', value: 18,
+      opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'lte'] },
+    });
+    expect(inf.state).toBe('mismatch');
+    expect(inf.issues[0]?.severity).toBe('error');
+    expect(inf.issues[0]?.message).toContain('is not in opBinding.allowed');
   });
 });
 

@@ -345,6 +345,19 @@ describe('ETL定型文の日本語化（GraphError / ConfigError / SchemaError�
   it('未知のETL定型文はheadingだけ差し替え、詳細は原文のまま残す（握りつぶさない）', () => {
     expect(ja(422, 'ETL_GRAPH', 'cycle detected: a -> b -> a')).toBe('ノードの接続を確認してください（cycle detected: a -> b -> a）');
   });
+
+  it('filter の opBinding 検証（既定演算子が許可リスト外）を日本語化する', () => {
+    expect(ja(422, 'ETL_SCHEMA', "filter: default operator 'gt' is not in opBinding.allowed (eq, neq)"))
+      .toBe('列名または型が一致していません。上流ノードの出力を確認してください（既定の演算子「gt」がAIに許可する演算子(eq, neq)に含まれていません）');
+    expect(en(422, 'ETL_SCHEMA', "filter: default operator 'gt' is not in opBinding.allowed (eq, neq)"))
+      .toBe("The column names or types do not match. Check the upstream node output (filter: default operator 'gt' is not in opBinding.allowed (eq, neq))");
+  });
+
+  it('filter の opBinding 検証（列型が大小比較を許さない。セミコロンを含む1文）を丸ごと日本語化する', () => {
+    const raw = "filter: opBinding on 'region' allows operator(s) gt|gte which require column type number|date, but 'region' is 'string'; restrict opBinding.allowed";
+    expect(ja(422, 'ETL_SCHEMA', raw))
+      .toBe('列名または型が一致していません。上流ノードの出力を確認してください（列「region」(文字列)では大小比較の演算子(gt|gte)をAIに許可できません。AIに許可する演算子を絞ってください）');
+  });
 });
 
 describe('localizeSchemaIssueMessage（ノード単位のSchemaIssue/propagation issueの日本語化）', () => {
@@ -357,6 +370,13 @@ describe('localizeSchemaIssueMessage（ノード単位のSchemaIssue/propagation
       .toBe('結合キーの型が一致しません: id (文字列) と id (数値)');
     expect(localizeSchemaIssueMessage('join: output exceeded 100000 rows; check join keys', 'ja'))
       .toBe('結合結果が10万行を超えました。結合キーが正しいか確認してください');
+  });
+
+  it('filter の opBinding 検証issueも同じ関数で日本語化できる（見出しなし）', () => {
+    expect(localizeSchemaIssueMessage("filter: default operator 'lt' is not in opBinding.allowed (eq, isNull)", 'ja'))
+      .toBe('既定の演算子「lt」がAIに許可する演算子(eq, isNull)に含まれていません');
+    expect(localizeSchemaIssueMessage("filter: opBinding on 'region' allows operator(s) lt|lte which require column type number|date, but 'region' is 'string'; restrict opBinding.allowed", 'ja'))
+      .toBe('列「region」(文字列)では大小比較の演算子(lt|lte)をAIに許可できません。AIに許可する演算子を絞ってください');
   });
 
   it('joinのwarning系issue(型不一致の可能性・文字列比較)を日本語化する', () => {
@@ -502,5 +522,29 @@ describe('エージェント実行エラー（AGENT_RUN / TOOL_ARGUMENTS / UNSAF
   it('中断されたRunの失敗コードにも見出しがある', () => {
     expect(localizeApiErrorMessage({ status: 499, code: 'RUN_CANCELLED', serverMessage: 'run cancelled by the user' }, 'ja'))
       .toBe('実行を中断しました');
+  });
+});
+
+/**
+ * filter の opBinding（演算子のAI引数化）の保存時検証。`TOOL_VALIDATION` の見出しに続く詳細として、
+ * 原因の言い換えと次の一手（Agent Input の型変更 / 許可リストの見直し）を両言語で出す。
+ */
+describe('SaveTool の opBinding 検証（TOOL_VALIDATION）の日本語化', () => {
+  function toolValidation(message: string, language: 'en' | 'ja' = 'ja'): string {
+    return localizeApiErrorMessage({ status: 400, code: 'TOOL_VALIDATION', serverMessage: message }, language);
+  }
+
+  it('string 以外の引数への演算子束縛は、Agent Input の型変更へ誘導する', () => {
+    expect(toolValidation("SaveTool: operator binding for argument 'op' requires a string argument, but it is declared as 'number'"))
+      .toBe('ツール定義を確認してください（演算子を受け取る引数「op」は string 型で宣言する必要がありますが、number 型になっています。Agent Inputノードで型を string に変更してください）');
+    expect(toolValidation("SaveTool: operator binding for argument 'op' requires a string argument, but it is declared as 'number'", 'en'))
+      .toBe("Please check the tool definition (the operator-bound argument 'op' must be a string argument, but it is declared as 'number'. Change its type to string on the Agent Input node)");
+  });
+
+  it('共通の許可演算子が無いときは、条件間の許可リストを揃える案内にする', () => {
+    expect(toolValidation("SaveTool: operator binding for argument 'op' has no operator that every condition allows"))
+      .toBe('ツール定義を確認してください（引数「op」で演算子を受け取る条件の間に、共通して許可された演算子が1つもありません。各条件の「AIに許可する演算子」を見直してください）');
+    expect(toolValidation("SaveTool: operator binding for argument 'op' has no operator that every condition allows", 'en'))
+      .toContain("no operator is allowed by every condition that binds argument 'op'");
   });
 });

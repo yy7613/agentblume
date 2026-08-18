@@ -16,6 +16,11 @@
  * nullable 引数が実行時に省略されたとき application層（`graphWithArguments`）が注入する。
  * 残った条件が0件になった場合、filter は全行を通すパススルーになる（スキーマは不変）。
  *
+ * 各条件は `opBinding?: { source:'agent-input', field, allowed? }` を持てる。実行時に Agent Tool の
+ * string引数で演算子そのものを差し替える参照で、`allowed` は Agent が選べる演算子の許可リスト
+ * （省略時は全演算子）。設計時の `op` はプレビューのサンプルかつ、nullable 引数が省略されたときの
+ * 既定演算子。inferSchema は「許可されたどの演算子が選ばれても列型が成立するか」を検証する。
+ *
  * inferSchema / execute は両形式を条件配列へ正規化して処理する（disabled は除外する）。
  * - inferSchema: 各条件の `column` 存在必須（欠損 → error/mismatch）。`gt|gte|lt|lte` は
  *   列型が number|date 必須（違反 → 型不一致 error + mismatch）。問題が無ければ入力
@@ -31,11 +36,30 @@ import { ConfigError } from '../errors';
 import type { EtlNode, NodeKind, SchemaInference, SchemaIssue } from '../node';
 import { zodMessage } from './zod-error';
 
+/** フィルタ演算子の正準リスト（UI・Tool公開スキーマ・実行時検証が共有する唯一の定義）。 */
+export const FILTER_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull'] as const;
+
 /** フィルタ演算子。 */
-export type FilterOp = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains' | 'isNull' | 'notNull';
+export type FilterOp = (typeof FILTER_OPS)[number];
+
+/** 値が FilterOp か。Agent 引数から実行時に演算子を受け取るときの検証に使う。 */
+export function isFilterOp(value: unknown): value is FilterOp {
+  return typeof value === 'string' && (FILTER_OPS as readonly string[]).includes(value);
+}
 
 /** 複数条件の結合方法。 */
 export type FilterCombine = 'and' | 'or';
+
+/**
+ * 実行時に Agent Tool の引数（string型）で op を上書きする参照。
+ * `allowed` は Agent が選べる演算子の許可リスト（省略時は全演算子）。設計時の `op` は
+ * プレビューのサンプルであり、引数が nullable で省略されたときの既定演算子にもなる。
+ */
+export interface OperatorBinding {
+  readonly source: 'agent-input';
+  readonly field: string;
+  readonly allowed?: readonly FilterOp[];
+}
 
 /** 条件1つ。旧形式のフラット config もこの形（1条件）として扱う。 */
 export interface FilterCondition {
@@ -44,6 +68,8 @@ export interface FilterCondition {
   readonly value?: Cell;
   /** 実行時に Agent Tool の引数で value を上書きする参照。設計時は value をsampleに使う。 */
   readonly valueBinding?: { readonly source: 'agent-input'; readonly field: string };
+  /** 実行時に Agent Tool の引数で op を上書きする参照。設計時は op を既定値として使う。 */
+  readonly opBinding?: OperatorBinding;
   /**
    * 実行時スキップの内部マーカー。true の条件は無いものとして扱う。
    * nullable な Agent Tool 引数が省略されたときに application層が注入する。
@@ -74,9 +100,14 @@ const cellSchema: z.ZodType<Cell> = z.union([
 
 const conditionSchema = z.object({
   column: z.string(),
-  op: z.enum(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull']),
+  op: z.enum(FILTER_OPS),
   value: cellSchema.optional(),
   valueBinding: z.object({ source: z.literal('agent-input'), field: z.string().min(1) }).optional(),
+  opBinding: z.object({
+    source: z.literal('agent-input'),
+    field: z.string().min(1),
+    allowed: z.array(z.enum(FILTER_OPS)).min(1).optional(),
+  }).optional(),
   disabled: z.boolean().optional(),
 });
 
@@ -153,7 +184,7 @@ function evaluate(cell: Cell, op: FilterOp, value: Cell): boolean {
   }
 }
 
-/** 1条件のスキーマ検証（列存在 / 順序演算子の列型）。 */
+/** 1条件のスキーマ検証（列存在 / 順序演算子の列型 / opBinding の整合）。 */
 function conditionIssues(input: Schema, condition: FilterCondition): SchemaIssue[] {
   const col = findColumn(input, condition.column);
   if (col === undefined) {
@@ -163,14 +194,35 @@ function conditionIssues(input: Schema, condition: FilterCondition): SchemaIssue
       column: condition.column,
     }];
   }
+  const issues: SchemaIssue[] = [];
   if (ORDER_OPS.has(condition.op) && col.type !== 'number' && col.type !== 'date') {
-    return [{
+    issues.push({
       severity: 'error',
       message: `filter: operator '${condition.op}' requires column type number|date, but '${condition.column}' is '${col.type}'`,
       column: condition.column,
-    }];
+    });
   }
-  return [];
+  const binding = condition.opBinding;
+  if (binding !== undefined) {
+    // 既定演算子（設計時の op）は許可リストの中から選ぶ。実行時省略のフォールバック先でもあるため。
+    if (binding.allowed !== undefined && !binding.allowed.includes(condition.op)) {
+      issues.push({
+        severity: 'error',
+        message: `filter: default operator '${condition.op}' is not in opBinding.allowed (${binding.allowed.join(', ')})`,
+        column: condition.column,
+      });
+    }
+    // 実行時にどの許可演算子が選ばれても成立するよう、順序演算子を許すなら列型 number|date を要求する。
+    const orderable = (binding.allowed ?? FILTER_OPS).filter((op) => ORDER_OPS.has(op));
+    if (orderable.length > 0 && col.type !== 'number' && col.type !== 'date') {
+      issues.push({
+        severity: 'error',
+        message: `filter: opBinding on '${condition.column}' allows operator(s) ${orderable.join('|')} which require column type number|date, but '${condition.column}' is '${col.type}'; restrict opBinding.allowed`,
+        column: condition.column,
+      });
+    }
+  }
+  return issues;
 }
 
 /** 1行 × 1条件の判定（欠損キーは null 扱い）。 */
@@ -226,3 +278,40 @@ class FilterNode implements EtlNode<FilterConfig> {
 
 /** `filter` ノードのシングルトン。 */
 export const filterNode: EtlNode<FilterConfig> = new FilterNode();
+
+/** opBinding を持つ条件1つ分の情報（application層の保存検証・Tool公開・Factoryが共有する）。 */
+export interface OperatorBindingSite {
+  /** バインド先の Agent 引数名。 */
+  readonly field: string;
+  /** フィルタ対象の列名（未設定の config では空文字）。 */
+  readonly column: string;
+  /** Agent が選べる演算子（`allowed` 省略時は全演算子へ展開済み）。 */
+  readonly allowed: readonly FilterOp[];
+  /** 設計時の既定演算子（nullable 引数が実行時に省略されたときのフォールバック）。 */
+  readonly defaultOp?: FilterOp;
+}
+
+/**
+ * 未検証の filter config（旧フラット形式 / 新 conditions 形式）から opBinding を持つ条件を集める。
+ * 実行時（`graphWithArguments`）に演算子が差し替わる対象と同じ集合を返す。
+ */
+export function operatorBindingsOf(config: unknown): OperatorBindingSite[] {
+  const conditions = (config as { conditions?: unknown } | null)?.conditions;
+  const sources = Array.isArray(conditions) ? conditions : [config];
+  const sites: OperatorBindingSite[] = [];
+  for (const source of sources) {
+    const condition = (source ?? {}) as { column?: unknown; op?: unknown; opBinding?: { source?: unknown; field?: unknown; allowed?: unknown } };
+    const binding = condition.opBinding;
+    if (binding?.source !== 'agent-input' || typeof binding.field !== 'string' || binding.field === '') continue;
+    const allowed = Array.isArray(binding.allowed) && binding.allowed.length > 0
+      ? binding.allowed.filter(isFilterOp)
+      : FILTER_OPS;
+    sites.push({
+      field: binding.field,
+      column: typeof condition.column === 'string' ? condition.column : '',
+      allowed,
+      ...(isFilterOp(condition.op) ? { defaultOp: condition.op } : {}),
+    });
+  }
+  return sites;
+}

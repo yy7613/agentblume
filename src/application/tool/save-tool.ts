@@ -13,6 +13,8 @@
  */
 import type { Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
+import { FILTER_OPS, operatorBindingsOf } from '../../domain/etl/nodes/filter';
+import type { OperatorBindingSite } from '../../domain/etl/nodes/filter';
 import { ToolValidationError } from '../../domain/tool/errors';
 import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { PublishState, SideEffect } from '../../domain/tool/metadata';
@@ -130,15 +132,43 @@ function agentInputBindingsOf(config: unknown): { readonly source: 'agent-input'
     .filter((binding): binding is { source: 'agent-input'; field: string } => binding?.source === 'agent-input' && typeof binding.field === 'string');
 }
 
+/**
+ * filter ノードの Agent 引数バインド（valueBinding / opBinding）を宣言済み inputSchema と照合する。
+ * - どちらのバインドがあっても inputSchema の宣言が必須で、参照 field は列として存在すること。
+ * - opBinding の field は string 型の引数であること（演算子は inputSchema 上 string で受け取る契約）。
+ * - 同一 field を複数条件がバインドする場合、全条件の allowed に共通する演算子が少なくとも1つ残ること
+ *   （積集合が空だと Agent はどの演算子も渡せない）。
+ * エラーメッセージの英文は UI 側の日本語化が文字列一致で依存するため変更しないこと。
+ */
 function validateAgentInputBindings(graph: ToolGraph, inputSchema: Schema | undefined): void {
-  const bindings = graph.nodes
+  const configs = graph.nodes
     .filter((node) => node.type === 'filter')
-    .flatMap((node) => agentInputBindingsOf(node.config));
-  if (bindings.length === 0) return;
+    .map((node) => node.config);
+  const valueBindings = configs.flatMap((config) => agentInputBindingsOf(config));
+  const operatorSites = configs.flatMap((config) => operatorBindingsOf(config));
+  if (valueBindings.length === 0 && operatorSites.length === 0) return;
   if (inputSchema === undefined) throw new ToolValidationError('SaveTool: Agent input bindings require an inputSchema');
-  for (const binding of bindings) {
+  for (const binding of valueBindings) {
     if (!inputSchema.columns.some((column) => column.name === binding.field)) {
       throw new ToolValidationError(`SaveTool: Agent input binding references unknown field '${binding.field}'`);
+    }
+  }
+  const sitesByField = new Map<string, OperatorBindingSite[]>();
+  for (const site of operatorSites) {
+    const sites = sitesByField.get(site.field);
+    if (sites === undefined) sitesByField.set(site.field, [site]);
+    else sites.push(site);
+  }
+  for (const [field, sites] of sitesByField) {
+    const column = inputSchema.columns.find((candidate) => candidate.name === field);
+    if (column === undefined) {
+      throw new ToolValidationError(`SaveTool: Agent input binding references unknown field '${field}'`);
+    }
+    if (column.type !== 'string') {
+      throw new ToolValidationError(`SaveTool: operator binding for argument '${field}' requires a string argument, but it is declared as '${column.type}'`);
+    }
+    if (!FILTER_OPS.some((op) => sites.every((site) => site.allowed.includes(op)))) {
+      throw new ToolValidationError(`SaveTool: operator binding for argument '${field}' has no operator that every condition allows`);
     }
   }
 }

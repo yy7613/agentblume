@@ -158,6 +158,67 @@ describe('SaveToolUseCase', () => {
       .rejects.toThrow(/Agent input bindings require an inputSchema/);
   });
 
+  it('filterのopBindingが未知のfieldを参照したら保存を拒否する', async () => {
+    const { usecase } = makeSut();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42 }] } },
+        { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, opBinding: { source: 'agent-input', field: 'scoreOp' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph, inputSchema: { columns: [{ name: 'other', type: 'string', nullable: false }] } })))
+      .rejects.toThrow(/Agent input binding references unknown field 'scoreOp'/);
+    await expect(usecase.execute(makeInput({ internalId: 'op-no-schema', graph })))
+      .rejects.toThrow(/Agent input bindings require an inputSchema/);
+  });
+
+  it('string以外の型の引数へのopBindingは保存を拒否する', async () => {
+    const { usecase, repo } = makeSut();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42 }] } },
+        { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, opBinding: { source: 'agent-input', field: 'scoreOp' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph, inputSchema: { columns: [{ name: 'scoreOp', type: 'number', nullable: false }] } })))
+      .rejects.toThrow(/SaveTool: operator binding for argument 'scoreOp' requires a string argument, but it is declared as 'number'/);
+    expect(repo.size).toBe(0);
+  });
+
+  it('同一fieldを複数条件がバインドしallowedの積集合が空なら保存を拒否する', async () => {
+    const { usecase, repo } = makeSut();
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42, price: 10 }] } },
+        { id: 'filter', type: 'filter', config: { conditions: [
+          { column: 'score', op: 'gt', value: 0, opBinding: { source: 'agent-input', field: 'op', allowed: ['gt'] } },
+          { column: 'price', op: 'lt', value: 100, opBinding: { source: 'agent-input', field: 'op', allowed: ['lt'] } },
+        ], combine: 'and' } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph, inputSchema: { columns: [{ name: 'op', type: 'string', nullable: false }] } })))
+      .rejects.toThrow(/SaveTool: operator binding for argument 'op' has no operator that every condition allows/);
+    expect(repo.size).toBe(0);
+  });
+
+  it('string型引数へのopBindingは保存できる', async () => {
+    const { usecase } = makeSut();
+    const inputSchema = { columns: [{ name: 'scoreOp', type: 'string' as const, nullable: false }] };
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42 }] } },
+        { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, opBinding: { source: 'agent-input', field: 'scoreOp', allowed: ['gt', 'gte', 'lt', 'lte'] } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: inputSchema, sample: { scoreOp: 'gte' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph, inputSchema })))
+      .resolves.toMatchObject({ inputSchema: { columns: [{ name: 'scoreOp' }] } });
+  });
+
   it('2回目の保存は既定 patch で 1.0.1', async () => {
     const { usecase } = makeSut();
 

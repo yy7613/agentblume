@@ -315,6 +315,92 @@ describe('RunAgentPreviewUseCase', () => {
     });
   });
 
+  describe('opBinding（演算子をTool引数で差し替える）', () => {
+    // scoreOp / noteOp / note は nullable（省略可）、minimumScore は必須。
+    // score 条件は allowed 省略（全演算子）、note 条件は allowed で eq/isNull/notNull に絞る。
+    const opSchema: Schema = { columns: [
+      { name: 'minimumScore', type: 'number', nullable: false },
+      { name: 'scoreOp', type: 'string', nullable: true },
+      { name: 'note', type: 'string', nullable: true },
+      { name: 'noteOp', type: 'string', nullable: true },
+    ] };
+    const opTool = (): Tool => createTool({
+      metadata: { internalId: 'op-search', workingName: 'op-search', displayName: 'Operator search', publishName: 'op_search', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: opSchema,
+      agentTool: { name: 'search_scores', description: 'Search scores; pass scoreOp/noteOp to change the comparison.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [
+          { name: 'Alice', score: 42, note: 'paid' },
+          { name: 'Bob', score: 7, note: null },
+          { name: 'Carol', score: 90, note: 'trial' },
+        ] } },
+        { id: 'filter', type: 'filter', config: { conditions: [
+          { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: 'minimumScore' }, opBinding: { source: 'agent-input', field: 'scoreOp' } },
+          { column: 'note', op: 'eq', value: 'paid', valueBinding: { source: 'agent-input', field: 'note' }, opBinding: { source: 'agent-input', field: 'noteOp', allowed: ['eq', 'isNull', 'notNull'] } },
+        ], combine: 'and' } },
+        { id: 'arguments', type: 'agent-input', config: { schema: opSchema, sample: { minimumScore: 0 } } },
+      ], edges: [{ from: 'data', to: 'filter' }] },
+    });
+    const callWith = async (args: JsonObject): Promise<string> => {
+      const model = new QueueModel([
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_scores', arguments: args }] }, finishReason: 'tool_calls' },
+        { message: { role: 'assistant', content: 'done' }, finishReason: 'stop' },
+      ]);
+      await useCase(opTool(), model).execute({ ...input, toolId: 'op-search' });
+      return String(model.requests[1]?.messages.at(-1)?.content);
+    };
+
+    it('AIが渡した演算子でfilterが実行される（既定gteをltへ差し替えると結果行が変わる）', async () => {
+      const result = await callWith({ minimumScore: 40, scoreOp: 'lt' });
+      expect(result).toContain('Bob'); // 40点未満。
+      expect(result).not.toContain('Alice');
+      expect(result).not.toContain('Carol');
+    });
+
+    it('FilterOpでない文字列は差し戻され、直らなければToolArgumentsErrorで拒否する', async () => {
+      const model = new QueueModel([
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_scores', arguments: { minimumScore: 0, scoreOp: 'between' } }] }, finishReason: 'tool_calls' },
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search-2', name: 'search_scores', arguments: { minimumScore: 0, scoreOp: 'between' } }] }, finishReason: 'tool_calls' },
+      ]);
+      await expect(useCase(opTool(), model).execute({ ...input, toolId: 'op-search' }))
+        .rejects.toThrow(/invalid operator 'between' for argument 'scoreOp'/);
+      // 差し戻しはツール結果としてモデルへ返る（次の往復でエラー内容が見えている）。
+      expect(JSON.stringify(model.requests[1]?.messages)).toContain("invalid operator 'between'");
+    });
+
+    it('allowed外の演算子は許可リストを添えて拒否する', async () => {
+      const model = new QueueModel([
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search', name: 'search_scores', arguments: { minimumScore: 0, note: 'pa', noteOp: 'contains' } }] }, finishReason: 'tool_calls' },
+        { message: { role: 'assistant', content: null, toolCalls: [{ id: 'search-2', name: 'search_scores', arguments: { minimumScore: 0, note: 'pa', noteOp: 'contains' } }] }, finishReason: 'tool_calls' },
+      ]);
+      // contains はFilterOpだが note 条件の allowed には無い。
+      await expect(useCase(opTool(), model).execute({ ...input, toolId: 'op-search' }))
+        .rejects.toThrow(/invalid operator 'contains' for argument 'noteOp': expected one of eq, isNull, notNull/);
+    });
+
+    it('nullableのop引数を省略すると設計時の既定opで実行される（条件はスキップされない）', async () => {
+      const result = await callWith({ minimumScore: 40 });
+      expect(result).toContain('Alice'); // 既定の gte 40。
+      expect(result).toContain('Carol');
+      expect(result).not.toContain('Bob'); // 条件が disabled になっていれば Bob も残ってしまう。
+    });
+
+    it('実行時にisNullへ解決されたら、value側のnullable引数が省略されていても条件はisNullとして効く', async () => {
+      const result = await callWith({ minimumScore: 0, noteOp: 'isNull' });
+      expect(result).toContain('Bob'); // note が null の行だけ。
+      expect(result).not.toContain('Alice'); // 条件が disabled になっていれば全行が残ってしまう。
+      expect(result).not.toContain('Carol');
+    });
+
+    it('valueBindingとopBindingを併用すると値と演算子の両方が差し替わる', async () => {
+      // score 条件: op gte→gt / value 0→50。note 条件: value paid→trial（op は既定の eq のまま）。
+      const result = await callWith({ minimumScore: 50, scoreOp: 'gt', note: 'trial' });
+      expect(result).toContain('Carol'); // 50点超 かつ note=trial。
+      expect(result).not.toContain('Alice');
+      expect(result).not.toContain('Bob');
+    });
+  });
+
   it('workspace-output stores an Artifact in the Run session and returns only its descriptor to the model', async () => {
     const workspaceTool = createTool({
       metadata: { internalId: 'workspace-tool', workingName: 'workspace-tool', displayName: 'Workspace tool', publishName: 'workspace_tool', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },

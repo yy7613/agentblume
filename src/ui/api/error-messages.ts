@@ -356,6 +356,14 @@ function localizeEtlDetail(message: string, language: ErrorLanguage): string | u
   matched = /^([A-Za-z][A-Za-z0-9_-]*): aggregate '(.+)' requires a column for op '(.+)'$/.exec(message);
   if (matched !== null) return `集計「${matched[2]}」には ${matched[3]} の対象列が必要です`;
 
+  // filter の opBinding（演算子のAI引数化）の検証（src/domain/etl/nodes/filter.ts）。
+  matched = /^filter: default operator '(.+)' is not in opBinding\.allowed \((.+)\)$/.exec(message);
+  if (matched !== null) return `既定の演算子「${matched[1]}」がAIに許可する演算子(${matched[2]})に含まれていません`;
+
+  // セミコロンを含む1つの文。localizeDetail の `;` 分割より先の丸ごと判定（etlWhole）で拾う。
+  matched = /^filter: opBinding on '(.+)' allows operator\(s\) (.+) which require column type number\|date, but '.+' is '(.+)'; restrict opBinding\.allowed$/.exec(message);
+  if (matched !== null) return `列「${matched[1]}」(${DATA_TYPE_JA[matched[3] ?? ''] ?? matched[3]})では大小比較の演算子(${matched[2]})をAIに許可できません。AIに許可する演算子を絞ってください`;
+
   if (/^join: output exceeded 100,?000 rows(?:;\s*check join keys)?\.?$/.test(message)) return '結合結果が10万行を超えました。結合キーが正しいか確認してください';
 
   matched = /^join: key type mismatch: (.+) \('(.+)'\) vs (.+) \('(.+)'\)$/.exec(message);
@@ -617,6 +625,21 @@ function localizeAgentRunDetail(message: string, language: ErrorLanguage): strin
     return ja
       ? 'ツールが引数を宣言していますが、受け取るAgent Inputノードがありません。ツール画面で引数ノードを追加してください'
       : 'the tool declares arguments but has no Agent Input node to receive them. Add the argument node in the tool screen';
+  }
+
+  // SaveTool の opBinding（演算子のAI引数化）検証。TOOL_VALIDATION の詳細として出る（application/tool/save-tool.ts）。
+  matched = /^SaveTool: operator binding for argument '(.+)' requires a string argument, but it is declared as '(.+)'$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `演算子を受け取る引数「${matched[1]}」は string 型で宣言する必要がありますが、${matched[2]} 型になっています。Agent Inputノードで型を string に変更してください`
+      : `the operator-bound argument '${matched[1]}' must be a string argument, but it is declared as '${matched[2]}'. Change its type to string on the Agent Input node`;
+  }
+
+  matched = /^SaveTool: operator binding for argument '(.+)' has no operator that every condition allows$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `引数「${matched[1]}」で演算子を受け取る条件の間に、共通して許可された演算子が1つもありません。各条件の「AIに許可する演算子」を見直してください`
+      : `no operator is allowed by every condition that binds argument '${matched[1]}'. Align the allowed operator lists of those conditions`;
   }
 
   if (message === 'run cancelled by the user') return ja ? '実行を中断しました' : 'the run was cancelled';
