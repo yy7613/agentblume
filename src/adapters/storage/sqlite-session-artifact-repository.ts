@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline';
 import { SqliteRepositoryBase, MEMORY_DB_PATH, type SqliteDatabaseSource } from './sqlite-database';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { SessionArtifact } from '../../domain/session/session-artifact';
+import { deserializeSessionArtifact } from '../../domain/session/serialization';
 import type { SessionArtifactReadOptions, SessionArtifactRepository } from '../../domain/session/session-repository';
 
 interface ArtifactRow { readonly record_json: string; readonly payload_path?: string | null; readonly payload_json?: string | null }
@@ -60,13 +61,13 @@ export class SqliteSessionArtifactRepository extends SqliteRepositoryBase implem
 
   async find(scope: TenantScope, sessionId: string, artifactId: string): Promise<{ readonly artifact: SessionArtifact; readonly payload: unknown } | null> {
     const row = this.db.prepare(`SELECT record_json, payload_path${this.hasLegacyPayloadJson ? ', payload_json' : ''} FROM session_artifacts WHERE tenant_id=? AND workspace_id=? AND session_id=? AND artifact_id=?`).get(scope.tenantId, scope.workspaceId, sessionId, artifactId) as ArtifactRow | undefined;
-    return row === undefined ? null : { artifact: JSON.parse(row.record_json) as SessionArtifact, payload: await this.readPayload(row) };
+    return row === undefined ? null : { artifact: deserializeSessionArtifact(JSON.parse(row.record_json)), payload: await this.readPayload(row) };
   }
 
   async read(scope: TenantScope, sessionId: string, artifactId: string, options: SessionArtifactReadOptions): Promise<{ readonly artifact: SessionArtifact; readonly payload: unknown } | null> {
     const row = this.db.prepare(`SELECT record_json, payload_path${this.hasLegacyPayloadJson ? ', payload_json' : ''} FROM session_artifacts WHERE tenant_id=? AND workspace_id=? AND session_id=? AND artifact_id=?`).get(scope.tenantId, scope.workspaceId, sessionId, artifactId) as ArtifactRow | undefined;
     if (row === undefined) return null;
-    const artifact = JSON.parse(row.record_json) as SessionArtifact;
+    const artifact = deserializeSessionArtifact(JSON.parse(row.record_json));
     if (artifact.kind === 'table' && row.payload_path?.endsWith('.jsonl') === true) {
       return { artifact, payload: await this.readTablePage(this.assertManagedPath(row.payload_path), options) };
     }
@@ -75,12 +76,12 @@ export class SqliteSessionArtifactRepository extends SqliteRepositoryBase implem
 
   async findByIdempotencyKey(scope: TenantScope, sessionId: string, idempotencyKey: string): Promise<SessionArtifact | null> {
     const row = this.db.prepare(`SELECT record_json FROM session_artifacts WHERE tenant_id=? AND workspace_id=? AND session_id=? AND idempotency_key=?`).get(scope.tenantId, scope.workspaceId, sessionId, idempotencyKey) as { readonly record_json: string } | undefined;
-    return row === undefined ? null : JSON.parse(row.record_json) as SessionArtifact;
+    return row === undefined ? null : deserializeSessionArtifact(JSON.parse(row.record_json));
   }
 
   async list(scope: TenantScope, sessionId: string): Promise<readonly SessionArtifact[]> {
     const rows = this.db.prepare(`SELECT record_json FROM session_artifacts WHERE tenant_id=? AND workspace_id=? AND session_id=? ORDER BY created_at DESC`).all(scope.tenantId, scope.workspaceId, sessionId) as Array<{ readonly record_json: string }>;
-    return rows.map((row) => JSON.parse(row.record_json) as SessionArtifact);
+    return rows.map((row) => deserializeSessionArtifact(JSON.parse(row.record_json)));
   }
 
   async delete(scope: TenantScope, sessionId: string, artifactId: string): Promise<void> {

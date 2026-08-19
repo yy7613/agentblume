@@ -1,4 +1,5 @@
 import type { AgentId } from '../agent/ids';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 import { SemVer } from '../tool/semver';
 import { validateEvaluationMetadata, evaluationNonEmpty, type EvaluationAssetMetadata } from './asset-metadata';
@@ -142,7 +143,7 @@ export interface GateRuleResult { readonly ruleId: GateRuleId; readonly passed: 
 export interface GateReport {
   readonly id: GateReportId; readonly scope: TenantScope; readonly policy: { readonly id: GatePolicyId; readonly version: SemVer };
   readonly baselineExperimentId?: ExperimentId; readonly candidateExperimentId: ExperimentId; readonly status: 'pass' | 'fail';
-  readonly ruleResults: readonly GateRuleResult[]; readonly createdAt: string; readonly expiresAt: string;
+  readonly ruleResults: readonly GateRuleResult[]; readonly createdAt: IsoDateTime; readonly expiresAt: IsoDateTime;
 }
 
 export function createGatePolicy(props: GatePolicy): GatePolicy {
@@ -206,7 +207,7 @@ export function createGateReport(report: GateReport): GateReport {
 export type PromotionStatus = 'pending' | 'approved' | 'rejected';
 export interface PromotionRequest {
   readonly id: PromotionRequestId; readonly scope: TenantScope; readonly agent: { readonly id: AgentId; readonly version: SemVer }; readonly gateReportId: GateReportId;
-  readonly status: PromotionStatus; readonly requestedBy: string; readonly requestedAt: string; readonly decidedBy?: string; readonly decidedAt?: string; readonly reason?: string;
+  readonly status: PromotionStatus; readonly requestedBy: string; readonly requestedAt: IsoDateTime; readonly decidedBy?: string; readonly decidedAt?: IsoDateTime; readonly reason?: string;
 }
 export function createPromotionRequest(request: PromotionRequest): PromotionRequest {
   evaluationNonEmpty(request.id, 'createPromotionRequest: id'); evaluationNonEmpty(request.scope?.tenantId, 'createPromotionRequest: scope.tenantId'); evaluationNonEmpty(request.scope?.workspaceId, 'createPromotionRequest: scope.workspaceId'); evaluationNonEmpty(request.agent?.id, 'createPromotionRequest: agent.id'); if (!(request.agent.version instanceof SemVer)) throw new EvaluationDomainError('createPromotionRequest: agent.version must be a SemVer instance');
@@ -215,7 +216,7 @@ export function createPromotionRequest(request: PromotionRequest): PromotionRequ
   if (request.status !== 'pending') { evaluationNonEmpty(request.decidedBy, 'createPromotionRequest: decidedBy'); if (request.decidedAt === undefined || !Number.isFinite(Date.parse(request.decidedAt))) throw new EvaluationDomainError('createPromotionRequest: decidedAt is invalid'); }
   return { ...request, scope: { ...request.scope }, agent: { ...request.agent } };
 }
-export function decidePromotion(request: PromotionRequest, decision: 'approved' | 'rejected', decidedBy: string, decidedAt: string, reason?: string): PromotionRequest {
+export function decidePromotion(request: PromotionRequest, decision: 'approved' | 'rejected', decidedBy: string, decidedAt: IsoDateTime, reason?: string): PromotionRequest {
   if (request.status !== 'pending') throw new EvaluationDomainError(`decidePromotion: request '${request.id}' is already ${request.status}`);
   evaluationNonEmpty(decidedBy, 'decidePromotion: decidedBy'); if (!Number.isFinite(Date.parse(decidedAt))) throw new EvaluationDomainError('decidePromotion: decidedAt is invalid');
   return createPromotionRequest({ ...request, status: decision, decidedBy, decidedAt, ...(reason !== undefined ? { reason } : {}) });

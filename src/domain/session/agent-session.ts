@@ -1,4 +1,5 @@
 import type { AgentId } from '../agent/ids';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 import { SessionDomainError } from './errors';
 import type { SessionId } from './ids';
@@ -22,11 +23,11 @@ export interface AgentSession {
   readonly scope: TenantScope;
   readonly rootAgent: { readonly internalId: AgentId; readonly version: string };
   readonly status: AgentSessionStatus;
-  readonly createdAt: string;
-  readonly lastAccessedAt: string;
-  readonly expiresAt: string;
+  readonly createdAt: IsoDateTime;
+  readonly lastAccessedAt: IsoDateTime;
+  readonly expiresAt: IsoDateTime;
   readonly quota: SessionQuota;
-  readonly closedAt?: string;
+  readonly closedAt?: IsoDateTime;
 }
 
 export function createAgentSession(input: Omit<AgentSession, 'status' | 'quota'> & { readonly quota?: SessionQuota }): AgentSession {
@@ -41,7 +42,7 @@ export function createAgentSession(input: Omit<AgentSession, 'status' | 'quota'>
   return { ...input, scope: { ...input.scope }, rootAgent: { ...input.rootAgent }, status: 'active', quota: { ...quota } };
 }
 
-export function closeAgentSession(session: AgentSession, closedAt: string): AgentSession {
+export function closeAgentSession(session: AgentSession, closedAt: IsoDateTime): AgentSession {
   if (session.status !== 'active') throw new SessionDomainError(`cannot close session in state ${session.status}`);
   return { ...session, status: 'closed', closedAt };
 }

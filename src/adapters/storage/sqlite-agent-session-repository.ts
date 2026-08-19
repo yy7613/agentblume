@@ -1,6 +1,7 @@
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { AgentSession } from '../../domain/session/agent-session';
+import { deserializeAgentSession } from '../../domain/session/serialization';
 import type { AgentSessionRepository } from '../../domain/session/session-repository';
 
 export class SqliteAgentSessionRepository extends SqliteRepositoryBase implements AgentSessionRepository {
@@ -12,10 +13,10 @@ export class SqliteAgentSessionRepository extends SqliteRepositoryBase implement
   }
   async find(scope: TenantScope, sessionId: string): Promise<AgentSession | null> {
     const row = this.db.prepare(`SELECT record_json FROM agent_sessions WHERE tenant_id=? AND workspace_id=? AND session_id=?`).get(scope.tenantId, scope.workspaceId, sessionId);
-    return row === undefined ? null : JSON.parse(String(row['record_json'])) as AgentSession;
+    return row === undefined ? null : deserializeAgentSession(JSON.parse(String(row['record_json'])));
   }
   async listExpired(now: string, limit: number): Promise<readonly AgentSession[]> {
     const rows = this.db.prepare(`SELECT record_json FROM agent_sessions WHERE status='active' AND expires_at <= ? ORDER BY expires_at ASC LIMIT ?`).all(now, Math.max(1, limit));
-    return rows.map((row) => JSON.parse(String(row['record_json'])) as AgentSession);
+    return rows.map((row) => deserializeAgentSession(JSON.parse(String(row['record_json']))));
   }
 }

@@ -1,4 +1,5 @@
 import type { NormalizedSearchRow, SearchProviderCatalog, SearchProviderId, SearchProviderSummary, SearchRequest } from '../../application/search/search-provider';
+import { isoDateTime } from '../../domain/shared/time';
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const TIMEOUT_MS = 10_000;
@@ -18,7 +19,7 @@ export class EnvironmentSearchProviderCatalog implements SearchProviderCatalog {
   }
 
   async search(request: SearchRequest): Promise<readonly NormalizedSearchRow[]> {
-    const retrievedAt = new Date().toISOString();
+    const retrievedAt = isoDateTime(new Date());
     switch (request.provider) {
       case 'tavily': return tavily(this.fetcher, required(this.env, 'TAVILY_API_KEY'), request, retrievedAt);
       case 'tinyfish': return tinyfish(this.fetcher, required(this.env, 'TINYFISH_API_KEY'), request, retrievedAt);

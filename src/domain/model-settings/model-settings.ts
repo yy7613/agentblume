@@ -11,6 +11,7 @@
  */
 import { classifyHost } from '../net/url-policy';
 import { assertHttpUrl, assertNonEmpty, type HttpUrl } from '../shared/assert';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 import { ModelSettingsValidationError } from './errors';
 import { parseRegistryModelRef, registryProviderOf } from './registry-model-ref';
@@ -34,14 +35,14 @@ export interface ModelSettings {
   readonly scope: TenantScope;
   readonly main?: ModelSlotSettings;
   readonly judge?: ModelSlotSettings;
-  readonly updatedAt: string;
+  readonly updatedAt: IsoDateTime;
 }
 
 export interface CreateModelSettingsProps {
   readonly scope: TenantScope;
   readonly main?: ModelSlotSettings;
   readonly judge?: ModelSlotSettings;
-  readonly updatedAt: string;
+  readonly updatedAt: IsoDateTime;
 }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {

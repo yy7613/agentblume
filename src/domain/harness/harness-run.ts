@@ -1,14 +1,16 @@
 import type { RunId } from '../run/ids';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 import type { HarnessId, HarnessRunId, SlotId } from './ids';
 
 export type HarnessRunMode = 'preview' | 'test';
 export type HarnessRunStatus = 'running' | 'succeeded' | 'failed' | 'waiting-input' | 'waiting-approval' | 'cancelled';
-export type HarnessEventKind = 'harness_started' | 'harness_resumed' | 'harness_completed' | 'harness_failed' | 'harness_cancelled' | 'participant_started' | 'participant_completed' | 'participant_failed' | 'intermediate_output' | 'handoff_requested' | 'speaker_selected' | 'plan_created' | 'plan_revised' | 'approval_requested' | 'progress_updated' | 'stall_detected' | 'input_requested' | 'checkpoint_saved';
+export const HARNESS_EVENT_KINDS = ['harness_started', 'harness_resumed', 'harness_completed', 'harness_failed', 'harness_cancelled', 'participant_started', 'participant_completed', 'participant_failed', 'intermediate_output', 'handoff_requested', 'speaker_selected', 'plan_created', 'plan_revised', 'approval_requested', 'progress_updated', 'stall_detected', 'input_requested', 'checkpoint_saved'] as const;
+export type HarnessEventKind = (typeof HARNESS_EVENT_KINDS)[number];
 export interface HarnessEvent {
   readonly sequence: number;
   readonly kind: HarnessEventKind;
-  readonly at: string;
+  readonly at: IsoDateTime;
   readonly slotId?: SlotId;
   readonly childRunId?: RunId;
   readonly message?: string;
@@ -32,7 +34,7 @@ export interface HandoffInputCheckpoint {
   readonly activeSlotId: SlotId;
   readonly history: readonly HarnessConversationMessage[];
   readonly budget: HarnessRunBudgetCheckpoint;
-  readonly expiresAt: string;
+  readonly expiresAt: IsoDateTime;
   readonly prompt: string;
 }
 
@@ -47,7 +49,7 @@ export interface MagenticApprovalCheckpoint {
   readonly resets: number;
   readonly latest: string;
   readonly budget: HarnessRunBudgetCheckpoint;
-  readonly expiresAt: string;
+  readonly expiresAt: IsoDateTime;
   readonly plan: string;
 }
 
@@ -60,8 +62,8 @@ export interface HarnessRunRecord {
   readonly mode: HarnessRunMode;
   readonly status: HarnessRunStatus;
   readonly message: string;
-  readonly startedAt: string;
-  readonly completedAt?: string;
+  readonly startedAt: IsoDateTime;
+  readonly completedAt?: IsoDateTime;
   readonly response?: string;
   readonly failure?: { readonly code: string; readonly message: string };
   /** waiting-* 状態だけで保持する、再開に必要な永続実行コンテキスト。 */
@@ -74,11 +76,11 @@ export function startHarnessRun(input: Omit<HarnessRunRecord, 'status' | 'events
 export function appendHarnessEvent(record: HarnessRunRecord, event: Omit<HarnessEvent, 'sequence'>): HarnessRunRecord {
   return { ...record, events: [...record.events, { ...event, sequence: record.events.length + 1 }] };
 }
-export function succeedHarnessRun(record: HarnessRunRecord, response: string, completedAt: string): HarnessRunRecord {
+export function succeedHarnessRun(record: HarnessRunRecord, response: string, completedAt: IsoDateTime): HarnessRunRecord {
   if (record.status !== 'running') throw new Error(`Harness run '${record.runId}' is already ${record.status}`);
   return { ...record, status: 'succeeded', response, completedAt };
 }
-export function failHarnessRun(record: HarnessRunRecord, failure: { readonly code: string; readonly message: string }, completedAt: string): HarnessRunRecord {
+export function failHarnessRun(record: HarnessRunRecord, failure: { readonly code: string; readonly message: string }, completedAt: IsoDateTime): HarnessRunRecord {
   if (record.status !== 'running') throw new Error(`Harness run '${record.runId}' is already ${record.status}`);
   return { ...record, status: 'failed', failure: { ...failure }, completedAt };
 }
@@ -94,7 +96,7 @@ export function resumeHarnessRun(record: HarnessRunRecord): HarnessRunRecord {
   if (record.status !== 'waiting-input' && record.status !== 'waiting-approval') throw new Error(`Harness run '${record.runId}' is not waiting for interaction`);
   return { ...record, status: 'running', checkpoint: undefined };
 }
-export function cancelHarnessRun(record: HarnessRunRecord, completedAt: string): HarnessRunRecord {
+export function cancelHarnessRun(record: HarnessRunRecord, completedAt: IsoDateTime): HarnessRunRecord {
   if (record.status === 'succeeded' || record.status === 'failed' || record.status === 'cancelled') throw new Error(`Harness run '${record.runId}' is already ${record.status}`);
   return { ...record, status: 'cancelled', checkpoint: undefined, completedAt };
 }

@@ -33,6 +33,7 @@
  * ディレクトリ名は**辞書順＝時刻順**になるよう固定幅にする。`:` は Windows のファイル名に使えないため
  * ISO 文字列をそのまま使わない。
  */
+import type { IsoDateTime } from '../shared/time';
 import { BackupValidationError } from './errors';
 
 /**
@@ -62,7 +63,7 @@ export interface BackupManifest {
   /** `BACKUP_FORMAT_VERSION`。 */
   readonly formatVersion: number;
   /** 作成時刻（ISO8601）。 */
-  readonly createdAt: string;
+  readonly createdAt: IsoDateTime;
   /** 取得時点の `PRAGMA user_version`。復元時に「このビルドで開けるか」を判定する。 */
   readonly schemaVersion: number;
   /** `AGENTCONTEXT_SOURCE_REVISION`（設定されていれば）。どのビルドが書いたDBかの手掛かり。 */

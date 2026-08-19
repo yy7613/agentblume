@@ -1,6 +1,7 @@
 import type { AgentId } from '../agent/ids';
 import type { NodeId } from '../etl/ids';
 import type { SessionId } from '../session/ids';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope, ToolId } from '../tool/ids';
 import type { SideEffect } from '../tool/metadata';
 import type { RunId, TerminalId, ToolCallId } from './ids';
@@ -85,7 +86,7 @@ export interface RunApprovalCheckpoint {
   readonly step: number;
   readonly sessionId?: SessionId;
   /** ISO。作成 + INTERACTIVE_CHECKPOINT_TTL_MS(24h)。 */
-  readonly expiresAt: string;
+  readonly expiresAt: IsoDateTime;
   /** 人間向け: どのツールがなぜ承認要求しているか。 */
   readonly prompt: string;
 }
@@ -112,7 +113,7 @@ export interface RunPriceSnapshot {
   readonly currency: 'USD';
   readonly inputPerMillionTokens: number;
   readonly outputPerMillionTokens: number;
-  readonly effectiveAt: string;
+  readonly effectiveAt: IsoDateTime;
 }
 
 export interface RunEstimatedCost {
@@ -147,8 +148,8 @@ export interface RunRecord {
   readonly tool?: RunArtifactRef;
   readonly tools?: readonly RunArtifactRef[];
   readonly agent?: RunArtifactRef;
-  readonly startedAt: string;
-  readonly completedAt?: string;
+  readonly startedAt: IsoDateTime;
+  readonly completedAt?: IsoDateTime;
   readonly response?: string;
   readonly structuredResponse?: Readonly<Record<string, unknown>>;
   readonly trace: readonly RunTraceEvent[];
@@ -170,7 +171,7 @@ export interface StartRunProps {
   readonly tool?: RunRecord['tool'];
   readonly tools?: RunRecord['tools'];
   readonly agent?: RunRecord['agent'];
-  readonly startedAt: string;
+  readonly startedAt: IsoDateTime;
 }
 
 export function startRun(props: StartRunProps): RunRecord {
@@ -196,7 +197,7 @@ export function succeedRun(record: RunRecord, result: {
   readonly usage: RunUsage;
   readonly latency?: RunLatencyBreakdown;
   readonly estimatedCost?: RunEstimatedCost;
-  readonly completedAt: string;
+  readonly completedAt: IsoDateTime;
 }): RunRecord {
   assertRunning(record);
   return {
@@ -221,7 +222,7 @@ export function failRun(record: RunRecord, result: {
   readonly trace: readonly RunTraceEvent[];
   readonly failure: RunFailure;
   readonly latency?: RunLatencyBreakdown;
-  readonly completedAt: string;
+  readonly completedAt: IsoDateTime;
 }): RunRecord {
   assertRunning(record);
   return { ...record, status: 'failed', checkpoint: undefined, trace: structuredClone(result.trace), failure: { ...result.failure }, ...(result.latency !== undefined ? { latency: { ...result.latency } } : {}), completedAt: result.completedAt };

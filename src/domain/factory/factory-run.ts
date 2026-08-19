@@ -7,6 +7,7 @@
  */
 import type { AgentId } from '../agent/ids';
 import type { DataSourceId } from '../data-source/ids';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 import type { ScenarioRunId } from '../validation/ids';
 import type { FactoryPlan } from './factory-plan';
@@ -34,7 +35,7 @@ export type FactoryEventKind = (typeof FACTORY_EVENT_KINDS)[number];
 export interface FactoryEvent {
   readonly sequence: number;
   readonly kind: FactoryEventKind;
-  readonly at: string;
+  readonly at: IsoDateTime;
   readonly stage?: FactoryStage;
   readonly iteration?: number;
   readonly message?: string;
@@ -133,7 +134,7 @@ export interface FactoryReport {
 
 export interface FactoryPlanCheckpoint {
   readonly kind: 'plan-approval';
-  readonly expiresAt: string;
+  readonly expiresAt: IsoDateTime;
   readonly prompt: string;
   readonly plan: FactoryPlan;
 }
@@ -172,8 +173,8 @@ export interface FactoryRun {
   readonly budget: { readonly consumed: FactoryBudgetSnapshot; readonly limits: FactoryBudgetLimits };
   readonly failure?: { readonly stage: FactoryStage; readonly reason: string };
   readonly events: readonly FactoryEvent[];
-  readonly startedAt: string;
-  readonly finishedAt?: string;
+  readonly startedAt: IsoDateTime;
+  readonly finishedAt?: IsoDateTime;
 }
 
 /** docs/16-agent-factory.md §9 既定値。 */
@@ -282,17 +283,17 @@ export function resumeFactoryRun(run: FactoryRun): FactoryRun {
   return { ...run, status: 'running', checkpoint: undefined };
 }
 
-export function succeedFactoryRun(run: FactoryRun, report: FactoryReport, finishedAt: string): FactoryRun {
+export function succeedFactoryRun(run: FactoryRun, report: FactoryReport, finishedAt: IsoDateTime): FactoryRun {
   if (run.status !== 'running') throw new Error(`Factory run '${run.id}' is already ${run.status}`);
   return { ...run, status: 'succeeded', report: cloneReport(report), finishedAt };
 }
 
-export function failFactoryRun(run: FactoryRun, failure: { readonly stage: FactoryStage; readonly reason: string }, finishedAt: string): FactoryRun {
+export function failFactoryRun(run: FactoryRun, failure: { readonly stage: FactoryStage; readonly reason: string }, finishedAt: IsoDateTime): FactoryRun {
   if (run.status !== 'running' && run.status !== 'waiting-approval') throw new Error(`Factory run '${run.id}' is already ${run.status}`);
   return { ...run, status: 'failed', failure: { ...failure }, checkpoint: undefined, finishedAt };
 }
 
-export function cancelFactoryRun(run: FactoryRun, finishedAt: string): FactoryRun {
+export function cancelFactoryRun(run: FactoryRun, finishedAt: IsoDateTime): FactoryRun {
   if (run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled') throw new Error(`Factory run '${run.id}' is already ${run.status}`);
   return { ...run, status: 'cancelled', checkpoint: undefined, finishedAt };
 }

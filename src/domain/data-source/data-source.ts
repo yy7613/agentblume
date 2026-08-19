@@ -1,3 +1,4 @@
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 import type { ConnectionId, DataSourceId } from './ids';
 
@@ -8,8 +9,8 @@ export interface DataSourceBase {
   readonly id: DataSourceId;
   readonly tenant: TenantScope;
   readonly name: string;
-  readonly createdAt: string;
-  readonly updatedAt: string;
+  readonly createdAt: IsoDateTime;
+  readonly updatedAt: IsoDateTime;
 }
 
 export interface FileDataSource extends DataSourceBase {

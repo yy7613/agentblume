@@ -5,6 +5,7 @@
  * 全内容を内包し、承認時に追加推論を要さない。人手承認制のエスケープハッチ。
  */
 import { assertNonEmpty } from '../shared/assert';
+import type { IsoDateTime } from '../shared/time';
 import type { SkillId } from '../skill/ids';
 import type { TenantScope } from '../tool/ids';
 import { MemoryDomainError } from './errors';
@@ -35,7 +36,7 @@ export interface MemoryProposal {
   readonly summary: string;
   readonly state: MemoryProposalState;
   readonly sourceRun?: string;
-  readonly createdAt: string;
+  readonly createdAt: IsoDateTime;
 }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
@@ -73,7 +74,7 @@ export interface CreateMemoryProposalProps {
   readonly target: MemoryProposalTarget;
   readonly summary: string;
   readonly sourceRun?: string;
-  readonly createdAt: string;
+  readonly createdAt: IsoDateTime;
 }
 
 export function createMemoryProposal(props: CreateMemoryProposalProps): MemoryProposal {

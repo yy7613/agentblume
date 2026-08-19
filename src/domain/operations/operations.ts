@@ -1,6 +1,7 @@
 import type { AgentId } from '../agent/ids';
 import type { RunId } from '../run/ids';
 import type { RunPurpose, RunStatus } from '../run/run';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 import type { RunFeedbackId } from './ids';
 
@@ -15,13 +16,13 @@ export interface RunFeedback {
   readonly rating?: number;
   readonly comment?: string;
   readonly issueTags: readonly string[];
-  readonly createdAt: string;
-  readonly updatedAt: string;
+  readonly createdAt: IsoDateTime;
+  readonly updatedAt: IsoDateTime;
 }
 
 export interface RunMetricSample {
   readonly scope: TenantScope;
-  readonly recordedAt: string;
+  readonly recordedAt: IsoDateTime;
   readonly status: RunStatus;
   readonly purpose?: RunPurpose;
   readonly latencyMs: number;
@@ -54,7 +55,7 @@ export interface RetentionPolicy {
    * 「先月あの設定を変えたのは誰か」であり、実行トレースと同じ寿命では用を成さない。
    */
   readonly auditDays: number;
-  readonly updatedAt: string;
+  readonly updatedAt: IsoDateTime;
 }
 
 export const DEFAULT_RETENTION_DAYS = {

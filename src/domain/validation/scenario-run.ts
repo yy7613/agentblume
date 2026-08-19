@@ -5,6 +5,7 @@
  */
 import type { RunId } from '../run/ids';
 import type { RunUsage } from '../run/run';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 import { SemVer } from '../tool/semver';
 import { ValidationDomainError } from './errors';
@@ -59,8 +60,8 @@ export interface ScenarioRun {
   /** 感想（id 'impressions' の回答。無ければ空文字）。 */
   readonly impressions: string;
   readonly metrics: ScenarioRunMetrics;
-  readonly startedAt: string;
-  readonly finishedAt: string;
+  readonly startedAt: IsoDateTime;
+  readonly finishedAt: IsoDateTime;
 }
 
 export type CreateScenarioRunProps = ScenarioRun;

@@ -5,6 +5,7 @@
  * （履歴は保持せず「現在の版」のみ。監査は sourceRuns と MemoryProposal 側で担う）。
  */
 import { assertNonEmpty } from '../shared/assert';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 import { MemoryDomainError } from './errors';
 import type { WikiPageId, WikiSpaceId } from './ids';
@@ -20,7 +21,7 @@ export interface WikiPage {
   readonly body: string;
   readonly version: number;
   readonly sourceRuns: readonly string[];
-  readonly updatedAt: string;
+  readonly updatedAt: IsoDateTime;
 }
 
 export interface WikiPageSummary {
@@ -29,7 +30,7 @@ export interface WikiPageSummary {
   readonly title: string;
   readonly tags: readonly string[];
   readonly version: number;
-  readonly updatedAt: string;
+  readonly updatedAt: IsoDateTime;
 }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
@@ -57,7 +58,7 @@ export interface CreateWikiPageProps {
   readonly tags?: readonly string[];
   readonly body: string;
   readonly sourceRuns?: readonly string[];
-  readonly updatedAt: string;
+  readonly updatedAt: IsoDateTime;
 }
 
 export function createWikiPage(props: CreateWikiPageProps): WikiPage {
@@ -86,7 +87,7 @@ export interface ReviseWikiPageChanges {
   readonly tags?: readonly string[];
   readonly body?: string;
   readonly addSourceRun?: string;
-  readonly updatedAt: string;
+  readonly updatedAt: IsoDateTime;
 }
 
 export function reviseWikiPage(page: WikiPage, changes: ReviseWikiPageChanges): WikiPage {

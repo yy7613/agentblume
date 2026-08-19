@@ -19,6 +19,7 @@
 import { z } from 'zod';
 import { AUTHORIZATION_ACTIONS, AUTHORIZATION_RESOURCE_KINDS, type AuthorizationAction, type AuthorizationResourceKind } from './authorization';
 import type { TenantId, WorkspaceId } from '../shared/tenant-scope';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 
 /**
@@ -45,7 +46,7 @@ export type AuditDetailValue = string | number | boolean;
 /** 1件の監査記録。 */
 export interface AuditEntry {
   /** 記録した時刻（ISO8601）。 */
-  readonly at: string;
+  readonly at: IsoDateTime;
   /** 誰が（`Principal.subject`）。認証前の失敗は `UNAUTHENTICATED_SUBJECT`。 */
   readonly subject: string;
   readonly tenantId: TenantId;
@@ -87,7 +88,7 @@ export function maskAuditDetail(detail: Readonly<Record<string, unknown>> | unde
 
 /** `AuditEntry` の組み立て（`detail` は必ずマスクを通す）。 */
 export function createAuditEntry(input: {
-  readonly at: string;
+  readonly at: IsoDateTime;
   readonly subject: string;
   readonly scope: TenantScope;
   readonly action: AuthorizationAction;

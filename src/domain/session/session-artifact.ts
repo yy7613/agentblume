@@ -2,6 +2,7 @@ import type { AgentId } from '../agent/ids';
 import type { Schema } from '../data/types';
 import type { NodeId } from '../etl/ids';
 import type { RunId, ToolCallId } from '../run/ids';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope, ToolId } from '../tool/ids';
 import { SessionDomainError } from './errors';
 import type { SessionArtifactId, SessionId } from './ids';
@@ -22,8 +23,8 @@ export interface SessionArtifact {
   readonly checksum: string;
   readonly counts?: { readonly rows?: number; readonly nodes?: number; readonly edges?: number };
   readonly origin: { readonly runId: RunId; readonly toolId: ToolId; readonly toolVersion: string; readonly toolCallId: ToolCallId; readonly sinkNodeId: NodeId; readonly agentId?: AgentId };
-  readonly createdAt: string;
-  readonly expiresAt: string;
+  readonly createdAt: IsoDateTime;
+  readonly expiresAt: IsoDateTime;
 }
 
 export interface SessionArtifactDescriptor extends Omit<SessionArtifact, 'scope' | 'origin'> {

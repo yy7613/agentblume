@@ -6,6 +6,7 @@
  * ツール名の前置修飾子としても使われるため、識別子として安全な文字種に限定する。
  */
 import { assertHttpUrl, assertNonEmpty, type HttpUrl } from '../shared/assert';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 import { McpValidationError } from './errors';
 
@@ -19,7 +20,7 @@ export interface McpServerConfig {
   readonly name: string;
   readonly transport: McpTransportConfig;
   readonly disabled: boolean;
-  readonly updatedAt: string;
+  readonly updatedAt: IsoDateTime;
 }
 
 export interface CreateMcpServerConfigProps {
@@ -27,7 +28,7 @@ export interface CreateMcpServerConfigProps {
   readonly name: string;
   readonly transport: McpTransportConfig;
   readonly disabled?: boolean;
-  readonly updatedAt: string;
+  readonly updatedAt: IsoDateTime;
 }
 
 /** name の最大長。ツール名の前置修飾子として使うため短く抑える。 */

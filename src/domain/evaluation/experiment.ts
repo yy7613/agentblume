@@ -2,6 +2,7 @@ import type { AgentId } from '../agent/ids';
 import type { RunId } from '../run/ids';
 import type { RunUsage } from '../run/run';
 import { assertNonEmpty } from '../shared/assert';
+import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../tool/ids';
 import { SemVer } from '../tool/semver';
 import type { EvaluationScore } from './evaluation';
@@ -40,9 +41,9 @@ export interface Experiment {
   readonly status: ExperimentStatus;
   readonly snapshot: ExperimentModelSnapshot;
   readonly progress: ExperimentProgress;
-  readonly createdAt: string;
-  readonly startedAt?: string;
-  readonly finishedAt?: string;
+  readonly createdAt: IsoDateTime;
+  readonly startedAt?: IsoDateTime;
+  readonly finishedAt?: IsoDateTime;
   readonly error?: ExperimentError;
 }
 
@@ -94,12 +95,12 @@ function requireStatus(experiment: Experiment, allowed: readonly ExperimentStatu
   if (!allowed.includes(experiment.status)) throw new EvaluationDomainError(`${action}: experiment '${experiment.id}' is ${experiment.status}`);
 }
 
-export function startExperiment(experiment: Experiment, startedAt: string): Experiment { requireStatus(experiment, ['queued'], 'startExperiment'); nonEmpty(startedAt, 'startExperiment: startedAt'); return { ...experiment, status: 'running', startedAt, error: undefined }; }
+export function startExperiment(experiment: Experiment, startedAt: IsoDateTime): Experiment { requireStatus(experiment, ['queued'], 'startExperiment'); nonEmpty(startedAt, 'startExperiment: startedAt'); return { ...experiment, status: 'running', startedAt, error: undefined }; }
 export function advanceExperiment(experiment: Experiment): Experiment { requireStatus(experiment, ['running'], 'advanceExperiment'); return { ...experiment, progress: validateProgress({ completed: experiment.progress.completed + 1, total: experiment.progress.total }) }; }
-export function completeExperiment(experiment: Experiment, finishedAt: string): Experiment { requireStatus(experiment, ['running'], 'completeExperiment'); nonEmpty(finishedAt, 'completeExperiment: finishedAt'); if (experiment.progress.completed !== experiment.progress.total) throw new EvaluationDomainError('completeExperiment: progress is incomplete'); return { ...experiment, status: 'completed', finishedAt }; }
-export function failExperiment(experiment: Experiment, error: ExperimentError, finishedAt: string): Experiment { requireStatus(experiment, ['queued', 'running'], 'failExperiment'); nonEmpty(error.code, 'failExperiment: error.code'); nonEmpty(error.message, 'failExperiment: error.message'); nonEmpty(finishedAt, 'failExperiment: finishedAt'); return { ...experiment, status: 'failed', error: { ...error }, finishedAt }; }
-export function cancelExperiment(experiment: Experiment, finishedAt: string): Experiment { requireStatus(experiment, ['queued', 'running'], 'cancelExperiment'); nonEmpty(finishedAt, 'cancelExperiment: finishedAt'); return { ...experiment, status: 'cancelled', finishedAt }; }
-export function interruptExperiment(experiment: Experiment, finishedAt: string): Experiment { requireStatus(experiment, ['running'], 'interruptExperiment'); nonEmpty(finishedAt, 'interruptExperiment: finishedAt'); return { ...experiment, status: 'interrupted', finishedAt, error: { code: 'PROCESS_INTERRUPTED', message: 'Experiment process stopped before completion' } }; }
+export function completeExperiment(experiment: Experiment, finishedAt: IsoDateTime): Experiment { requireStatus(experiment, ['running'], 'completeExperiment'); nonEmpty(finishedAt, 'completeExperiment: finishedAt'); if (experiment.progress.completed !== experiment.progress.total) throw new EvaluationDomainError('completeExperiment: progress is incomplete'); return { ...experiment, status: 'completed', finishedAt }; }
+export function failExperiment(experiment: Experiment, error: ExperimentError, finishedAt: IsoDateTime): Experiment { requireStatus(experiment, ['queued', 'running'], 'failExperiment'); nonEmpty(error.code, 'failExperiment: error.code'); nonEmpty(error.message, 'failExperiment: error.message'); nonEmpty(finishedAt, 'failExperiment: finishedAt'); return { ...experiment, status: 'failed', error: { ...error }, finishedAt }; }
+export function cancelExperiment(experiment: Experiment, finishedAt: IsoDateTime): Experiment { requireStatus(experiment, ['queued', 'running'], 'cancelExperiment'); nonEmpty(finishedAt, 'cancelExperiment: finishedAt'); return { ...experiment, status: 'cancelled', finishedAt }; }
+export function interruptExperiment(experiment: Experiment, finishedAt: IsoDateTime): Experiment { requireStatus(experiment, ['running'], 'interruptExperiment'); nonEmpty(finishedAt, 'interruptExperiment: finishedAt'); return { ...experiment, status: 'interrupted', finishedAt, error: { code: 'PROCESS_INTERRUPTED', message: 'Experiment process stopped before completion' } }; }
 export function resumeExperiment(experiment: Experiment): Experiment { requireStatus(experiment, ['interrupted', 'failed'], 'resumeExperiment'); const { finishedAt: _finishedAt, error: _error, ...rest } = experiment; return { ...rest, status: 'queued' }; }
 
 export function createExperimentCaseResult(props: ExperimentCaseResult): ExperimentCaseResult {

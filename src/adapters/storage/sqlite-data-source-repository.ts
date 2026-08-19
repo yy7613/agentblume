@@ -1,6 +1,7 @@
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { DataSource } from '../../domain/data-source/data-source';
+import { deserializeDataSource } from '../../domain/data-source/serialization';
 import type { DataSourceRepository } from '../../domain/data-source/data-source-repository';
 
 /** SQLiteはカタログとCSV/JSON本文をbackend側に保持する。DB資格情報は保存しない。 */
@@ -19,18 +20,18 @@ export class SqliteDataSourceRepository extends SqliteRepositoryBase implements 
   async list(scope: TenantScope): Promise<readonly DataSource[]> {
     return this.db.prepare(`SELECT record_json FROM data_sources WHERE tenant_id=? AND workspace_id=? ORDER BY updated_at DESC`)
       .all(scope.tenantId, scope.workspaceId)
-      .map((row) => JSON.parse(String(row['record_json'])) as DataSource);
+      .map((row) => deserializeDataSource(JSON.parse(String(row['record_json']))));
   }
 
   async find(scope: TenantScope, id: string): Promise<DataSource | null> {
     const row = this.db.prepare(`SELECT record_json FROM data_sources WHERE tenant_id=? AND workspace_id=? AND id=?`).get(scope.tenantId, scope.workspaceId, id);
-    return row === undefined ? null : JSON.parse(String(row['record_json'])) as DataSource;
+    return row === undefined ? null : deserializeDataSource(JSON.parse(String(row['record_json'])));
   }
 
   async readFile(scope: TenantScope, id: string): Promise<{ readonly source: DataSource; readonly content: string } | null> {
     const row = this.db.prepare(`SELECT record_json, file_content FROM data_sources WHERE tenant_id=? AND workspace_id=? AND id=?`).get(scope.tenantId, scope.workspaceId, id);
     if (row === undefined) return null;
-    const source = JSON.parse(String(row['record_json'])) as DataSource;
+    const source = deserializeDataSource(JSON.parse(String(row['record_json'])));
     const content = row['file_content'];
     return source.kind !== 'file' || typeof content !== 'string' ? null : { source, content };
   }
