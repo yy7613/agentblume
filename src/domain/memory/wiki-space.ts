@@ -1,6 +1,6 @@
 import { assertNonEmpty } from '../shared/assert';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import { MemoryDomainError } from './errors';
 import type { WikiSpaceId } from './ids';
 

@@ -2,7 +2,7 @@ import type { AgentHarness } from '../../domain/harness/agent-harness';
 import type { AgentHarnessRepository, HarnessSummary } from '../../domain/harness/harness-repository';
 import { HarnessNotFoundError } from '../../domain/harness/errors';
 import type { HarnessId } from '../../domain/harness/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 
 export class QueryHarnessesUseCase {

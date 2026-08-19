@@ -12,7 +12,7 @@
 import { classifyHost } from '../net/url-policy';
 import { assertHttpUrl, assertNonEmpty, type HttpUrl } from '../shared/assert';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import { ModelSettingsValidationError } from './errors';
 import { parseRegistryModelRef, registryProviderOf } from './registry-model-ref';
 import { createSealedSecret, type SealedSecret } from './sealed-secret';

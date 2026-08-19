@@ -2,7 +2,7 @@ import type { AgentRepository, AgentSummary } from '../../domain/agent/agent-rep
 import { AgentNotFoundError } from '../../domain/agent/errors';
 import type { Agent, AgentKind } from '../../domain/agent/agent';
 import type { AgentId } from '../../domain/agent/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 
 export class QueryAgentsUseCase {

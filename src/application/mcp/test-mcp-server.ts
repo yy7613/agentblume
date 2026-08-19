@@ -6,7 +6,7 @@
  * McpNotFoundError を投げる（404）。disabled なサーバーもテストは実行できる
  * （無効化したまま設定を直して検証できるようにするため）。
  */
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { McpNotFoundError } from '../../domain/mcp/errors';
 import type { McpServerRepository } from '../../domain/mcp/mcp-server-repository';
 import type { McpClientPort } from './mcp-client';

@@ -2,7 +2,7 @@ import type { AgentId } from '../agent/ids';
 import type { RunId } from '../run/ids';
 import type { RunPurpose, RunStatus } from '../run/run';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { RunFeedbackId } from './ids';
 
 export type FeedbackThumb = 'up' | 'down';

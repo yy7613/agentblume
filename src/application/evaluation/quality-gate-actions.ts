@@ -7,7 +7,7 @@ import { EvaluationDomainError, ExperimentNotFoundError, QualityGateConflictErro
 import type { ExperimentId, GatePolicyId, GateReportId, PromotionRequestId } from '../../domain/evaluation/ids';
 import { compareExperiments, createGatePolicy, createPromotionRequest, decidePromotion, evaluateGate, type ExperimentComparison, type GatePolicy, type GateReport, type GateRule, type PromotionRequest } from '../../domain/evaluation/quality-gate';
 import type { GatePolicySummary, QualityGateRepository } from '../../domain/evaluation/quality-gate-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 

@@ -1,4 +1,4 @@
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { DataSource } from '../../domain/data-source/data-source';
 import type { DataSourceRepository } from '../../domain/data-source/data-source-repository';
 

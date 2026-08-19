@@ -1,7 +1,7 @@
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import { AgentNotFoundError } from '../../domain/agent/errors';
 import type { AgentId } from '../../domain/agent/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 /**
  * 保存済みAgentの論理削除。repository.delete が false（未存在/削除済み）なら AgentNotFoundError。

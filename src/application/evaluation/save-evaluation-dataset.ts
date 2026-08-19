@@ -2,7 +2,7 @@ import type { EvaluationAssetMetadata } from '../../domain/evaluation/asset-meta
 import { createEvaluationDataset, type EvaluationCase, type EvaluationDataset } from '../../domain/evaluation/evaluation-dataset';
 import type { EvaluationDatasetRepository } from '../../domain/evaluation/evaluation-asset-repositories';
 import type { DatasetId } from '../../domain/evaluation/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import { EvaluationDomainError } from '../../domain/evaluation/errors';

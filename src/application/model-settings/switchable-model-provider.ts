@@ -17,7 +17,7 @@
 import { createHash } from 'node:crypto';
 import type { ModelSettingsRepository } from '../../domain/model-settings/model-settings-repository';
 import { modelSlot, type ModelSlotName, type ModelSlotSettings } from '../../domain/model-settings/model-settings';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { ModelProviderError, type ModelCapability, type ModelCompletion, type ModelCompletionRequest, type ModelProviderPort } from '../model/model-provider';
 import type { ModelProviderFactoryPort, ResolvedSlotOptions } from './model-provider-factory';
 import { SecretCipherError, type SecretCipherPort } from './secret-cipher';

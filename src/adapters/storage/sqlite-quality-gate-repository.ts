@@ -3,7 +3,7 @@ import { QualityGateConflictError, QualityGateNotFoundError } from '../../domain
 import type { GatePolicySummary, QualityGateRepository } from '../../domain/evaluation/quality-gate-repository';
 import { deserializeGatePolicy, deserializeGateReport, deserializePromotionRequest, serializeGatePolicy, serializeGateReport, serializePromotionRequest } from '../../domain/evaluation/quality-gate-serialization';
 import type { GatePolicy, GateReport, PromotionRequest } from '../../domain/evaluation/quality-gate';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 
 const isUnique = (error: unknown): boolean => error instanceof Error && error.message.includes('UNIQUE constraint failed');

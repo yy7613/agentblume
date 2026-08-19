@@ -2,7 +2,7 @@ import type { Skill } from '../../domain/skill/skill';
 import type { SkillRepository, SkillSummary } from '../../domain/skill/skill-repository';
 import { SkillVersionConflictError } from '../../domain/skill/errors';
 import { deserializeSkill, serializeSkill, type SerializedSkill } from '../../domain/skill/serialization';
-import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 const key = (scope: TenantScope, id: string, version: string) => `${tenantKey(scope)} ${id} ${version}`;
 const idKey = (scope: TenantScope, id: string) => `${tenantKey(scope)} ${id}`;

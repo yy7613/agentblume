@@ -1,4 +1,4 @@
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { Experiment, ExperimentCaseResult, ExperimentStatus } from './experiment';
 
 export interface ExperimentFilter { readonly status?: ExperimentStatus }

@@ -12,7 +12,7 @@ import {
   type AuthenticationResult,
 } from '../../application/security/authentication';
 import { singleUserPrincipal, type Principal } from '../../domain/security/principal';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 export class SingleUserAuthentication implements AuthenticationPort {
   readonly mode = 'single-user' as const;

@@ -3,7 +3,7 @@
  * repository や Tool version には触れず、Tool Builder の編集ループ専用とする。
  */
 import type { ToolGraph } from '../../domain/etl/graph';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { EtlEngine, PreviewResult, PropagationResult } from '../etl/engine';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 

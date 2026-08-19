@@ -1,4 +1,4 @@
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { RunId } from './ids';
 import type { RunRecord, RunStatus } from './run';
 

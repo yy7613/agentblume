@@ -2,7 +2,7 @@
  * application層: Agent Factory `CancelFactoryRunUseCase`（v33 実装契約 §3）。
  * `CancelExperimentUseCase`（v23）と同じ形: ドメイン遷移 → 保存 → worker.cancel通知。
  */
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { appendFactoryEvent, cancelFactoryRun, type FactoryRun } from '../../domain/factory/factory-run';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
 import type { FactoryRunId } from '../../domain/factory/ids';

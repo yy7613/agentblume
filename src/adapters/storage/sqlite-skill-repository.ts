@@ -3,7 +3,7 @@ import type { Skill } from '../../domain/skill/skill';
 import type { SkillRepository, SkillSummary } from '../../domain/skill/skill-repository';
 import { SkillVersionConflictError } from '../../domain/skill/errors';
 import { deserializeSkill, serializeSkill } from '../../domain/skill/serialization';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 const fromJson = (value: unknown): Skill => deserializeSkill(JSON.parse(String(value)));
 export class SqliteSkillRepository extends SqliteRepositoryBase implements SkillRepository {

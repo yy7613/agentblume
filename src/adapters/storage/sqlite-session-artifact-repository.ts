@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { SqliteRepositoryBase, MEMORY_DB_PATH, type SqliteDatabaseSource } from './sqlite-database';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SessionArtifact } from '../../domain/session/session-artifact';
 import { deserializeSessionArtifact } from '../../domain/session/serialization';
 import type { SessionArtifactReadOptions, SessionArtifactRepository } from '../../domain/session/session-repository';

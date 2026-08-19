@@ -2,7 +2,7 @@ import { deserializeExperiment, deserializeExperimentCaseResult, serializeExperi
 import type { ExperimentFilter, ExperimentRepository } from '../../domain/evaluation/experiment-repository';
 import type { Experiment, ExperimentCaseResult, ExperimentStatus } from '../../domain/evaluation/experiment';
 import { ExperimentConflictError, ExperimentNotFoundError } from '../../domain/evaluation/errors';
-import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 
 const experimentKey = (scope: TenantScope, id: string): string => `${tenantKey(scope)} ${id}`;
 const resultKey = (result: ExperimentCaseResult): string => `${experimentKey(result.scope, result.experimentId)} ${result.caseId} ${result.repetition}`;

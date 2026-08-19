@@ -2,7 +2,7 @@ import type { EvaluationDatasetRepository, EvaluationDatasetSummary } from '../.
 import { EvaluationDatasetNotFoundError } from '../../domain/evaluation/errors';
 import type { EvaluationDataset } from '../../domain/evaluation/evaluation-dataset';
 import type { DatasetId } from '../../domain/evaluation/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 
 export class QueryEvaluationDatasetsUseCase {

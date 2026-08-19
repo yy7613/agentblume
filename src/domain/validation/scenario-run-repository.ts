@@ -1,4 +1,4 @@
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { ScenarioId, ScenarioRunId } from './ids';
 import type { ScenarioRun } from './scenario-run';
 

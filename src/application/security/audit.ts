@@ -14,7 +14,7 @@
  * ここでは素直に throw してよい契約にしてある。
  */
 import type { AuditEntry, AuditLogFilter, AuditLogRepository } from '../../domain/security/audit';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 /** 監査イベントの記録先。 */
 export interface AuditSink {

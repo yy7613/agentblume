@@ -4,7 +4,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { DataSourceId } from '../../domain/data-source/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import {
   DEFAULT_FACTORY_OPTIONS,
   startFactoryRun,

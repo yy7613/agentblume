@@ -5,7 +5,7 @@
  * 手動編集・提案承認の双方から使う「現在版の置換」保存。
  */
 import { randomUUID } from 'node:crypto';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { WikiPageId, WikiSpaceId } from '../../domain/memory/ids';
 import type { RunId } from '../../domain/run/ids';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';

@@ -22,7 +22,7 @@ import { SessionQuotaExceededError } from '../../domain/session/errors';
 import { createSessionArtifact } from '../../domain/session/session-artifact';
 import type { SessionArtifactRepository } from '../../domain/session/session-repository';
 import type { RunId } from '../../domain/run/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { ModelRequestMessage, ModelToolCall, ModelToolDefinition } from '../model/model-provider';
 import type { WebSearchUseCase } from '../search/web-search';
 import { AgentRunError } from './errors';

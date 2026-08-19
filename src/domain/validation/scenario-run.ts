@@ -6,7 +6,7 @@
 import type { RunId } from '../run/ids';
 import type { RunUsage } from '../run/run';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import { SemVer } from '../tool/semver';
 import { ValidationDomainError } from './errors';
 import type { ScenarioId, ScenarioRunId } from './ids';

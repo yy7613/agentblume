@@ -7,7 +7,7 @@
  */
 import { assertHttpUrl, assertNonEmpty, type HttpUrl } from '../shared/assert';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import { McpValidationError } from './errors';
 
 /** stdio（子プロセス）または streamable-http のいずれか。 */

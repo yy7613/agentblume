@@ -1,6 +1,6 @@
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import type { AgentId } from '../../domain/agent/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import { ValidationDomainError } from '../../domain/validation/errors';

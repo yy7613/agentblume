@@ -199,7 +199,7 @@ import { GetModelSettingsUseCase, SaveModelSettingsUseCase } from '../applicatio
 import { TestModelSettingsUseCase } from '../application/model-settings/test-model-settings';
 import { QueryModelCatalogUseCase } from '../application/model-settings/query-model-catalog';
 import type { ModelSlotName } from '../domain/model-settings/model-settings';
-import type { TenantScope } from '../domain/tool/ids';
+import type { TenantScope } from '../domain/shared/tenant-scope';
 import { defaultDatabasePath, LATEST_SCHEMA_VERSION, MEMORY_DB_PATH, openSqliteDatabase, type SqliteDatabase } from '../adapters/storage/sqlite-database';
 import { SqliteUnitOfWork } from '../adapters/storage/sqlite-unit-of-work';
 import { NoopUnitOfWork, type UnitOfWorkPort } from '../application/persistence/unit-of-work';

@@ -10,7 +10,7 @@ import { TokenAuthentication } from '../adapters/security/token-authentication';
 import type { AuthenticationPort } from '../application/security/authentication';
 import type { AuthorizationPort } from '../application/security/authorization';
 import type { AuthSettings } from '../config/environment';
-import type { TenantScope } from '../domain/tool/ids';
+import type { TenantScope } from '../domain/shared/tenant-scope';
 
 /**
  * 起動設定から認証実装を組み立てる。

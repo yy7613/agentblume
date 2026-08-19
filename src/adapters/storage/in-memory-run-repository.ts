@@ -1,4 +1,4 @@
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { ListRunsOptions, RunRepository, RunRetentionOptions, RunRetentionResult } from '../../domain/run/run-repository';
 import { redactRun, type RunRecord, type RunStatus } from '../../domain/run/run';
 import { deserializeRun, serializeRun } from '../../domain/run/serialization';

@@ -3,7 +3,7 @@ import { deserializeEvaluationDataset, serializeEvaluationDataset } from '../../
 import type { EvaluationDatasetRepository, EvaluationDatasetSummary } from '../../domain/evaluation/evaluation-asset-repositories';
 import { EvaluationAssetVersionConflictError } from '../../domain/evaluation/errors';
 import type { EvaluationDataset } from '../../domain/evaluation/evaluation-dataset';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 
 const fromJson = (value: unknown): EvaluationDataset => deserializeEvaluationDataset(JSON.parse(String(value)));

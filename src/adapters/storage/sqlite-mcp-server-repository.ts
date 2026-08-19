@@ -24,7 +24,7 @@ import {
   isStoredSealed, parseStoredMcpServerConfig, storedSecrets, toMcpServerConfig, toStoredMcpServerConfig,
   type StoredMcpServerConfig,
 } from '../../domain/mcp/serialization';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 /** `resealLegacySecrets()` の結果。`failed > 0` は「次の保存に委ねた行がある」を意味する。 */
 export interface ResealResult {

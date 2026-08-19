@@ -5,7 +5,7 @@ import type { OperationsRepository } from '../../domain/operations/operations-re
 import { RunNotFoundError } from '../../domain/run/errors';
 import type { RunId } from '../../domain/run/ids';
 import type { RunRepository } from '../../domain/run/run-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { logSwallowed, type LoggerPort } from './logger';
 
 export interface SubmitRunFeedbackInput {

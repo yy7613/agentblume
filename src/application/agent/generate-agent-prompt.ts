@@ -3,7 +3,7 @@ import type { AgentRepository } from '../../domain/agent/agent-repository';
 import { AgentValidationError } from '../../domain/agent/errors';
 import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
 import type { Schema } from '../../domain/data/types';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';

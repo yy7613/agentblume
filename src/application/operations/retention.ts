@@ -2,7 +2,7 @@ import { DEFAULT_RETENTION_DAYS, type RetentionPolicy } from '../../domain/opera
 import type { OperationsRepository } from '../../domain/operations/operations-repository';
 import type { RunRepository, RunRetentionResult } from '../../domain/run/run-repository';
 import type { AuditLogRepository } from '../../domain/security/audit';
-import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 import { describeError, type LoggerPort } from './logger';
 
 export interface RetentionApplyResult extends RunRetentionResult { readonly feedbackDeleted: number; readonly aggregateBucketsDeleted: number; readonly auditDeleted: number }

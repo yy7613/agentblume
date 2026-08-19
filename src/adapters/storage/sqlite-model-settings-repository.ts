@@ -2,7 +2,7 @@ import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-databa
 import type { ModelSettings } from '../../domain/model-settings/model-settings';
 import type { ModelSettingsRepository } from '../../domain/model-settings/model-settings-repository';
 import { deserializeModelSettings, serializeModelSettings } from '../../domain/model-settings/serialization';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 /**
  * モデル設定のSQLite永続化。設定は版を持たず (tenant_id, workspace_id) で upsert する。

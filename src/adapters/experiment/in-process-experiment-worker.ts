@@ -1,7 +1,7 @@
 import type { RunExperimentUseCase } from '../../application/evaluation/run-experiment';
 import type { ExperimentWorkerPort } from '../../application/evaluation/experiment-worker';
 import { logSwallowed, type LoggerPort } from '../../application/operations/logger';
-import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 import { IdleLatch } from '../worker/idle-latch';
 
 interface PendingExperiment { readonly scope: TenantScope; readonly id: string; readonly key: string }

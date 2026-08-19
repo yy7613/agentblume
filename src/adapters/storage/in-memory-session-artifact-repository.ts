@@ -1,4 +1,4 @@
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SessionArtifact } from '../../domain/session/session-artifact';
 import type { SessionArtifactReadOptions, SessionArtifactRepository } from '../../domain/session/session-repository';
 

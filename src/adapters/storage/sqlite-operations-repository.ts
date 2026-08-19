@@ -2,7 +2,7 @@ import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-databa
 import type { OperationsRepository } from '../../domain/operations/operations-repository';
 import { utcDayStart, type OperationsDailyMetric, type RetentionPolicy, type RunFeedback, type RunMetricSample } from '../../domain/operations/operations';
 import { deserializeDailyMetric, deserializeFeedback, deserializeRetentionPolicy, serializeDailyMetric, serializeFeedback, serializeRetentionPolicy } from '../../domain/operations/serialization';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 export class SqliteOperationsRepository extends SqliteRepositoryBase implements OperationsRepository {
   constructor(source: SqliteDatabaseSource = ':memory:') {

@@ -29,7 +29,7 @@ import type { FactoryAddSkillPlan } from '../../domain/factory/factory-plan';
 import type { AppliedProposal, ImprovementProposal, RejectedProposal } from '../../domain/factory/improvement-proposal';
 import type { VersionRef } from '../../domain/factory/refs';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';

@@ -1,6 +1,6 @@
 import type { HarnessRunRecord, HarnessRunStatus } from '../../domain/harness/harness-run';
 import type { HarnessRunRepository } from '../../domain/harness/harness-run-repository';
-import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 
 function key(scope: TenantScope, runId: string): string { return `${tenantKey(scope)} ${runId}`; }
 export class InMemoryHarnessRunRepository implements HarnessRunRepository {

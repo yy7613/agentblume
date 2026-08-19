@@ -1,6 +1,6 @@
 import type { OperationsDailyMetric } from '../../domain/operations/operations';
 import type { OperationsRepository } from '../../domain/operations/operations-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 export interface OperationsMetricPoint {
   readonly bucketStart: string;

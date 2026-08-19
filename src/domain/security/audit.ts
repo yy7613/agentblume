@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { AUTHORIZATION_ACTIONS, AUTHORIZATION_RESOURCE_KINDS, type AuthorizationAction, type AuthorizationResourceKind } from './authorization';
 import type { TenantId, WorkspaceId } from '../shared/tenant-scope';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 
 /**
  * 監査エントリの結末。

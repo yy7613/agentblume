@@ -2,7 +2,7 @@ import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-databa
 import { redactRun, type RunRecord, type RunStatus } from '../../domain/run/run';
 import type { ListRunsOptions, RunRepository, RunRetentionOptions, RunRetentionResult } from '../../domain/run/run-repository';
 import { deserializeRun, serializeRun } from '../../domain/run/serialization';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 function fromJson(value: unknown): RunRecord {
   return deserializeRun(JSON.parse(String(value)));

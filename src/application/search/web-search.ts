@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Row } from '../../domain/data/types';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SearchProviderCatalog, SearchProviderId, SearchProviderSummary } from './search-provider';
 
 const MAX_QUERY_LENGTH = 2_000;

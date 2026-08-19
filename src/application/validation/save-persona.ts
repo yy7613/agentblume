@@ -1,7 +1,7 @@
 import type { PersonaId } from '../../domain/validation/ids';
 import { createPersona, type Persona, type PersonaArchetype, type PersonaLanguage, type PersonaLevel, type PersonaVerbosity } from '../../domain/validation/persona';
 import type { PersonaRepository } from '../../domain/validation/persona-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 

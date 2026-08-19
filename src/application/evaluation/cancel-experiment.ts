@@ -2,7 +2,7 @@ import { cancelExperiment, type Experiment } from '../../domain/evaluation/exper
 import type { ExperimentRepository } from '../../domain/evaluation/experiment-repository';
 import { ExperimentNotFoundError } from '../../domain/evaluation/errors';
 import type { ExperimentId } from '../../domain/evaluation/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { ExperimentWorkerPort } from './experiment-worker';
 
 export class CancelExperimentUseCase {

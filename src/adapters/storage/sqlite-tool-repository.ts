@@ -10,7 +10,8 @@
  */
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import { VersionConflictError } from '../../domain/tool/errors';
-import type { TenantScope, ToolId } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
+import type { ToolId } from '../../domain/tool/ids';
 import type { ToolSummary } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import { deserializeTool, serializeTool } from '../../domain/tool/serialization';

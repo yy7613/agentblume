@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto';
 import type { Agent } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import { DEFAULT_SURVEY } from '../../domain/validation/survey';

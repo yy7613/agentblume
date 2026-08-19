@@ -5,7 +5,7 @@ import type { SessionArtifactId, SessionId } from '../../domain/session/ids';
 import type { SessionArtifact, SessionArtifactDescriptor } from '../../domain/session/session-artifact';
 import { toArtifactDescriptor } from '../../domain/session/session-artifact';
 import type { SessionArtifactRepository } from '../../domain/session/session-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { QueryAgentSessionUseCase } from './agent-sessions';
 
 export class QuerySessionArtifactsUseCase {

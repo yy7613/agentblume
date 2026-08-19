@@ -1,5 +1,5 @@
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';
 import { effectiveWikiId, summarizeWikiPage, type WikiPage, type WikiPageSummary } from '../../domain/memory/wiki-page';
 import { deserializeWikiPage, deserializeWikiSpace, serializeWikiPage, serializeWikiSpace, type SerializedWikiPage, type SerializedWikiSpace } from '../../domain/memory/serialization';

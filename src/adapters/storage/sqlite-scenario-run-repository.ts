@@ -1,5 +1,5 @@
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { ValidationDomainError } from '../../domain/validation/errors';
 import type { ScenarioRun } from '../../domain/validation/scenario-run';
 import type { ScenarioRunFilter, ScenarioRunRepository } from '../../domain/validation/scenario-run-repository';

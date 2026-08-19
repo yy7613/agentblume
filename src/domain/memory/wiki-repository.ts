@@ -4,7 +4,7 @@
  * save は id で upsert（改訂は現在版を置換）。検索は v1 キーワード/タグ一致。
  * 埋め込み検索（M4）は将来 ModelProviderPort.embed を用いる別実装で拡張する。
  */
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { WikiPageId, WikiSpaceId } from './ids';
 import type { WikiPage, WikiPageSummary } from './wiki-page';
 import type { WikiSpace, WikiSpaceSummary } from './wiki-space';

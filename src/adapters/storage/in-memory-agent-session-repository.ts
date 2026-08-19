@@ -1,4 +1,4 @@
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { AgentSession } from '../../domain/session/agent-session';
 import type { AgentSessionRepository } from '../../domain/session/session-repository';
 

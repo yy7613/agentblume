@@ -1,7 +1,7 @@
 import type { OperationsRepository } from '../../domain/operations/operations-repository';
 import { utcDayStart, type OperationsDailyMetric, type RetentionPolicy, type RunFeedback, type RunMetricSample } from '../../domain/operations/operations';
 import { deserializeDailyMetric, deserializeFeedback, deserializeRetentionPolicy, serializeDailyMetric, serializeFeedback, serializeRetentionPolicy } from '../../domain/operations/serialization';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 const scopeKey = (scope: TenantScope): string => `${scope.tenantId}\u0000${scope.workspaceId}`;
 const feedbackKey = (scope: TenantScope, runId: string): string => `${scopeKey(scope)}\u0000${runId}`;

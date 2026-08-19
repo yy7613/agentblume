@@ -2,7 +2,7 @@ import type { Experiment, ExperimentCaseResult, ExperimentStatus } from '../../d
 import type { ExperimentRepository } from '../../domain/evaluation/experiment-repository';
 import { ExperimentNotFoundError } from '../../domain/evaluation/errors';
 import type { ExperimentId } from '../../domain/evaluation/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 export class QueryExperimentsUseCase {
   constructor(private readonly repo: ExperimentRepository) {}

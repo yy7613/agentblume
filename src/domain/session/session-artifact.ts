@@ -3,7 +3,8 @@ import type { Schema } from '../data/types';
 import type { NodeId } from '../etl/ids';
 import type { RunId, ToolCallId } from '../run/ids';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope, ToolId } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
+import type { ToolId } from '../tool/ids';
 import { SessionDomainError } from './errors';
 import type { SessionArtifactId, SessionId } from './ids';
 

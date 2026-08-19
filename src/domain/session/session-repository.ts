@@ -1,4 +1,4 @@
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { AgentSession } from './agent-session';
 import type { SessionArtifactId, SessionId } from './ids';
 import type { SessionArtifact } from './session-artifact';

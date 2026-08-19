@@ -1,4 +1,4 @@
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { DataSource } from './data-source';
 import type { DataSourceId } from './ids';
 

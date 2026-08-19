@@ -1,4 +1,4 @@
-import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 import type { MemoryProposalRepository } from '../../domain/memory/memory-proposal-repository';
 import type { MemoryProposal, MemoryProposalState } from '../../domain/memory/memory-proposal';
 import { deserializeMemoryProposal, serializeMemoryProposal, type SerializedMemoryProposal } from '../../domain/memory/serialization';

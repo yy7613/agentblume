@@ -12,7 +12,8 @@
  * 件数は上限（既定20件）で切り捨てる。切り捨てた場合も `totalCount` に総数を残し、Plannerへ
  * 「他にもN件ある」と伝えられるようにする。並び順は決定的（組み込み → publishName昇順）。
  */
-import type { TenantScope, ToolId } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
+import type { ToolId } from '../../domain/tool/ids';
 import type { SideEffect } from '../../domain/tool/metadata';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 

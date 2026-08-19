@@ -1,5 +1,6 @@
 import { SkillValidationError } from '../../domain/skill/errors';
-import type { TenantScope, ToolId } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
+import type { ToolId } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';

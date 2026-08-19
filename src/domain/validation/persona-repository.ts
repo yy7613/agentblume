@@ -1,4 +1,4 @@
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { PublishState } from '../tool/metadata';
 import type { SemVer } from '../tool/semver';
 import type { PersonaId } from './ids';

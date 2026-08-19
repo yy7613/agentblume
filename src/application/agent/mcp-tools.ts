@@ -14,7 +14,7 @@
  */
 import type { McpServerConfig } from '../../domain/mcp/mcp-server';
 import type { McpServerRepository } from '../../domain/mcp/mcp-server-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { McpClientError, type McpClientPort, type McpToolDescriptor } from '../mcp/mcp-client';
 import type { JsonObject, JsonSchemaObject, JsonSchemaProperty, ModelToolCall, ModelToolDefinition } from '../model/model-provider';
 import { AgentRunError } from './errors';

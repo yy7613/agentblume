@@ -6,7 +6,7 @@
  *  - skill → 現行 Skill を流用し instructions だけ差し替えた新 minor バージョンを保存（蒸留）
  * reject は状態遷移のみ（実体は変更しない）。
  */
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { MemoryDomainError, MemoryProposalNotFoundError } from '../../domain/memory/errors';
 import type { MemoryProposalId } from '../../domain/memory/ids';
 import { decideProposal, type MemoryProposal } from '../../domain/memory/memory-proposal';

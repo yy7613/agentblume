@@ -18,7 +18,7 @@ import { createApp } from './composition/root';
 import type { App } from './composition/root';
 import type { Cell, Row, Schema, Table } from './domain/data/types';
 import type { GraphNode, ToolGraph } from './domain/etl/graph';
-import type { TenantScope } from './domain/tool/ids';
+import type { TenantScope } from './domain/shared/tenant-scope';
 import { SemVer } from './domain/tool/semver';
 
 /** README §7 相当のサンプル CSV（複数型を含む 4 行）。 */

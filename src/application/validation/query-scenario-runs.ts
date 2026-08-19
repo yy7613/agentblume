@@ -1,4 +1,4 @@
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { ScenarioRunNotFoundError } from '../../domain/validation/errors';
 import type { ScenarioRunId } from '../../domain/validation/ids';
 import type { ScenarioRun } from '../../domain/validation/scenario-run';

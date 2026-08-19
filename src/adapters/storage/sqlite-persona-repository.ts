@@ -1,6 +1,6 @@
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import { VersionConflictError } from '../../domain/tool/errors';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 import type { Persona } from '../../domain/validation/persona';
 import type { PersonaRepository, PersonaSummary } from '../../domain/validation/persona-repository';

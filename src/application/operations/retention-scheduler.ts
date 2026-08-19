@@ -19,7 +19,7 @@
  * `unref()` してイベントループを掴まない。retentionタイマーだけが理由でプロセスが終われなくなるのは
  * `Ctrl+C` の体験として最悪であり、掃除は次回起動時にやり直せばよい。
  */
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { describeError, type LoggerPort } from './logger';
 import type { RetentionSweepResult, RetentionUseCase } from './retention';
 

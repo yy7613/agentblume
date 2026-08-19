@@ -1,6 +1,6 @@
 import type { RunId } from '../run/ids';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { OperationsDailyMetric, RetentionPolicy, RunFeedback, RunMetricSample } from './operations';
 
 export interface OperationsRepository {

@@ -1,7 +1,7 @@
 /**
  * application層: 記憶提案の一覧・取得（v21 実装契約 §3 / ADR-0016 M2）
  */
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { MemoryProposalNotFoundError } from '../../domain/memory/errors';
 import type { MemoryProposalId } from '../../domain/memory/ids';
 import type { MemoryProposal, MemoryProposalState } from '../../domain/memory/memory-proposal';

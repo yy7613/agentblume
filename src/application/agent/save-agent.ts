@@ -5,7 +5,8 @@ import type { StructuredOutputDefinition } from '../../domain/agent/structured-o
 import { AgentValidationError } from '../../domain/agent/errors';
 import type { WikiSpaceId } from '../../domain/memory/ids';
 import type { SkillId } from '../../domain/skill/ids';
-import type { ToolId, TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
+import type { ToolId } from '../../domain/tool/ids';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import type { ToolRepository } from '../../domain/tool/tool-repository';

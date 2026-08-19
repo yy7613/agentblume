@@ -26,7 +26,7 @@ import type { AuthorizationPort } from '../application/security/authorization';
 import { createAuditEntry, type AuditDetailValue, type AuditOutcome, type AuditResource, UNAUTHENTICATED_SUBJECT } from '../domain/security/audit';
 import { decideAuthorization, type AuthorizationAction, type AuthorizationResource, type AuthorizationResourceKind } from '../domain/security/authorization';
 import { principalScope } from '../domain/security/principal';
-import type { TenantScope } from '../domain/tool/ids';
+import type { TenantScope } from '../domain/shared/tenant-scope';
 import { pathOf } from './authentication';
 
 declare module 'fastify' {

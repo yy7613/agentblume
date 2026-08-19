@@ -2,7 +2,7 @@ import { QualityGateConflictError, QualityGateNotFoundError } from '../../domain
 import type { GatePolicySummary, QualityGateRepository } from '../../domain/evaluation/quality-gate-repository';
 import { deserializeGatePolicy, deserializeGateReport, deserializePromotionRequest, serializeGatePolicy, serializeGateReport, serializePromotionRequest, type SerializedGatePolicy, type SerializedGateReport, type SerializedPromotionRequest } from '../../domain/evaluation/quality-gate-serialization';
 import type { GatePolicy, GateReport, PromotionRequest } from '../../domain/evaluation/quality-gate';
-import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 
 const policyKey = (scope: TenantScope, id: string, version: string): string => `${tenantKey(scope)} ${id} ${version}`;

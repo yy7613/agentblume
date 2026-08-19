@@ -7,7 +7,7 @@
  */
 import type { EtlEngine } from '../etl/engine';
 import type { ToolGraph } from '../../domain/etl/graph';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { DataSourceId } from '../../domain/data-source/ids';
 import type { DataSourceRepository } from '../../domain/data-source/data-source-repository';
 import { FactoryValidationError } from '../../domain/factory/errors';

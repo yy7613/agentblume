@@ -2,7 +2,7 @@ import type { JudgeRubricRepository, JudgeRubricSummary } from '../../domain/eva
 import { JudgeRubricNotFoundError } from '../../domain/evaluation/errors';
 import type { JudgeRubricId } from '../../domain/evaluation/ids';
 import type { JudgeRubric } from '../../domain/evaluation/judge-rubric';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 
 export class QueryJudgeRubricsUseCase {

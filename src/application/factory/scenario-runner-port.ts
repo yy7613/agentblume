@@ -8,7 +8,7 @@
  * Factory自身の検証実行は既存Experimentと同じ非対話の自動実行のため、呼び出し側は常に `mode: 'test'` を渡す。
  */
 import type { AgentId } from '../../domain/agent/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 import type { ScenarioId } from '../../domain/validation/ids';
 import type { ScenarioRun } from '../../domain/validation/scenario-run';

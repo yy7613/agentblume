@@ -1,4 +1,4 @@
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { FactoryRun, FactoryRunStatus } from './factory-run';
 import type { FactoryRunId } from './ids';
 

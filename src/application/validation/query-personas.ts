@@ -1,4 +1,4 @@
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 import { PersonaNotFoundError } from '../../domain/validation/errors';
 import type { PersonaId } from '../../domain/validation/ids';

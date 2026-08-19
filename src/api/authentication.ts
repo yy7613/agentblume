@@ -22,7 +22,7 @@ import type { AuthenticationPort, AuthenticationRequest } from '../application/s
 import { authenticated } from '../application/security/authentication';
 import type { Principal } from '../domain/security/principal';
 import { principalScope, singleUserPrincipal } from '../domain/security/principal';
-import type { TenantScope } from '../domain/tool/ids';
+import type { TenantScope } from '../domain/shared/tenant-scope';
 
 declare module 'fastify' {
   interface FastifyRequest {

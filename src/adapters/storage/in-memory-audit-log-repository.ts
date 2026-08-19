@@ -6,7 +6,7 @@
  */
 import type { AuditSink } from '../../application/security/audit';
 import { deserializeAuditEntry, serializeAuditEntry, type AuditEntry, type AuditLogFilter, type AuditLogRepository } from '../../domain/security/audit';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 /**
  * スコープの複合鍵。区切りの U+0000 は**エスケープ表記で書く**（生のNULバイトを埋めない）。

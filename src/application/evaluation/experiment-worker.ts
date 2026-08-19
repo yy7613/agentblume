@@ -1,5 +1,5 @@
 import type { ExperimentId } from '../../domain/evaluation/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 export interface ExperimentWorkerPort {
   enqueue(scope: TenantScope, experimentId: ExperimentId): void;

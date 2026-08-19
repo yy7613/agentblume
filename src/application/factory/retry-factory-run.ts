@@ -5,7 +5,7 @@
  * `CreateFactoryRunUseCase` に委譲して新しいRunを `queued` で作成・worker へ enqueue する
  * （`ResumeFactoryRunUseCase` のような同一Runの再開ではない。失敗Runは終端状態のため再開できない）。
  */
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { FactoryRun } from '../../domain/factory/factory-run';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
 import type { FactoryRunId } from '../../domain/factory/ids';

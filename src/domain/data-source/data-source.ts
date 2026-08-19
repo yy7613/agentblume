@@ -1,5 +1,5 @@
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { ConnectionId, DataSourceId } from './ids';
 
 /** Toolから参照する再利用可能なデータソースのカタログ情報。payloadや資格情報は含めない。 */

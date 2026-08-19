@@ -14,7 +14,7 @@
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import type { AuditSink } from '../../application/security/audit';
 import { deserializeAuditEntry, serializeAuditEntry, type AuditEntry, type AuditLogFilter, type AuditLogRepository } from '../../domain/security/audit';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 export class SqliteAuditLogRepository extends SqliteRepositoryBase implements AuditLogRepository, AuditSink {
   constructor(source: SqliteDatabaseSource = ':memory:') {

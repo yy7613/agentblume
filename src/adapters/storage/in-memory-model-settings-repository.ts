@@ -1,6 +1,6 @@
 import type { ModelSettings } from '../../domain/model-settings/model-settings';
 import type { ModelSettingsRepository } from '../../domain/model-settings/model-settings-repository';
-import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 
 /** モデル設定のインメモリ永続化（testプロファイル・契約テスト用）。 */
 export class InMemoryModelSettingsRepository implements ModelSettingsRepository {

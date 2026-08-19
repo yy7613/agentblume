@@ -1,5 +1,5 @@
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { AgentSession } from '../../domain/session/agent-session';
 import { deserializeAgentSession } from '../../domain/session/serialization';
 import type { AgentSessionRepository } from '../../domain/session/session-repository';

@@ -1,6 +1,6 @@
 import type { Row } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { DataSourceRepository } from '../../domain/data-source/data-source-repository';
 import { DataSourceValidationError } from './manage-data-sources';
 import type { DatabaseReadPort } from './manage-data-sources';

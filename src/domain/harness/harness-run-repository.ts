@@ -1,4 +1,4 @@
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { HarnessRunRecord, HarnessRunStatus } from './harness-run';
 import type { HarnessRunId } from './ids';
 

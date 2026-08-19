@@ -3,7 +3,7 @@ import type { RunId } from '../run/ids';
 import type { RunUsage } from '../run/run';
 import { assertNonEmpty } from '../shared/assert';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import { SemVer } from '../tool/semver';
 import type { EvaluationScore } from './evaluation';
 import { createEvaluationResult } from './evaluation';

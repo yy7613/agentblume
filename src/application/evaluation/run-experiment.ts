@@ -13,7 +13,7 @@ import type { ExperimentId } from '../../domain/evaluation/ids';
 import type { EvaluationCase, ScenarioEvaluationCase, TurnEvaluationCase } from '../../domain/evaluation/evaluation-dataset';
 import type { EvaluatorProfile } from '../../domain/evaluation/evaluator-profile';
 import type { ScenarioRun } from '../../domain/validation/scenario-run';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { JudgeEvaluatorPort } from './judge-evaluator';
 import { JudgeEvaluationError } from '../../domain/evaluation/errors';
 import type { ExperimentModelSnapshot, JudgeEvaluationRecord } from '../../domain/evaluation/experiment';

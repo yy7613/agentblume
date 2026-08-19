@@ -2,7 +2,7 @@ import { createEvaluatorProfile, type EvaluatorMetricDefinition, type EvaluatorP
 import type { EvaluatorProfileRepository, JudgeRubricRepository } from '../../domain/evaluation/evaluation-asset-repositories';
 import { EvaluationDomainError } from '../../domain/evaluation/errors';
 import type { EvaluatorProfileId } from '../../domain/evaluation/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 

@@ -16,7 +16,7 @@
 import type { AuthorizationRole } from './authorization';
 import { AUTHORIZATION_ROLES } from './authorization';
 import type { TenantId, WorkspaceId } from '../shared/tenant-scope';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 
 /** 認証済みの主体。api層は必ずこれ経由で `TenantScope` を得る。 */
 export interface Principal {

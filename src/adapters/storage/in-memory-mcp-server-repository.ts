@@ -1,6 +1,6 @@
 import type { McpServerConfig } from '../../domain/mcp/mcp-server';
 import type { McpServerRepository } from '../../domain/mcp/mcp-server-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 function key(scope: TenantScope, name: string): string { return `${scope.tenantId}\u0000${scope.workspaceId}\u0000${name}`; }
 function inScope(config: McpServerConfig, scope: TenantScope): boolean {

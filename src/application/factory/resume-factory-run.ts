@@ -4,7 +4,7 @@
  * `waiting-approval` checkpoint（`plan-approval`）への応答を処理する。Magentic計画承認と同じ応答型
  * （approve / revise / reject）。reject は再計画ではなく監査可能な `cancelled` として確定する。
  */
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { appendFactoryEvent, cancelFactoryRun, resumeFactoryRun, type FactoryRun } from '../../domain/factory/factory-run';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
 import type { FactoryRunId } from '../../domain/factory/ids';

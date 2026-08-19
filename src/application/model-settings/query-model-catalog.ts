@@ -12,7 +12,7 @@
  */
 import { modelSlot, sameBaseUrl, type ModelSlotName } from '../../domain/model-settings/model-settings';
 import type { ModelSettingsRepository } from '../../domain/model-settings/model-settings-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { ModelCatalogPort, ModelCatalogProvider } from './model-catalog';
 import type { SecretCipherPort } from './secret-cipher';
 

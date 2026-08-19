@@ -1,6 +1,6 @@
 import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-database';
 import { VersionConflictError } from '../../domain/tool/errors';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 import type { Scenario } from '../../domain/validation/scenario';
 import type { ScenarioRepository, ScenarioSummary } from '../../domain/validation/scenario-repository';

@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentId } from '../../domain/agent/ids';
 import type { RunUsage } from '../../domain/run/run';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import { PersonaNotFoundError, ScenarioNotFoundError, ValidationDomainError } from '../../domain/validation/errors';

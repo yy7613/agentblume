@@ -94,8 +94,19 @@ Brand へ昇格していない Flavor は、本 ADR 末尾の台帳（付記）�
 
 昇格（決定4）を完了していない Flavor をここへ追記する。
 
-| 型 | 所有 BC | 状態（2026-08-18） | 備考 |
+| 型 | 所有 BC | 状態（2026-08-19） | 備考 |
 |---|---|---|---|
-| TenantId / WorkspaceId | shared（tenant-scope） | Flavor 化未着手 | セキュリティ境界値。昇格優先度: 高 |
-| SlotId | harness | Flavor 化未着手 | 取り違え多発値（fromSlotId⇄runId）。昇格優先度: 高 |
-| ToolId / AgentId ほか各 BC の ID | 各 BC の ids.ts | Flavor 化未着手 | 型別名からの張り替えを純増分で順次実施 |
+| TenantId / WorkspaceId | shared（tenant-scope） | Flavor 化済・Brand 昇格不可（実験ログ参照） | セキュリティ境界値。昇格優先度: 高。昇格試行でコンパイルエラー 1,447 件 |
+| SlotId | harness | Flavor 化済・Brand 昇格不可（実験ログ参照） | 取り違え多発値（fromSlotId⇄runId）。昇格優先度: 高。昇格試行でエラー 88 件 |
+| ToolId / AgentId ほか各 BC の ID | 各 BC の ids.ts | Flavor 化済 | 型別名からの張り替え完了。Brand 昇格は実験ログの帰結に従う |
+| TerminalId | run | Flavor 化済・Brand 昇格不可（構造的） | 値空間が ETL 終端ノード ID と実行時ソース番兵（'runtime-harness' / 'mcp' / 'session-workspace'）の異種混合であり、生成経路の限定（決定4 (a)）が原理的に成立しない |
+| IsoDateTime | shared（time） | ファクトリ厳格化 未実施 | shared/time.ts の assertIsoDateTime は新設済みだが未配線。既存テストの日時リテラルとの互換を確認しつつ BC ごとに意図的採用する（M4 決定） |
+| （検証方言: nonEmpty） | session / operations | 共通 assert への委譲未了 | src/domain/session/agent-session.ts（`${field} must be non-empty` — 別文言のため委譲には契約変更判断が必要）/ src/domain/operations/backup.ts（`backup manifest field "key"` ラベル方言 — 委譲可能だが任意） |
+
+### 実験ログ: Brand 昇格試行（2026-08-19）
+
+結論: **現時点で昇格可能な ID はゼロ**。決定4 (b)（昇格してもコンパイルが通ること）を満たす Flavor は存在しなかった。
+
+- `TenantId` / `WorkspaceId` → Brand: コンパイルエラー **1,447 件**。本番コード（adapters/security/token-authentication.ts、in-memory リポジトリ群）と既存テスト・契約テストに広く波及し、純増分ポリシー下では不可。
+- `SlotId` → Brand: エラー **88 件**（既存テスト 79 / 本番 9）。本番側の内訳: application/harness/run-harness.ts ×3、api/harness-routes.ts ×2、domain/harness/serialization.ts ×2、domain/harness/run-serialization.ts ×1、adapters/storage/harness-run-repository.contract.ts ×1。本番側はいずれも zod 出力や LLM 出力由来の string 流入点であり、パース点へのスマートコンストラクタ導入が必要。主障壁はテスト側。
+- 帰結: Brand 昇格には「既存テストの ID リテラルを更新する」という意図的な決断が前提となる。純増分運用の間は全 ID が Flavor に留まる。昇格を決断する場合の作業リストとしては、上記エラー一覧がそのまま使える。

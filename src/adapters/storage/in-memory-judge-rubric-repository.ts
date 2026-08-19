@@ -2,7 +2,7 @@ import { deserializeJudgeRubric, serializeJudgeRubric, type SerializedJudgeRubri
 import type { JudgeRubricRepository, JudgeRubricSummary } from '../../domain/evaluation/evaluation-asset-repositories';
 import { EvaluationAssetVersionConflictError } from '../../domain/evaluation/errors';
 import type { JudgeRubric } from '../../domain/evaluation/judge-rubric';
-import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 
 const key = (scope: TenantScope, id: string, version: string): string => `${tenantKey(scope)} ${id} ${version}`;

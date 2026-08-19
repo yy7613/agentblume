@@ -1,5 +1,5 @@
 import type { FactoryRunId } from '../../domain/factory/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 /**
  * Agent Factory の非同期実行ポート（v33 実装契約 §3 / docs/16-agent-factory.md §7）。

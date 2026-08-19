@@ -6,7 +6,7 @@
  * 承認は別ユースケース（ReviewProposal）。ここでは書き込まず提案のみ生成する。
  */
 import { randomUUID } from 'node:crypto';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { WikiPageId, WikiSpaceId } from '../../domain/memory/ids';
 import type { RunId } from '../../domain/run/ids';
 import type { SkillId } from '../../domain/skill/ids';

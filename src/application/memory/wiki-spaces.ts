@@ -1,4 +1,4 @@
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { WikiSpaceNotFoundError } from '../../domain/memory/errors';
 import type { WikiSpaceId } from '../../domain/memory/ids';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';

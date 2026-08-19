@@ -8,7 +8,7 @@
 import type { AgentId } from '../agent/ids';
 import type { DataSourceId } from '../data-source/ids';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { ScenarioRunId } from '../validation/ids';
 import type { FactoryPlan } from './factory-plan';
 import type { FactoryRunId } from './ids';

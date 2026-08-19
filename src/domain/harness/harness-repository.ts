@@ -1,5 +1,5 @@
 import type { PublishState } from '../tool/metadata';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { SemVer } from '../tool/semver';
 import type { AgentHarness, HarnessPattern } from './agent-harness';
 import type { HarnessId } from './ids';

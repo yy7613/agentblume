@@ -20,7 +20,7 @@
  * 400 で理由が分かるほうが親切）。ただしこれは第一の防壁ではない。ポリシー導入前に
  * 保存された行があるので、実際に守るのは接続直前の検査（adapters）である。
  */
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { McpNotFoundError } from '../../domain/mcp/errors';
 import { createMcpServerConfig, type McpServerConfig, type McpTransportConfig } from '../../domain/mcp/mcp-server';
 import type { McpServerRepository } from '../../domain/mcp/mcp-server-repository';

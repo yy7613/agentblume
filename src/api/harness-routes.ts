@@ -7,7 +7,7 @@ import { buildHarness, type SaveHarnessInput, type SaveHarnessUseCase } from '..
 import type { ValidateHarnessUseCase } from '../application/harness/validate-harness';
 import { serializeAgentHarness } from '../domain/harness/serialization';
 import type { HarnessTopology } from '../domain/harness/agent-harness';
-import type { TenantScope } from '../domain/tool/ids';
+import type { TenantScope } from '../domain/shared/tenant-scope';
 import { SemVer } from '../domain/tool/semver';
 import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';

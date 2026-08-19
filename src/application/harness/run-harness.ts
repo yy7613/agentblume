@@ -24,7 +24,7 @@ import type { HarnessRunRepository } from '../../domain/harness/harness-run-repo
 import { HarnessNotFoundError, HarnessRunError, HarnessRunNotFoundError } from '../../domain/harness/errors';
 import type { HarnessId, HarnessRunId, SlotId } from '../../domain/harness/ids';
 import type { RunId } from '../../domain/run/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer, type SemVer as SemVerType } from '../../domain/tool/semver';
 import { RunFailedError } from '../agent/errors';
 

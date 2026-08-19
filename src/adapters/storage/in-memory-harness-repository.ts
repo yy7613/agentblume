@@ -2,7 +2,7 @@ import type { AgentHarness } from '../../domain/harness/agent-harness';
 import type { AgentHarnessRepository, HarnessSummary } from '../../domain/harness/harness-repository';
 import { HarnessNotFoundError, HarnessVersionConflictError } from '../../domain/harness/errors';
 import { deserializeAgentHarness, serializeAgentHarness, type SerializedAgentHarness } from '../../domain/harness/serialization';
-import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 
 function key(scope: TenantScope, internalId: string, version: string): string { return `${tenantKey(scope)} ${internalId} ${version}`; }

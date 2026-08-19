@@ -1,5 +1,5 @@
 import type { AgentId } from '../agent/ids';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { SemVer } from '../tool/semver';
 import type { ExperimentId, GatePolicyId, GateReportId, PromotionRequestId } from './ids';
 import type { GatePolicy, GateReport, PromotionRequest } from './quality-gate';

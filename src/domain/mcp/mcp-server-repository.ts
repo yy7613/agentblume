@@ -5,7 +5,7 @@
  * replaceAll は「JSONタブのApply」に対応し、スコープ内の設定を与えられた集合で丸ごと置き換える
  * （実装はトランザクションで原子的に行うこと。途中失敗で設定が半端に消えてはならない）。
  */
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { McpServerConfig } from './mcp-server';
 
 export interface McpServerRepository {

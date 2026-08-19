@@ -1,4 +1,4 @@
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 import { ScenarioNotFoundError } from '../../domain/validation/errors';
 import type { ScenarioId } from '../../domain/validation/ids';

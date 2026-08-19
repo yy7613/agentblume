@@ -3,6 +3,7 @@
  *
  * TenantScope / tenantKey の実体は横断概念として shared へ移設した(ADR-0035)。
  * 既存 import の互換のためここから再エクスポートする。
+ * 再エクスポートはテスト互換のために維持。テスト以外の新規コードは shared/tenant-scope を直接 import すること。
  */
 import type { Flavor } from '../shared/brand';
 

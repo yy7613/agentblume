@@ -3,7 +3,7 @@ import type { Agent } from '../../domain/agent/agent';
 import type { AgentRepository, AgentSummary } from '../../domain/agent/agent-repository';
 import { AgentVersionConflictError } from '../../domain/agent/errors';
 import { deserializeAgent, serializeAgent } from '../../domain/agent/serialization';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 import type { PublishState } from '../../domain/tool/metadata';
 import { AgentNotFoundError } from '../../domain/agent/errors';

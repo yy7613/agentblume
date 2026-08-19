@@ -2,7 +2,7 @@ import type { SkillId } from '../../domain/skill/ids';
 import type { Skill } from '../../domain/skill/skill';
 import type { SkillRepository, SkillSummary } from '../../domain/skill/skill-repository';
 import { SkillNotFoundError } from '../../domain/skill/errors';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 export class QuerySkillsUseCase {
   constructor(private readonly repo: SkillRepository) {}

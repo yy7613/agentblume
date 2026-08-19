@@ -3,7 +3,7 @@ import { deserializeEvaluatorProfile, serializeEvaluatorProfile } from '../../do
 import type { EvaluatorProfileRepository, EvaluatorProfileSummary } from '../../domain/evaluation/evaluation-asset-repositories';
 import { EvaluationAssetVersionConflictError } from '../../domain/evaluation/errors';
 import type { EvaluatorProfile } from '../../domain/evaluation/evaluator-profile';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 
 const fromJson = (value: unknown): EvaluatorProfile => deserializeEvaluatorProfile(JSON.parse(String(value)));

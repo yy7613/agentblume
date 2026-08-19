@@ -2,7 +2,7 @@ import type { EvaluatorProfileRepository, EvaluatorProfileSummary } from '../../
 import { EvaluatorProfileNotFoundError } from '../../domain/evaluation/errors';
 import type { EvaluatorProfile } from '../../domain/evaluation/evaluator-profile';
 import type { EvaluatorProfileId } from '../../domain/evaluation/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 
 export class QueryEvaluatorProfilesUseCase {

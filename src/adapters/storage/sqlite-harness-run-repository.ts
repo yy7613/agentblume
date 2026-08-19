@@ -2,7 +2,7 @@ import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-databa
 import type { HarnessRunRecord, HarnessRunStatus } from '../../domain/harness/harness-run';
 import type { HarnessRunRepository } from '../../domain/harness/harness-run-repository';
 import { deserializeHarnessRunRecord } from '../../domain/harness/run-serialization';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 function fromJson(value: unknown): HarnessRunRecord { return deserializeHarnessRunRecord(JSON.parse(String(value))); }
 export class SqliteHarnessRunRepository extends SqliteRepositoryBase implements HarnessRunRepository {

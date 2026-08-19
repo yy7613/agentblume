@@ -1,6 +1,6 @@
 import type { RunId } from '../run/ids';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import type { HarnessId, HarnessRunId, SlotId } from './ids';
 
 export type HarnessRunMode = 'preview' | 'test';

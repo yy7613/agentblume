@@ -1,7 +1,7 @@
 import type { JudgeRubricRepository } from '../../domain/evaluation/evaluation-asset-repositories';
 import type { JudgeRubricId } from '../../domain/evaluation/ids';
 import { createJudgeRubric, type JudgeCriterion, type JudgeReferencePolicy, type JudgeRubric } from '../../domain/evaluation/judge-rubric';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 

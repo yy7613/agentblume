@@ -6,7 +6,7 @@ import { createExperiment, type Experiment, type ExperimentModelSnapshot } from 
 import type { ExperimentRepository } from '../../domain/evaluation/experiment-repository';
 import { EvaluationDomainError } from '../../domain/evaluation/errors';
 import type { DatasetId, EvaluatorProfileId } from '../../domain/evaluation/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 import type { ExperimentWorkerPort } from './experiment-worker';
 

@@ -3,7 +3,7 @@ import { deserializeExperiment, deserializeExperimentCaseResult, serializeExperi
 import type { ExperimentFilter, ExperimentRepository } from '../../domain/evaluation/experiment-repository';
 import type { Experiment, ExperimentCaseResult, ExperimentStatus } from '../../domain/evaluation/experiment';
 import { ExperimentConflictError, ExperimentNotFoundError } from '../../domain/evaluation/errors';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 const experimentFromJson = (value: unknown): Experiment => deserializeExperiment(JSON.parse(String(value)));
 const resultFromJson = (value: unknown): ExperimentCaseResult => deserializeExperimentCaseResult(JSON.parse(String(value)));

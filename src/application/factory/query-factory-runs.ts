@@ -2,7 +2,7 @@
  * application層: Agent Factory `QueryFactoryRunsUseCase`（v33 実装契約 §3）。
  * `QueryHarnessRunsUseCase` / `QueryExperimentsUseCase` と同じ形。
  */
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { FactoryRun, FactoryRunStatus } from '../../domain/factory/factory-run';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
 import type { FactoryRunId } from '../../domain/factory/ids';

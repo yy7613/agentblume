@@ -1,6 +1,6 @@
 import type { AgentId } from '../agent/ids';
 import type { IsoDateTime } from '../shared/time';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import { SemVer } from '../tool/semver';
 import { validateEvaluationMetadata, evaluationNonEmpty, type EvaluationAssetMetadata } from './asset-metadata';
 import type { EvaluationDataset } from './evaluation-dataset';

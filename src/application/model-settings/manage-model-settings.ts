@@ -18,7 +18,7 @@ import {
   type ModelSlotSettings,
 } from '../../domain/model-settings/model-settings';
 import type { SealedSecret } from '../../domain/model-settings/sealed-secret';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SecretCipherPort } from './secret-cipher';
 
 /** APIキーのマスク表現。平文も封緘済みデータもUIへは渡さない。 */

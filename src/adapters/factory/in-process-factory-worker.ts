@@ -5,7 +5,7 @@
 import type { RunFactoryUseCase } from '../../application/factory/run-factory';
 import type { FactoryWorkerPort } from '../../application/factory/factory-worker';
 import { logSwallowed, type LoggerPort } from '../../application/operations/logger';
-import { tenantKey, type TenantScope } from '../../domain/tool/ids';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 import { IdleLatch } from '../worker/idle-latch';
 
 interface PendingFactoryRun { readonly scope: TenantScope; readonly id: string; readonly key: string }

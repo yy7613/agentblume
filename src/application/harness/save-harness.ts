@@ -4,7 +4,7 @@ import { createAgentHarness, type AgentHarness, type AgentSlot, type HarnessOutp
 import type { AgentHarnessRepository } from '../../domain/harness/harness-repository';
 import { HarnessValidationError } from '../../domain/harness/errors';
 import type { HarnessId } from '../../domain/harness/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { DataSource, DatabaseConnectionStatus, DatabaseConnectionSummary } from '../../domain/data-source/data-source';
 import type { ConnectionId, DataSourceId } from '../../domain/data-source/ids';
 import type { Row } from '../../domain/data/types';

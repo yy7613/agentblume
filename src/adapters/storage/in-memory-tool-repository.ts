@@ -5,8 +5,9 @@
  * 保存時は serializeTool、取得時は deserializeTool を必ず経由する。
  */
 import { VersionConflictError } from '../../domain/tool/errors';
-import { tenantKey } from '../../domain/tool/ids';
-import type { TenantScope, ToolId } from '../../domain/tool/ids';
+import { tenantKey } from '../../domain/shared/tenant-scope';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
+import type { ToolId } from '../../domain/tool/ids';
 import type { ToolSummary } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import { deserializeTool, serializeTool } from '../../domain/tool/serialization';

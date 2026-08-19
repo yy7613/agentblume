@@ -1,7 +1,7 @@
 import type { AgentHarnessRepository } from '../../domain/harness/harness-repository';
 import { HarnessNotFoundError } from '../../domain/harness/errors';
 import type { HarnessId } from '../../domain/harness/ids';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 /**
  * 保存済みHarnessの論理削除（docs/14-agent-harness-builder.md §10）。

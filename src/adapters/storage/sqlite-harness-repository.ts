@@ -3,7 +3,7 @@ import type { AgentHarness } from '../../domain/harness/agent-harness';
 import type { AgentHarnessRepository, HarnessSummary } from '../../domain/harness/harness-repository';
 import { HarnessVersionConflictError } from '../../domain/harness/errors';
 import { deserializeAgentHarness, serializeAgentHarness } from '../../domain/harness/serialization';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 
 function fromJson(value: unknown): AgentHarness { return deserializeAgentHarness(JSON.parse(String(value))); }

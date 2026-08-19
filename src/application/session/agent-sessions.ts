@@ -6,7 +6,7 @@ import { closeAgentSession, createAgentSession, expireAgentSession, type AgentSe
 import { AgentSessionClosedError, AgentSessionExpiredError, AgentSessionNotFoundError } from '../../domain/session/errors';
 import type { SessionId } from '../../domain/session/ids';
 import type { AgentSessionRepository } from '../../domain/session/session-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1_000;

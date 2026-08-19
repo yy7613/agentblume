@@ -17,7 +17,7 @@
 import { createModelSlotSettings, modelSlot, sameModelDestination, type ModelSlotName, type ModelSlotSettings } from '../../domain/model-settings/model-settings';
 import { ModelSettingsValidationError } from '../../domain/model-settings/errors';
 import type { ModelSettingsRepository } from '../../domain/model-settings/model-settings-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { ModelProviderFactoryPort, ResolvedSlotOptions } from './model-provider-factory';
 import type { ModelSlotSettingsInput } from './manage-model-settings';
 import type { SecretCipherPort } from './secret-cipher';

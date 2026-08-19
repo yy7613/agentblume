@@ -2,7 +2,7 @@ import { SqliteRepositoryBase, type SqliteDatabaseSource } from './sqlite-databa
 import type { FactoryRun, FactoryRunStatus } from '../../domain/factory/factory-run';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
 import { deserializeFactoryRun, serializeFactoryRun } from '../../domain/factory/serialization';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 export class SqliteFactoryRunRepository extends SqliteRepositoryBase implements FactoryRunRepository {
   constructor(source: SqliteDatabaseSource = ':memory:') {

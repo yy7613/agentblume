@@ -2,7 +2,7 @@ import { RunNotFoundError } from '../../domain/run/errors';
 import type { RunId } from '../../domain/run/ids';
 import type { RunRecord, RunStatus } from '../../domain/run/run';
 import type { RunRepository } from '../../domain/run/run-repository';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 export class QueryRunsUseCase {
   constructor(private readonly repo: RunRepository) {}

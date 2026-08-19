@@ -8,7 +8,7 @@
  * 何度呼んでも一覧の内容は同じで、`created` だけが「今回新しく作った件数」として変わる。
  * 利用者が編集したサンプルを上書きしないための選択でもある。
  */
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { QueryDataSourcesUseCase, SaveFileDataSourceUseCase } from '../data-source/manage-data-sources';
 import type { GetToolUseCase, ListToolsUseCase } from '../tool/query-tool';
 import type { SaveToolUseCase } from '../tool/save-tool';

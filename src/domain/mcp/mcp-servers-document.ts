@@ -17,7 +17,7 @@
  * どちらも無いものもエラー（transport を決められない）。
  */
 import { z } from 'zod';
-import type { TenantScope } from '../tool/ids';
+import type { TenantScope } from '../shared/tenant-scope';
 import { McpValidationError } from './errors';
 import { createMcpServerConfig, type McpServerConfig } from './mcp-server';
 

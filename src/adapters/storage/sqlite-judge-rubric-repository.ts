@@ -3,7 +3,7 @@ import { deserializeJudgeRubric, serializeJudgeRubric } from '../../domain/evalu
 import type { JudgeRubricRepository, JudgeRubricSummary } from '../../domain/evaluation/evaluation-asset-repositories';
 import { EvaluationAssetVersionConflictError } from '../../domain/evaluation/errors';
 import type { JudgeRubric } from '../../domain/evaluation/judge-rubric';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
 
 const fromJson = (value: unknown): JudgeRubric => deserializeJudgeRubric(JSON.parse(String(value)));

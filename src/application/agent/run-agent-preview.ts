@@ -13,7 +13,8 @@ import { failRun, resumeRunRecord, startRun, succeedRun, waitRunForApproval } fr
 import { RunNotFoundError } from '../../domain/run/errors';
 import type { RunRepository } from '../../domain/run/run-repository';
 import { ToolNotFoundError } from '../../domain/tool/errors';
-import type { TenantScope, ToolId } from '../../domain/tool/ids';
+import type { TenantScope } from '../../domain/shared/tenant-scope';
+import type { ToolId } from '../../domain/tool/ids';
 import type { SideEffect } from '../../domain/tool/metadata';
 import type { McpServerRepository } from '../../domain/mcp/mcp-server-repository';
 import { SemVer } from '../../domain/tool/semver';
