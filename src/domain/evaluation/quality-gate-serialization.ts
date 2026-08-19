@@ -1,12 +1,18 @@
 import { z } from 'zod';
 import { PUBLISH_STATES, type PublishState } from '../tool/metadata';
 import { SemVer } from '../tool/semver';
-import { createGatePolicy, createGateReport, createPromotionRequest, type GatePolicy, type GateReport, type GateRule, type PromotionRequest } from './quality-gate';
+import { createGatePolicy, createGateReport, createPromotionRequest, type GatePolicy, type GateReport, type PromotionRequest } from './quality-gate';
 import { EvaluationDomainError } from './errors';
 
 interface SerializedMetadata { readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly version: string; readonly owner: string; readonly state: PublishState; readonly tenant: { readonly tenantId: string; readonly workspaceId: string } }
-export interface SerializedGatePolicy { readonly metadata: SerializedMetadata; readonly rules: readonly GateRule[]; readonly reportTtlHours: number }
-export interface SerializedGateReport { readonly id: string; readonly scope: { readonly tenantId: string; readonly workspaceId: string }; readonly policy: { readonly id: string; readonly version: string }; readonly baselineExperimentId?: string; readonly candidateExperimentId: string; readonly status: 'pass' | 'fail'; readonly ruleResults: GateReport['ruleResults']; readonly createdAt: string; readonly expiresAt: string }
+// Serialized* はドメイン型を再利用せず素の string で独立定義する(境界表現はプリミティブ — ADR-0035)。
+type SerializedGateRule =
+  | { readonly id: string; readonly kind: 'metric-threshold'; readonly metric: string; readonly operator: 'gte' | 'lte'; readonly threshold: number }
+  | { readonly id: string; readonly kind: 'max-regression'; readonly metric: string; readonly maxRegression: number }
+  | { readonly id: string; readonly kind: 'required-case-pass'; readonly tags: readonly string[] };
+interface SerializedGateRuleResult { readonly ruleId: string; readonly passed: boolean; readonly observed?: number; readonly message: string }
+export interface SerializedGatePolicy { readonly metadata: SerializedMetadata; readonly rules: readonly SerializedGateRule[]; readonly reportTtlHours: number }
+export interface SerializedGateReport { readonly id: string; readonly scope: { readonly tenantId: string; readonly workspaceId: string }; readonly policy: { readonly id: string; readonly version: string }; readonly baselineExperimentId?: string; readonly candidateExperimentId: string; readonly status: 'pass' | 'fail'; readonly ruleResults: readonly SerializedGateRuleResult[]; readonly createdAt: string; readonly expiresAt: string }
 export interface SerializedPromotionRequest { readonly id: string; readonly scope: { readonly tenantId: string; readonly workspaceId: string }; readonly agent: { readonly id: string; readonly version: string }; readonly gateReportId: string; readonly status: PromotionRequest['status']; readonly requestedBy: string; readonly requestedAt: string; readonly decidedBy?: string; readonly decidedAt?: string; readonly reason?: string }
 
 const metadataSchema = z.object({ internalId: z.string(), workingName: z.string(), displayName: z.string(), publishName: z.string(), version: z.string(), owner: z.string(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]), tenant: z.object({ tenantId: z.string(), workspaceId: z.string() }) });

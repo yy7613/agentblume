@@ -3,10 +3,12 @@
  *
  * 生成は application 層のオーケストレータが行い、domain は型と最小整合チェックのみ。
  */
+import type { RunId } from '../run/ids';
 import type { RunUsage } from '../run/run';
 import type { TenantScope } from '../tool/ids';
 import { SemVer } from '../tool/semver';
 import { ValidationDomainError } from './errors';
+import type { ScenarioId, ScenarioRunId } from './ids';
 import { nonEmpty } from './metadata';
 import type { SurveyAnswer } from './survey';
 
@@ -17,7 +19,7 @@ export interface Turn {
   readonly speaker: 'user' | 'agent';
   readonly message: string;
   /** agent ターンのみ: 既存 RunRepository の Run 参照。 */
-  readonly runId?: string;
+  readonly runId?: RunId;
 }
 
 export interface ExpectedToolHit {
@@ -43,10 +45,10 @@ export interface ScenarioRunPseudoUserRef {
 }
 
 export interface ScenarioRun {
-  readonly id: string;
+  readonly id: ScenarioRunId;
   readonly scope: TenantScope;
   /** 実行時点の固定参照。 */
-  readonly scenario: { readonly id: string; readonly version: SemVer };
+  readonly scenario: { readonly id: ScenarioId; readonly version: SemVer };
   /** 使用した疑似ユーザーの参照（persona@version または agent@version）。v18。 */
   readonly pseudoUserRef?: ScenarioRunPseudoUserRef;
   readonly status: ScenarioRunStatus;

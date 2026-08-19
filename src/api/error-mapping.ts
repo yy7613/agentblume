@@ -35,6 +35,7 @@ import { McpClientError } from '../application/mcp/mcp-client';
 import { ModelSettingsValidationError } from '../domain/model-settings/errors';
 import { SecretCipherError } from '../application/model-settings/secret-cipher';
 import { ModelCatalogError } from '../application/model-settings/model-catalog';
+import { SharedValidationError } from '../domain/shared/errors';
 
 /** HTTP エラーレスポンス表現。 */
 export interface HttpError {
@@ -173,6 +174,11 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof GraphError) return httpError(422, err.code, err.message);
   if (err instanceof ConfigError) return httpError(422, err.code, err.message);
   if (err instanceof SchemaError) return httpError(422, err.code, err.message);
+
+  // domain/shared の検証ヘルパー既定エラー（ADR-0035）。BC は通常 fail 注入で自 BC の
+  // エラー型を投げるため本来ここへは来ないが、注入漏れで検証エラーが 500/'internal error'
+  // に化けて詳細が失われるのを防ぐ安全網として 400 に写す。
+  if (err instanceof SharedValidationError) return httpError(400, err.code, err.message);
 
   // 未知の例外は詳細を漏らさない。
   return httpError(500, 'INTERNAL', 'internal error');

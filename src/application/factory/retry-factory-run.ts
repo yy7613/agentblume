@@ -8,12 +8,13 @@
 import type { TenantScope } from '../../domain/tool/ids';
 import type { FactoryRun } from '../../domain/factory/factory-run';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
+import type { FactoryRunId } from '../../domain/factory/ids';
 import { FactoryNotFoundError, FactoryValidationError } from '../../domain/factory/errors';
 import type { CreateFactoryRunUseCase } from './create-factory-run';
 
 export interface RetryFactoryRunInput {
   readonly scope: TenantScope;
-  readonly runId: string;
+  readonly runId: FactoryRunId;
 }
 
 export class RetryFactoryRunUseCase {

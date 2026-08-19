@@ -4,6 +4,7 @@
  * ツールを構成する ETL ノードの有向グラフ（DAG）表現。
  * 実行時の振る舞いは `engine.ts`（EtlEngine）が担う。
  */
+import type { NodeId } from './ids';
 
 /** 編集UI（Tool Builder）のキャンバス座標。実行には影響しないレイアウトメタデータ。 */
 export interface GraphNodePosition {
@@ -13,7 +14,7 @@ export interface GraphNodePosition {
 
 /** グラフ上の1ノード。`type` は `NodeRegistry` に登録された EtlNode を指す。 */
 export interface GraphNode {
-  readonly id: string;
+  readonly id: NodeId;
   readonly type: string;
   /** ノード固有の設定。EtlNode.validateConfig で検証される。 */
   readonly config: unknown;
@@ -26,8 +27,8 @@ export interface GraphNode {
 
 /** 有向辺（from → to）。`toInput` は to ノードの入力ポート番号（既定 0）。 */
 export interface GraphEdge {
-  readonly from: string;
-  readonly to: string;
+  readonly from: NodeId;
+  readonly to: NodeId;
   /** to ノードの入力ポート（既定 0）。多入力ノードの入力順序決定に用いる。 */
   readonly toInput?: number;
 }

@@ -7,6 +7,9 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { TenantScope } from '../../domain/tool/ids';
+import type { WikiPageId, WikiSpaceId } from '../../domain/memory/ids';
+import type { RunId } from '../../domain/run/ids';
+import type { SkillId } from '../../domain/skill/ids';
 import { MemoryDomainError } from '../../domain/memory/errors';
 import { createMemoryProposal, type MemoryProposal } from '../../domain/memory/memory-proposal';
 import type { MemoryProposalRepository } from '../../domain/memory/memory-proposal-repository';
@@ -21,12 +24,12 @@ export interface ReflectRunInput {
   readonly scope: TenantScope;
   readonly input: string;
   readonly output: string;
-  readonly sourceRunId?: string;
+  readonly sourceRunId?: RunId;
   /** 指定時、その Skill の現行 instructions を改訂対象にできる。 */
-  readonly targetSkillId?: string;
+  readonly targetSkillId?: SkillId;
   /** 指定時、その既存 Wiki ページの改訂案にする（未指定は新規ページ案）。 */
-  readonly existingWikiPageId?: string;
-  readonly targetWikiId?: string;
+  readonly existingWikiPageId?: WikiPageId;
+  readonly targetWikiId?: WikiSpaceId;
 }
 
 /** 反省の構造化出力（flat・required 全部・additionalProperties:false）。 */

@@ -8,6 +8,7 @@
  */
 import type { TenantScope } from '../../domain/tool/ids';
 import { MemoryDomainError, MemoryProposalNotFoundError } from '../../domain/memory/errors';
+import type { MemoryProposalId } from '../../domain/memory/ids';
 import { decideProposal, type MemoryProposal } from '../../domain/memory/memory-proposal';
 import type { MemoryProposalRepository } from '../../domain/memory/memory-proposal-repository';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
@@ -30,7 +31,7 @@ export class ReviewProposalUseCase {
    * 片方だけ残ると、提案は draft のままなのにページ・Skill新版だけが存在する状態になり、
    * 再承認で同じ内容がもう一度作られる（重複した蒸留Skill版・上書きされたWikiページ）。
    */
-  async approve(scope: TenantScope, id: string): Promise<MemoryProposal> {
+  async approve(scope: TenantScope, id: MemoryProposalId): Promise<MemoryProposal> {
     const proposal = await this.load(scope, id);
     if (proposal.state !== 'draft') throw new MemoryDomainError(`ReviewProposal: cannot approve a proposal already ${proposal.state}: ${id}`);
     return this.unitOfWork.withTransaction(async () => {
@@ -41,7 +42,7 @@ export class ReviewProposalUseCase {
     });
   }
 
-  async reject(scope: TenantScope, id: string): Promise<MemoryProposal> {
+  async reject(scope: TenantScope, id: MemoryProposalId): Promise<MemoryProposal> {
     const proposal = await this.load(scope, id);
     const rejected = decideProposal(proposal, 'rejected');
     await this.proposals.save(rejected);
@@ -82,7 +83,7 @@ export class ReviewProposalUseCase {
     });
   }
 
-  private async load(scope: TenantScope, id: string): Promise<MemoryProposal> {
+  private async load(scope: TenantScope, id: MemoryProposalId): Promise<MemoryProposal> {
     const proposal = await this.proposals.find(scope, id);
     if (proposal === null) throw new MemoryProposalNotFoundError(`ReviewProposal: proposal not found: ${id}`);
     return proposal;

@@ -12,13 +12,13 @@
  * 件数は上限（既定20件）で切り捨てる。切り捨てた場合も `totalCount` に総数を残し、Plannerへ
  * 「他にもN件ある」と伝えられるようにする。並び順は決定的（組み込み → publishName昇順）。
  */
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { SideEffect } from '../../domain/tool/metadata';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 
 /** Plannerへ提示する既存Tool 1件の要約（グラフ本体は渡さない: 判断に必要な契約面だけ）。 */
 export interface ExistingToolCatalogEntry {
-  readonly internalId: string;
+  readonly internalId: ToolId;
   /** 再利用時に採用するバージョン（保存済みの最新版）。 */
   readonly latestVersion: string;
   readonly publishName: string;

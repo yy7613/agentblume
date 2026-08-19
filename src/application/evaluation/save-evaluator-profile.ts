@@ -1,13 +1,14 @@
 import { createEvaluatorProfile, type EvaluatorMetricDefinition, type EvaluatorProfile } from '../../domain/evaluation/evaluator-profile';
 import type { EvaluatorProfileRepository, JudgeRubricRepository } from '../../domain/evaluation/evaluation-asset-repositories';
 import { EvaluationDomainError } from '../../domain/evaluation/errors';
+import type { EvaluatorProfileId } from '../../domain/evaluation/ids';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 
 export interface SaveEvaluatorProfileInput {
   readonly scope: TenantScope;
-  readonly internalId: string;
+  readonly internalId: EvaluatorProfileId;
   readonly workingName: string;
   readonly displayName: string;
   readonly publishName: string;

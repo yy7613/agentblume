@@ -7,13 +7,15 @@
  * `RunScenarioUseCase.execute` はこのPortを構造的に満たす（実運用ではcompositionで実体を注入する）。
  * Factory自身の検証実行は既存Experimentと同じ非対話の自動実行のため、呼び出し側は常に `mode: 'test'` を渡す。
  */
+import type { AgentId } from '../../domain/agent/ids';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
+import type { ScenarioId } from '../../domain/validation/ids';
 import type { ScenarioRun } from '../../domain/validation/scenario-run';
 
 export interface ScenarioRunnerInput {
   readonly scope: TenantScope;
-  readonly scenarioId: string;
+  readonly scenarioId: ScenarioId;
   /** 省略時は latest。Stage 5でSaveScenarioUseCaseが返した版を固定で渡す。 */
   readonly version?: SemVer;
   readonly mode: 'test';
@@ -22,7 +24,7 @@ export interface ScenarioRunnerInput {
    * 省略時は `Scenario.target`（Stage 5でイテレーション1の生成Agent版に固定済み）を使う。
    * イテレーション2以降は改訂後の新Agent版を明示的に渡し、凍結したScenario集合はそのまま再検証する。
    */
-  readonly target?: { readonly agentId: string; readonly version: SemVer };
+  readonly target?: { readonly agentId: AgentId; readonly version: SemVer };
 }
 
 export interface ScenarioRunnerPort {

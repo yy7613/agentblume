@@ -1,21 +1,25 @@
-import type { TenantScope } from '../tool/ids';
+import type { AgentId } from '../agent/ids';
+import type { NodeId } from '../etl/ids';
+import type { SessionId } from '../session/ids';
+import type { TenantScope, ToolId } from '../tool/ids';
 import type { SideEffect } from '../tool/metadata';
+import type { RunId, TerminalId, ToolCallId } from './ids';
 
 export type RunStatus = 'running' | 'succeeded' | 'failed' | 'waiting-approval';
 export type RunMode = 'preview' | 'test';
 export type RunPurpose = 'interactive' | 'scenario' | 'evaluation' | 'delegation';
 
 export interface RunNodeOutput {
-  readonly nodeId: string;
+  readonly nodeId: NodeId;
   readonly rowCount: number;
   readonly truncated: boolean;
 }
 export type RunTraceEvent =
   | { readonly sequence: number; readonly kind: 'model-request'; readonly step: number; readonly toolNames: readonly string[] }
   | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }
-  | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: string; readonly nodes: readonly RunNodeOutput[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[] }
+  | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: TerminalId; readonly nodes: readonly RunNodeOutput[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[] }
   | { readonly sequence: number; readonly kind: 'model-response'; readonly content: string }
-  | { readonly sequence: number; readonly kind: 'agent_call'; readonly toolName: string; readonly agentRef: { readonly internalId: string; readonly version: string }; readonly childRunId: string; readonly ok: boolean; readonly summary: string }
+  | { readonly sequence: number; readonly kind: 'agent_call'; readonly toolName: string; readonly agentRef: { readonly internalId: AgentId; readonly version: string }; readonly childRunId: RunId; readonly ok: boolean; readonly summary: string }
   /** ランタイムハーネスの自動圧縮が走ったモデル往復（beforeChars → afterChars）。 */
   | { readonly sequence: number; readonly kind: 'compaction'; readonly beforeChars: number; readonly afterChars: number }
   /** toolApproval: 非read-onlyツールの実行前に人間の承認を要求してRunを止めた。 */
@@ -44,7 +48,7 @@ export type RunCheckpointContentPart =
 
 /** モデルが発行したツール呼び出し1件。 */
 export interface RunCheckpointToolCall {
-  readonly id: string;
+  readonly id: ToolCallId;
   readonly name: string;
   readonly arguments: Readonly<Record<string, unknown>>;
 }
@@ -54,7 +58,7 @@ export interface RunCheckpointMessage {
   readonly role: 'system' | 'user' | 'assistant' | 'tool';
   readonly content: string | null | readonly RunCheckpointContentPart[];
   readonly toolCalls?: readonly RunCheckpointToolCall[];
-  readonly toolCallId?: string;
+  readonly toolCallId?: ToolCallId;
 }
 
 /** 再開後も同じ上限を消費する、ツリー共有バジェットの残り。 */
@@ -69,17 +73,17 @@ export interface RunCheckpointBudget {
  */
 export interface RunApprovalCheckpoint {
   readonly kind: 'tool-approval';
-  readonly agentRef: { readonly internalId: string; readonly version: string };
+  readonly agentRef: { readonly internalId: AgentId; readonly version: string };
   /** ループ再開に必要な全メッセージ（assistantのtoolCallsを含む）。 */
   readonly messages: readonly RunCheckpointMessage[];
   /** 未実行のツール呼び出し。先頭が承認対象。 */
   readonly pendingCalls: readonly RunCheckpointToolCall[];
   /** ツール呼び出し上限のカウントと結果recordの tools 復元に使う実行済みTool。 */
-  readonly executedToolRefs: readonly { readonly internalId: string; readonly version: string; readonly publishName?: string }[];
+  readonly executedToolRefs: readonly { readonly internalId: ToolId; readonly version: string; readonly publishName?: string }[];
   readonly budget: RunCheckpointBudget;
   /** 再開時のモデル往復番号。 */
   readonly step: number;
-  readonly sessionId?: string;
+  readonly sessionId?: SessionId;
   /** ISO。作成 + INTERACTIVE_CHECKPOINT_TTL_MS(24h)。 */
   readonly expiresAt: string;
   /** 人間向け: どのツールがなぜ承認要求しているか。 */
@@ -124,16 +128,17 @@ export interface RunFailure {
 }
 
 export interface RunArtifactRef {
+  /** Tool参照（`tool` / `tools`）ならToolId、Agent参照（`agent`）ならAgentId。両用のためstringのまま(ADR-0034)。 */
   readonly internalId: string;
   readonly version?: string;
   readonly publishName?: string;
 }
 
 export interface RunRecord {
-  readonly runId: string;
+  readonly runId: RunId;
   readonly scope: TenantScope;
   /** Agent Session Workspaceとの対応。旧Runは未指定を許容する。 */
-  readonly sessionId?: string;
+  readonly sessionId?: SessionId;
   readonly status: RunStatus;
   readonly mode: RunMode;
   /** v26追加。旧recordでは未指定を許容しinteractiveとして解釈する。 */
@@ -156,9 +161,9 @@ export interface RunRecord {
 }
 
 export interface StartRunProps {
-  readonly runId: string;
+  readonly runId: RunId;
   readonly scope: TenantScope;
-  readonly sessionId?: string;
+  readonly sessionId?: SessionId;
   readonly mode: RunMode;
   readonly purpose?: RunPurpose;
   readonly model?: RunModelSnapshot;

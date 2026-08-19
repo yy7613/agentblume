@@ -8,6 +8,7 @@
 import type { EtlEngine } from '../etl/engine';
 import type { ToolGraph } from '../../domain/etl/graph';
 import type { TenantScope } from '../../domain/tool/ids';
+import type { DataSourceId } from '../../domain/data-source/ids';
 import type { DataSourceRepository } from '../../domain/data-source/data-source-repository';
 import { FactoryValidationError } from '../../domain/factory/errors';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
@@ -19,7 +20,7 @@ export interface ColumnProfile {
 }
 
 export interface DataProfile {
-  readonly dataSourceId: string;
+  readonly dataSourceId: DataSourceId;
   readonly name: string;
   readonly kind: 'file' | 'database';
   /** file dataSourceのファイル形式（M2 ToolSmithがsourceノード種別を選ぶために使う）。database未対応のため常に'file'時のみ設定。 */
@@ -40,7 +41,7 @@ export class ProfileDataSourcesUseCase {
     private readonly engine: EtlEngine,
   ) {}
 
-  async execute(scope: TenantScope, dataSourceId: string): Promise<DataProfile> {
+  async execute(scope: TenantScope, dataSourceId: DataSourceId): Promise<DataProfile> {
     const source = await this.dataSources.find(scope, dataSourceId);
     if (source === null) throw new FactoryValidationError(`ProfileDataSources: data source not found: ${dataSourceId}`);
     if (source.kind === 'database') throw new FactoryValidationError('ProfileDataSources: database data source profiling is not supported yet');
@@ -68,7 +69,7 @@ export class ProfileDataSourcesUseCase {
     };
   }
 
-  async executeAll(scope: TenantScope, dataSourceIds: readonly string[]): Promise<DataProfile[]> {
+  async executeAll(scope: TenantScope, dataSourceIds: readonly DataSourceId[]): Promise<DataProfile[]> {
     const profiles: DataProfile[] = [];
     for (const dataSourceId of dataSourceIds) profiles.push(await this.execute(scope, dataSourceId));
     return profiles;

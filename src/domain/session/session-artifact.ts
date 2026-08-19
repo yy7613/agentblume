@@ -1,14 +1,18 @@
+import type { AgentId } from '../agent/ids';
 import type { Schema } from '../data/types';
-import type { TenantScope } from '../tool/ids';
+import type { NodeId } from '../etl/ids';
+import type { RunId, ToolCallId } from '../run/ids';
+import type { TenantScope, ToolId } from '../tool/ids';
 import { SessionDomainError } from './errors';
+import type { SessionArtifactId, SessionId } from './ids';
 
 export const SESSION_ARTIFACT_KINDS = ['table', 'json', 'chart', 'graph', 'blob'] as const;
 export type SessionArtifactKind = (typeof SESSION_ARTIFACT_KINDS)[number];
 
 export interface SessionArtifact {
-  readonly id: string;
+  readonly id: SessionArtifactId;
   readonly scope: TenantScope;
-  readonly sessionId: string;
+  readonly sessionId: SessionId;
   readonly name: string;
   readonly kind: SessionArtifactKind;
   readonly revision: number;
@@ -17,7 +21,7 @@ export interface SessionArtifact {
   readonly sizeBytes: number;
   readonly checksum: string;
   readonly counts?: { readonly rows?: number; readonly nodes?: number; readonly edges?: number };
-  readonly origin: { readonly runId: string; readonly toolId: string; readonly toolVersion: string; readonly toolCallId: string; readonly sinkNodeId: string; readonly agentId?: string };
+  readonly origin: { readonly runId: RunId; readonly toolId: ToolId; readonly toolVersion: string; readonly toolCallId: ToolCallId; readonly sinkNodeId: NodeId; readonly agentId?: AgentId };
   readonly createdAt: string;
   readonly expiresAt: string;
 }

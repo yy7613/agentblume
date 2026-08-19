@@ -3,6 +3,7 @@
  * `CreateExperimentUseCase`（v23）と同じ「保存してから非同期worker enqueue」パターン。
  */
 import { randomUUID } from 'node:crypto';
+import type { DataSourceId } from '../../domain/data-source/ids';
 import type { TenantScope } from '../../domain/tool/ids';
 import {
   DEFAULT_FACTORY_OPTIONS,
@@ -19,7 +20,7 @@ import type { FactoryWorkerPort } from './factory-worker';
 export interface CreateFactoryRunInput {
   readonly scope: TenantScope;
   readonly goal: FactoryGoalInput;
-  readonly dataSourceIds: readonly string[];
+  readonly dataSourceIds: readonly DataSourceId[];
   readonly options?: Partial<FactoryOptions>;
   /** 強化対象の既存Agent。指定すると `dataSourceIds` は0件でもよい（未指定は0→1生成モード）。 */
   readonly baseAgent?: FactoryBaseAgentRef;

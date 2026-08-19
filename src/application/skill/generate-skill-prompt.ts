@@ -1,10 +1,10 @@
 import { SkillValidationError } from '../../domain/skill/errors';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 
-export interface SkillPromptInput { readonly scope: TenantScope; readonly displayName: string; readonly responsibility: string; readonly activationCondition: string; readonly inputDescription: string; readonly outputDescription: string; readonly tools: readonly { readonly internalId: string; readonly version: SemVer }[] }
+export interface SkillPromptInput { readonly scope: TenantScope; readonly displayName: string; readonly responsibility: string; readonly activationCondition: string; readonly inputDescription: string; readonly outputDescription: string; readonly tools: readonly { readonly internalId: ToolId; readonly version: SemVer }[] }
 export interface SkillPromptDraft { readonly promptDraft: string; readonly sections: { readonly responsibility: string; readonly activation: string; readonly ioContract: string; readonly toolGuide: string }; readonly editable: true; readonly sources: readonly string[] }
 export class GenerateSkillPromptUseCase {
   constructor(private readonly tools: ToolRepository) {}

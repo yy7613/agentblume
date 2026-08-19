@@ -5,6 +5,7 @@
 import type { TenantScope } from '../../domain/tool/ids';
 import type { FactoryRun, FactoryRunStatus } from '../../domain/factory/factory-run';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
+import type { FactoryRunId } from '../../domain/factory/ids';
 import { FactoryNotFoundError } from '../../domain/factory/errors';
 
 export class QueryFactoryRunsUseCase {
@@ -14,7 +15,7 @@ export class QueryFactoryRunsUseCase {
     return this.repo.list(scope, options);
   }
 
-  async get(scope: TenantScope, runId: string): Promise<FactoryRun> {
+  async get(scope: TenantScope, runId: FactoryRunId): Promise<FactoryRun> {
     const run = await this.repo.find(scope, runId);
     if (run === null) throw new FactoryNotFoundError(`Factory run not found: ${runId}`);
     return run;

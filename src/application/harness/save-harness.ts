@@ -3,13 +3,14 @@ import { AgentNotFoundError } from '../../domain/agent/errors';
 import { createAgentHarness, type AgentHarness, type AgentSlot, type HarnessOutputPolicy, type HarnessPattern, type HarnessPolicies, type HarnessTopology } from '../../domain/harness/agent-harness';
 import type { AgentHarnessRepository } from '../../domain/harness/harness-repository';
 import { HarnessValidationError } from '../../domain/harness/errors';
+import type { HarnessId } from '../../domain/harness/ids';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 
 export interface SaveHarnessInput {
   readonly scope: TenantScope;
-  readonly internalId: string;
+  readonly internalId: HarnessId;
   readonly workingName: string;
   readonly displayName: string;
   readonly publishName: string;

@@ -1,13 +1,16 @@
+import type { AgentId } from '../agent/ids';
+import type { RunId } from '../run/ids';
 import type { RunPurpose, RunStatus } from '../run/run';
 import type { TenantScope } from '../tool/ids';
+import type { RunFeedbackId } from './ids';
 
 export type FeedbackThumb = 'up' | 'down';
 
 export interface RunFeedback {
-  readonly id: string;
+  readonly id: RunFeedbackId;
   readonly scope: TenantScope;
-  readonly runId: string;
-  readonly agent: { readonly internalId: string; readonly version: string };
+  readonly runId: RunId;
+  readonly agent: { readonly internalId: AgentId; readonly version: string };
   readonly thumb: FeedbackThumb;
   readonly rating?: number;
   readonly comment?: string;

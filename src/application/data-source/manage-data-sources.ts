@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { DataSource, DatabaseConnectionStatus, DatabaseConnectionSummary } from '../../domain/data-source/data-source';
+import type { ConnectionId, DataSourceId } from '../../domain/data-source/ids';
 import type { Row } from '../../domain/data/types';
 import type { DataSourceRepository } from '../../domain/data-source/data-source-repository';
 import { validateFileContent } from '../../domain/data-source/file-content-validation';
@@ -10,12 +11,12 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024;
 /** backendが環境変数から解決するDB接続の安全な公開面。 */
 export interface DatabaseConnectionCatalog {
   list(): readonly DatabaseConnectionSummary[];
-  test(connectionId: string): Promise<DatabaseConnectionStatus>;
+  test(connectionId: ConnectionId): Promise<DatabaseConnectionStatus>;
 }
 
 /** DB読取は構成済みallowlistのtable/viewを固定上限で読むだけのポート。 */
 export interface DatabaseReadPort {
-  readTable(connectionId: string, table: string, limit: number): Promise<readonly Row[]>;
+  readTable(connectionId: ConnectionId, table: string, limit: number): Promise<readonly Row[]>;
 }
 
 export class DataSourceValidationError extends Error {
@@ -57,7 +58,7 @@ export class RegisterDatabaseDataSourceUseCase {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async execute(input: { readonly scope: TenantScope; readonly name: string; readonly connectionId: string; readonly defaultSchema?: string }): Promise<DataSource> {
+  async execute(input: { readonly scope: TenantScope; readonly name: string; readonly connectionId: ConnectionId; readonly defaultSchema?: string }): Promise<DataSource> {
     const name = input.name.trim();
     const connectionId = input.connectionId.trim();
     if (name === '') throw new DataSourceValidationError('database source name is required');
@@ -83,11 +84,11 @@ export class QueryDataSourcesUseCase {
 
 export class DeleteDataSourceUseCase {
   constructor(private readonly repository: DataSourceRepository) {}
-  async execute(scope: TenantScope, id: string): Promise<void> { await this.repository.delete(scope, id); }
+  async execute(scope: TenantScope, id: DataSourceId): Promise<void> { await this.repository.delete(scope, id); }
 }
 
 export class QueryDatabaseConnectionsUseCase {
   constructor(private readonly connections: DatabaseConnectionCatalog) {}
   list(): readonly DatabaseConnectionSummary[] { return this.connections.list(); }
-  async test(connectionId: string): Promise<DatabaseConnectionStatus> { return this.connections.test(connectionId); }
+  async test(connectionId: ConnectionId): Promise<DatabaseConnectionStatus> { return this.connections.test(connectionId); }
 }

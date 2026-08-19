@@ -5,13 +5,14 @@
  * （相互変換は mcp-servers-document.ts）。name は同一スコープ内での一意キーであり、
  * ツール名の前置修飾子としても使われるため、識別子として安全な文字種に限定する。
  */
+import { assertHttpUrl, assertNonEmpty, type HttpUrl } from '../shared/assert';
 import type { TenantScope } from '../tool/ids';
 import { McpValidationError } from './errors';
 
 /** stdio（子プロセス）または streamable-http のいずれか。 */
 export type McpTransportConfig =
   | { readonly kind: 'stdio'; readonly command: string; readonly args: readonly string[]; readonly env: Readonly<Record<string, string>>; readonly cwd?: string }
-  | { readonly kind: 'http'; readonly url: string; readonly headers: Readonly<Record<string, string>> };
+  | { readonly kind: 'http'; readonly url: HttpUrl; readonly headers: Readonly<Record<string, string>> };
 
 export interface McpServerConfig {
   readonly scope: TenantScope;
@@ -35,7 +36,7 @@ export const MCP_SERVER_NAME_MAX_LENGTH = 64;
 export const MCP_SERVER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim() === '') throw new McpValidationError(`createMcpServerConfig: ${field} must be a non-empty string`);
+  assertNonEmpty(value, `createMcpServerConfig: ${field}`, (m) => new McpValidationError(m));
 }
 
 /** 文字列レコード（env / headers）を検証しつつ複製する。キー空文字は設定ミスなので弾く。 */
@@ -58,18 +59,8 @@ function stringRecord(value: unknown, field: string): Record<string, string> {
  * ここへ入れてしまうと、ポリシーを締めた瞬間に**保存済みの行が読めなくなる**（`list()` が投げる）。
  * ポリシー検査は保存時（use case）と接続直前（adapters）で行う。
  */
-function httpUrl(value: unknown, field: string): string {
-  nonEmpty(value, field);
-  const raw = value.trim();
-  let parsed: URL;
-  try { parsed = new URL(raw); }
-  catch { throw new McpValidationError(`createMcpServerConfig: ${field} must be a valid URL: ${raw}`); }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new McpValidationError(`createMcpServerConfig: ${field} must use http(s): ${raw}`);
-  // URLは封緘対象外でDB・ログ・API応答に平文で残る。そこへ秘密を書かせない（モデル設定の baseUrl と同じ規約）。
-  if (parsed.username !== '' || parsed.password !== '') {
-    throw new McpValidationError(`createMcpServerConfig: ${field} must not embed credentials (user:password@host)`);
-  }
-  return raw;
+function httpUrl(value: unknown, field: string): HttpUrl {
+  return assertHttpUrl(value, `createMcpServerConfig: ${field}`, (m) => new McpValidationError(m));
 }
 
 function validateTransport(value: McpTransportConfig): McpTransportConfig {

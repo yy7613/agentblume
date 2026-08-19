@@ -1,17 +1,18 @@
+import type { SkillId } from '../../domain/skill/ids';
 import { createSkill, type Skill } from '../../domain/skill/skill';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
 import { SkillValidationError } from '../../domain/skill/errors';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 
 export interface SaveSkillInput {
-  readonly scope: TenantScope; readonly internalId: string; readonly workingName: string; readonly displayName: string;
+  readonly scope: TenantScope; readonly internalId: SkillId; readonly workingName: string; readonly displayName: string;
   readonly publishName: string; readonly owner: string; readonly responsibility: string; readonly activationCondition: string;
   readonly inputDescription: string; readonly outputDescription: string;
   readonly instructions: string;
-  readonly tools: readonly { readonly internalId: string; readonly version: SemVer }[];
+  readonly tools: readonly { readonly internalId: ToolId; readonly version: SemVer }[];
   readonly bump?: 'major' | 'minor' | 'patch'; readonly state?: PublishState;
 }
 export class SaveSkillUseCase {

@@ -31,8 +31,10 @@ import { operatorBindingsOf, valueBindingsOf } from '../../domain/etl/nodes/filt
 import type { FactoryAgentBrief, FactoryPlan, FactoryToolPlan } from '../../domain/factory/factory-plan';
 import type { FactoryEvent, FactoryGoalInput, FactoryPromptStrategy } from '../../domain/factory/factory-run';
 import { FactoryValidationError } from '../../domain/factory/errors';
+import type { FactoryRunId } from '../../domain/factory/ids';
 import type { VersionRef } from '../../domain/factory/refs';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { SkillId } from '../../domain/skill/ids';
+import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { SideEffect } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
@@ -53,7 +55,7 @@ export const FACTORY_OWNER = 'agent-factory';
 
 export interface GenerateAgentAssetsInput {
   readonly scope: TenantScope;
-  readonly runId: string;
+  readonly runId: FactoryRunId;
   readonly goal: FactoryGoalInput;
   readonly plan: FactoryPlan;
   readonly profiles: readonly DataProfile[];
@@ -302,8 +304,8 @@ export interface IntegrateAgentAssetsRequest {
   /** 統合先の既存Agent（`RunFactoryUseCase` がロードした起点版）。 */
   readonly baseAgent: Agent;
   /** このRunで生成・再利用したTool（既存Agentの参照との和集合を取る。同 internalId は新版優先）。 */
-  readonly toolRefs: readonly { readonly internalId: string; readonly version: SemVer }[];
-  readonly skillRefs: readonly { readonly internalId: string; readonly version: SemVer }[];
+  readonly toolRefs: readonly { readonly internalId: ToolId; readonly version: SemVer }[];
+  readonly skillRefs: readonly { readonly internalId: SkillId; readonly version: SemVer }[];
   /** systemPromptの扱い。省略時は `'preserve'`（ガイド2節だけを決定的に差し替える従来の挙動）。 */
   readonly promptStrategy?: FactoryPromptStrategy;
   /** `'rewrite'` でAssemblerへ渡す材料。無ければ rewrite できないため `preserve` へ倒す。 */
@@ -520,7 +522,7 @@ export interface ToolRepairLoopDeps {
 
 /** 保存するToolの識別情報。試行ごとに払い出す（再試行では新しい internalId を採る）。 */
 export interface ToolSaveIdentity {
-  readonly internalId: string;
+  readonly internalId: ToolId;
   readonly workingName: string;
   readonly displayName: string;
   readonly publishName: string;

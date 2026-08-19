@@ -1,10 +1,11 @@
 import type { TenantScope } from '../tool/ids';
+import type { ConnectionId, DataSourceId } from './ids';
 
 /** Toolから参照する再利用可能なデータソースのカタログ情報。payloadや資格情報は含めない。 */
 export type DataSource = FileDataSource | DatabaseDataSource;
 
 export interface DataSourceBase {
-  readonly id: string;
+  readonly id: DataSourceId;
   readonly tenant: TenantScope;
   readonly name: string;
   readonly createdAt: string;
@@ -21,13 +22,13 @@ export interface FileDataSource extends DataSourceBase {
 export interface DatabaseDataSource extends DataSourceBase {
   readonly kind: 'database';
   /** backend環境変数の設定名。接続文字列・パスワードではない。 */
-  readonly connectionId: string;
+  readonly connectionId: ConnectionId;
   readonly driver: 'postgresql';
   readonly defaultSchema?: string;
 }
 
 export interface DatabaseConnectionSummary {
-  readonly id: string;
+  readonly id: ConnectionId;
   readonly driver: 'postgresql';
 }
 

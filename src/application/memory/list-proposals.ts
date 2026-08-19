@@ -3,6 +3,7 @@
  */
 import type { TenantScope } from '../../domain/tool/ids';
 import { MemoryProposalNotFoundError } from '../../domain/memory/errors';
+import type { MemoryProposalId } from '../../domain/memory/ids';
 import type { MemoryProposal, MemoryProposalState } from '../../domain/memory/memory-proposal';
 import type { MemoryProposalRepository } from '../../domain/memory/memory-proposal-repository';
 
@@ -13,7 +14,7 @@ export class ListProposalsUseCase {
     return this.proposals.list(scope, state);
   }
 
-  async get(scope: TenantScope, id: string): Promise<MemoryProposal> {
+  async get(scope: TenantScope, id: MemoryProposalId): Promise<MemoryProposal> {
     const proposal = await this.proposals.find(scope, id);
     if (proposal === null) throw new MemoryProposalNotFoundError(`ListProposals: proposal not found: ${id}`);
     return proposal;

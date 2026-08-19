@@ -1,18 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
+import type { AgentId } from '../../domain/agent/ids';
 import type { EvaluationDatasetRepository, EvaluatorProfileRepository } from '../../domain/evaluation/evaluation-asset-repositories';
 import { createExperiment, type Experiment, type ExperimentModelSnapshot } from '../../domain/evaluation/experiment';
 import type { ExperimentRepository } from '../../domain/evaluation/experiment-repository';
 import { EvaluationDomainError } from '../../domain/evaluation/errors';
+import type { DatasetId, EvaluatorProfileId } from '../../domain/evaluation/ids';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 import type { ExperimentWorkerPort } from './experiment-worker';
 
 export interface CreateExperimentInput {
   readonly scope: TenantScope;
-  readonly target: { readonly agentId: string; readonly version: SemVer };
-  readonly dataset: { readonly id: string; readonly version: SemVer };
-  readonly evaluatorProfile: { readonly id: string; readonly version: SemVer };
+  readonly target: { readonly agentId: AgentId; readonly version: SemVer };
+  readonly dataset: { readonly id: DatasetId; readonly version: SemVer };
+  readonly evaluatorProfile: { readonly id: EvaluatorProfileId; readonly version: SemVer };
   readonly repetitions?: number;
 }
 

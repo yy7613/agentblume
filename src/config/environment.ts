@@ -143,6 +143,9 @@ const nonNegativeInteger = z.coerce.number().int().min(0);
 /**
  * http(s) のURL。`z.url()` は `new URL()` が通るものを全部許すため、
  * `localhost:1234`（protocol が `localhost:` の相対省略形）のような書き間違いを取り逃がす。
+ *
+ * ドメイン層の `shared/assert.ts` `assertHttpUrl` と規則が重なるが、config は他層に
+ * 依存しない leaf として値を書き写す方針のため、意図的な境界の重複である（ADR-0035）。
  */
 const httpUrl = z.string().refine((value) => {
   try {

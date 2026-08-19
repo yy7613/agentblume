@@ -8,7 +8,10 @@
  * `add-tool` / `add-skill` は「既存Agentに無い能力を足す」提案で、適用すると新しいTool/Skillが
  * 保存され、Agent新版の `tools` / `skills` へ**追加**される（既存参照のバージョン差替とは別経路）。
  */
+import type { AgentId } from '../agent/ids';
 import type { ToolGraph } from '../etl/graph';
+import type { SkillId } from '../skill/ids';
+import type { ToolId } from '../tool/ids';
 import type { FactoryAddSkillPlan, FactoryToolPlan } from './factory-plan';
 import type { VersionRef } from './refs';
 
@@ -22,10 +25,10 @@ export interface Finding {
 }
 
 export type ImprovementProposal =
-  | { readonly kind: 'system-prompt-revision'; readonly agentId: string; readonly sections: { readonly role?: string; readonly rules?: string }; readonly rationale: string }
-  | { readonly kind: 'skill-instructions-revision'; readonly skillId: string; readonly instructions: string; readonly activationCondition?: string; readonly rationale: string }
-  | { readonly kind: 'tool-contract-revision'; readonly toolId: string; readonly agentTool: { readonly name?: string; readonly description?: string }; readonly rationale: string }
-  | { readonly kind: 'tool-graph-revision'; readonly toolId: string; readonly graph: ToolGraph; readonly rationale: string }
+  | { readonly kind: 'system-prompt-revision'; readonly agentId: AgentId; readonly sections: { readonly role?: string; readonly rules?: string }; readonly rationale: string }
+  | { readonly kind: 'skill-instructions-revision'; readonly skillId: SkillId; readonly instructions: string; readonly activationCondition?: string; readonly rationale: string }
+  | { readonly kind: 'tool-contract-revision'; readonly toolId: ToolId; readonly agentTool: { readonly name?: string; readonly description?: string }; readonly rationale: string }
+  | { readonly kind: 'tool-graph-revision'; readonly toolId: ToolId; readonly graph: ToolGraph; readonly rationale: string }
   | { readonly kind: 'add-tool'; readonly plan: FactoryToolPlan; readonly rationale: string }
   | { readonly kind: 'add-skill'; readonly plan: FactoryAddSkillPlan; readonly rationale: string };
 

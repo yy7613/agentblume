@@ -1,9 +1,10 @@
+import type { RunId } from '../run/ids';
 import type { TenantScope } from '../tool/ids';
 import type { OperationsDailyMetric, RetentionPolicy, RunFeedback, RunMetricSample } from './operations';
 
 export interface OperationsRepository {
   saveFeedback(record: RunFeedback): Promise<void>;
-  findFeedback(scope: TenantScope, runId: string): Promise<RunFeedback | null>;
+  findFeedback(scope: TenantScope, runId: RunId): Promise<RunFeedback | null>;
   recordRunMetric(sample: RunMetricSample): Promise<void>;
   recordFeedbackMetric(scope: TenantScope, recordedAt: string): Promise<void>;
   listDailyMetrics(scope: TenantScope, from?: string): Promise<OperationsDailyMetric[]>;

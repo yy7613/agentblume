@@ -25,6 +25,13 @@ module.exports = {
       to: { path: '^src/adapters' },
     },
     {
+      name: 'domain-shared-is-leaf',
+      comment: 'domain/sharedは全BCが依存してよい共有カーネルであり、他BC・他層に依存しない葉に保つ（ADR-0035）',
+      severity: 'error',
+      from: { path: '^src/domain/shared' },
+      to: { path: '^src/(domain/(?!shared)|application|adapters|api|ui|composition|config)' },
+    },
+    {
       name: 'no-circular',
       comment: '循環依存を禁止する',
       severity: 'error',

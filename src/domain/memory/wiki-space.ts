@@ -1,10 +1,12 @@
+import { assertNonEmpty } from '../shared/assert';
 import type { TenantScope } from '../tool/ids';
 import { MemoryDomainError } from './errors';
+import type { WikiSpaceId } from './ids';
 
 export const DEFAULT_WIKI_ID = 'default';
 
 export interface WikiSpace {
-  readonly id: string;
+  readonly id: WikiSpaceId;
   readonly tenant: TenantScope;
   readonly name: string;
   readonly description: string;
@@ -13,17 +15,17 @@ export interface WikiSpace {
 }
 
 export interface WikiSpaceSummary {
-  readonly id: string;
+  readonly id: WikiSpaceId;
   readonly name: string;
   readonly description: string;
   readonly updatedAt: string;
 }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim() === '') throw new MemoryDomainError(`WikiSpace: ${field} must be a non-empty string`);
+  assertNonEmpty(value, `WikiSpace: ${field}`, (m) => new MemoryDomainError(m));
 }
 
-export function createWikiSpace(props: { readonly id: string; readonly tenant: TenantScope; readonly name: string; readonly description?: string; readonly createdAt: string }): WikiSpace {
+export function createWikiSpace(props: { readonly id: WikiSpaceId; readonly tenant: TenantScope; readonly name: string; readonly description?: string; readonly createdAt: string }): WikiSpace {
   nonEmpty(props.id, 'id'); nonEmpty(props.tenant?.tenantId, 'tenant.tenantId'); nonEmpty(props.tenant?.workspaceId, 'tenant.workspaceId'); nonEmpty(props.name, 'name'); nonEmpty(props.createdAt, 'createdAt');
   return { id: props.id.trim(), tenant: { ...props.tenant }, name: props.name.trim(), description: props.description?.trim() ?? '', createdAt: props.createdAt, updatedAt: props.createdAt };
 }

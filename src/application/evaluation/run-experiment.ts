@@ -9,6 +9,7 @@ import type { JudgeRubricRepository } from '../../domain/evaluation/evaluation-a
 import { advanceExperiment, cancelExperiment, completeExperiment, createExperimentCaseResult, failExperiment, startExperiment, type Experiment, type ExperimentCaseResult } from '../../domain/evaluation/experiment';
 import type { ExperimentRepository } from '../../domain/evaluation/experiment-repository';
 import { ExperimentNotFoundError } from '../../domain/evaluation/errors';
+import type { ExperimentId } from '../../domain/evaluation/ids';
 import type { EvaluationCase, ScenarioEvaluationCase, TurnEvaluationCase } from '../../domain/evaluation/evaluation-dataset';
 import type { EvaluatorProfile } from '../../domain/evaluation/evaluator-profile';
 import type { ScenarioRun } from '../../domain/validation/scenario-run';
@@ -63,7 +64,7 @@ export class RunExperimentUseCase {
     private readonly logger?: LoggerPort,
   ) {}
 
-  async execute(scope: TenantScope, id: string, signal?: AbortSignal): Promise<Experiment> {
+  async execute(scope: TenantScope, id: ExperimentId, signal?: AbortSignal): Promise<Experiment> {
     let experiment = await this.experiments.find(scope, id);
     if (experiment === null) throw new ExperimentNotFoundError(`Experiment not found: ${id}`);
     try {

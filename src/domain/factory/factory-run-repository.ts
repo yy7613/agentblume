@@ -1,9 +1,10 @@
 import type { TenantScope } from '../tool/ids';
 import type { FactoryRun, FactoryRunStatus } from './factory-run';
+import type { FactoryRunId } from './ids';
 
 export interface FactoryRunRepository {
   save(run: FactoryRun): Promise<void>;
-  find(scope: TenantScope, runId: string): Promise<FactoryRun | null>;
+  find(scope: TenantScope, runId: FactoryRunId): Promise<FactoryRun | null>;
   list(scope: TenantScope, options?: { readonly limit?: number; readonly status?: FactoryRunStatus }): Promise<FactoryRun[]>;
   /**
    * 全スコープ横断で、指定状態のRunを返す（起動時の孤児Run回収用・`RecoverInterruptedRunsUseCase`）。

@@ -1,9 +1,10 @@
 import type { EtlEngine } from '../etl/engine';
 import { ModelProviderError, type ModelProviderPort } from '../model/model-provider';
 import type { ToolGraph } from '../../domain/etl/graph';
+import type { NodeId } from '../../domain/etl/ids';
 
 const ANALYSIS_TYPES = new Set(['summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter']);
-export interface AnalysisConfigProposal { readonly nodeId: string; readonly nodeType: string; readonly config: Readonly<Record<string, unknown>>; readonly rationale: readonly string[]; readonly warnings: readonly string[]; }
+export interface AnalysisConfigProposal { readonly nodeId: NodeId; readonly nodeType: string; readonly config: Readonly<Record<string, unknown>>; readonly rationale: readonly string[]; readonly warnings: readonly string[]; }
 
 /** LLMは設定案のみを返す。検証済みでも、適用・保存はUIの明示操作が必要。 */
 export class SuggestAnalysisConfigUseCase {
@@ -14,7 +15,7 @@ export class SuggestAnalysisConfigUseCase {
    */
   constructor(private readonly engine: EtlEngine, private readonly model: ModelProviderPort, private readonly enabled: () => boolean | Promise<boolean>) {}
   async available(): Promise<boolean> { return await this.enabled() && this.model.capabilities().includes('structured-output'); }
-  async execute(input: { readonly graph: ToolGraph; readonly nodeId: string; readonly intent: string }): Promise<AnalysisConfigProposal> {
+  async execute(input: { readonly graph: ToolGraph; readonly nodeId: NodeId; readonly intent: string }): Promise<AnalysisConfigProposal> {
     if (!await this.available()) throw new ModelProviderError('analysis assistant is not configured');
     if (input.intent.trim() === '') throw new ModelProviderError('analysis assistant requires an intent');
     const node = input.graph.nodes.find((item) => item.id === input.nodeId);

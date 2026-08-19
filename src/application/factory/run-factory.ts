@@ -43,6 +43,7 @@ import {
 } from '../../domain/factory/factory-run';
 import type { FactoryPlan } from '../../domain/factory/factory-plan';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
+import type { FactoryRunId } from '../../domain/factory/ids';
 import type { VersionRef } from '../../domain/factory/refs';
 import { FactoryValidationError } from '../../domain/factory/errors';
 import type { ScenarioRun } from '../../domain/validation/scenario-run';
@@ -91,7 +92,7 @@ export class RunFactoryUseCase {
   ) {}
 
   /** Worker entrypoint: Runを現在の状態から進める。終端・存在しないRunは無視する。 */
-  async execute(scope: TenantScope, runId: string, signal?: AbortSignal): Promise<void> {
+  async execute(scope: TenantScope, runId: FactoryRunId, signal?: AbortSignal): Promise<void> {
     const loaded = await this.runs.find(scope, runId);
     if (loaded === null) return;
     if (loaded.status !== 'queued' && loaded.status !== 'running') return;

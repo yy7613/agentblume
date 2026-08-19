@@ -1,5 +1,7 @@
+import type { AgentId } from '../agent/ids';
 import type { TenantScope } from '../tool/ids';
 import { SessionDomainError } from './errors';
+import type { SessionId } from './ids';
 
 export type AgentSessionStatus = 'active' | 'closed' | 'expired';
 
@@ -16,9 +18,9 @@ export const DEFAULT_SESSION_QUOTA: SessionQuota = {
 };
 
 export interface AgentSession {
-  readonly id: string;
+  readonly id: SessionId;
   readonly scope: TenantScope;
-  readonly rootAgent: { readonly internalId: string; readonly version: string };
+  readonly rootAgent: { readonly internalId: AgentId; readonly version: string };
   readonly status: AgentSessionStatus;
   readonly createdAt: string;
   readonly lastAccessedAt: string;

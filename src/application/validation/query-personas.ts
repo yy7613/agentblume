@@ -1,6 +1,7 @@
 import type { TenantScope } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 import { PersonaNotFoundError } from '../../domain/validation/errors';
+import type { PersonaId } from '../../domain/validation/ids';
 import type { Persona } from '../../domain/validation/persona';
 import type { PersonaRepository, PersonaSummary } from '../../domain/validation/persona-repository';
 
@@ -9,9 +10,9 @@ export class QueryPersonasUseCase {
 
   list(scope: TenantScope): Promise<PersonaSummary[]> { return this.repo.list(scope); }
 
-  versions(scope: TenantScope, internalId: string): Promise<SemVer[]> { return this.repo.listVersions(scope, internalId); }
+  versions(scope: TenantScope, internalId: PersonaId): Promise<SemVer[]> { return this.repo.listVersions(scope, internalId); }
 
-  async get(scope: TenantScope, internalId: string, version?: SemVer): Promise<Persona> {
+  async get(scope: TenantScope, internalId: PersonaId, version?: SemVer): Promise<Persona> {
     const persona = version === undefined
       ? await this.repo.findLatest(scope, internalId)
       : await this.repo.findVersion(scope, internalId, version);
@@ -28,7 +29,7 @@ export class QueryPersonasUseCase {
  */
 export class DeletePersonaUseCase {
   constructor(private readonly repo: PersonaRepository) {}
-  async execute(scope: TenantScope, internalId: string): Promise<void> {
+  async execute(scope: TenantScope, internalId: PersonaId): Promise<void> {
     const existed = await this.repo.delete(scope, internalId);
     if (!existed) throw new PersonaNotFoundError(`DeletePersona: persona not found: ${internalId}`);
   }

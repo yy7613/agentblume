@@ -6,20 +6,22 @@
  * 同 internalId が既にあればバージョンを bump する（SaveAgentUseCase の版採番に委譲）。
  */
 import type { Agent } from '../../domain/agent/agent';
+import type { AgentId } from '../../domain/agent/ids';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 import { PersonaNotFoundError } from '../../domain/validation/errors';
+import type { PersonaId } from '../../domain/validation/ids';
 import { buildPersonaBasePrompt } from '../../domain/validation/persona';
 import type { PersonaRepository } from '../../domain/validation/persona-repository';
 import type { SaveAgentUseCase } from '../agent/save-agent';
 
 export interface RegisterPseudoUserAgentInput {
   readonly scope: TenantScope;
-  readonly personaId: string;
+  readonly personaId: PersonaId;
   /** 省略時は latest。 */
   readonly personaVersion?: SemVer;
   /** 省略時は `pseudo-${personaId}`。 */
-  readonly agentInternalId?: string;
+  readonly agentInternalId?: AgentId;
   readonly bump?: 'major' | 'minor' | 'patch';
   /** 生成される基底プロンプトの上書き（エスケープハッチ）。 */
   readonly promptOverride?: string;

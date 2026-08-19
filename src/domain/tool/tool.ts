@@ -7,6 +7,7 @@
  */
 import type { Schema } from '../data/types';
 import type { ToolGraph } from '../etl/graph';
+import { assertNonEmpty } from '../shared/assert';
 import { ToolValidationError } from './errors';
 import type { TenantScope } from './ids';
 import { isPublishState, isSideEffect } from './metadata';
@@ -41,9 +42,7 @@ export interface CreateToolProps {
 
 /** 非空文字列でなければ ToolValidationError。 */
 function assertNonEmptyString(value: unknown, field: string): void {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new ToolValidationError(`createTool: ${field} must be a non-empty string`);
-  }
+  assertNonEmpty(value, `createTool: ${field}`, (m) => new ToolValidationError(m), { trim: false });
 }
 
 /** Schema を深く複製する（列配列と各列を複製）。 */

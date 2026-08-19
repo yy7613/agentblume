@@ -1,9 +1,11 @@
+import type { AgentId } from '../agent/ids';
 import type { TenantScope } from '../tool/ids';
 import { SemVer } from '../tool/semver';
 import { validateEvaluationMetadata, evaluationNonEmpty, type EvaluationAssetMetadata } from './asset-metadata';
 import type { EvaluationDataset } from './evaluation-dataset';
 import type { Experiment, ExperimentCaseResult } from './experiment';
 import { EvaluationDomainError } from './errors';
+import type { EvaluationCaseId, ExperimentId, GatePolicyId, GateReportId, GateRuleId, PromotionRequestId } from './ids';
 
 export type MetricPreference = 'higher' | 'lower';
 export type ComparisonDirection = 'improved' | 'regressed' | 'unchanged' | 'incomparable';
@@ -21,7 +23,7 @@ export interface MetricStats {
 }
 
 export interface ExperimentAggregate {
-  readonly experimentId: string;
+  readonly experimentId: ExperimentId;
   readonly caseCount: number;
   readonly metrics: Readonly<Record<string, MetricStats>>;
 }
@@ -36,7 +38,7 @@ export interface MetricComparison {
 }
 
 export interface CaseComparison {
-  readonly caseId: string;
+  readonly caseId: EvaluationCaseId;
   readonly repetition: number;
   readonly baselineStatus?: ExperimentCaseResult['status'];
   readonly candidateStatus?: ExperimentCaseResult['status'];
@@ -47,8 +49,8 @@ export interface CaseComparison {
 }
 
 export interface ExperimentComparison {
-  readonly baselineExperimentId: string;
-  readonly candidateExperimentId: string;
+  readonly baselineExperimentId: ExperimentId;
+  readonly candidateExperimentId: ExperimentId;
   readonly baseline: ExperimentAggregate;
   readonly candidate: ExperimentAggregate;
   readonly metrics: readonly MetricComparison[];
@@ -75,7 +77,7 @@ export function calculateMetricStats(values: readonly number[]): MetricStats {
   return { count: samples.length, mean: round(mean), median: quantile(samples, 0.5), p50: quantile(samples, 0.5), p95: quantile(samples, 0.95), stddev: round(Math.sqrt(variance)), min: samples[0] ?? 0, max: samples.at(-1) ?? 0, samples };
 }
 
-export function aggregateExperiment(experimentId: string, results: readonly ExperimentCaseResult[]): ExperimentAggregate {
+export function aggregateExperiment(experimentId: ExperimentId, results: readonly ExperimentCaseResult[]): ExperimentAggregate {
   evaluationNonEmpty(experimentId, 'aggregateExperiment: experimentId');
   const values = new Map<string, number[]>();
   const add = (metric: string, value: number): void => { const current = values.get(metric) ?? []; current.push(value); values.set(metric, current); };
@@ -131,15 +133,15 @@ export function compareExperiments(
 }
 
 export type GateRule =
-  | { readonly id: string; readonly kind: 'metric-threshold'; readonly metric: string; readonly operator: 'gte' | 'lte'; readonly threshold: number }
-  | { readonly id: string; readonly kind: 'max-regression'; readonly metric: string; readonly maxRegression: number }
-  | { readonly id: string; readonly kind: 'required-case-pass'; readonly tags: readonly string[] };
+  | { readonly id: GateRuleId; readonly kind: 'metric-threshold'; readonly metric: string; readonly operator: 'gte' | 'lte'; readonly threshold: number }
+  | { readonly id: GateRuleId; readonly kind: 'max-regression'; readonly metric: string; readonly maxRegression: number }
+  | { readonly id: GateRuleId; readonly kind: 'required-case-pass'; readonly tags: readonly string[] };
 
-export interface GatePolicy { readonly metadata: EvaluationAssetMetadata; readonly rules: readonly GateRule[]; readonly reportTtlHours: number }
-export interface GateRuleResult { readonly ruleId: string; readonly passed: boolean; readonly observed?: number; readonly message: string }
+export interface GatePolicy { readonly metadata: EvaluationAssetMetadata & { readonly internalId: GatePolicyId }; readonly rules: readonly GateRule[]; readonly reportTtlHours: number }
+export interface GateRuleResult { readonly ruleId: GateRuleId; readonly passed: boolean; readonly observed?: number; readonly message: string }
 export interface GateReport {
-  readonly id: string; readonly scope: TenantScope; readonly policy: { readonly id: string; readonly version: SemVer };
-  readonly baselineExperimentId?: string; readonly candidateExperimentId: string; readonly status: 'pass' | 'fail';
+  readonly id: GateReportId; readonly scope: TenantScope; readonly policy: { readonly id: GatePolicyId; readonly version: SemVer };
+  readonly baselineExperimentId?: ExperimentId; readonly candidateExperimentId: ExperimentId; readonly status: 'pass' | 'fail';
   readonly ruleResults: readonly GateRuleResult[]; readonly createdAt: string; readonly expiresAt: string;
 }
 
@@ -203,7 +205,7 @@ export function createGateReport(report: GateReport): GateReport {
 
 export type PromotionStatus = 'pending' | 'approved' | 'rejected';
 export interface PromotionRequest {
-  readonly id: string; readonly scope: TenantScope; readonly agent: { readonly id: string; readonly version: SemVer }; readonly gateReportId: string;
+  readonly id: PromotionRequestId; readonly scope: TenantScope; readonly agent: { readonly id: AgentId; readonly version: SemVer }; readonly gateReportId: GateReportId;
   readonly status: PromotionStatus; readonly requestedBy: string; readonly requestedAt: string; readonly decidedBy?: string; readonly decidedAt?: string; readonly reason?: string;
 }
 export function createPromotionRequest(request: PromotionRequest): PromotionRequest {

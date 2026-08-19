@@ -1,3 +1,4 @@
+import { assertNonEmpty } from '../shared/assert';
 import type { TenantScope } from '../tool/ids';
 import { isPublishState, type PublishState } from '../tool/metadata';
 import { SemVer } from '../tool/semver';
@@ -15,9 +16,7 @@ export interface EvaluationAssetMetadata {
 }
 
 export function evaluationNonEmpty(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new EvaluationDomainError(`${field} must be a non-empty string`);
-  }
+  assertNonEmpty(value, field, (m) => new EvaluationDomainError(m));
 }
 
 export function validateEvaluationMetadata(metadata: EvaluationAssetMetadata, label: string): EvaluationAssetMetadata {

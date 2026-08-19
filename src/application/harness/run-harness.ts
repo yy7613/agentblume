@@ -22,6 +22,8 @@ import {
 } from '../../domain/harness/harness-run';
 import type { HarnessRunRepository } from '../../domain/harness/harness-run-repository';
 import { HarnessNotFoundError, HarnessRunError, HarnessRunNotFoundError } from '../../domain/harness/errors';
+import type { HarnessId, HarnessRunId, SlotId } from '../../domain/harness/ids';
+import type { RunId } from '../../domain/run/ids';
 import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer, type SemVer as SemVerType } from '../../domain/tool/semver';
 import { RunFailedError } from '../agent/errors';
@@ -30,7 +32,7 @@ const INTERACTIVE_CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1_000;
 
 export interface StartHarnessRunInput {
   readonly scope: TenantScope;
-  readonly harnessId: string;
+  readonly harnessId: HarnessId;
   readonly version?: SemVerType;
   readonly message: string;
   readonly mode: HarnessRunMode;
@@ -40,13 +42,13 @@ export type HarnessInteractionResponse =
   | { readonly kind: 'approval'; readonly decision: 'approve' | 'revise' | 'reject'; readonly feedback?: string };
 export interface ResumeHarnessRunInput {
   readonly scope: TenantScope;
-  readonly runId: string;
+  readonly runId: HarnessRunId;
   readonly response: HarnessInteractionResponse;
 }
 interface ParticipantResult {
   readonly slot: AgentSlot;
   readonly response?: string;
-  readonly childRunId?: string;
+  readonly childRunId?: RunId;
   readonly error?: string;
 }
 interface SharedHarnessBudget {
@@ -122,7 +124,7 @@ export class RunHarnessUseCase {
     return this.executeRecord(harness, record, original, { checkpoint: checkpoint as MagenticApprovalCheckpoint, response: input.response as Extract<HarnessInteractionResponse, { readonly kind: 'approval' }> }, signal);
   }
 
-  async cancel(scope: TenantScope, runId: string): Promise<HarnessRunRecord> {
+  async cancel(scope: TenantScope, runId: HarnessRunId): Promise<HarnessRunRecord> {
     const stored = await this.runs.find(scope, runId);
     if (stored === null) throw new HarnessRunNotFoundError(`Harness run not found: ${runId}`);
     let cancelled = cancelHarnessRun(stored, this.now().toISOString());
@@ -179,7 +181,7 @@ export class RunHarnessUseCase {
     }
   }
 
-  private async findHarness(scope: TenantScope, harnessId: string, version: SemVerType | undefined): Promise<AgentHarness> {
+  private async findHarness(scope: TenantScope, harnessId: HarnessId, version: SemVerType | undefined): Promise<AgentHarness> {
     const harness = version === undefined ? await this.harnesses.findLatest(scope, harnessId) : await this.harnesses.findVersion(scope, harnessId, version);
     if (harness === null) throw new HarnessNotFoundError(`Harness not found: ${harnessId}${version === undefined ? '' : `@${version.toString()}`}`);
     return harness;
@@ -467,7 +469,7 @@ export class RunHarnessUseCase {
     if (shared.remainingParticipantRuns < 1) throw new HarnessRunError('Harness participant budget exhausted before participant start');
     shared.remainingParticipantRuns -= 1;
   }
-  private slot(harness: AgentHarness, id: string): AgentSlot { const slot = harness.slots.find((item) => item.id === id); if (slot === undefined) throw new HarnessRunError(`Harness topology references unknown slot '${id}'`); return slot; }
+  private slot(harness: AgentHarness, id: SlotId): AgentSlot { const slot = harness.slots.find((item) => item.id === id); if (slot === undefined) throw new HarnessRunError(`Harness topology references unknown slot '${id}'`); return slot; }
   private reserveBudget(shared: SharedHarnessBudget, futureParticipants: number): Pick<RunBudget, 'remainingModelRounds' | 'remainingToolCalls'> {
     if (shared.remainingModelRounds < 1) throw new HarnessRunError('Harness model-round budget exhausted before participant start');
     const remainingModelRounds = Math.min(Math.max(1, shared.remainingModelRounds - futureParticipants), DEFAULT_MODEL_ROUNDS_BUDGET);
@@ -486,7 +488,7 @@ export class RunHarnessUseCase {
 export class QueryHarnessRunsUseCase {
   constructor(private readonly repo: HarnessRunRepository) {}
   list(scope: TenantScope, options?: { readonly limit?: number; readonly status?: HarnessRunRecord['status'] }): Promise<HarnessRunRecord[]> { return this.repo.list(scope, options); }
-  async get(scope: TenantScope, runId: string): Promise<HarnessRunRecord> { const run = await this.repo.find(scope, runId); if (run === null) throw new HarnessRunNotFoundError(`Harness run not found: ${runId}`); return run; }
+  async get(scope: TenantScope, runId: HarnessRunId): Promise<HarnessRunRecord> { const run = await this.repo.find(scope, runId); if (run === null) throw new HarnessRunNotFoundError(`Harness run not found: ${runId}`); return run; }
 }
 
 function summarize(value: string): string { return value.length > 500 ? `${value.slice(0, 500)}…` : value; }

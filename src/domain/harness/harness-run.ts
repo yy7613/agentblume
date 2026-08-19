@@ -1,4 +1,6 @@
+import type { RunId } from '../run/ids';
 import type { TenantScope } from '../tool/ids';
+import type { HarnessId, HarnessRunId, SlotId } from './ids';
 
 export type HarnessRunMode = 'preview' | 'test';
 export type HarnessRunStatus = 'running' | 'succeeded' | 'failed' | 'waiting-input' | 'waiting-approval' | 'cancelled';
@@ -7,8 +9,8 @@ export interface HarnessEvent {
   readonly sequence: number;
   readonly kind: HarnessEventKind;
   readonly at: string;
-  readonly slotId?: string;
-  readonly childRunId?: string;
+  readonly slotId?: SlotId;
+  readonly childRunId?: RunId;
   readonly message?: string;
 }
 
@@ -27,7 +29,7 @@ export interface HarnessRunBudgetCheckpoint {
 
 export interface HandoffInputCheckpoint {
   readonly kind: 'handoff-input';
-  readonly activeSlotId: string;
+  readonly activeSlotId: SlotId;
   readonly history: readonly HarnessConversationMessage[];
   readonly budget: HarnessRunBudgetCheckpoint;
   readonly expiresAt: string;
@@ -36,8 +38,8 @@ export interface HandoffInputCheckpoint {
 
 export interface MagenticApprovalCheckpoint {
   readonly kind: 'magentic-approval';
-  readonly managerSlotId: string;
-  readonly selectedSlotId: string;
+  readonly managerSlotId: SlotId;
+  readonly selectedSlotId: SlotId;
   readonly instruction: string;
   readonly history: readonly HarnessConversationMessage[];
   readonly round: number;
@@ -52,9 +54,9 @@ export interface MagenticApprovalCheckpoint {
 export type HarnessRunCheckpoint = HandoffInputCheckpoint | MagenticApprovalCheckpoint;
 
 export interface HarnessRunRecord {
-  readonly runId: string;
+  readonly runId: HarnessRunId;
   readonly scope: TenantScope;
-  readonly harness: { readonly internalId: string; readonly version: string; readonly displayName: string };
+  readonly harness: { readonly internalId: HarnessId; readonly version: string; readonly displayName: string };
   readonly mode: HarnessRunMode;
   readonly status: HarnessRunStatus;
   readonly message: string;

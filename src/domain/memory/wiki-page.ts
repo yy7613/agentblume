@@ -4,15 +4,17 @@
  * 宣言的知識の単位。改訂は version をインクリメントし、由来 Run を追記する
  * （履歴は保持せず「現在の版」のみ。監査は sourceRuns と MemoryProposal 側で担う）。
  */
+import { assertNonEmpty } from '../shared/assert';
 import type { TenantScope } from '../tool/ids';
 import { MemoryDomainError } from './errors';
+import type { WikiPageId, WikiSpaceId } from './ids';
 import { DEFAULT_WIKI_ID } from './wiki-space';
 
 export interface WikiPage {
-  readonly id: string;
+  readonly id: WikiPageId;
   readonly tenant: TenantScope;
   /** 旧recordでは欠損を許容し、default Wiki所属として解釈する。 */
-  readonly wikiId?: string;
+  readonly wikiId?: WikiSpaceId;
   readonly title: string;
   readonly tags: readonly string[];
   readonly body: string;
@@ -22,8 +24,8 @@ export interface WikiPage {
 }
 
 export interface WikiPageSummary {
-  readonly id: string;
-  readonly wikiId?: string;
+  readonly id: WikiPageId;
+  readonly wikiId?: WikiSpaceId;
   readonly title: string;
   readonly tags: readonly string[];
   readonly version: number;
@@ -31,9 +33,7 @@ export interface WikiPageSummary {
 }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new MemoryDomainError(`WikiPage: ${field} must be a non-empty string`);
-  }
+  assertNonEmpty(value, `WikiPage: ${field}`, (m) => new MemoryDomainError(m));
 }
 
 /** タグを trim・空要素除去・重複排除して正規化する。 */
@@ -50,9 +50,9 @@ function normalizeTags(tags: readonly string[]): readonly string[] {
 }
 
 export interface CreateWikiPageProps {
-  readonly id: string;
+  readonly id: WikiPageId;
   readonly tenant: TenantScope;
-  readonly wikiId?: string;
+  readonly wikiId?: WikiSpaceId;
   readonly title: string;
   readonly tags?: readonly string[];
   readonly body: string;
@@ -113,4 +113,4 @@ export function summarizeWikiPage(page: WikiPage): WikiPageSummary {
   return { id: page.id, ...(page.wikiId !== undefined ? { wikiId: page.wikiId } : {}), title: page.title, tags: [...page.tags], version: page.version, updatedAt: page.updatedAt };
 }
 
-export function effectiveWikiId(page: Pick<WikiPage, 'wikiId'>): string { return page.wikiId ?? DEFAULT_WIKI_ID; }
+export function effectiveWikiId(page: Pick<WikiPage, 'wikiId'>): WikiSpaceId { return page.wikiId ?? DEFAULT_WIKI_ID; }

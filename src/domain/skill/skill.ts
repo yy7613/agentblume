@@ -1,14 +1,16 @@
-import type { TenantScope } from '../tool/ids';
+import { assertNonEmpty } from '../shared/assert';
+import type { TenantScope, ToolId } from '../tool/ids';
 import { isPublishState, type PublishState } from '../tool/metadata';
 import { SemVer } from '../tool/semver';
 import { SkillValidationError } from './errors';
+import type { SkillId } from './ids';
 
 export interface SkillMetadata {
-  readonly internalId: string; readonly workingName: string; readonly displayName: string;
+  readonly internalId: SkillId; readonly workingName: string; readonly displayName: string;
   readonly publishName: string; readonly version: SemVer; readonly owner: string;
   readonly state: PublishState; readonly tenant: TenantScope;
 }
-export interface SkillToolRef { readonly internalId: string; readonly version: SemVer }
+export interface SkillToolRef { readonly internalId: ToolId; readonly version: SemVer }
 export interface Skill {
   readonly metadata: SkillMetadata;
   readonly responsibility: string;
@@ -21,7 +23,7 @@ export interface Skill {
 export interface CreateSkillProps extends Omit<Skill, 'tools'> { readonly tools: readonly SkillToolRef[] }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim().length === 0) throw new SkillValidationError(`createSkill: ${field} must be a non-empty string`);
+  assertNonEmpty(value, `createSkill: ${field}`, (m) => new SkillValidationError(m));
 }
 
 export function createSkill(props: CreateSkillProps): Skill {

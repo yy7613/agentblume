@@ -1,8 +1,11 @@
 import { createAgent, type Agent, type AgentKind, type AgentPersonaRef, type AgentRuntimeHarness, type AgentSubAgentRef } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
+import type { AgentId } from '../../domain/agent/ids';
 import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
 import { AgentValidationError } from '../../domain/agent/errors';
-import type { TenantScope } from '../../domain/tool/ids';
+import type { WikiSpaceId } from '../../domain/memory/ids';
+import type { SkillId } from '../../domain/skill/ids';
+import type { ToolId, TenantScope } from '../../domain/tool/ids';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
@@ -12,17 +15,17 @@ import type { WikiRepository } from '../../domain/memory/wiki-repository';
 
 export interface SaveAgentInput {
   readonly scope: TenantScope;
-  readonly internalId: string;
+  readonly internalId: AgentId;
   readonly workingName: string;
   readonly displayName: string;
   readonly publishName: string;
   readonly owner: string;
   readonly kind: AgentKind;
   readonly systemPrompt: string;
-  readonly skills?: readonly { readonly internalId: string; readonly version: SemVer }[];
-  readonly tools: readonly { readonly internalId: string; readonly version: SemVer }[];
+  readonly skills?: readonly { readonly internalId: SkillId; readonly version: SemVer }[];
+  readonly tools: readonly { readonly internalId: ToolId; readonly version: SemVer }[];
   readonly agents?: readonly AgentSubAgentRef[];
-  readonly wikis?: readonly { readonly wikiId: string }[];
+  readonly wikis?: readonly { readonly wikiId: WikiSpaceId }[];
   /** ツールを注入する保存済みMCPサーバー名。未指定・空は従来動作（MCPツールなし）。 */
   readonly mcpServers?: readonly string[];
   /** ランタイムハーネス設定（Agent単位のopt-in）。未指定は従来動作。 */

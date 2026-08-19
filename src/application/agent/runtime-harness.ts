@@ -12,6 +12,8 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type { AgentRuntimeHarness } from '../../domain/agent/agent';
+import type { AgentId } from '../../domain/agent/ids';
+import type { WikiSpaceId } from '../../domain/memory/ids';
 import { createWikiPage, reviseWikiPage } from '../../domain/memory/wiki-page';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';
 import { createWikiSpace } from '../../domain/memory/wiki-space';
@@ -19,6 +21,7 @@ import type { AgentSession } from '../../domain/session/agent-session';
 import { SessionQuotaExceededError } from '../../domain/session/errors';
 import { createSessionArtifact } from '../../domain/session/session-artifact';
 import type { SessionArtifactRepository } from '../../domain/session/session-repository';
+import type { RunId } from '../../domain/run/ids';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { ModelRequestMessage, ModelToolCall, ModelToolDefinition } from '../model/model-provider';
 import type { WebSearchUseCase } from '../search/web-search';
@@ -58,7 +61,7 @@ export interface HarnessTodo {
 }
 
 /** 専用のFile memory Wiki空間ID。Agent internalId ごとに1つ。 */
-export function agentMemoryWikiId(agentInternalId: string): string {
+export function agentMemoryWikiId(agentInternalId: AgentId): WikiSpaceId {
   return `agent-memory--${agentInternalId}`;
 }
 
@@ -137,9 +140,9 @@ export interface HarnessToolResult {
 export interface AgentRuntimeHarnessOptions {
   readonly harness: AgentRuntimeHarness;
   readonly scope: TenantScope;
-  readonly runId: string;
+  readonly runId: RunId;
   /** File memory の専用Wiki空間IDを決めるAgent internalId。未保存プレビューでは未指定。 */
-  readonly agentId?: string;
+  readonly agentId?: AgentId;
   readonly session?: AgentSession;
   readonly artifacts?: SessionArtifactRepository;
   readonly wiki?: WikiRepository;
@@ -277,7 +280,7 @@ export class AgentRuntimeHarnessRuntime {
 
   // --- file memory ---------------------------------------------------------
 
-  private get memoryWikiId(): string { return agentMemoryWikiId(this.options.agentId as string); }
+  private get memoryWikiId(): WikiSpaceId { return agentMemoryWikiId(this.options.agentId as string); }
 
   private async executeMemoryList(): Promise<HarnessToolResult> {
     const wiki = this.options.wiki as WikiRepository;

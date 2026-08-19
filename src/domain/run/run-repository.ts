@@ -1,4 +1,5 @@
 import type { TenantScope } from '../tool/ids';
+import type { RunId } from './ids';
 import type { RunRecord, RunStatus } from './run';
 
 export interface ListRunsOptions {
@@ -13,7 +14,7 @@ export interface RunRetentionOptions {
 export interface RunRetentionResult { readonly payloadRedacted: number; readonly traceRedacted: number; readonly deleted: number }
 export interface RunRepository {
   save(record: RunRecord): Promise<void>;
-  find(scope: TenantScope, runId: string): Promise<RunRecord | null>;
+  find(scope: TenantScope, runId: RunId): Promise<RunRecord | null>;
   list(scope: TenantScope, options?: ListRunsOptions): Promise<RunRecord[]>;
   /**
    * 全スコープ横断で、指定状態のRunを返す（起動時の孤児Run回収用・`RecoverInterruptedRunsUseCase`）。

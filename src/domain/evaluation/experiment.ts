@@ -1,9 +1,13 @@
+import type { AgentId } from '../agent/ids';
+import type { RunId } from '../run/ids';
 import type { RunUsage } from '../run/run';
+import { assertNonEmpty } from '../shared/assert';
 import type { TenantScope } from '../tool/ids';
 import { SemVer } from '../tool/semver';
 import type { EvaluationScore } from './evaluation';
 import { createEvaluationResult } from './evaluation';
 import { EvaluationDomainError } from './errors';
+import type { EvaluationCaseId, ExperimentId, MetricId } from './ids';
 
 export const EXPERIMENT_STATUSES = ['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted'] as const;
 export type ExperimentStatus = (typeof EXPERIMENT_STATUSES)[number];
@@ -16,7 +20,7 @@ export interface ExperimentProgress { readonly completed: number; readonly total
 export interface ExperimentError { readonly code: string; readonly message: string }
 export interface JudgeEvaluationRecord {
   readonly scorer: 'llm-as-judge';
-  readonly metricId: string;
+  readonly metricId: MetricId;
   readonly rubric: ExperimentArtifactRef;
   readonly required: boolean;
   readonly model: ExperimentModelSnapshot;
@@ -27,9 +31,9 @@ export interface JudgeEvaluationRecord {
 }
 
 export interface Experiment {
-  readonly id: string;
+  readonly id: ExperimentId;
   readonly scope: TenantScope;
-  readonly target: { readonly agentId: string; readonly version: SemVer };
+  readonly target: { readonly agentId: AgentId; readonly version: SemVer };
   readonly dataset: ExperimentArtifactRef;
   readonly evaluatorProfile: ExperimentArtifactRef;
   readonly repetitions: number;
@@ -43,13 +47,13 @@ export interface Experiment {
 }
 
 export interface ExperimentCaseResult {
-  readonly experimentId: string;
+  readonly experimentId: ExperimentId;
   readonly scope: TenantScope;
-  readonly caseId: string;
+  readonly caseId: EvaluationCaseId;
   readonly caseKind: 'turn' | 'scenario';
   readonly repetition: number;
   readonly status: ExperimentCaseStatus;
-  readonly runIds: readonly string[];
+  readonly runIds: readonly RunId[];
   readonly output?: string;
   readonly scores: readonly EvaluationScore[];
   readonly latencyMs: number;
@@ -59,7 +63,7 @@ export interface ExperimentCaseResult {
 }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim().length === 0) throw new EvaluationDomainError(`${field} must be a non-empty string`);
+  assertNonEmpty(value, field, (m) => new EvaluationDomainError(m));
 }
 function validateRef(ref: ExperimentArtifactRef, field: string): ExperimentArtifactRef {
   nonEmpty(ref?.id, `${field}.id`);

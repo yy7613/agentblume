@@ -6,6 +6,8 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { TenantScope } from '../../domain/tool/ids';
+import type { WikiPageId, WikiSpaceId } from '../../domain/memory/ids';
+import type { RunId } from '../../domain/run/ids';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';
 import { createWikiPage, reviseWikiPage, type WikiPage } from '../../domain/memory/wiki-page';
 import { MemoryDomainError, WikiSpaceNotFoundError } from '../../domain/memory/errors';
@@ -14,13 +16,13 @@ import { createWikiSpace, DEFAULT_WIKI_ID } from '../../domain/memory/wiki-space
 export interface SaveWikiPageInput {
   readonly scope: TenantScope;
   /** 省略時は新規（id 自動採番）。既存 id なら改訂。 */
-  readonly id?: string;
-  readonly wikiId?: string;
+  readonly id?: WikiPageId;
+  readonly wikiId?: WikiSpaceId;
   readonly title: string;
   readonly tags: readonly string[];
   readonly body: string;
   /** 由来 Run（提案承認経路で付与）。 */
-  readonly sourceRunId?: string;
+  readonly sourceRunId?: RunId;
 }
 
 export class SaveWikiPageUseCase {

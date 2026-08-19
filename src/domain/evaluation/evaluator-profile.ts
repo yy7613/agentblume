@@ -1,12 +1,13 @@
 import { validateEvaluationMetadata, evaluationNonEmpty, type EvaluationAssetMetadata } from './asset-metadata';
 import { EvaluationDomainError } from './errors';
+import type { JudgeRubricId, MetricId } from './ids';
 import { SemVer } from '../tool/semver';
 
 export const CODE_SCORERS = ['keyword-coverage', 'completeness', 'tone-consistency', 'content-similarity'] as const;
 export type CodeScorer = (typeof CODE_SCORERS)[number];
 
 export interface CodeEvaluatorMetricDefinition {
-  readonly id: string;
+  readonly id: MetricId;
   readonly kind: 'code';
   readonly weight: number;
   readonly required: boolean;
@@ -14,11 +15,11 @@ export interface CodeEvaluatorMetricDefinition {
 }
 
 export interface JudgeEvaluatorMetricDefinition {
-  readonly id: string;
+  readonly id: MetricId;
   readonly kind: 'judge';
   readonly weight: number;
   readonly required: boolean;
-  readonly rubric: { readonly id: string; readonly version: SemVer };
+  readonly rubric: { readonly id: JudgeRubricId; readonly version: SemVer };
 }
 
 export type EvaluatorMetricDefinition = CodeEvaluatorMetricDefinition | JudgeEvaluatorMetricDefinition;

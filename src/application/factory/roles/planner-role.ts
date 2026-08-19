@@ -6,6 +6,7 @@
  * `validateFactoryPlan` により再検証）。データソースの列・サンプル行はuntrusted dataとしてuser message側へ
  * 隔離し、system命令へは混ぜない。
  */
+import type { DataSourceId } from '../../../domain/data-source/ids';
 import { FactoryValidationError } from '../../../domain/factory/errors';
 import { validateFactoryPlan, type FactoryPlan } from '../../../domain/factory/factory-plan';
 import type { FactoryGoalInput, FactoryOptions } from '../../../domain/factory/factory-run';
@@ -149,7 +150,7 @@ export interface PlannerCurrentAgent {
 export interface PlannerRoleInput {
   readonly goal: FactoryGoalInput;
   readonly profiles: readonly DataProfile[];
-  readonly dataSourceIds: readonly string[];
+  readonly dataSourceIds: readonly DataSourceId[];
   readonly options: FactoryOptions;
   /**
    * 同じworkspaceに保存済みの再利用候補Tool（`buildExistingToolCatalog` の結果）。

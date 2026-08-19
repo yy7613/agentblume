@@ -6,13 +6,14 @@
  * - validateSurveyAnswers は型・範囲を検証し、違反は ValidationDomainError。
  */
 import { ValidationDomainError } from './errors';
+import type { SurveyQuestionId } from './ids';
 import { nonEmpty } from './metadata';
 
 export const SURVEY_QUESTION_KINDS = ['scale', 'boolean', 'text'] as const;
 export type SurveyQuestionKind = (typeof SURVEY_QUESTION_KINDS)[number];
 
 export interface SurveyQuestion {
-  readonly id: string;
+  readonly id: SurveyQuestionId;
   readonly textJa: string;
   readonly textEn: string;
   readonly kind: SurveyQuestionKind;
@@ -23,7 +24,7 @@ export interface SurveyQuestion {
 }
 
 export interface SurveyAnswer {
-  readonly questionId: string;
+  readonly questionId: SurveyQuestionId;
   readonly value: number | boolean | string;
 }
 

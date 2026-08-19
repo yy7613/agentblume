@@ -21,16 +21,21 @@
  * `add-tool` は `availableDataSources`（任意入力）が渡されている場合のみ有効で、そこに無い
  * `dataSourceId` を指す提案は破棄する（適用側でも解決できず、提案枠を空振りさせるだけのため）。
  */
+import type { AgentId } from '../../../domain/agent/ids';
+import type { DataSourceId } from '../../../domain/data-source/ids';
 import { FactoryValidationError } from '../../../domain/factory/errors';
 import type { FactoryAddSkillPlan, FactoryToolPlan } from '../../../domain/factory/factory-plan';
 import type { FactoryGoalInput, IterationMetrics } from '../../../domain/factory/factory-run';
 import type { Finding, ImprovementProposal } from '../../../domain/factory/improvement-proposal';
 import type { ToolGraph } from '../../../domain/etl/graph';
+import type { SkillId } from '../../../domain/skill/ids';
+import type { ToolId } from '../../../domain/tool/ids';
+import type { ScenarioId } from '../../../domain/validation/ids';
 import type { JsonSchemaObject, JsonSchemaProperty, ModelProviderPort } from '../../model/model-provider';
 import { wrapUntrusted } from './untrusted';
 
 export interface AnalystScenarioSummary {
-  readonly scenarioId: string;
+  readonly scenarioId: ScenarioId;
   readonly status: string;
   readonly goalAchieved: boolean | null;
   readonly satisfaction?: number;
@@ -39,12 +44,12 @@ export interface AnalystScenarioSummary {
 }
 
 export interface AnalystCurrentSkill {
-  readonly id: string;
+  readonly id: SkillId;
   readonly instructions: string;
 }
 
 export interface AnalystCurrentTool {
-  readonly id: string;
+  readonly id: ToolId;
   readonly name: string;
   readonly description: string;
 }
@@ -56,7 +61,7 @@ export interface AnalystCurrentTool {
  * 適用側でプロファイル解決に失敗して却下されるだけで、提案枠を1つ無駄にするため）。
  */
 export interface AnalystDataSourceSummary {
-  readonly dataSourceId: string;
+  readonly dataSourceId: DataSourceId;
   readonly name: string;
   readonly format?: string;
   /** 列の要約（`name:type` 形式を想定）。 */
@@ -68,7 +73,7 @@ export interface AnalystRoleInput {
   readonly metrics: IterationMetrics;
   readonly scenarioSummaries: readonly AnalystScenarioSummary[];
   /** `id` は提案の `agentId` 参照整合検証に使う（対象は常にRun内で唯一のAgent）。 */
-  readonly currentAgent: { readonly id: string; readonly systemPrompt: string };
+  readonly currentAgent: { readonly id: AgentId; readonly systemPrompt: string };
   readonly currentSkills: readonly AnalystCurrentSkill[];
   readonly currentTools: readonly AnalystCurrentTool[];
   /**

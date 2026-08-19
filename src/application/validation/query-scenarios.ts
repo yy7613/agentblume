@@ -1,6 +1,7 @@
 import type { TenantScope } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 import { ScenarioNotFoundError } from '../../domain/validation/errors';
+import type { ScenarioId } from '../../domain/validation/ids';
 import type { Scenario } from '../../domain/validation/scenario';
 import type { ScenarioRepository, ScenarioSummary } from '../../domain/validation/scenario-repository';
 
@@ -9,9 +10,9 @@ export class QueryScenariosUseCase {
 
   list(scope: TenantScope): Promise<ScenarioSummary[]> { return this.repo.list(scope); }
 
-  versions(scope: TenantScope, internalId: string): Promise<SemVer[]> { return this.repo.listVersions(scope, internalId); }
+  versions(scope: TenantScope, internalId: ScenarioId): Promise<SemVer[]> { return this.repo.listVersions(scope, internalId); }
 
-  async get(scope: TenantScope, internalId: string, version?: SemVer): Promise<Scenario> {
+  async get(scope: TenantScope, internalId: ScenarioId, version?: SemVer): Promise<Scenario> {
     const scenario = version === undefined
       ? await this.repo.findLatest(scope, internalId)
       : await this.repo.findVersion(scope, internalId, version);
@@ -28,7 +29,7 @@ export class QueryScenariosUseCase {
  */
 export class DeleteScenarioUseCase {
   constructor(private readonly repo: ScenarioRepository) {}
-  async execute(scope: TenantScope, internalId: string): Promise<void> {
+  async execute(scope: TenantScope, internalId: ScenarioId): Promise<void> {
     const existed = await this.repo.delete(scope, internalId);
     if (!existed) throw new ScenarioNotFoundError(`DeleteScenario: scenario not found: ${internalId}`);
   }

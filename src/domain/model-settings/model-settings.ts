@@ -10,8 +10,10 @@
  * apiKey は封緘済み（SealedSecret）だけを持つ。平文はドメインに存在しない。
  */
 import { classifyHost } from '../net/url-policy';
+import { assertHttpUrl, assertNonEmpty, type HttpUrl } from '../shared/assert';
 import type { TenantScope } from '../tool/ids';
 import { ModelSettingsValidationError } from './errors';
+import { parseRegistryModelRef, registryProviderOf } from './registry-model-ref';
 import { createSealedSecret, type SealedSecret } from './sealed-secret';
 
 /** 切り替え可能なモデルスロット。 */
@@ -26,7 +28,7 @@ export const MODEL_BASE_URL_MAX_LENGTH = 512;
 
 export type ModelSlotSettings =
   | { readonly source: 'registry'; readonly model: string; readonly apiKey?: SealedSecret }
-  | { readonly source: 'openai-compatible'; readonly baseUrl: string; readonly model: string; readonly apiKey?: SealedSecret };
+  | { readonly source: 'openai-compatible'; readonly baseUrl: HttpUrl; readonly model: string; readonly apiKey?: SealedSecret };
 
 export interface ModelSettings {
   readonly scope: TenantScope;
@@ -43,9 +45,7 @@ export interface CreateModelSettingsProps {
 }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw new ModelSettingsValidationError(`createModelSettings: ${field} must be a non-empty string`);
-  }
+  assertNonEmpty(value, `createModelSettings: ${field}`, (m) => new ModelSettingsValidationError(m));
 }
 
 function bounded(value: string, field: string, max: number): string {
@@ -58,8 +58,7 @@ function bounded(value: string, field: string, max: number): string {
 function registryModel(value: unknown, field: string): string {
   nonEmpty(value, field);
   const model = bounded(value, field, MODEL_ID_MAX_LENGTH);
-  const slash = model.indexOf('/');
-  if (slash <= 0 || slash === model.length - 1) {
+  if (parseRegistryModelRef(model) === null) {
     throw new ModelSettingsValidationError(`createModelSettings: ${field} must be in 'provider/model' form, but got '${model}'`);
   }
   return model;
@@ -102,20 +101,13 @@ export function isHttpBaseUrl(value: unknown): boolean {
   return parsed.username === '' && parsed.password === '';
 }
 
-function httpUrl(value: unknown, field: string): string {
-  nonEmpty(value, field);
-  const raw = bounded(value, field, MODEL_BASE_URL_MAX_LENGTH);
-  let parsed: URL;
-  try { parsed = new URL(raw); }
-  catch { throw new ModelSettingsValidationError(`createModelSettings: ${field} must be a valid URL: ${raw}`); }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new ModelSettingsValidationError(`createModelSettings: ${field} must use http(s): ${raw}`);
-  }
-  // 資格情報を含み得るのでメッセージにURLは載せない。
-  if (parsed.username !== '' || parsed.password !== '') {
-    throw new ModelSettingsValidationError(`createModelSettings: ${field} must not embed credentials (user:password@host)`);
-  }
-  if (isLinkLocalHost(parsed.hostname)) {
+function httpUrl(value: unknown, field: string): HttpUrl {
+  // 共通不変条件(http(s)・資格情報禁止・長さ上限)は shared へ委譲。リンクローカル拒否は
+  // この BC 固有のポリシー(isLinkLocalHost のコメント参照)なのでここに残す。
+  const raw = assertHttpUrl(value, `createModelSettings: ${field}`, (m) => new ModelSettingsValidationError(m), {
+    maxLength: MODEL_BASE_URL_MAX_LENGTH,
+  });
+  if (isLinkLocalHost(new URL(raw).hostname)) {
     throw new ModelSettingsValidationError(`createModelSettings: ${field} must not target a link-local address (cloud metadata endpoints are never reachable from here)`);
   }
   return raw;
@@ -160,8 +152,7 @@ export interface ModelDestinationInput {
 
 export function modelDestination(input: ModelDestinationInput): ModelDestination {
   if (input.source === 'registry') {
-    const slash = input.model.indexOf('/');
-    return { source: 'registry', provider: (slash > 0 ? input.model.slice(0, slash) : input.model).trim().toLowerCase() };
+    return { source: 'registry', provider: registryProviderOf(input.model) };
   }
   return { source: 'openai-compatible', baseUrl: normalizeBaseUrl(input.baseUrl ?? '') };
 }

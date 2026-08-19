@@ -5,6 +5,9 @@
  * 検証規則は docs/16-agent-factory.md §4「Stage 1: 構成計画」に従う: データソース参照整合・
  * 副作用制限（write / external-action 拒否）・件数上限・キー参照整合。
  */
+import type { DataSourceId } from '../data-source/ids';
+import { assertNonEmpty } from '../shared/assert';
+import type { ToolId } from '../tool/ids';
 import type { SideEffect } from '../tool/metadata';
 import { FactoryValidationError } from './errors';
 
@@ -14,7 +17,7 @@ import { FactoryValidationError } from './errors';
  * 生成段（Stage 2）は再利用先を解決できればToolSmithを呼ばず、解決できなければ新規生成へフォールバックする。
  */
 export interface FactoryToolReuse {
-  readonly internalId: string;
+  readonly internalId: ToolId;
   /** なぜその既存Toolで足りるのか（人間がレビューするための理由）。 */
   readonly rationale?: string;
 }
@@ -23,7 +26,7 @@ export interface FactoryToolPlan {
   readonly key: string;
   readonly displayName: string;
   readonly purpose: string;
-  readonly dataSourceId: string;
+  readonly dataSourceId: DataSourceId;
   readonly sideEffect: SideEffect;
   readonly outputShape?: string;
   readonly argumentSummary?: string;
@@ -115,7 +118,7 @@ export interface FactoryPlanLimits {
 export const DEFAULT_FACTORY_PLAN_LIMITS: FactoryPlanLimits = { maxTools: 4, maxSkills: 3, maxPersonas: 3, maxScenarios: 6 };
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim().length === 0) throw new FactoryValidationError(`${field} must be a non-empty string`);
+  assertNonEmpty(value, field, (m) => new FactoryValidationError(m));
 }
 
 /**
@@ -128,7 +131,7 @@ function nonEmpty(value: unknown, field: string): asserts value is string {
  * - 各コレクション内でキー重複禁止。Skill.toolKeys / Scenario.personaKey / Scenario.expectedToolKeys は既知キーのみ参照可。
  * - 必須文字列は空・空白のみを禁止。Scenario.maxUserTurns は 1..8。
  */
-export function validateFactoryPlan(plan: FactoryPlan, ctx: { readonly dataSourceIds: readonly string[]; readonly limits?: FactoryPlanLimits }): void {
+export function validateFactoryPlan(plan: FactoryPlan, ctx: { readonly dataSourceIds: readonly DataSourceId[]; readonly limits?: FactoryPlanLimits }): void {
   const limits = ctx.limits ?? DEFAULT_FACTORY_PLAN_LIMITS;
   nonEmpty(plan.agentBrief?.displayName, 'validateFactoryPlan: agentBrief.displayName');
   nonEmpty(plan.agentBrief?.role, 'validateFactoryPlan: agentBrief.role');

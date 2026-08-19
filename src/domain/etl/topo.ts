@@ -4,11 +4,12 @@
  * Kahn 法。`nodeIds` の入力順を尊重した安定な順序で返す。
  */
 import { GraphError } from './errors';
+import type { NodeId } from './ids';
 
 /** 有向辺（from → to）。 */
 export interface DirectedEdge {
-  readonly from: string;
-  readonly to: string;
+  readonly from: NodeId;
+  readonly to: NodeId;
 }
 
 /**
@@ -21,9 +22,9 @@ export interface DirectedEdge {
  * 入力配列は破壊的変更しない。
  */
 export function topologicalSort(
-  nodeIds: readonly string[],
+  nodeIds: readonly NodeId[],
   edges: readonly DirectedEdge[],
-): string[] {
+): NodeId[] {
   const known = new Set(nodeIds);
 
   // 位置索引（安定順序のため）。同名idが複数あっても最初の位置を採用。

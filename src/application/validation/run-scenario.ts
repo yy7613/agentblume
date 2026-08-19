@@ -7,11 +7,13 @@
  * エラー時も途中経過（transcript / metrics）を status:'error' で保存して返す。
  */
 import { randomUUID } from 'node:crypto';
+import type { AgentId } from '../../domain/agent/ids';
 import type { RunUsage } from '../../domain/run/run';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { SemVer } from '../../domain/tool/semver';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import { PersonaNotFoundError, ScenarioNotFoundError, ValidationDomainError } from '../../domain/validation/errors';
+import type { ScenarioId } from '../../domain/validation/ids';
 import { buildPersonaSystemPrompt, composeScenarioPrompt, type PersonaLanguage } from '../../domain/validation/persona';
 import type { PersonaRepository } from '../../domain/validation/persona-repository';
 import type { Scenario } from '../../domain/validation/scenario';
@@ -24,12 +26,12 @@ import type { JsonSchemaObject, ModelMessage, ModelProviderPort, ModelUsage } fr
 
 export interface RunScenarioInput {
   readonly scope: TenantScope;
-  readonly scenarioId: string;
+  readonly scenarioId: ScenarioId;
   /** 省略時は latest。 */
   readonly version?: SemVer;
   readonly mode: 'preview' | 'test';
   /** 評価実験から候補Agent版を差し替える。通常のScenario実行では未指定。 */
-  readonly target?: { readonly agentId: string; readonly version: SemVer };
+  readonly target?: { readonly agentId: AgentId; readonly version: SemVer };
 }
 
 /** 疑似ユーザー1ターンの構造化出力スキーマ（required 全部・additionalProperties:false）。 */

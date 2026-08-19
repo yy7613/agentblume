@@ -1,12 +1,14 @@
 import { SemVer } from '../tool/semver';
+import type { ScenarioId } from '../validation/ids';
 import { validateEvaluationMetadata, evaluationNonEmpty, type EvaluationAssetMetadata } from './asset-metadata';
 import { EvaluationDomainError } from './errors';
+import type { EvaluationCaseId } from './ids';
 
 export const EVALUATION_CASE_SOURCES = ['manual', 'import', 'run-feedback'] as const;
 export type EvaluationCaseSource = (typeof EVALUATION_CASE_SOURCES)[number];
 
 interface EvaluationCaseBase {
-  readonly id: string;
+  readonly id: EvaluationCaseId;
   readonly tags: readonly string[];
   readonly source: EvaluationCaseSource;
 }
@@ -20,7 +22,7 @@ export interface TurnEvaluationCase extends EvaluationCaseBase {
 
 export interface ScenarioEvaluationCase extends EvaluationCaseBase {
   readonly kind: 'scenario';
-  readonly scenario: { readonly id: string; readonly version: SemVer };
+  readonly scenario: { readonly id: ScenarioId; readonly version: SemVer };
 }
 
 export type EvaluationCase = TurnEvaluationCase | ScenarioEvaluationCase;

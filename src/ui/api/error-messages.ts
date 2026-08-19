@@ -100,6 +100,11 @@ const HEADINGS: Record<string, Bilingual> = {
   DATA_SOURCE_VALIDATION: ['Please check the data source settings', 'データソースの設定を確認してください'],
   WEB_SEARCH_VALIDATION: ['Please check the web search settings', 'Web検索の設定を確認してください'],
 
+  // MCPクライアント: サーバー設定の入力不正（400）と未登録サーバー（404）。src/domain/mcp/errors.ts の
+  // McpValidationError / McpNotFoundError に対応する（接続失敗の McpClientError・502 は別系統）。
+  MCP_VALIDATION: ['Please check the MCP server settings', 'MCPサーバー設定の入力内容を確認してください'],
+  MCP_NOT_FOUND: ['The MCP server was not found', 'MCPサーバーが見つかりませんでした'],
+
   // モデル設定の入力不正（400）。LM Studio 前提の実行エラー文言に混ぜない。
   MODEL_SETTINGS_VALIDATION: ['Please check the model settings', 'モデル設定の入力内容を確認してください'],
   // モデル一覧の取得失敗（502）。実行エラーではなく「一覧が引けない」だけ。
@@ -681,10 +686,25 @@ function localizeAgentRunDetail(message: string, language: ErrorLanguage): strin
 }
 
 /**
- * モデル設定（`src/domain/model-settings`）の検証定型文。`MODEL_SETTINGS_VALIDATION` の見出しに続く
- * 詳細として出るため、「何をどう直すか」が分かる文へ置き換える（実行エラー文言とは別系統）。
+ * assertHttpUrl 前置詞 → URL フィールドの画面上の呼び名。
+ * モデル設定のフィールドは baseUrl なので「ベースURL」、MCPサーバー設定は transport.url なので「URL」。
  */
-function localizeModelSettingsDetail(message: string, language: ErrorLanguage): string | undefined {
+function urlFieldLabel(prefix: string | undefined, language: ErrorLanguage): string {
+  if (prefix === 'createModelSettings') return language === 'ja' ? 'ベースURL' : 'the base URL';
+  return language === 'ja' ? 'URL' : 'the URL';
+}
+
+/**
+ * モデル設定（`src/domain/model-settings`）と MCPサーバー設定（`src/domain/mcp`）の検証定型文。
+ * `MODEL_SETTINGS_VALIDATION` / `MCP_VALIDATION` の見出しに続く詳細として出るため、
+ * 「何をどう直すか」が分かる文へ置き換える（実行エラー文言とは別系統）。
+ *
+ * URL 検証は domain/shared/assert.ts の assertHttpUrl（ADR-0035）に共通化されており、
+ * `createModelSettings:` / `createMcpServerConfig:` の2前置詞で同形メッセージを生成する。
+ * ここでも前置詞グループで共通に拾い、URL フィールドの呼び名だけを前置詞で分ける
+ * （urlFieldLabel）。createModelSettings 側の出力文言は共通化前とバイト単位で一致させている。
+ */
+function localizeSettingsValidationDetail(message: string, language: ErrorLanguage): string | undefined {
   const ja = language === 'ja';
   let matched = /^createModelSettings: [A-Za-z0-9_.]+ must be in 'provider\/model' form(?:, but got '(.*)')?$/.exec(message);
   if (matched !== null) {
@@ -692,17 +712,48 @@ function localizeModelSettingsDetail(message: string, language: ErrorLanguage): 
     return ja ? `モデルは provider/model 形式で入力してください（例: openai/gpt-4o${got}）` : `the model must be in 'provider/model' form (for example openai/gpt-4o${got})`;
   }
 
-  matched = /^createModelSettings: [A-Za-z0-9_.]+ must be a valid URL: (.+)$/.exec(message);
-  if (matched !== null) return ja ? `ベースURLの形式が正しくありません: ${matched[1]}` : `the base URL is not a valid URL: ${matched[1]}`;
-
-  matched = /^createModelSettings: [A-Za-z0-9_.]+ must use http\(s\): (.+)$/.exec(message);
-  if (matched !== null) return ja ? `ベースURLは http または https を指定してください: ${matched[1]}` : `the base URL must use http(s): ${matched[1]}`;
-
-  if (/^createModelSettings: [A-Za-z0-9_.]+ must not embed credentials/.test(message)) {
-    return ja ? 'ベースURLに認証情報（user:password@host）を含めないでください' : 'the base URL must not embed credentials (user:password@host)';
+  // リンクローカル拒否（src/domain/model-settings/model-settings.ts）。SSRF（クラウドメタデータ
+  // 窃取）対策で常に拒否している旨まで伝え、「形式を直せば通る」と誤解させない。
+  if (/^createModelSettings: [A-Za-z0-9_.]+ must not target a link-local address/.test(message)) {
+    return ja
+      ? 'ベースURLにリンクローカルアドレス（169.254.x.x / fe80::）は指定できません。クラウドメタデータの窃取（SSRF）を防ぐため、この宛先は常に拒否しています'
+      : 'the base URL must not target a link-local address (169.254.x.x / fe80::). These destinations are always rejected to prevent SSRF against cloud metadata endpoints';
   }
 
-  matched = /^createModelSettings: ([A-Za-z0-9_.]+) must be a non-empty string$/.exec(message);
+  // MCP の name は末尾に入力値が付く独自形（src/domain/mcp/mcp-server.ts の name 長さ検証）。
+  matched = /^createMcpServerConfig: name must be at most (\d+) characters: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `名前: ${matched[1]}文字以内で入力してください（入力値: ${matched[2]}）`
+      : `Name: must be at most ${matched[1]} characters (received '${matched[2]}')`;
+  }
+
+  matched = /^(createModelSettings|createMcpServerConfig): [A-Za-z0-9_.]+ must be a valid URL: (.+)$/.exec(message);
+  if (matched !== null) {
+    const url = urlFieldLabel(matched[1], language);
+    return ja ? `${url}の形式が正しくありません: ${matched[2]}` : `${url} is not a valid URL: ${matched[2]}`;
+  }
+
+  matched = /^(createModelSettings|createMcpServerConfig): [A-Za-z0-9_.]+ must use http\(s\): (.+)$/.exec(message);
+  if (matched !== null) {
+    const url = urlFieldLabel(matched[1], language);
+    return ja ? `${url}は http または https を指定してください: ${matched[2]}` : `${url} must use http(s): ${matched[2]}`;
+  }
+
+  matched = /^(createModelSettings|createMcpServerConfig): [A-Za-z0-9_.]+ must not embed credentials/.exec(message);
+  if (matched !== null) {
+    const url = urlFieldLabel(matched[1], language);
+    return ja ? `${url}に認証情報（user:password@host）を含めないでください` : `${url} must not embed credentials (user:password@host)`;
+  }
+
+  // 長さ上限の共通形（shared/assert.ts の maxLength と model-settings の bounded が生成）。
+  matched = /^(?:createModelSettings|createMcpServerConfig): ([A-Za-z0-9_.]+) must be at most (\d+) characters$/.exec(message);
+  if (matched !== null) {
+    const field = localizeFieldPath(matched[1] ?? '', language);
+    return ja ? `${field}: ${matched[2]}文字以内で入力してください` : `${field}: must be at most ${matched[2]} characters`;
+  }
+
+  matched = /^(?:createModelSettings|createMcpServerConfig): ([A-Za-z0-9_.]+) must be a non-empty string$/.exec(message);
   if (matched !== null) return ja ? `${localizeFieldPath(matched[1] ?? '', language)}: 必須です` : `${localizeFieldPath(matched[1] ?? '', language)}: is required`;
 
   return undefined;
@@ -718,8 +769,8 @@ function localizeMessageText(message: string, language: ErrorLanguage): string |
   const agentRun = localizeAgentRunDetail(message, language);
   if (agentRun !== undefined) return agentRun;
 
-  const modelSettings = localizeModelSettingsDetail(message, language);
-  if (modelSettings !== undefined) return modelSettings;
+  const settings = localizeSettingsValidationDetail(message, language);
+  if (settings !== undefined) return settings;
 
   const ja = language === 'ja';
   const required = ja ? '必須です' : 'is required';
@@ -727,6 +778,15 @@ function localizeMessageText(message: string, language: ErrorLanguage): string |
   if (message === 'Invalid URL') return ja ? 'URLの形式が正しくありません' : 'must be a valid URL';
   if (message === 'Invalid email address') return ja ? 'メールアドレスの形式が正しくありません' : 'must be a valid email address';
   if (message === 'Invalid date') return ja ? '日付の形式が正しくありません' : 'must be a valid date';
+
+  // api/schemas.ts の modelBaseUrlSchema（zod refine）。書き込み経路（PUT /model-settings /
+  // POST /model-catalog/openai-compatible-models）ではドメイン検証より先にここで落ちるため、
+  // 実際に UI へ届く baseUrl 不正はこの1文になる。`invalid body: main.baseUrl: <この文>` のように
+  // フィールドパス付きで届き、localizeSegment がパスを剥がした本文がここへ来る。
+  // en は zod 定型文と同じ体裁で原文のまま十分伝わるため変換しない（原文を保持）。
+  if (message === 'must be an http(s) URL without embedded credentials') {
+    return ja ? 'http(s) のURLを指定してください。URLに認証情報（user:password@）は埋め込めません' : undefined;
+  }
 
   if (/^Invalid input: expected \w+, received (?:undefined|null|nan)$/.test(message)) return required;
 

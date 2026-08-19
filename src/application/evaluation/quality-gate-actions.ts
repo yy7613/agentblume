@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
+import type { AgentId } from '../../domain/agent/ids';
 import type { EvaluationDatasetRepository, EvaluatorProfileRepository } from '../../domain/evaluation/evaluation-asset-repositories';
 import type { ExperimentRepository } from '../../domain/evaluation/experiment-repository';
 import { EvaluationDomainError, ExperimentNotFoundError, QualityGateConflictError, QualityGateNotFoundError } from '../../domain/evaluation/errors';
+import type { ExperimentId, GatePolicyId, GateReportId, PromotionRequestId } from '../../domain/evaluation/ids';
 import { compareExperiments, createGatePolicy, createPromotionRequest, decidePromotion, evaluateGate, type ExperimentComparison, type GatePolicy, type GateReport, type GateRule, type PromotionRequest } from '../../domain/evaluation/quality-gate';
 import type { GatePolicySummary, QualityGateRepository } from '../../domain/evaluation/quality-gate-repository';
 import type { TenantScope } from '../../domain/tool/ids';
@@ -10,7 +12,7 @@ import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 
 const nextVersion = (versions: readonly SemVer[], bump: 'major' | 'minor' | 'patch'): SemVer => versions.length === 0 ? SemVer.of(1, 0, 0) : versions.reduce((max, value) => value.compare(max) > 0 ? value : max).bump(bump);
-export interface SaveGatePolicyInput { readonly scope: TenantScope; readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner: string; readonly rules: readonly GateRule[]; readonly reportTtlHours?: number; readonly bump?: 'major' | 'minor' | 'patch'; readonly state?: PublishState }
+export interface SaveGatePolicyInput { readonly scope: TenantScope; readonly internalId: GatePolicyId; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner: string; readonly rules: readonly GateRule[]; readonly reportTtlHours?: number; readonly bump?: 'major' | 'minor' | 'patch'; readonly state?: PublishState }
 
 export class SaveGatePolicyUseCase {
   constructor(private readonly repo: QualityGateRepository) {}
@@ -23,18 +25,18 @@ export class SaveGatePolicyUseCase {
 export class QueryQualityGatesUseCase {
   constructor(private readonly repo: QualityGateRepository) {}
   listPolicies(scope: TenantScope): Promise<GatePolicySummary[]> { return this.repo.listPolicies(scope); }
-  policyVersions(scope: TenantScope, id: string): Promise<SemVer[]> { return this.repo.listPolicyVersions(scope, id); }
-  async getPolicy(scope: TenantScope, id: string, version?: SemVer): Promise<GatePolicy> { const value = version === undefined ? await this.repo.findLatestPolicy(scope, id) : await this.repo.findPolicyVersion(scope, id, version); if (value === null) throw new QualityGateNotFoundError(`Gate policy not found: ${id}${version === undefined ? '' : `@${version.toString()}`}`); return value; }
-  listReports(scope: TenantScope, candidateExperimentId?: string): Promise<GateReport[]> { return this.repo.listReports(scope, candidateExperimentId); }
-  async getReport(scope: TenantScope, id: string): Promise<GateReport> { const value = await this.repo.findReport(scope, id); if (value === null) throw new QualityGateNotFoundError(`Gate report not found: ${id}`); return value; }
-  listPromotions(scope: TenantScope, agentId?: string): Promise<PromotionRequest[]> { return this.repo.listPromotions(scope, agentId); }
-  async getPromotion(scope: TenantScope, id: string): Promise<PromotionRequest> { const value = await this.repo.findPromotion(scope, id); if (value === null) throw new QualityGateNotFoundError(`Promotion request not found: ${id}`); return value; }
+  policyVersions(scope: TenantScope, id: GatePolicyId): Promise<SemVer[]> { return this.repo.listPolicyVersions(scope, id); }
+  async getPolicy(scope: TenantScope, id: GatePolicyId, version?: SemVer): Promise<GatePolicy> { const value = version === undefined ? await this.repo.findLatestPolicy(scope, id) : await this.repo.findPolicyVersion(scope, id, version); if (value === null) throw new QualityGateNotFoundError(`Gate policy not found: ${id}${version === undefined ? '' : `@${version.toString()}`}`); return value; }
+  listReports(scope: TenantScope, candidateExperimentId?: ExperimentId): Promise<GateReport[]> { return this.repo.listReports(scope, candidateExperimentId); }
+  async getReport(scope: TenantScope, id: GateReportId): Promise<GateReport> { const value = await this.repo.findReport(scope, id); if (value === null) throw new QualityGateNotFoundError(`Gate report not found: ${id}`); return value; }
+  listPromotions(scope: TenantScope, agentId?: AgentId): Promise<PromotionRequest[]> { return this.repo.listPromotions(scope, agentId); }
+  async getPromotion(scope: TenantScope, id: PromotionRequestId): Promise<PromotionRequest> { const value = await this.repo.findPromotion(scope, id); if (value === null) throw new QualityGateNotFoundError(`Promotion request not found: ${id}`); return value; }
 }
 
 /** 保存済みGate policyの論理削除。repository.deletePolicy が false(未存在/削除済み)なら QualityGateNotFoundError。 */
 export class DeleteGatePolicyUseCase {
   constructor(private readonly repo: QualityGateRepository) {}
-  async execute(scope: TenantScope, internalId: string): Promise<void> {
+  async execute(scope: TenantScope, internalId: GatePolicyId): Promise<void> {
     const existed = await this.repo.deletePolicy(scope, internalId);
     if (!existed) throw new QualityGateNotFoundError(`DeleteGatePolicy: policy not found: ${internalId}`);
   }
@@ -42,14 +44,14 @@ export class DeleteGatePolicyUseCase {
 
 export class CompareExperimentsUseCase {
   constructor(private readonly experiments: ExperimentRepository) {}
-  async execute(scope: TenantScope, baselineExperimentId: string, candidateExperimentId: string): Promise<ExperimentComparison> {
+  async execute(scope: TenantScope, baselineExperimentId: ExperimentId, candidateExperimentId: ExperimentId): Promise<ExperimentComparison> {
     const baseline = await this.experiments.find(scope, baselineExperimentId); const candidate = await this.experiments.find(scope, candidateExperimentId);
     if (baseline === null) throw new ExperimentNotFoundError(`Experiment not found: ${baselineExperimentId}`); if (candidate === null) throw new ExperimentNotFoundError(`Experiment not found: ${candidateExperimentId}`);
     return compareExperiments(baseline, await this.experiments.listCaseResults(scope, baseline.id), candidate, await this.experiments.listCaseResults(scope, candidate.id));
   }
 }
 
-export interface EvaluateQualityGateInput { readonly scope: TenantScope; readonly policy: { readonly id: string; readonly version: SemVer }; readonly candidateExperimentId: string; readonly baselineExperimentId?: string }
+export interface EvaluateQualityGateInput { readonly scope: TenantScope; readonly policy: { readonly id: GatePolicyId; readonly version: SemVer }; readonly candidateExperimentId: ExperimentId; readonly baselineExperimentId?: ExperimentId }
 export class EvaluateQualityGateUseCase {
   constructor(private readonly gates: QualityGateRepository, private readonly experiments: ExperimentRepository, private readonly datasets: EvaluationDatasetRepository, private readonly makeId: () => string = randomUUID, private readonly now: () => Date = () => new Date(), private readonly profiles?: EvaluatorProfileRepository) {}
   async execute(input: EvaluateQualityGateInput): Promise<GateReport> {
@@ -66,12 +68,12 @@ export class EvaluateQualityGateUseCase {
   }
 }
 
-async function updateAgentState(agents: AgentRepository, scope: TenantScope, id: string, version: SemVer, state: PublishState): Promise<void> {
+async function updateAgentState(agents: AgentRepository, scope: TenantScope, id: AgentId, version: SemVer, state: PublishState): Promise<void> {
   if (agents.updateState === undefined) throw new EvaluationDomainError('Promotion requires an AgentRepository that supports lifecycle state updates');
   await agents.updateState(scope, id, version, state);
 }
 
-export interface RequestPromotionInput { readonly scope: TenantScope; readonly agentId: string; readonly version: SemVer; readonly gateReportId: string; readonly requestedBy: string }
+export interface RequestPromotionInput { readonly scope: TenantScope; readonly agentId: AgentId; readonly version: SemVer; readonly gateReportId: GateReportId; readonly requestedBy: string }
 export class RequestPromotionUseCase {
   constructor(private readonly gates: QualityGateRepository, private readonly experiments: ExperimentRepository, private readonly agents: AgentRepository, private readonly makeId: () => string = randomUUID, private readonly now: () => Date = () => new Date()) {}
   async execute(input: RequestPromotionInput): Promise<PromotionRequest> {
@@ -86,7 +88,7 @@ export class RequestPromotionUseCase {
   }
 }
 
-export interface DecidePromotionInput { readonly scope: TenantScope; readonly requestId: string; readonly decision: 'approved' | 'rejected'; readonly decidedBy: string; readonly reason?: string }
+export interface DecidePromotionInput { readonly scope: TenantScope; readonly requestId: PromotionRequestId; readonly decision: 'approved' | 'rejected'; readonly decidedBy: string; readonly reason?: string }
 export class DecidePromotionUseCase {
   constructor(private readonly gates: QualityGateRepository, private readonly agents: AgentRepository, private readonly now: () => Date = () => new Date()) {}
   async execute(input: DecidePromotionInput): Promise<PromotionRequest> {
@@ -99,7 +101,7 @@ export class DecidePromotionUseCase {
 
 export class QualityGateExitCodeUseCase {
   constructor(private readonly gates: QualityGateRepository, private readonly experiments: ExperimentRepository, private readonly now: () => Date = () => new Date()) {}
-  async execute(scope: TenantScope, experimentId: string): Promise<0 | 1 | 2> {
+  async execute(scope: TenantScope, experimentId: ExperimentId): Promise<0 | 1 | 2> {
     if ((await this.experiments.find(scope, experimentId)) === null) return 2;
     const report = (await this.gates.listReports(scope, experimentId))[0]; if (report === undefined || Date.parse(report.expiresAt) <= this.now().valueOf()) return 2;
     return report.status === 'pass' ? 0 : 1;

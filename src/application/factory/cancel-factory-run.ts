@@ -5,6 +5,7 @@
 import type { TenantScope } from '../../domain/tool/ids';
 import { appendFactoryEvent, cancelFactoryRun, type FactoryRun } from '../../domain/factory/factory-run';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
+import type { FactoryRunId } from '../../domain/factory/ids';
 import { FactoryNotFoundError } from '../../domain/factory/errors';
 import type { FactoryWorkerPort } from './factory-worker';
 
@@ -15,7 +16,7 @@ export class CancelFactoryRunUseCase {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async execute(scope: TenantScope, runId: string): Promise<FactoryRun> {
+  async execute(scope: TenantScope, runId: FactoryRunId): Promise<FactoryRun> {
     const stored = await this.runs.find(scope, runId);
     if (stored === null) throw new FactoryNotFoundError(`Factory run not found: ${runId}`);
     let cancelled = cancelFactoryRun(stored, this.now().toISOString());

@@ -1,20 +1,22 @@
 import type { AgentRepository } from '../../domain/agent/agent-repository';
+import type { AgentId } from '../../domain/agent/ids';
 import type { TenantScope } from '../../domain/tool/ids';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import { ValidationDomainError } from '../../domain/validation/errors';
+import type { PersonaId, ScenarioId } from '../../domain/validation/ids';
 import type { PersonaRepository } from '../../domain/validation/persona-repository';
 import { createScenario, type Scenario } from '../../domain/validation/scenario';
 import type { ScenarioRepository } from '../../domain/validation/scenario-repository';
 import type { SurveyQuestion } from '../../domain/validation/survey';
 
 export interface SaveScenarioInput {
-  readonly scope: TenantScope; readonly internalId: string; readonly workingName: string; readonly displayName: string;
+  readonly scope: TenantScope; readonly internalId: ScenarioId; readonly workingName: string; readonly displayName: string;
   readonly publishName: string; readonly owner: string;
-  readonly target: { readonly agentId: string; readonly version: SemVer };
+  readonly target: { readonly agentId: AgentId; readonly version: SemVer };
   /** persona と pseudoUser は排他かつどちらか必須（v18）。 */
-  readonly persona?: { readonly personaId: string; readonly version: SemVer };
-  readonly pseudoUser?: { readonly agentId: string; readonly version: SemVer };
+  readonly persona?: { readonly personaId: PersonaId; readonly version: SemVer };
+  readonly pseudoUser?: { readonly agentId: AgentId; readonly version: SemVer };
   readonly goal: string;
   readonly context?: string;
   readonly maxUserTurns: number;

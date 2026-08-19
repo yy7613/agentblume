@@ -7,13 +7,14 @@
 import type { TenantScope } from '../../domain/tool/ids';
 import { appendFactoryEvent, cancelFactoryRun, resumeFactoryRun, type FactoryRun } from '../../domain/factory/factory-run';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
+import type { FactoryRunId } from '../../domain/factory/ids';
 import { FactoryNotFoundError, FactoryValidationError } from '../../domain/factory/errors';
 import type { FactoryWorkerPort } from './factory-worker';
 import type { RunFactoryUseCase } from './run-factory';
 
 export interface ResumeFactoryRunInput {
   readonly scope: TenantScope;
-  readonly runId: string;
+  readonly runId: FactoryRunId;
   readonly decision: 'approve' | 'revise' | 'reject';
   readonly feedback?: string;
 }

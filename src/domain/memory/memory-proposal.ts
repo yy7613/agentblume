@@ -4,16 +4,19 @@
  * Run 相当の対話から抽出した「記憶への変更案」。target に承認時へ適用する
  * 全内容を内包し、承認時に追加推論を要さない。人手承認制のエスケープハッチ。
  */
+import { assertNonEmpty } from '../shared/assert';
+import type { SkillId } from '../skill/ids';
 import type { TenantScope } from '../tool/ids';
 import { MemoryDomainError } from './errors';
+import type { MemoryProposalId, WikiPageId, WikiSpaceId } from './ids';
 
 export type MemoryProposalState = 'draft' | 'approved' | 'rejected';
 
 export type MemoryProposalTarget =
   | {
       readonly kind: 'wiki';
-      readonly wikiId?: string;
-      readonly pageId: string;
+      readonly wikiId?: WikiSpaceId;
+      readonly pageId: WikiPageId;
       readonly isNewPage: boolean;
       readonly title: string;
       readonly tags: readonly string[];
@@ -21,12 +24,12 @@ export type MemoryProposalTarget =
     }
   | {
       readonly kind: 'skill';
-      readonly skillId: string;
+      readonly skillId: SkillId;
       readonly instructions: string;
     };
 
 export interface MemoryProposal {
-  readonly id: string;
+  readonly id: MemoryProposalId;
   readonly tenant: TenantScope;
   readonly target: MemoryProposalTarget;
   readonly summary: string;
@@ -36,9 +39,7 @@ export interface MemoryProposal {
 }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new MemoryDomainError(`MemoryProposal: ${field} must be a non-empty string`);
-  }
+  assertNonEmpty(value, `MemoryProposal: ${field}`, (m) => new MemoryDomainError(m));
 }
 
 function normalizeTags(tags: readonly string[]): readonly string[] {
@@ -67,7 +68,7 @@ function normalizeTarget(target: MemoryProposalTarget): MemoryProposalTarget {
 }
 
 export interface CreateMemoryProposalProps {
-  readonly id: string;
+  readonly id: MemoryProposalId;
   readonly tenant: TenantScope;
   readonly target: MemoryProposalTarget;
   readonly summary: string;

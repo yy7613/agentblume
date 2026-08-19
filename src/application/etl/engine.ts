@@ -17,6 +17,7 @@
  */
 import type { Schema, SchemaState, Table } from '../../domain/data/types';
 import { GraphError } from '../../domain/etl/errors';
+import type { NodeId } from '../../domain/etl/ids';
 import type { EtlNode, SchemaIssue } from '../../domain/etl/node';
 import type { NodeRegistry } from '../../domain/etl/registry';
 import { combineStates } from '../../domain/etl/state';
@@ -25,7 +26,7 @@ import type { GraphNode, ToolGraph } from '../../domain/etl/graph';
 
 /** 1ノードのスキーマ推論結果（上流合成後の最終 state を含む）。 */
 export interface NodeInference {
-  readonly nodeId: string;
+  readonly nodeId: NodeId;
   readonly schema: Schema;
   /** 上流 final state 群 + 当ノード局所 state を合成した最終 state。 */
   readonly state: SchemaState;
@@ -35,7 +36,7 @@ export interface NodeInference {
 /** スキーマ伝播の全体結果。 */
 export interface PropagationResult {
   /** トポロジカル順のノードid列。 */
-  readonly order: string[];
+  readonly order: NodeId[];
   /** nodeId → 推論結果。 */
   readonly nodes: Record<string, NodeInference>;
   /** いずれかのノードに severity:'error' の issue があれば true。 */
@@ -50,7 +51,7 @@ export interface PreviewOptions {
 
 /** 1ノードのプレビュー結果。 */
 export interface NodePreview {
-  readonly nodeId: string;
+  readonly nodeId: NodeId;
   /** 行数上限を適用した後のテーブル。 */
   readonly table: Table;
   /** 上限超過で行を切り捨てたら true。 */
@@ -59,6 +60,11 @@ export interface NodePreview {
 
 /** プレビュー実行の全体結果。 */
 export interface PreviewResult {
+  /**
+   * 終端ノードのid。実体は NodeId だが、run BC が同じ値を独自の TerminalId
+   * （domain/run/ids.ts）として保持しており、異種ブランド衝突を避けるため
+   * ここでは素の string のままにする（M1 の残課題として報告済み）。
+   */
   readonly terminalId: string;
   /** 終端ノードの（上限適用後）テーブル。 */
   readonly output: Table;
@@ -81,11 +87,11 @@ const EMPTY_SCHEMA: Schema = { columns: [] };
  * - `terminalId`: 出次数0の唯一ノード。
  */
 interface ValidatedGraph {
-  readonly order: string[];
-  readonly nodeById: Map<string, GraphNode>;
-  readonly nodeOf: Map<string, EtlNode>;
-  readonly inputsOf: Map<string, string[]>;
-  readonly terminalId: string;
+  readonly order: NodeId[];
+  readonly nodeById: Map<NodeId, GraphNode>;
+  readonly nodeOf: Map<NodeId, EtlNode>;
+  readonly inputsOf: Map<NodeId, NodeId[]>;
+  readonly terminalId: NodeId;
 }
 
 export class EtlEngine {

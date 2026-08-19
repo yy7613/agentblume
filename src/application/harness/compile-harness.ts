@@ -1,10 +1,11 @@
 import type { AgentHarness } from '../../domain/harness/agent-harness';
+import type { HarnessId, SlotId } from '../../domain/harness/ids';
 import type { SideEffect } from '../../domain/tool/metadata';
 
-export interface ExecutableHarnessNode { readonly id: string; readonly kind: 'input' | 'participant' | 'output'; readonly slotId?: string; }
+export interface ExecutableHarnessNode { readonly id: string; readonly kind: 'input' | 'participant' | 'output'; readonly slotId?: SlotId; }
 export interface ExecutableHarnessEdge { readonly from: string; readonly to: string; readonly label?: string; }
 export interface ExecutableHarness {
-  readonly harnessRef: { readonly internalId: string; readonly version: string };
+  readonly harnessRef: { readonly internalId: HarnessId; readonly version: string };
   readonly pattern: AgentHarness['pattern'];
   readonly nodes: readonly ExecutableHarnessNode[];
   readonly edges: readonly ExecutableHarnessEdge[];
@@ -21,7 +22,7 @@ export class CompileHarnessUseCase {
     return { harnessRef: { internalId: harness.metadata.internalId, version: harness.metadata.version.toString() }, pattern: harness.pattern, nodes, edges, entryNodeId: 'input', outputNodeId: 'output', effectiveSideEffect: 'read-only' };
   }
   private edges(harness: AgentHarness): ExecutableHarnessEdge[] {
-    const slot = (id: string) => `slot:${id}`;
+    const slot = (id: SlotId) => `slot:${id}`;
     const topology = harness.topology;
     switch (topology.pattern) {
       case 'sequential': return [{ from: 'input', to: slot(topology.orderedSlotIds[0]!) }, ...topology.orderedSlotIds.slice(1).map((id, index) => ({ from: slot(topology.orderedSlotIds[index]!), to: slot(id) })), { from: slot(topology.orderedSlotIds.at(-1)!), to: 'output' }];

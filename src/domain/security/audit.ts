@@ -18,6 +18,7 @@
  */
 import { z } from 'zod';
 import { AUTHORIZATION_ACTIONS, AUTHORIZATION_RESOURCE_KINDS, type AuthorizationAction, type AuthorizationResourceKind } from './authorization';
+import type { TenantId, WorkspaceId } from '../shared/tenant-scope';
 import type { TenantScope } from '../tool/ids';
 
 /**
@@ -47,8 +48,8 @@ export interface AuditEntry {
   readonly at: string;
   /** 誰が（`Principal.subject`）。認証前の失敗は `UNAUTHENTICATED_SUBJECT`。 */
   readonly subject: string;
-  readonly tenantId: string;
-  readonly workspaceId: string;
+  readonly tenantId: TenantId;
+  readonly workspaceId: WorkspaceId;
   /** 何をしようとしたか。 */
   readonly action: AuthorizationAction;
   /** 何に対して。 */

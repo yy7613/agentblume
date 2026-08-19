@@ -1,13 +1,17 @@
+import { assertNonEmpty } from '../shared/assert';
+import type { AgentId } from '../agent/ids';
+import type { WikiSpaceId } from '../memory/ids';
 import type { TenantScope } from '../tool/ids';
 import { isPublishState, type PublishState } from '../tool/metadata';
 import { SemVer } from '../tool/semver';
 import { HarnessValidationError } from './errors';
+import type { HarnessId, SlotId } from './ids';
 
 export const HARNESS_PATTERNS = ['agent-as-tools', 'sequential', 'concurrent', 'handoff', 'group-chat', 'magentic'] as const;
 export type HarnessPattern = (typeof HARNESS_PATTERNS)[number];
 
 export interface HarnessMetadata {
-  readonly internalId: string;
+  readonly internalId: HarnessId;
   readonly workingName: string;
   readonly displayName: string;
   readonly publishName: string;
@@ -17,28 +21,28 @@ export interface HarnessMetadata {
   readonly tenant: TenantScope;
 }
 
-export interface HarnessAgentRef { readonly internalId: string; readonly version: SemVer; }
+export interface HarnessAgentRef { readonly internalId: AgentId; readonly version: SemVer; }
 export interface AgentSlot {
-  readonly id: string;
+  readonly id: SlotId;
   readonly label: string;
   readonly purpose: string;
   readonly assignment: HarnessAgentRef;
 }
 
 export type HarnessTopology =
-  | { readonly pattern: 'agent-as-tools'; readonly coordinatorSlotId: string; readonly participantSlotIds: readonly string[] }
-  | { readonly pattern: 'sequential'; readonly orderedSlotIds: readonly string[]; readonly contextMode: 'full-conversation' | 'previous-response' }
-  | { readonly pattern: 'concurrent'; readonly participantSlotIds: readonly string[]; readonly aggregation: 'collect' | 'vote' | 'agent'; readonly aggregatorSlotId?: string }
-  | { readonly pattern: 'handoff'; readonly startSlotId: string; readonly transitions: readonly HandoffTransition[]; readonly autonomous: boolean }
-  | { readonly pattern: 'group-chat'; readonly participantSlotIds: readonly string[]; readonly selector: 'round-robin' | 'fixed-order' | 'agent'; readonly managerSlotId?: string; readonly maxRounds: number }
-  | { readonly pattern: 'magentic'; readonly managerSlotId: string; readonly participantSlotIds: readonly string[]; readonly maxRounds: number; readonly maxStalls: number; readonly maxResets: number; readonly requirePlanSignoff: boolean };
+  | { readonly pattern: 'agent-as-tools'; readonly coordinatorSlotId: SlotId; readonly participantSlotIds: readonly SlotId[] }
+  | { readonly pattern: 'sequential'; readonly orderedSlotIds: readonly SlotId[]; readonly contextMode: 'full-conversation' | 'previous-response' }
+  | { readonly pattern: 'concurrent'; readonly participantSlotIds: readonly SlotId[]; readonly aggregation: 'collect' | 'vote' | 'agent'; readonly aggregatorSlotId?: SlotId }
+  | { readonly pattern: 'handoff'; readonly startSlotId: SlotId; readonly transitions: readonly HandoffTransition[]; readonly autonomous: boolean }
+  | { readonly pattern: 'group-chat'; readonly participantSlotIds: readonly SlotId[]; readonly selector: 'round-robin' | 'fixed-order' | 'agent'; readonly managerSlotId?: SlotId; readonly maxRounds: number }
+  | { readonly pattern: 'magentic'; readonly managerSlotId: SlotId; readonly participantSlotIds: readonly SlotId[]; readonly maxRounds: number; readonly maxStalls: number; readonly maxResets: number; readonly requirePlanSignoff: boolean };
 
-export interface HandoffTransition { readonly fromSlotId: string; readonly toSlotId: string; readonly condition: string; }
+export interface HandoffTransition { readonly fromSlotId: SlotId; readonly toSlotId: SlotId; readonly condition: string; }
 export interface HarnessPolicies {
   readonly budget: { readonly maxDurationMs: number; readonly maxParticipantRuns: number; readonly maxModelRounds: number; readonly maxToolCalls: number; readonly maxParallelism: number };
   readonly context: 'task-only' | 'previous-response' | 'full-conversation';
   readonly planning: { readonly enabled: boolean; readonly requireApproval: boolean };
-  readonly memory: { readonly wikiIds: readonly string[]; readonly sessionWorkspace: boolean };
+  readonly memory: { readonly wikiIds: readonly WikiSpaceId[]; readonly sessionWorkspace: boolean };
   readonly approvals: { readonly mode: 'inherit-agent' | 'always' | 'disabled-in-preview' };
   readonly failure: { readonly mode: 'fail-fast' | 'collect' | 'continue-with-error' };
 }
@@ -69,14 +73,14 @@ export const DEFAULT_HARNESS_POLICIES: HarnessPolicies = {
 };
 
 function text(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim().length === 0) throw new HarnessValidationError(`createAgentHarness: ${field} must be a non-empty string`);
+  assertNonEmpty(value, `createAgentHarness: ${field}`, (m) => new HarnessValidationError(m));
 }
 function limit(value: number, field: string, min: number, max: number): void {
   if (!Number.isInteger(value) || value < min || value > max) throw new HarnessValidationError(`createAgentHarness: ${field} must be an integer from ${min} to ${max}`);
 }
-function idsExist(slotIds: readonly string[], slots: ReadonlyMap<string, AgentSlot>, field: string, min: number): void {
+function idsExist(slotIds: readonly SlotId[], slots: ReadonlyMap<SlotId, AgentSlot>, field: string, min: number): void {
   if (slotIds.length < min) throw new HarnessValidationError(`createAgentHarness: ${field} must contain at least ${min} slot(s)`);
-  const seen = new Set<string>();
+  const seen = new Set<SlotId>();
   for (const id of slotIds) {
     text(id, field);
     if (!slots.has(id)) throw new HarnessValidationError(`createAgentHarness: ${field} references unknown slot: ${id}`);
@@ -84,12 +88,12 @@ function idsExist(slotIds: readonly string[], slots: ReadonlyMap<string, AgentSl
     seen.add(id);
   }
 }
-function slot(slots: ReadonlyMap<string, AgentSlot>, id: string, field: string): void {
+function slot(slots: ReadonlyMap<SlotId, AgentSlot>, id: SlotId, field: string): void {
   text(id, field);
   if (!slots.has(id)) throw new HarnessValidationError(`createAgentHarness: ${field} references unknown slot: ${id}`);
 }
 
-function validateTopology(topology: HarnessTopology, slots: ReadonlyMap<string, AgentSlot>): void {
+function validateTopology(topology: HarnessTopology, slots: ReadonlyMap<SlotId, AgentSlot>): void {
   switch (topology.pattern) {
     case 'agent-as-tools':
       slot(slots, topology.coordinatorSlotId, 'topology.coordinatorSlotId');
@@ -122,7 +126,7 @@ function validateTopology(topology: HarnessTopology, slots: ReadonlyMap<string, 
       // 到達不能スロットを許容しない: 全スロットは startSlotId から遷移表を辿って到達できること。
       // 到達不能スロットは実行時に決して呼ばれない一方、compileでは output への辺が張られて
       // 出力に関与するように見えるため、設定ミスとして作成時に拒否する。
-      const reachable = new Set<string>([topology.startSlotId]);
+      const reachable = new Set<SlotId>([topology.startSlotId]);
       for (let grew = true; grew;) {
         grew = false;
         for (const transition of topology.transitions) {
@@ -183,7 +187,7 @@ export function createAgentHarness(props: CreateAgentHarnessProps): AgentHarness
   if (!isPublishState(metadata.state)) throw new HarnessValidationError(`createAgentHarness: invalid state: ${String(metadata.state)}`);
   if (!(HARNESS_PATTERNS as readonly unknown[]).includes(props.pattern)) throw new HarnessValidationError(`createAgentHarness: invalid pattern: ${String(props.pattern)}`);
   if (props.topology === null || props.topology.pattern !== props.pattern) throw new HarnessValidationError('createAgentHarness: topology pattern must match pattern');
-  const slotMap = new Map<string, AgentSlot>();
+  const slotMap = new Map<SlotId, AgentSlot>();
   const slots = props.slots.map((item, index) => {
     text(item.id, `slots.${index}.id`); text(item.label, `slots.${index}.label`); text(item.purpose, `slots.${index}.purpose`); text(item.assignment?.internalId, `slots.${index}.assignment.internalId`);
     if (!(item.assignment?.version instanceof SemVer)) throw new HarnessValidationError(`createAgentHarness: slots.${index}.assignment.version must be a SemVer instance`);

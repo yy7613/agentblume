@@ -3,6 +3,7 @@
  *
  * Tool/Skill/Agent と同じ共通メタ形。検証は skill と同じ流儀（非空・SemVerインスタンス・state）。
  */
+import { assertNonEmpty } from '../shared/assert';
 import type { TenantScope } from '../tool/ids';
 import { isPublishState, type PublishState } from '../tool/metadata';
 import { SemVer } from '../tool/semver';
@@ -21,9 +22,7 @@ export interface ValidationMetadata {
 
 /** 非空文字列を検証する（違反 → ValidationDomainError）。 */
 export function nonEmpty(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new ValidationDomainError(`${field} must be a non-empty string`);
-  }
+  assertNonEmpty(value, field, (m) => new ValidationDomainError(m));
 }
 
 /** 共通メタデータの不変条件を検証し、防御的コピーを返す。 */

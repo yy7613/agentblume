@@ -15,6 +15,7 @@
  */
 import type { AuthorizationRole } from './authorization';
 import { AUTHORIZATION_ROLES } from './authorization';
+import type { TenantId, WorkspaceId } from '../shared/tenant-scope';
 import type { TenantScope } from '../tool/ids';
 
 /** 認証済みの主体。api層は必ずこれ経由で `TenantScope` を得る。 */
@@ -22,9 +23,9 @@ export interface Principal {
   /** 主体の識別子（トークンの持ち主・IdPのsub）。監査で「誰が」に使う。 */
   readonly subject: string;
   /** この主体が属するテナント。 */
-  readonly tenantId: string;
+  readonly tenantId: TenantId;
   /** この主体が属するワークスペース。 */
-  readonly workspaceId: string;
+  readonly workspaceId: WorkspaceId;
   /** 画面表示用の名前（無ければ subject を出す）。 */
   readonly displayName?: string;
   /**

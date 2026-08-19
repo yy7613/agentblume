@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_RUNTIME_HARNESS, type Agent, type AgentRuntimeHarness, type AgentSubAgentRef } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
+import type { AgentId } from '../../domain/agent/ids';
 import { AgentNotFoundError } from '../../domain/agent/errors';
 import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
 import type { Cell, Row, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { isFilterOp, operatorArgumentSummaries, VALUELESS_OPS, type OperatorArgumentSummary } from '../../domain/etl/nodes/filter';
+import type { RunId } from '../../domain/run/ids';
 import type { RunApprovalCheckpoint, RunCheckpointMessage, RunCheckpointToolCall, RunLatencyBreakdown, RunMode, RunModelSnapshot, RunPurpose, RunRecord, RunStatus, RunTraceEvent, RunUsage } from '../../domain/run/run';
 import { failRun, resumeRunRecord, startRun, succeedRun, waitRunForApproval } from '../../domain/run/run';
 import { RunNotFoundError } from '../../domain/run/errors';
@@ -31,6 +33,7 @@ import type { PricingPort } from '../operations/pricing';
 import type { OperationsRepository } from '../../domain/operations/operations-repository';
 import { estimateRunCost, recordRunMetricSafely } from '../operations/run-observability';
 import { logSwallowed, type LoggerPort } from '../operations/logger';
+import type { WikiPageId } from '../../domain/memory/ids';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';
 import { effectiveWikiId, type WikiPage } from '../../domain/memory/wiki-page';
 import { createAgentSession, expireAgentSession, type AgentSession } from '../../domain/session/agent-session';
@@ -74,7 +77,7 @@ export interface AgentHistoryMessage {
 
 export interface RunSavedAgentPreviewInput {
   readonly scope: TenantScope;
-  readonly agentId: string;
+  readonly agentId: AgentId;
   readonly version?: SemVer;
   readonly message: string;
   readonly mode: AgentRunMode;
@@ -89,7 +92,7 @@ export interface RunSavedAgentPreviewInput {
   /** 手動アタッチした長期記憶（Wiki）の要約。指定時のみ system prompt 先頭へ最小注入する（v21 M1）。 */
   readonly memoryContext?: string;
   /** API互換の手動ページ指定。Wiki allowlist設定Agentではallowlist内だけ許可する。 */
-  readonly memoryPageIds?: readonly string[];
+  readonly memoryPageIds?: readonly WikiPageId[];
   /**
    * 対話相手（人間）がいる実行かどうか。POST /runs だけが true を渡す。
    * Harness・Factory・シナリオ検証などの自動実行は未指定（false）のままにして、
@@ -101,7 +104,7 @@ export interface RunSavedAgentPreviewInput {
 /** 単一エージェントRunの承認待ちを解決して再開する入力。 */
 export interface ResumeSavedRunInput {
   readonly scope: TenantScope;
-  readonly runId: string;
+  readonly runId: RunId;
   readonly decision: 'approve' | 'reject';
   readonly feedback?: string;
   /**
@@ -131,7 +134,7 @@ export interface AgentRunApprovalPrompt {
 }
 
 export interface AgentPreviewRun {
-  readonly runId: string;
+  readonly runId: RunId;
   readonly sessionId?: string;
   readonly mode: AgentRunMode;
   readonly agent?: RunRecord['agent'];
@@ -205,7 +208,7 @@ function makeBudget(partial?: Partial<RunBudget>): RunBudget {
 
 /** 1ノード（1エージェント実行）の委譲コンテキスト。budget はツリーで共有する同一参照。 */
 interface NodeContext {
-  readonly runId: string;
+  readonly runId: RunId;
   readonly scope: TenantScope;
   readonly mode: AgentRunMode;
   readonly budget: RunBudget;
@@ -1287,7 +1290,7 @@ export class RunAgentPreviewUseCase {
     return { ...session, lastAccessedAt: now.toISOString() };
   }
 
-  private async buildWikiContext(scope: TenantScope, agent: Agent, query: string, manualPageIds?: readonly string[]): Promise<string | undefined> {
+  private async buildWikiContext(scope: TenantScope, agent: Agent, query: string, manualPageIds?: readonly WikiPageId[]): Promise<string | undefined> {
     const wiki = this.wiki;
     if (wiki === undefined) return undefined;
     const allowed = new Set((agent.wikis ?? []).map((ref) => ref.wikiId));
@@ -1334,7 +1337,7 @@ export class RunAgentPreviewUseCase {
     return tool;
   }
 
-  private async loadAgent(scope: TenantScope, agentId: string, version?: SemVer): Promise<Agent> {
+  private async loadAgent(scope: TenantScope, agentId: AgentId, version?: SemVer): Promise<Agent> {
     if (this.agents === undefined) throw new AgentRunError('saved Agent execution is not configured');
     const agent = version === undefined ? await this.agents.findLatest(scope, agentId) : await this.agents.findVersion(scope, agentId, version);
     if (agent === null) throw new AgentNotFoundError(`RunAgentPreview: agent not found: ${agentId}${version === undefined ? '' : `@${version.toString()}`}`);

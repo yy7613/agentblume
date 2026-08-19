@@ -3,13 +3,14 @@ import { FeedbackValidationError } from '../../domain/operations/errors';
 import type { FeedbackThumb, RunFeedback } from '../../domain/operations/operations';
 import type { OperationsRepository } from '../../domain/operations/operations-repository';
 import { RunNotFoundError } from '../../domain/run/errors';
+import type { RunId } from '../../domain/run/ids';
 import type { RunRepository } from '../../domain/run/run-repository';
 import type { TenantScope } from '../../domain/tool/ids';
 import { logSwallowed, type LoggerPort } from './logger';
 
 export interface SubmitRunFeedbackInput {
   readonly scope: TenantScope;
-  readonly runId: string;
+  readonly runId: RunId;
   readonly thumb: FeedbackThumb;
   readonly rating?: number;
   readonly comment?: string;
@@ -45,6 +46,6 @@ export class SubmitRunFeedbackUseCase {
 
 export class QueryRunFeedbackUseCase {
   constructor(private readonly operations: OperationsRepository) {}
-  async get(scope: TenantScope, runId: string): Promise<RunFeedback | null> { return this.operations.findFeedback(scope, runId); }
+  async get(scope: TenantScope, runId: RunId): Promise<RunFeedback | null> { return this.operations.findFeedback(scope, runId); }
 }
 

@@ -3,8 +3,10 @@
  *
  * 再現性のため対象Agent・Persona は SemVer 固定で参照する。
  */
+import type { AgentId } from '../agent/ids';
 import { SemVer } from '../tool/semver';
 import { ValidationDomainError } from './errors';
+import type { PersonaId } from './ids';
 import { nonEmpty, validateMetadata, type ValidationMetadata } from './metadata';
 import { normalizeSurveyQuestions, type SurveyQuestion } from './survey';
 
@@ -13,17 +15,17 @@ export const MAX_USER_TURNS_LIMIT = 8;
 export type ScenarioMetadata = ValidationMetadata;
 
 export interface ScenarioTargetRef {
-  readonly agentId: string;
+  readonly agentId: AgentId;
   readonly version: SemVer;
 }
 
 export interface ScenarioPersonaRef {
-  readonly personaId: string;
+  readonly personaId: PersonaId;
   readonly version: SemVer;
 }
 
 export interface ScenarioPseudoUserRef {
-  readonly agentId: string;
+  readonly agentId: AgentId;
   readonly version: SemVer;
 }
 

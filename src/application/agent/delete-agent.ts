@@ -1,5 +1,6 @@
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import { AgentNotFoundError } from '../../domain/agent/errors';
+import type { AgentId } from '../../domain/agent/ids';
 import type { TenantScope } from '../../domain/tool/ids';
 
 /**
@@ -8,7 +9,7 @@ import type { TenantScope } from '../../domain/tool/ids';
  */
 export class DeleteAgentUseCase {
   constructor(private readonly repo: AgentRepository) {}
-  async execute(scope: TenantScope, internalId: string): Promise<void> {
+  async execute(scope: TenantScope, internalId: AgentId): Promise<void> {
     const existed = await this.repo.delete(scope, internalId);
     if (!existed) throw new AgentNotFoundError(`Agent not found: ${internalId}`);
   }

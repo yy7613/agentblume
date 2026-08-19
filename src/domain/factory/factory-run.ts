@@ -5,8 +5,12 @@
  * イベントは append-only の `FactoryEvent`（sequence付き）としてRunレコードへ埋め込む。
  * checkpointはRun record内へ埋め込み、TTL 24時間・型付き応答のみ受け付ける（Harness checkpointと同じ規則）。
  */
+import type { AgentId } from '../agent/ids';
+import type { DataSourceId } from '../data-source/ids';
 import type { TenantScope } from '../tool/ids';
+import type { ScenarioRunId } from '../validation/ids';
 import type { FactoryPlan } from './factory-plan';
+import type { FactoryRunId } from './ids';
 import type { AppliedProposal, Finding, ImprovementProposal, RejectedProposal } from './improvement-proposal';
 import type { VersionRef } from './refs';
 
@@ -105,7 +109,7 @@ export interface IterationMetrics {
 export interface FactoryIteration {
   readonly index: number;
   readonly agentVersion: string;
-  readonly scenarioRunIds: readonly string[];
+  readonly scenarioRunIds: readonly ScenarioRunId[];
   readonly metrics: IterationMetrics;
   readonly analysis?: { readonly findings: readonly Finding[]; readonly applied: readonly AppliedProposal[]; readonly rejected: readonly RejectedProposal[] };
 }
@@ -121,7 +125,7 @@ export interface FactoryArtifacts {
 
 export interface FactoryReport {
   readonly bestIteration: number;
-  readonly candidate: { readonly agentId: string; readonly version: string };
+  readonly candidate: { readonly agentId: AgentId; readonly version: string };
   readonly summary: string;
   readonly openFindings: readonly Finding[];
   readonly metricsByIteration: readonly IterationMetrics[];
@@ -142,17 +146,17 @@ export interface FactoryPlanCheckpoint {
  * patch新版を作る。未指定なら従来どおりの生成モード。
  */
 export interface FactoryBaseAgentRef {
-  readonly internalId: string;
+  readonly internalId: AgentId;
   /** 省略時は最新版を起点にする。指定するとその版を起点にする（過去版からの分岐）。 */
   readonly version?: string;
 }
 
 export interface FactoryRun {
-  readonly id: string;
+  readonly id: FactoryRunId;
   readonly scope: TenantScope;
   readonly input: {
     readonly goal: FactoryGoalInput;
-    readonly dataSourceIds: readonly string[];
+    readonly dataSourceIds: readonly DataSourceId[];
     readonly options: FactoryOptions;
     /** 強化対象の既存Agent。未指定は0→1生成モード。 */
     readonly baseAgent?: FactoryBaseAgentRef;

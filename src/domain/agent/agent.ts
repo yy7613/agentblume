@@ -1,14 +1,19 @@
+import type { WikiSpaceId } from '../memory/ids';
+import { assertNonEmpty } from '../shared/assert';
+import type { SkillId } from '../skill/ids';
 import type { ToolId, TenantScope } from '../tool/ids';
 import { isPublishState, type PublishState } from '../tool/metadata';
 import { SemVer } from '../tool/semver';
+import type { PersonaId } from '../validation/ids';
 import { AgentValidationError } from './errors';
+import type { AgentId } from './ids';
 import { createStructuredOutput, type StructuredOutputDefinition } from './structured-output';
 
 export const AGENT_KINDS = ['normal', 'pseudo-user', 'evaluator'] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
 export interface AgentMetadata {
-  readonly internalId: string;
+  readonly internalId: AgentId;
   readonly workingName: string;
   readonly displayName: string;
   readonly publishName: string;
@@ -24,23 +29,23 @@ export interface AgentToolRef {
 }
 
 export interface AgentSkillRef {
-  readonly internalId: string;
+  readonly internalId: SkillId;
   readonly version: SemVer;
 }
 
 export interface AgentSubAgentRef {
-  readonly internalId: string;
+  readonly internalId: AgentId;
   readonly version: SemVer;
   /** 委譲基準（非空）。LLMへ提示するサブエージェント委譲ツールの説明文になる。 */
   readonly usage: string;
 }
 
 export interface AgentPersonaRef {
-  readonly personaId: string;
+  readonly personaId: PersonaId;
   readonly version: SemVer;
 }
 
-export interface AgentWikiRef { readonly wikiId: string }
+export interface AgentWikiRef { readonly wikiId: WikiSpaceId }
 
 /**
  * 単一Agent実行のランタイムハーネス設定（Agent単位のopt-in）。
@@ -158,9 +163,7 @@ export function subAgentToolName(publishName: string): string {
 }
 
 function nonEmpty(value: unknown, field: string): asserts value is string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new AgentValidationError(`createAgent: ${field} must be a non-empty string`);
-  }
+  assertNonEmpty(value, `createAgent: ${field}`, (m) => new AgentValidationError(m));
 }
 
 export function createAgent(props: CreateAgentProps): Agent {
