@@ -10,25 +10,22 @@
 import { z } from 'zod';
 import type { DataType, Schema } from '../data/types';
 import type { ToolGraph } from '../etl/graph';
+import {
+  deserializePublishableMetadata,
+  serializedPublishableMetadataSchema,
+  serializePublishableMetadata,
+} from '../shared/publishable';
+import type { SerializedPublishableMetadata } from '../shared/publishable';
 import { ToolValidationError } from './errors';
-import { PUBLISH_STATES, SIDE_EFFECTS } from './metadata';
-import type { PublishState, SideEffect } from './metadata';
+import { SIDE_EFFECTS } from './metadata';
+import type { SideEffect } from './metadata';
 import { SemVer } from './semver';
 import { createTool } from './tool';
 import type { AgentToolContract, Tool } from './tool';
 
 /** 永続化用の素データ表現。 */
 export interface SerializedTool {
-  metadata: {
-    internalId: string;
-    workingName: string;
-    displayName: string;
-    publishName: string;
-    version: string;
-    owner: string;
-    state: PublishState;
-    tenant: { tenantId: string; workspaceId: string };
-  };
+  metadata: SerializedPublishableMetadata;
   sideEffect: SideEffect;
   graph: ToolGraph; // config: unknown は JSON そのまま
   inputSchema?: Schema;
@@ -75,19 +72,7 @@ const graphSchema = z.object({
 });
 
 const serializedToolSchema = z.object({
-  metadata: z.object({
-    internalId: z.string(),
-    workingName: z.string(),
-    displayName: z.string(),
-    publishName: z.string(),
-    version: z.string(),
-    owner: z.string(),
-    state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]),
-    tenant: z.object({
-      tenantId: z.string(),
-      workspaceId: z.string(),
-    }),
-  }),
+  metadata: serializedPublishableMetadataSchema,
   sideEffect: z.enum(SIDE_EFFECTS as [SideEffect, ...SideEffect[]]),
   graph: graphSchema,
   inputSchema: schemaSchema.optional(),
@@ -97,21 +82,8 @@ const serializedToolSchema = z.object({
 
 /** Tool を JSON.stringify 可能な素のオブジェクトへ直列化する。 */
 export function serializeTool(tool: Tool): SerializedTool {
-  const { metadata } = tool;
   const data: SerializedTool = {
-    metadata: {
-      internalId: metadata.internalId,
-      workingName: metadata.workingName,
-      displayName: metadata.displayName,
-      publishName: metadata.publishName,
-      version: metadata.version.toString(),
-      owner: metadata.owner,
-      state: metadata.state,
-      tenant: {
-        tenantId: metadata.tenant.tenantId,
-        workspaceId: metadata.tenant.workspaceId,
-      },
-    },
+    metadata: serializePublishableMetadata(tool.metadata),
     sideEffect: tool.sideEffect,
     graph: {
       nodes: tool.graph.nodes.map((n) =>
@@ -146,23 +118,9 @@ export function deserializeTool(data: unknown): Tool {
   }
   const value = parsed.data;
 
-  // SemVer.parse は不正時に ToolValidationError を投げる。
-  const version = SemVer.parse(value.metadata.version);
-
   return createTool({
-    metadata: {
-      internalId: value.metadata.internalId,
-      workingName: value.metadata.workingName,
-      displayName: value.metadata.displayName,
-      publishName: value.metadata.publishName,
-      version,
-      owner: value.metadata.owner,
-      state: value.metadata.state,
-      tenant: {
-        tenantId: value.metadata.tenant.tenantId,
-        workspaceId: value.metadata.tenant.workspaceId,
-      },
-    },
+    // SemVer.parse は不正時に ToolValidationError を投げる。
+    metadata: deserializePublishableMetadata(value.metadata, (text) => SemVer.parse(text)),
     sideEffect: value.sideEffect,
     graph: value.graph,
     ...(value.inputSchema !== undefined ? { inputSchema: value.inputSchema } : {}),

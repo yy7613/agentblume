@@ -1,21 +1,17 @@
 import { z } from 'zod';
-import { PUBLISH_STATES, type PublishState } from '../tool/metadata';
+import {
+  deserializePublishableMetadata,
+  serializedPublishableMetadataSchema,
+  serializePublishableMetadata,
+} from '../shared/publishable';
+import type { SerializedPublishableMetadata } from '../shared/publishable';
 import { SemVer } from '../tool/semver';
 import { AGENT_KINDS, createAgent, type Agent, type AgentKind, type AgentRuntimeHarness } from './agent';
 import { AgentValidationError } from './errors';
 import { STRUCTURED_OUTPUT_TYPES, type StructuredOutputDefinition } from './structured-output';
 
 export interface SerializedAgent {
-  readonly metadata: {
-    readonly internalId: string;
-    readonly workingName: string;
-    readonly displayName: string;
-    readonly publishName: string;
-    readonly version: string;
-    readonly owner: string;
-    readonly state: PublishState;
-    readonly tenant: { readonly tenantId: string; readonly workspaceId: string };
-  };
+  readonly metadata: SerializedPublishableMetadata;
   readonly kind: AgentKind;
   readonly systemPrompt: string;
   readonly skills: readonly { readonly internalId: string; readonly version: string }[];
@@ -29,12 +25,7 @@ export interface SerializedAgent {
 }
 
 const schema = z.object({
-  metadata: z.object({
-    internalId: z.string(), workingName: z.string(), displayName: z.string(), publishName: z.string(),
-    version: z.string(), owner: z.string(),
-    state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]),
-    tenant: z.object({ tenantId: z.string(), workspaceId: z.string() }),
-  }),
+  metadata: serializedPublishableMetadataSchema,
   kind: z.enum(AGENT_KINDS),
   systemPrompt: z.string(),
   skills: z.array(z.object({ internalId: z.string(), version: z.string() })).default([]),
@@ -64,11 +55,7 @@ const schema = z.object({
 
 export function serializeAgent(agent: Agent): SerializedAgent {
   return {
-    metadata: {
-      ...agent.metadata,
-      version: agent.metadata.version.toString(),
-      tenant: { ...agent.metadata.tenant },
-    },
+    metadata: serializePublishableMetadata(agent.metadata),
     kind: agent.kind,
     systemPrompt: agent.systemPrompt,
     skills: agent.skills.map((skill) => ({ internalId: skill.internalId, version: skill.version.toString() })),
@@ -90,11 +77,7 @@ export function deserializeAgent(value: unknown): Agent {
   }
   const agent = parsed.data;
   return createAgent({
-    metadata: {
-      ...agent.metadata,
-      version: SemVer.parse(agent.metadata.version),
-      tenant: { ...agent.metadata.tenant },
-    },
+    metadata: deserializePublishableMetadata(agent.metadata, (text) => SemVer.parse(text)),
     kind: agent.kind,
     systemPrompt: agent.systemPrompt,
     skills: agent.skills.map((skill) => ({ internalId: skill.internalId, version: SemVer.parse(skill.version) })),

@@ -5,7 +5,12 @@
  * deserialize は create* を通して不変条件を再検証する。
  */
 import { z } from 'zod';
-import { PUBLISH_STATES, type PublishState } from '../tool/metadata';
+import {
+  deserializePublishableMetadata,
+  serializePublishableMetadata,
+  serializedPublishableMetadataSchema,
+  type SerializedPublishableMetadata,
+} from '../shared/publishable';
 import { SemVer } from '../tool/semver';
 import { ValidationDomainError } from './errors';
 import {
@@ -24,14 +29,8 @@ import { createScenario, type Scenario } from './scenario';
 import { createScenarioRun, SCENARIO_RUN_STATUSES, type ScenarioRun, type ScenarioRunStatus } from './scenario-run';
 import { SURVEY_QUESTION_KINDS, type SurveyQuestion } from './survey';
 
-interface SerializedMetadata {
-  readonly internalId: string; readonly workingName: string; readonly displayName: string;
-  readonly publishName: string; readonly version: string; readonly owner: string;
-  readonly state: PublishState; readonly tenant: { readonly tenantId: string; readonly workspaceId: string };
-}
-
 export interface SerializedPersona {
-  readonly metadata: SerializedMetadata;
+  readonly metadata: SerializedPublishableMetadata;
   readonly archetype: PersonaArchetype;
   readonly knowledgeLevel: PersonaLevel;
   readonly patience: PersonaLevel;
@@ -43,7 +42,7 @@ export interface SerializedPersona {
 }
 
 export interface SerializedScenario {
-  readonly metadata: SerializedMetadata;
+  readonly metadata: SerializedPublishableMetadata;
   readonly target: { readonly agentId: string; readonly version: string };
   readonly persona?: { readonly personaId: string; readonly version: string };
   readonly pseudoUser?: { readonly agentId: string; readonly version: string };
@@ -74,12 +73,6 @@ export interface SerializedScenarioRun {
   readonly finishedAt: string;
 }
 
-const metadataSchema = z.object({
-  internalId: z.string(), workingName: z.string(), displayName: z.string(), publishName: z.string(),
-  version: z.string(), owner: z.string(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]),
-  tenant: z.object({ tenantId: z.string(), workspaceId: z.string() }),
-});
-
 const surveyQuestionSchema = z.object({
   id: z.string(), textJa: z.string(), textEn: z.string(),
   kind: z.enum(SURVEY_QUESTION_KINDS),
@@ -87,7 +80,7 @@ const surveyQuestionSchema = z.object({
 });
 
 const personaSchema = z.object({
-  metadata: metadataSchema,
+  metadata: serializedPublishableMetadataSchema,
   archetype: z.enum(PERSONA_ARCHETYPES),
   knowledgeLevel: z.enum(PERSONA_LEVELS),
   patience: z.enum(PERSONA_LEVELS),
@@ -99,7 +92,7 @@ const personaSchema = z.object({
 });
 
 const scenarioSchema = z.object({
-  metadata: metadataSchema,
+  metadata: serializedPublishableMetadataSchema,
   target: z.object({ agentId: z.string(), version: z.string() }),
   persona: z.object({ personaId: z.string(), version: z.string() }).optional(),
   pseudoUser: z.object({ agentId: z.string(), version: z.string() }).optional(),
@@ -136,13 +129,9 @@ function issues(error: z.ZodError): string {
   return error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ');
 }
 
-function serializeMetadata(metadata: Persona['metadata']): SerializedMetadata {
-  return { ...metadata, version: metadata.version.toString(), tenant: { ...metadata.tenant } };
-}
-
 export function serializePersona(persona: Persona): SerializedPersona {
   return {
-    metadata: serializeMetadata(persona.metadata),
+    metadata: serializePublishableMetadata(persona.metadata),
     archetype: persona.archetype,
     knowledgeLevel: persona.knowledgeLevel,
     patience: persona.patience,
@@ -160,13 +149,13 @@ export function deserializePersona(value: unknown): Persona {
   const persona = parsed.data;
   return createPersona({
     ...persona,
-    metadata: { ...persona.metadata, version: SemVer.parse(persona.metadata.version), tenant: { ...persona.metadata.tenant } },
+    metadata: deserializePublishableMetadata(persona.metadata, (text) => SemVer.parse(text)),
   });
 }
 
 export function serializeScenario(scenario: Scenario): SerializedScenario {
   return {
-    metadata: serializeMetadata(scenario.metadata),
+    metadata: serializePublishableMetadata(scenario.metadata),
     target: { agentId: scenario.target.agentId, version: scenario.target.version.toString() },
     ...(scenario.persona !== undefined ? { persona: { personaId: scenario.persona.personaId, version: scenario.persona.version.toString() } } : {}),
     ...(scenario.pseudoUser !== undefined ? { pseudoUser: { agentId: scenario.pseudoUser.agentId, version: scenario.pseudoUser.version.toString() } } : {}),
@@ -185,7 +174,7 @@ export function deserializeScenario(value: unknown): Scenario {
   const { persona, pseudoUser, ...rest } = scenario;
   return createScenario({
     ...rest,
-    metadata: { ...scenario.metadata, version: SemVer.parse(scenario.metadata.version), tenant: { ...scenario.metadata.tenant } },
+    metadata: deserializePublishableMetadata(scenario.metadata, (text) => SemVer.parse(text)),
     target: { agentId: scenario.target.agentId, version: SemVer.parse(scenario.target.version) },
     ...(persona !== undefined ? { persona: { personaId: persona.personaId, version: SemVer.parse(persona.version) } } : {}),
     ...(pseudoUser !== undefined ? { pseudoUser: { agentId: pseudoUser.agentId, version: SemVer.parse(pseudoUser.version) } } : {}),

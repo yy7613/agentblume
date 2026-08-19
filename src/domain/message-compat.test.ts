@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createAgent, type CreateAgentProps } from './agent/agent';
-import { evaluationNonEmpty } from './evaluation/asset-metadata';
+import { evaluationNonEmpty, validateEvaluationMetadata, type EvaluationAssetMetadata } from './evaluation/asset-metadata';
 import { createExperiment, type Experiment } from './evaluation/experiment';
 import { validateFactoryPlan, type FactoryPlan } from './factory/factory-plan';
 import { createAgentHarness, type CreateAgentHarnessProps } from './harness/agent-harness';
@@ -22,7 +22,7 @@ import { createModelSettings, createModelSlotSettings, type CreateModelSettingsP
 import { createSkill, type CreateSkillProps } from './skill/skill';
 import { SemVer } from './tool/semver';
 import { createTool, type CreateToolProps } from './tool/tool';
-import { nonEmpty } from './validation/metadata';
+import { nonEmpty, validateMetadata, type ValidationMetadata } from './validation/metadata';
 
 describe('nonEmpty error message compatibility (golden)', () => {
   it.each<[string, () => unknown, RegExp]>([
@@ -149,6 +149,88 @@ describe('httpUrl / registryModel error message compatibility (golden)', () => {
       "createModelSlotSettings: registry model not in 'provider/model' form",
       () => createModelSlotSettings({ source: 'registry', model: 'no-slash' }),
       /^createModelSettings: slot\.model must be in 'provider\/model' form, but got 'no-slash'$/,
+    ],
+  ])('%s keeps the exact message', (_name, call, pattern) => {
+    expect(call).toThrow(pattern);
+  });
+});
+
+describe('metadata version/state error message compatibility (golden)', () => {
+  // validatePublishableMetadata への統合(M3)前後でメッセージがバイト単位不変であることを固定する。
+  const metadata = (patch: Record<string, unknown>) => ({
+    internalId: 'id-1',
+    workingName: 'work',
+    displayName: 'Display',
+    publishName: 'publish.name',
+    version: SemVer.of(1, 0, 0),
+    owner: 'alice',
+    state: 'draft',
+    tenant: { tenantId: 't1', workspaceId: 'w1' },
+    ...patch,
+  });
+  const badVersion = { version: '1.0.0' };
+  const badState = { state: 'live' };
+
+  it.each<[string, () => unknown, RegExp]>([
+    [
+      'createTool: version',
+      () => createTool({ metadata: metadata(badVersion) } as unknown as CreateToolProps),
+      /^createTool: metadata\.version must be a SemVer instance$/,
+    ],
+    [
+      'createTool: state',
+      () => createTool({ metadata: metadata(badState) } as unknown as CreateToolProps),
+      /^createTool: invalid state: live$/,
+    ],
+    [
+      'createAgent: version',
+      () => createAgent({ metadata: metadata(badVersion) } as unknown as CreateAgentProps),
+      /^createAgent: metadata\.version must be a SemVer instance$/,
+    ],
+    [
+      'createAgent: state',
+      () => createAgent({ metadata: metadata(badState) } as unknown as CreateAgentProps),
+      /^createAgent: invalid state: live$/,
+    ],
+    [
+      'createAgentHarness: version',
+      () => createAgentHarness({ metadata: metadata(badVersion) } as unknown as CreateAgentHarnessProps),
+      /^createAgentHarness: metadata\.version must be a SemVer instance$/,
+    ],
+    [
+      'createAgentHarness: state',
+      () => createAgentHarness({ metadata: metadata(badState) } as unknown as CreateAgentHarnessProps),
+      /^createAgentHarness: invalid state: live$/,
+    ],
+    [
+      'createSkill: version',
+      () => createSkill({ metadata: metadata(badVersion) } as unknown as CreateSkillProps),
+      /^createSkill: metadata\.version must be a SemVer instance$/,
+    ],
+    [
+      'createSkill: state',
+      () => createSkill({ metadata: metadata(badState) } as unknown as CreateSkillProps),
+      /^createSkill: invalid state: live$/,
+    ],
+    [
+      'validateMetadata (validation): version',
+      () => validateMetadata(metadata(badVersion) as unknown as ValidationMetadata, 'createPersona'),
+      /^createPersona: metadata\.version must be a SemVer instance$/,
+    ],
+    [
+      'validateMetadata (validation): state',
+      () => validateMetadata(metadata(badState) as unknown as ValidationMetadata, 'createPersona'),
+      /^createPersona: invalid state: live$/,
+    ],
+    [
+      'validateEvaluationMetadata: version',
+      () => validateEvaluationMetadata(metadata(badVersion) as unknown as EvaluationAssetMetadata, 'createGatePolicy'),
+      /^createGatePolicy: metadata\.version must be a SemVer instance$/,
+    ],
+    [
+      'validateEvaluationMetadata: state',
+      () => validateEvaluationMetadata(metadata(badState) as unknown as EvaluationAssetMetadata, 'createGatePolicy'),
+      /^createGatePolicy: invalid state: live$/,
     ],
   ])('%s keeps the exact message', (_name, call, pattern) => {
     expect(call).toThrow(pattern);

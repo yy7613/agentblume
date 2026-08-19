@@ -1,8 +1,8 @@
 import type { WikiSpaceId } from '../memory/ids';
 import { assertNonEmpty } from '../shared/assert';
+import { validatePublishableMetadata, type PublishableMetadata } from '../shared/publishable';
 import type { SkillId } from '../skill/ids';
-import type { ToolId, TenantScope } from '../tool/ids';
-import { isPublishState, type PublishState } from '../tool/metadata';
+import type { ToolId } from '../tool/ids';
 import { SemVer } from '../tool/semver';
 import type { PersonaId } from '../validation/ids';
 import { AgentValidationError } from './errors';
@@ -12,16 +12,8 @@ import { createStructuredOutput, type StructuredOutputDefinition } from './struc
 export const AGENT_KINDS = ['normal', 'pseudo-user', 'evaluator'] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
-export interface AgentMetadata {
-  readonly internalId: AgentId;
-  readonly workingName: string;
-  readonly displayName: string;
-  readonly publishName: string;
-  readonly version: SemVer;
-  readonly owner: string;
-  readonly state: PublishState;
-  readonly tenant: TenantScope;
-}
+/** Agent の識別・公開・所有情報(共通メタデータ — ADR-0036)。 */
+export type AgentMetadata = PublishableMetadata<AgentId, SemVer>;
 
 export interface AgentToolRef {
   readonly internalId: ToolId;
@@ -171,19 +163,10 @@ export function createAgent(props: CreateAgentProps): Agent {
   if (metadata === null || typeof metadata !== 'object') {
     throw new AgentValidationError('createAgent: metadata is required');
   }
-  nonEmpty(metadata.internalId, 'metadata.internalId');
-  nonEmpty(metadata.workingName, 'metadata.workingName');
-  nonEmpty(metadata.displayName, 'metadata.displayName');
-  nonEmpty(metadata.publishName, 'metadata.publishName');
-  nonEmpty(metadata.owner, 'metadata.owner');
-  nonEmpty(metadata.tenant?.tenantId, 'metadata.tenant.tenantId');
-  nonEmpty(metadata.tenant?.workspaceId, 'metadata.tenant.workspaceId');
-  if (!(metadata.version instanceof SemVer)) {
-    throw new AgentValidationError('createAgent: metadata.version must be a SemVer instance');
-  }
-  if (!isPublishState(metadata.state)) {
-    throw new AgentValidationError(`createAgent: invalid state: ${String(metadata.state)}`);
-  }
+  const validatedMetadata = validatePublishableMetadata(metadata, 'createAgent', {
+    fail: (m) => new AgentValidationError(m),
+    isVersion: (v) => v instanceof SemVer,
+  });
   if (!(AGENT_KINDS as readonly unknown[]).includes(props.kind)) {
     throw new AgentValidationError(`createAgent: invalid kind: ${String(props.kind)}`);
   }
@@ -256,16 +239,7 @@ export function createAgent(props: CreateAgentProps): Agent {
   }
 
   return {
-    metadata: {
-      internalId: metadata.internalId,
-      workingName: metadata.workingName,
-      displayName: metadata.displayName,
-      publishName: metadata.publishName,
-      version: metadata.version,
-      owner: metadata.owner,
-      state: metadata.state,
-      tenant: { tenantId: metadata.tenant.tenantId, workspaceId: metadata.tenant.workspaceId },
-    },
+    metadata: validatedMetadata,
     kind: props.kind,
     systemPrompt: props.systemPrompt,
     skills,

@@ -1,8 +1,7 @@
 import { assertNonEmpty } from '../shared/assert';
 import type { AgentId } from '../agent/ids';
 import type { WikiSpaceId } from '../memory/ids';
-import type { TenantScope } from '../tool/ids';
-import { isPublishState, type PublishState } from '../tool/metadata';
+import { validatePublishableMetadata, type PublishableMetadata } from '../shared/publishable';
 import { SemVer } from '../tool/semver';
 import { HarnessValidationError } from './errors';
 import type { HarnessId, SlotId } from './ids';
@@ -10,16 +9,7 @@ import type { HarnessId, SlotId } from './ids';
 export const HARNESS_PATTERNS = ['agent-as-tools', 'sequential', 'concurrent', 'handoff', 'group-chat', 'magentic'] as const;
 export type HarnessPattern = (typeof HARNESS_PATTERNS)[number];
 
-export interface HarnessMetadata {
-  readonly internalId: HarnessId;
-  readonly workingName: string;
-  readonly displayName: string;
-  readonly publishName: string;
-  readonly version: SemVer;
-  readonly owner: string;
-  readonly state: PublishState;
-  readonly tenant: TenantScope;
-}
+export type HarnessMetadata = PublishableMetadata<HarnessId, SemVer>;
 
 export interface HarnessAgentRef { readonly internalId: AgentId; readonly version: SemVer; }
 export interface AgentSlot {
@@ -181,10 +171,7 @@ function validatePolicies(policies: HarnessPolicies): HarnessPolicies {
 export function createAgentHarness(props: CreateAgentHarnessProps): AgentHarness {
   const { metadata } = props;
   if (metadata === null || typeof metadata !== 'object') throw new HarnessValidationError('createAgentHarness: metadata is required');
-  text(metadata.internalId, 'metadata.internalId'); text(metadata.workingName, 'metadata.workingName'); text(metadata.displayName, 'metadata.displayName');
-  text(metadata.publishName, 'metadata.publishName'); text(metadata.owner, 'metadata.owner'); text(metadata.tenant?.tenantId, 'metadata.tenant.tenantId'); text(metadata.tenant?.workspaceId, 'metadata.tenant.workspaceId');
-  if (!(metadata.version instanceof SemVer)) throw new HarnessValidationError('createAgentHarness: metadata.version must be a SemVer instance');
-  if (!isPublishState(metadata.state)) throw new HarnessValidationError(`createAgentHarness: invalid state: ${String(metadata.state)}`);
+  const validatedMetadata = validatePublishableMetadata(metadata, 'createAgentHarness', { fail: (m) => new HarnessValidationError(m), isVersion: (v) => v instanceof SemVer });
   if (!(HARNESS_PATTERNS as readonly unknown[]).includes(props.pattern)) throw new HarnessValidationError(`createAgentHarness: invalid pattern: ${String(props.pattern)}`);
   if (props.topology === null || props.topology.pattern !== props.pattern) throw new HarnessValidationError('createAgentHarness: topology pattern must match pattern');
   const slotMap = new Map<SlotId, AgentSlot>();
@@ -198,7 +185,7 @@ export function createAgentHarness(props: CreateAgentHarnessProps): AgentHarness
   validateTopology(props.topology, slotMap);
   const policies = validatePolicies(props.policies ?? DEFAULT_HARNESS_POLICIES);
   return {
-    metadata: { ...metadata, tenant: { ...metadata.tenant } }, pattern: props.pattern, slots,
+    metadata: validatedMetadata, pattern: props.pattern, slots,
     topology: structuredClone(props.topology), policies, output: { format: props.output?.format ?? 'text' },
   };
 }

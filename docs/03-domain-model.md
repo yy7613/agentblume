@@ -51,7 +51,7 @@ erDiagram
 
 ## 2. 共通メタデータ（Tool / Skill / Agent 共通）
 
-`ideas.md` は「内部識別子・表示名・公開名・バージョン・所有者・公開状態」の分離を要求する。複数人開発と公開名の衝突管理のため、これを共通値オブジェクト化する。
+`ideas.md` は「内部識別子・表示名・公開名・バージョン・所有者・公開状態」の分離を要求する。複数人開発と公開名の衝突管理のため、これを共通値オブジェクト化する。共通値オブジェクト化は実装済み（[ADR-0036](./adr/0036-shared-publishable-metadata.md)、`src/domain/shared/publishable.ts`）。図中の `aliases` は未実装の後続課題である。
 
 ```mermaid
 classDiagram

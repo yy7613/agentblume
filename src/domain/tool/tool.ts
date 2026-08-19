@@ -8,9 +8,9 @@
 import type { Schema } from '../data/types';
 import type { ToolGraph } from '../etl/graph';
 import { assertNonEmpty } from '../shared/assert';
+import { validatePublishableMetadata } from '../shared/publishable';
 import { ToolValidationError } from './errors';
-import type { TenantScope } from './ids';
-import { isPublishState, isSideEffect } from './metadata';
+import { isSideEffect } from './metadata';
 import type { SideEffect, ToolMetadata } from './metadata';
 import { SemVer } from './semver';
 
@@ -93,26 +93,12 @@ export function createTool(props: CreateToolProps): Tool {
     throw new ToolValidationError('createTool: metadata is required');
   }
 
-  assertNonEmptyString(metadata.internalId, 'metadata.internalId');
-  assertNonEmptyString(metadata.workingName, 'metadata.workingName');
-  assertNonEmptyString(metadata.displayName, 'metadata.displayName');
-  assertNonEmptyString(metadata.publishName, 'metadata.publishName');
-  assertNonEmptyString(metadata.owner, 'metadata.owner');
-
-  const tenant: TenantScope | undefined = metadata.tenant;
-  if (tenant === null || typeof tenant !== 'object') {
-    throw new ToolValidationError('createTool: metadata.tenant is required');
-  }
-  assertNonEmptyString(tenant.tenantId, 'metadata.tenant.tenantId');
-  assertNonEmptyString(tenant.workspaceId, 'metadata.tenant.workspaceId');
-
-  if (!(metadata.version instanceof SemVer)) {
-    throw new ToolValidationError('createTool: metadata.version must be a SemVer instance');
-  }
-
-  if (!isPublishState(metadata.state)) {
-    throw new ToolValidationError(`createTool: invalid state: ${String(metadata.state)}`);
-  }
+  const validatedMetadata = validatePublishableMetadata(metadata, 'createTool', {
+    fail: (m) => new ToolValidationError(m),
+    isVersion: (v) => v instanceof SemVer,
+    trim: false,
+    tenantGuardMessage: 'createTool: metadata.tenant is required',
+  });
 
   if (!isSideEffect(sideEffect)) {
     throw new ToolValidationError(`createTool: invalid sideEffect: ${String(sideEffect)}`);
@@ -130,19 +116,9 @@ export function createTool(props: CreateToolProps): Tool {
   }
 
   // 全て検証済み。入力を複製して外部変更の影響を受けない Tool を返す。
-  const clonedMetadata: ToolMetadata = {
-    internalId: metadata.internalId,
-    workingName: metadata.workingName,
-    displayName: metadata.displayName,
-    publishName: metadata.publishName,
-    version: metadata.version, // SemVer はイミュータブル
-    owner: metadata.owner,
-    state: metadata.state,
-    tenant: { tenantId: tenant.tenantId, workspaceId: tenant.workspaceId },
-  };
-
+  // metadata は validatePublishableMetadata が返す防御的コピー（SemVer はイミュータブル）。
   const tool: Tool = {
-    metadata: clonedMetadata,
+    metadata: validatedMetadata,
     sideEffect,
     graph: cloneGraph(graph),
     ...(inputSchema !== undefined ? { inputSchema: cloneSchema(inputSchema) } : {}),

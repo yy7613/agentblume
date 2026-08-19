@@ -1,15 +1,11 @@
 import { assertNonEmpty } from '../shared/assert';
-import type { TenantScope, ToolId } from '../tool/ids';
-import { isPublishState, type PublishState } from '../tool/metadata';
+import { validatePublishableMetadata, type PublishableMetadata } from '../shared/publishable';
+import type { ToolId } from '../tool/ids';
 import { SemVer } from '../tool/semver';
 import { SkillValidationError } from './errors';
 import type { SkillId } from './ids';
 
-export interface SkillMetadata {
-  readonly internalId: SkillId; readonly workingName: string; readonly displayName: string;
-  readonly publishName: string; readonly version: SemVer; readonly owner: string;
-  readonly state: PublishState; readonly tenant: TenantScope;
-}
+export type SkillMetadata = PublishableMetadata<SkillId, SemVer>;
 export interface SkillToolRef { readonly internalId: ToolId; readonly version: SemVer }
 export interface Skill {
   readonly metadata: SkillMetadata;
@@ -28,15 +24,10 @@ function nonEmpty(value: unknown, field: string): asserts value is string {
 
 export function createSkill(props: CreateSkillProps): Skill {
   const { metadata } = props;
-  nonEmpty(metadata?.internalId, 'metadata.internalId'); nonEmpty(metadata.workingName, 'metadata.workingName');
-  nonEmpty(metadata.displayName, 'metadata.displayName'); nonEmpty(metadata.publishName, 'metadata.publishName');
-  nonEmpty(metadata.owner, 'metadata.owner'); nonEmpty(metadata.tenant?.tenantId, 'metadata.tenant.tenantId');
-  nonEmpty(metadata.tenant?.workspaceId, 'metadata.tenant.workspaceId');
+  const validatedMetadata = validatePublishableMetadata(metadata, 'createSkill', { fail: (m) => new SkillValidationError(m), isVersion: (v) => v instanceof SemVer });
   nonEmpty(props.responsibility, 'responsibility'); nonEmpty(props.activationCondition, 'activationCondition');
   nonEmpty(props.inputDescription, 'inputDescription'); nonEmpty(props.outputDescription, 'outputDescription');
   nonEmpty(props.instructions, 'instructions');
-  if (!(metadata.version instanceof SemVer)) throw new SkillValidationError('createSkill: metadata.version must be a SemVer instance');
-  if (!isPublishState(metadata.state)) throw new SkillValidationError(`createSkill: invalid state: ${String(metadata.state)}`);
   const seen = new Set<string>();
   const tools = props.tools.map((tool, index) => {
     nonEmpty(tool.internalId, `tools.${index}.internalId`);
@@ -46,7 +37,7 @@ export function createSkill(props: CreateSkillProps): Skill {
     seen.add(key); return { internalId: tool.internalId, version: tool.version };
   });
   return {
-    metadata: { ...metadata, tenant: { ...metadata.tenant } },
+    metadata: validatedMetadata,
     responsibility: props.responsibility,
     activationCondition: props.activationCondition,
     inputDescription: props.inputDescription,

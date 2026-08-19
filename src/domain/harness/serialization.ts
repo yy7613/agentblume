@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import { PUBLISH_STATES, type PublishState } from '../tool/metadata';
+import { deserializePublishableMetadata, serializePublishableMetadata, serializedPublishableMetadataSchema, type SerializedPublishableMetadata } from '../shared/publishable';
 import { SemVer } from '../tool/semver';
 import { HARNESS_PATTERNS, createAgentHarness, type AgentHarness, type HarnessPattern } from './agent-harness';
 import { HarnessValidationError } from './errors';
 
 export interface SerializedAgentHarness {
-  readonly metadata: { readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly version: string; readonly owner: string; readonly state: PublishState; readonly tenant: { readonly tenantId: string; readonly workspaceId: string } };
+  readonly metadata: SerializedPublishableMetadata;
   readonly pattern: HarnessPattern;
   readonly slots: readonly { readonly id: string; readonly label: string; readonly purpose: string; readonly assignment: { readonly internalId: string; readonly version: string } }[];
   readonly topology: unknown;
@@ -31,13 +31,13 @@ const policiesSchema = z.object({
   failure: z.object({ mode: z.enum(['fail-fast', 'collect', 'continue-with-error']) }),
 });
 const schema = z.object({
-  metadata: z.object({ internalId: z.string(), workingName: z.string(), displayName: z.string(), publishName: z.string(), version: z.string(), owner: z.string(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]), tenant: z.object({ tenantId: z.string(), workspaceId: z.string() }) }),
+  metadata: serializedPublishableMetadataSchema,
   pattern: z.enum(HARNESS_PATTERNS), slots: z.array(slotSchema), topology: topologySchema, policies: policiesSchema, output: z.object({ format: z.literal('text') }),
 });
 
 export function serializeAgentHarness(harness: AgentHarness): SerializedAgentHarness {
   return {
-    metadata: { ...harness.metadata, version: harness.metadata.version.toString(), tenant: { ...harness.metadata.tenant } },
+    metadata: serializePublishableMetadata(harness.metadata),
     pattern: harness.pattern,
     slots: harness.slots.map((slot) => ({ ...slot, assignment: { internalId: slot.assignment.internalId, version: slot.assignment.version.toString() } })),
     topology: structuredClone(harness.topology), policies: structuredClone(harness.policies), output: { format: 'text' },
@@ -52,7 +52,7 @@ export function deserializeAgentHarness(value: unknown): AgentHarness {
   }
   const harness = parsed.data;
   return createAgentHarness({
-    metadata: { ...harness.metadata, version: SemVer.parse(harness.metadata.version), tenant: { ...harness.metadata.tenant } },
+    metadata: deserializePublishableMetadata(harness.metadata, (text) => SemVer.parse(text)),
     pattern: harness.pattern,
     slots: harness.slots.map((slot) => ({ ...slot, assignment: { internalId: slot.assignment.internalId, version: SemVer.parse(slot.assignment.version) } })),
     topology: harness.topology, policies: harness.policies, output: harness.output,
