@@ -1,6 +1,8 @@
 # 02. 技術スタック
 
-> **凡例**: ✅ = アイデアに明記 / 🔷 = 本仕様書が補う提案（要決定） / 🔶 = 本仕様書が補完し、採用を決定した技術
+> **凡例**: ✅ = アイデアに明記 / 🔶 = 本仕様書が補完し、採用を決定した技術 / 🚧 = 採用は決定済みだが未実装（計画のみ）
+>
+> バージョンの正は [package.json](../package.json)。本書のバージョン表記は 2026-08-27 時点の実測。
 
 ---
 
@@ -9,32 +11,34 @@
 ```mermaid
 flowchart TB
   subgraph FE["フロントエンド"]
-    UIFW["🔶 UIフレームワーク<br/>React系（想定）"]
-    FLOW["🔶 ノードUIライブラリ<br/>React Flow 等（想定）"]
-    MD["✅ Markdown 描画"]
-    MM["✅ Mermaid 描画"]
-    CHART["✅ Chart.js 描画"]
+    UIFW["🔶 React 19"]
+    FLOW["🔶 React Flow<br/>（@xyflow/react 12）"]
+    STATE["🔶 Zustand"]
+    SVG["🔶 自前SVG描画<br/>（チャート）"]
+    MD["🚧 Markdown / Mermaid 描画"]
   end
 
   subgraph BE["バックエンド / ランタイム"]
-    NODE["🔶 Node.js / TypeScript<br/>（Mastra前提）"]
-    MASTRA["✅ Mastra（Agent SDK）"]
+    NODE["🔶 Node.js 22 + TypeScript"]
+    API["🔶 Fastify（REST）"]
+    MASTRA["✅ Mastra<br/>（@mastra/core / @mastra/evals）"]
     VALID["✅ Zod（実装時検証）"]
     JSCH["✅ JSON Schema（保存・交換）"]
   end
 
   subgraph LLM["モデル層"]
     LMS["✅ LM Studio（開発時ローカルLLM）"]
-    CLOUD["✅ 各種LLM選択可（クラウド）"]
+    CLOUD["✅ クラウドLLM<br/>（Mastra経由 + OpenAI互換）"]
   end
 
   subgraph INFRA["インフラ / 基盤"]
-    DB["🔶 SQLite（初期開発）<br/>PostgreSQL（Phase 2）"]
-    SEC["🔶 Secrets（Vault/KMS）"]
-    OIDC["✅ OIDC/OAuth2 IdP"]
-    MCP["✅ MCP（Client/Server）"]
-    OTEL["🔶 OpenTelemetry"]
-    SANDBOX["✅ サンドボックス実行環境"]
+    DB["🔶 SQLite（node:sqlite・現行）<br/>PostgreSQL（Phase 2）"]
+    SEC["🔶 AES-256-GCM鍵ファイル<br/>（Vault/KMSはPhase 2）"]
+    OIDC["🚧 OIDC/OAuth2 IdP（team）"]
+    MCP["✅ MCP Client<br/>（Server公開は🚧）"]
+    OTEL["🔶 OpenTelemetry（trace）"]
+    SEARCH["🔶 Web検索API<br/>（Tavily 等）"]
+    SANDBOX["🚧 サンドボックス実行環境"]
   end
 
   FE --> BE
@@ -43,28 +47,32 @@ flowchart TB
 
   classDef stated fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
   classDef adopted fill:#fff8e1,stroke:#f9a825,color:#e65100;
-  class MD,MM,CHART,MASTRA,VALID,JSCH,LMS,CLOUD,OIDC,MCP,SANDBOX stated;
-  class UIFW,FLOW,NODE,DB,SEC,OTEL adopted;
+  classDef planned fill:#eceff1,stroke:#78909c,color:#37474f,stroke-dasharray:4 3;
+  class MASTRA,VALID,JSCH,LMS,CLOUD,MCP stated;
+  class UIFW,FLOW,STATE,SVG,NODE,API,DB,SEC,OTEL,SEARCH adopted;
+  class MD,OIDC,SANDBOX planned;
 ```
 
 ---
 
 ## 2. 確定スタック（アイデア明記）
 
-| 領域 | 技術 | 用途・根拠 |
-|---|---|---|
-| **Agent SDK** | ✅ **Mastra** | エージェント実行の中核。`AgentRuntimePort` 経由で利用し、直接依存はAdapterに閉じる |
-| **開発時LLM** | ✅ **LM Studio** | ローカルLLM。OpenAI互換APIを想定し `ModelProviderPort` の一実装 |
-| **本番LLM** | ✅ **各種選択可** | モデルルーティングを `ModelProviderPort` で抽象化 |
-| **文書描画** | ✅ **Markdown** | チャット・ドキュメント表示 |
-| **図表描画** | ✅ **Mermaid** | フロー・関係図の表示 |
-| **グラフ描画** | ✅ **Chart.js** | ETL出力のグラフデータを可視化 |
-| **スキーマ検証** | ✅ **Zod** | 実装時の検証表現 |
-| **スキーマ交換** | ✅ **JSON Schema** | 保存・交換用の標準表現 |
-| **実行環境設定** | ✅ **env** | プロファイル切替（[01-architecture.md](./01-architecture.md) Composition Root） |
-| **MCP** | ✅ **MCP Client / Server** | 外部Tool利用と自作Tool公開 |
-| **認証** | ✅ **OIDC / OAuth 2.0** | IdP差し替え（[08-security-auth.md](./08-security-auth.md)） |
-| **サンドボックス** | ✅ **分離実行環境** | カスタムコードノードの時間/メモリ/CPU/ネットワーク/FS制限 |
+アイデアに明記された技術と、その現在の実装状況。アイデアと実装が分かれたもの（Chart.js）は理由を残す。
+
+| 領域 | 技術 | 用途・根拠 | 実装状況 |
+|---|---|---|---|
+| **Agent SDK** | ✅ **Mastra** | エージェント実行の中核。`AgentRuntimePort` 経由で利用し、直接依存はAdapterに閉じる | 実装済（`@mastra/core` 1.x。評価は `@mastra/evals`、ADR-0020） |
+| **開発時LLM** | ✅ **LM Studio** | ローカルLLM。OpenAI互換APIの `ModelProviderPort` 実装 | 実装済（§5 接続設定） |
+| **本番LLM** | ✅ **各種選択可** | モデルルーティングを `ModelProviderPort` で抽象化 | 実装済。Mastra登録簿の OpenAI / Anthropic / Google に加え、OpenAI互換エンドポイント（Azure AI Foundry / AWS Bedrock / Google Vertex AI の接続先プリセット）を選択可（`src/adapters/model/registry-model-catalog.ts`） |
+| **文書描画** | ✅ **Markdown** | チャット・ドキュメント表示 | 🚧 未実装（描画ライブラリ未導入。チャットはプレーンテキスト表示） |
+| **図表描画** | ✅ **Mermaid** | フロー・関係図の表示 | 🚧 未実装 |
+| **グラフ描画** | ✅ ~~Chart.js~~ → 🔶 **自前SVG描画** | ETL出力のグラフデータを可視化 | 実装済。ADR-0031で保存形式 `ChartSpecV1` をrenderer非依存の内部契約とし、現行rendererは依存ゼロの自前SVG（`ChatPage.tsx` の `ChartSvg` / `HistogramSvg` / `BoxPlotSvg` / `HeatmapSvg`）。Chart.jsは導入していない |
+| **スキーマ検証** | ✅ **Zod**（v4） | 実装時の検証表現 | 実装済 |
+| **スキーマ交換** | ✅ **JSON Schema** | 保存・交換用の標準表現 | 実装済 |
+| **実行環境設定** | ✅ **env** | プロファイル切替（[01-architecture.md](./01-architecture.md) Composition Root） | 実装済（§5・§6 fail-fast検証） |
+| **MCP** | ✅ **MCP Client / Server** | 外部Tool利用と自作Tool公開 | Clientは実装済（公式 `@modelcontextprotocol/sdk`。外部MCPサーバーの登録・利用、`src/adapters/mcp/`）。自作Toolの公開（Server側）は🚧 |
+| **認証** | ✅ **OIDC / OAuth 2.0** | IdP差し替え（[08-security-auth.md](./08-security-auth.md)） | 🚧 外部IdPは未実装。現行はローカルのトークン認証（`src/adapters/security/token-authentication.ts`） |
+| **サンドボックス** | ✅ **分離実行環境** | カスタムコードノードの時間/メモリ/CPU/ネットワーク/FS制限 | 🚧 未実装（カスタムコードノードごとPhase 3） |
 
 ### Zod と JSON Schema の使い分け（`ideas-v2.md §1`）
 
@@ -84,20 +92,23 @@ flowchart LR
 
 ## 3. 採用スタック（本仕様書で補完）
 
-アイデアに明記はないが、Mastra（TypeScript）前提から補完した以下のスタックを採用する。選択肢を併記している項目は、AdapterやPortの境界を先に固定し、具体製品・ライブラリを実装フェーズで絞り込む。
+アイデアに明記はないが、Mastra（TypeScript）前提から補完したスタック。当初「要決定」として選択肢を併記していた項目は、実装を経て以下に**確定済み**。
 
-| 領域 | 提案 | 理由 / 代替 |
+| 領域 | 採用 | 理由 / 現況 |
 |---|---|---|
-| 言語/ランタイム | 🔶 **TypeScript + Node.js** | MastraがTS/Node製のため整合性が高い |
-| UIフレームワーク | 🔶 **React** | ノードUI・エコシステムが厚い。代替: Vue / Svelte |
-| ノードエディタ | 🔶 **React Flow (xyflow)** | ETLキャンバスの標準的選択。代替: Rete.js |
-| 状態管理 | 🔶 **Zustand / Redux Toolkit** | キャンバスのundo/redo・複製に対応 |
-| APIスタイル | 🔶 **REST or tRPC** | [04-api-spec.md](./04-api-spec.md) 参照 |
-| 永続化 | 🔶 **SQLite（初期開発）** / PostgreSQL（Phase 2） | v1は導入・運用が軽いSQLiteで定義・バージョン・実行履歴を保存。チーム利用時は`StoragePort`を介してPostgreSQLへ移行し、テナント境界を行レベルで適用 |
-| Secrets | 🔶 **HashiCorp Vault / クラウドKMS** | `SecretProvider` の実装 |
-| 観測 | 🔶 **OpenTelemetry** | `TelemetryPort` の実装。トレース可視化 |
-| サンドボックス | 🔶 **isolated-vm / WASM / コンテナ** | カスタムコードノード（Phase 3） |
-| テスト | 🔶 **Vitest + Playwright + カバレッジ計測** | ドメイン・API・UI unit/integrationはVitest、実ブラウザ縦切りはPlaywright |
+| 言語/ランタイム | 🔶 **TypeScript（strict） + Node.js >= 22.9** | MastraがTS/Node製のため整合性が高い。`node:sqlite`・`--env-file-if-exists` を使うため22.9が下限（§6） |
+| UIフレームワーク | 🔶 **React 19** | ノードUI・エコシステムが厚い（ADR-0007） |
+| ノードエディタ | 🔶 **React Flow（`@xyflow/react` 12）** | ETLキャンバスの標準的選択 |
+| 状態管理 | 🔶 **Zustand 5** | キャンバス状態を1ストアで管理（`src/ui/tool-builder/store.ts`）。Redux Toolkitは不採用 |
+| APIスタイル | 🔶 **REST（Fastify 5）** | ADR-0006で確定。tRPCは不採用。[04-api-spec.md](./04-api-spec.md) 参照 |
+| ビルド | 🔶 **Vite 8（UI SPA + サーバーSSRビルド）** | 開発実行は `tsx`。サーバーもtscではなくviteでビルドする理由は§6 |
+| 永続化 | 🔶 **SQLite（`node:sqlite` 組込み・現行）** / PostgreSQL（Phase 2） | v1は導入・運用が軽いSQLiteで定義・バージョン・実行履歴を保存（§5）。チーム利用時は`StoragePort`を介してPostgreSQLへ移行し、テナント境界を行レベルで適用。※ 依存にある `pg` はアプリの永続化用ではなく、データソースレジストリ（ADR-0029）で外部PostgreSQLを読むためのもの（`src/adapters/database/environment-postgres.ts`） |
+| Secrets | 🔶 **AES-256-GCM鍵ファイル（現行）** / Vault・クラウドKMS（team以降🚧） | 現行は `SecretCipherPort` のローカル実装（§5 秘密値の保管）。Vault/KMSは同Portの差し替えとして導入する |
+| Web検索 | 🔶 **外部検索API（Tavily / TinyFish / Google Custom Search）** | envにAPIキーがあるproviderだけを公開（ADR-0030、`src/adapters/search/`） |
+| 観測 | 🔶 **OpenTelemetry（trace限定構成）** | `TelemetryPort` の実装。実装済・既定は無効（§7） |
+| サンドボックス | 🚧 **isolated-vm / WASM / コンテナ** | カスタムコードノード（Phase 3）。未着手 |
+| テスト | 🔶 **Vitest 4 + Playwright + `@vitest/coverage-v8`** | ドメイン・API・UI unit/integrationはVitest（UIは Testing Library + jsdom）、実ブラウザ縦切りはPlaywright（E2E、§8） |
+| 依存規律 | 🔶 **dependency-cruiser** | 層違反（domain→adapters等）をCIで機械検出（[05-dependency-graph.md](./05-dependency-graph.md)） |
 
 ---
 
