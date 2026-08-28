@@ -52,3 +52,14 @@ Zenn/
 
 # Local LT slides (presented separately from this repository)
 slides/
+
+# LT用のスクリーンショット・デモ動画の収録ハーネス（slides/ と同じくリポジトリ外で管理する）
+e2e/slide-screenshots.spec.ts
+e2e/factory-demo.spec.ts
+e2e/tool-demo.spec.ts
+playwright.slides.config.ts
+playwright.factory-demo.config.ts
+playwright.tool-demo.config.ts
+scripts/capture-slides.ps1
+scripts/capture-factory-demo.ps1
+scripts/capture-tool-demo.ps1
