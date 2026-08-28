@@ -399,6 +399,8 @@ function CurrentDatetimeFields({ config, setConfig }: { config: Readonly<Record<
 export const FILTER_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull'] as const;
 /** 値を要さない演算子。 */
 export const FILTER_VALUELESS_OPS: readonly string[] = ['isNull', 'notNull'];
+/** caseInsensitive が作用する文字列比較の演算子（チェックボックスの表示・書き戻し判定に使う）。 */
+export const FILTER_CASE_FOLD_OPS: readonly string[] = ['eq', 'neq', 'contains'];
 /** number|date 列を要する大小比較の演算子（opBinding 許可リストの初期値の絞り込みに使う）。 */
 export const FILTER_ORDER_OPS: readonly string[] = ['gt', 'gte', 'lt', 'lte'];
 /** 記号で表せる演算子の表示ラベル（option の value = op コードは変えない）。 */
@@ -411,6 +413,7 @@ interface FilterConditionDraft {
   readonly value?: unknown;
   readonly valueBinding?: { readonly source?: string; readonly field?: string };
   readonly opBinding?: { readonly source?: string; readonly field?: string; readonly allowed?: readonly string[] };
+  readonly caseInsensitive?: boolean;
 }
 
 /**
@@ -431,6 +434,14 @@ function conditionNeedsValue(condition: FilterConditionDraft): boolean {
   return !FILTER_VALUELESS_OPS.includes(condition.op);
 }
 
+/** 条件が文字列比較（eq/neq/contains）になり得るか。caseInsensitive の表示・書き戻し判定に使う。 */
+function conditionCanFoldCase(condition: FilterConditionDraft): boolean {
+  if (condition.opBinding?.source === 'agent-input') {
+    return normalizeAllowedOps(condition.opBinding.allowed).ops.some((op) => FILTER_CASE_FOLD_OPS.includes(op));
+  }
+  return FILTER_CASE_FOLD_OPS.includes(condition.op);
+}
+
 /** 条件1つ分のキーだけを持つプレーンなconfigへ（undefinedのキーは残さない）。 */
 function filterConditionConfig(condition: FilterConditionDraft): Record<string, unknown> {
   // 値が不要になる条件（固定 op が isNull/notNull、または許可演算子のすべてが値不要）では
@@ -443,6 +454,8 @@ function filterConditionConfig(condition: FilterConditionDraft): Record<string, 
     ...(condition.value === undefined ? {} : { value: condition.value }),
     ...(keepValueBinding ? { valueBinding: condition.valueBinding } : {}),
     ...(condition.opBinding === undefined ? {} : { opBinding: condition.opBinding }),
+    // 文字列比較になり得ない条件（大小比較のみ等）ではフラグを書き戻さない（見えない残留設定を防ぐ）。
+    ...(condition.caseInsensitive === true && conditionCanFoldCase(condition) ? { caseInsensitive: true } : {}),
   };
 }
 
@@ -460,6 +473,7 @@ function filterConditionDrafts(config: Readonly<Record<string, unknown>>): Filte
       ...(raw['value'] === undefined ? {} : { value: raw['value'] }),
       ...(binding === undefined ? {} : { valueBinding: binding }),
       ...(opBinding === undefined ? {} : { opBinding }),
+      ...(raw['caseInsensitive'] === true ? { caseInsensitive: true } : {}),
     };
   });
 }
@@ -538,6 +552,10 @@ function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { c
               <label>{text('Default operator', '既定の演算子')}<select aria-label={text('Default operator', '既定の演算子')} value={condition.op} onChange={(event) => patch(index, { op: event.target.value })}>{defaultOpOptions.map((op) => <option key={op} value={op}>{opLabel(op)}</option>)}</select><small>{text('The default operator is the design-time preview sample. If the argument is optional (nullable), omitting it at run time falls back to this default.', '既定の演算子は設計時プレビューのサンプルです。引数が任意 (nullable) の場合、実行時に省略されるとこの既定が使われます。')}</small></label>
             </>
           : <label>{text('Operator', '演算子')}<select aria-label={text('Operator', '演算子')} value={condition.op} onChange={(event) => patch(index, { op: event.target.value })}>{FILTER_OPS.map((value) => <option key={value} value={value}>{opLabel(value)}</option>)}</select></label>}
+        {conditionCanFoldCase(condition) && <>
+          <label className="check"><input type="checkbox" checked={condition.caseInsensitive === true} onChange={(event) => patch(index, { caseInsensitive: event.target.checked })} /> {text('Ignore case', '大文字と小文字を区別しない')}</label>
+          {condition.caseInsensitive === true && <small>{text('Applies to =, ≠ and contains on string values.', '文字列の =・≠・含む の比較にのみ作用します。')}</small>}
+        </>}
         {needsValue && <>
           <label>{text('Condition value', '条件値の取得元')}<select value={valueSource} onChange={(event) => patch(index, event.target.value === 'agent-input' ? { valueBinding: { source: 'agent-input', field: agentInputColumns[0]?.name ?? '' } } : { valueBinding: undefined })}><option value="constant">{text('Fixed value', '固定値')}</option><option value="agent-input">{text('Agent input', 'エージェント入力')}</option></select></label>
           {valueSource === 'agent-input'

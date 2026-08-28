@@ -138,6 +138,8 @@ flowchart LR
 
 filter条件・計算列を **GUIビルダーで組む → 上級者は生の式に切替**。ここが no-code / code の境界。
 
+filter条件は文字列比較（`eq` / `neq` / `contains`）に限り `caseInsensitive: true` を指定でき、大文字小文字を区別せず照合する（既定は区別する。数値・日付・大小比較・isNull/notNull には作用しない）。UIでは該当演算子を選んだときだけ「大文字と小文字を区別しない」チェックボックスが現れる。
+
 ```mermaid
 flowchart LR
   subgraph GUI["GUIビルダー層（非エンジニア）"]

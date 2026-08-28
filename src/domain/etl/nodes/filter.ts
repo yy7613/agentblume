@@ -28,6 +28,12 @@
  * - execute: combine に応じて全条件 AND / いずれか OR で行を残す。
  *   eq/neq=厳密等価（Date は時刻値比較）; 大小=数値/日付比較;
  *   contains=文字列包含（String化）; isNull/notNull。
+ *
+ * 各条件は `caseInsensitive?: boolean` を持てる（既定 false = 従来どおり区別する）。
+ * true のとき、文字列比較（eq/neq は両辺が string の場合のみ・contains は String 化後）を
+ * 大文字小文字を区別せず判定する。折り畳みは `toLowerCase()`（ロケール非依存の既定変換）。
+ * 数値・日付・boolean の比較や isNull/notNull、大小比較には作用しない（value と同様、
+ * 演算子に無関係な設定キーは黙って無視する既存の規約に従う）。
  */
 import { z } from 'zod';
 import type { Cell, Row, Schema, Table } from '../../data/types';
@@ -54,6 +60,9 @@ export function isFilterOp(value: unknown): value is FilterOp {
 /** 値を要さない演算子（evaluate が value を参照しない）。application層・UIの値スキップ判定が共有する。 */
 export const VALUELESS_OPS: ReadonlySet<FilterOp> = new Set(['isNull', 'notNull']);
 
+/** `caseInsensitive` が作用する演算子（文字列比較を行うもの）。UIのチェックボックス表示判定が共有する。 */
+export const CASE_FOLD_OPS: ReadonlySet<FilterOp> = new Set(['eq', 'neq', 'contains']);
+
 /** 複数条件の結合方法。 */
 export type FilterCombine = 'and' | 'or';
 
@@ -77,6 +86,8 @@ export interface FilterCondition {
   readonly valueBinding?: { readonly source: 'agent-input'; readonly field: string };
   /** 実行時に Agent Tool の引数で op を上書きする参照。設計時は op を既定値として使う。 */
   readonly opBinding?: OperatorBinding;
+  /** true なら文字列比較（eq/neq/contains）で大文字小文字を区別しない。既定 false。 */
+  readonly caseInsensitive?: boolean;
   /**
    * 実行時スキップの内部マーカー。true の条件は無いものとして扱う。
    * nullable な Agent Tool 引数が省略されたときに application層が注入する。
@@ -115,6 +126,7 @@ const conditionSchema = z.object({
     field: z.string().min(1),
     allowed: z.array(z.enum(FILTER_OPS)).min(1).optional(),
   }).optional(),
+  caseInsensitive: z.boolean().optional(),
   disabled: z.boolean().optional(),
 });
 
@@ -153,27 +165,32 @@ function toComparable(value: Cell): number {
   return Number.NaN;
 }
 
-/** eq/neq 用の厳密等価（Date は時刻値で比較）。 */
-function cellEquals(a: Cell, b: Cell): boolean {
+/** eq/neq 用の厳密等価（Date は時刻値で比較）。caseInsensitive は両辺 string のときだけ作用する。 */
+function cellEquals(a: Cell, b: Cell, caseInsensitive: boolean): boolean {
   if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
   // 片方だけ Date のときは厳密には非等価（型が異なる）。
   if (a instanceof Date || b instanceof Date) return false;
+  if (caseInsensitive && typeof a === 'string' && typeof b === 'string') {
+    return a.toLowerCase() === b.toLowerCase();
+  }
   return a === b;
 }
 
 /** 1セルに対して述語を評価する。 */
-function evaluate(cell: Cell, op: FilterOp, value: Cell): boolean {
+function evaluate(cell: Cell, op: FilterOp, value: Cell, caseInsensitive: boolean): boolean {
   switch (op) {
     case 'isNull':
       return cell === null;
     case 'notNull':
       return cell !== null;
     case 'eq':
-      return cellEquals(cell, value);
+      return cellEquals(cell, value, caseInsensitive);
     case 'neq':
-      return !cellEquals(cell, value);
+      return !cellEquals(cell, value, caseInsensitive);
     case 'contains':
-      return String(cell).includes(String(value));
+      return caseInsensitive
+        ? String(cell).toLowerCase().includes(String(value).toLowerCase())
+        : String(cell).includes(String(value));
     case 'gt':
     case 'gte':
     case 'lt':
@@ -239,7 +256,7 @@ function matches(row: Row, condition: FilterCondition): boolean {
   const cell = Object.prototype.hasOwnProperty.call(row, condition.column)
     ? (row[condition.column] ?? null)
     : null;
-  return evaluate(cell, condition.op, condition.value ?? null);
+  return evaluate(cell, condition.op, condition.value ?? null, condition.caseInsensitive === true);
 }
 
 class FilterNode implements EtlNode<FilterConfig> {

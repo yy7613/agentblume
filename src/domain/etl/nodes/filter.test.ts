@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Schema, Table } from '../../data/types';
 import { ConfigError } from '../errors';
-import { FILTER_OPS, filterNode, operatorArgumentSummaries, ORDER_OPS, valueBindingsOf, VALUELESS_OPS } from './filter';
+import { CASE_FOLD_OPS, FILTER_OPS, filterNode, operatorArgumentSummaries, ORDER_OPS, valueBindingsOf, VALUELESS_OPS } from './filter';
 
 const schema: Schema = {
   columns: [
@@ -118,6 +118,15 @@ describe('filter: validateConfig', () => {
       conditions: [{ column: 'age', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'lte'] } }],
       combine: 'and',
     })).toMatchObject({ conditions: [{ opBinding: { source: 'agent-input', field: 'ageOp', allowed: ['gte', 'lte'] } }] });
+  });
+
+  it('accepts caseInsensitive in both shapes and rejects a non-boolean', () => {
+    expect(filterNode.validateConfig({ column: 'name', op: 'eq', value: 'a', caseInsensitive: true }))
+      .toMatchObject({ caseInsensitive: true });
+    expect(filterNode.validateConfig({ conditions: [{ column: 'name', op: 'contains', value: 'a', caseInsensitive: false }], combine: 'or' }))
+      .toMatchObject({ conditions: [{ caseInsensitive: false }] });
+    expect(() => filterNode.validateConfig({ column: 'name', op: 'eq', value: 'a', caseInsensitive: 'yes' }))
+      .toThrowError(ConfigError);
   });
 });
 
@@ -284,8 +293,12 @@ describe('filter: exported operator sets', () => {
     expect([...ORDER_OPS].sort()).toEqual(['gt', 'gte', 'lt', 'lte']);
   });
 
-  it('both sets contain only canonical FILTER_OPS entries', () => {
-    for (const op of [...VALUELESS_OPS, ...ORDER_OPS]) expect(FILTER_OPS).toContain(op);
+  it('CASE_FOLD_OPS is exactly eq/neq/contains', () => {
+    expect([...CASE_FOLD_OPS].sort()).toEqual(['contains', 'eq', 'neq']);
+  });
+
+  it('all sets contain only canonical FILTER_OPS entries', () => {
+    for (const op of [...VALUELESS_OPS, ...ORDER_OPS, ...CASE_FOLD_OPS]) expect(FILTER_OPS).toContain(op);
   });
 });
 
@@ -445,6 +458,40 @@ describe('filter: execute', () => {
   it('isNull keeps rows where cell is null', () => {
     const out = filterNode.execute([table], { column: 'name', op: 'isNull' });
     expect(out.rows.map((r) => r.id)).toEqual([3]);
+  });
+
+  it('caseInsensitive eq/neq folds both string operands (default remains exact-case)', () => {
+    expect(filterNode.execute([table], { column: 'name', op: 'eq', value: 'alice' }).rows).toEqual([]);
+    expect(
+      filterNode.execute([table], { column: 'name', op: 'eq', value: 'alice', caseInsensitive: true }).rows.map((r) => r.id),
+    ).toEqual([1]);
+    // null セルは string ではないので折り畳み対象外（=== 比較のまま非一致 → neq は残す）。
+    expect(
+      filterNode.execute([table], { column: 'name', op: 'neq', value: 'ALICE', caseInsensitive: true }).rows.map((r) => r.id),
+    ).toEqual([2, 3]);
+  });
+
+  it('caseInsensitive contains folds after stringification', () => {
+    expect(filterNode.execute([table], { column: 'name', op: 'contains', value: 'AL' }).rows).toEqual([]);
+    expect(
+      filterNode.execute([table], { column: 'name', op: 'contains', value: 'AL', caseInsensitive: true }).rows.map((r) => r.id),
+    ).toEqual([1]);
+  });
+
+  it('caseInsensitive does not affect number or Date comparison', () => {
+    expect(
+      filterNode.execute([table], { column: 'id', op: 'eq', value: 2, caseInsensitive: true }).rows.map((r) => r.id),
+    ).toEqual([2]);
+    expect(
+      filterNode.execute([table], { column: 'joined', op: 'eq', value: d('2020-01-01T00:00:00Z'), caseInsensitive: true }).rows.map((r) => r.id),
+    ).toEqual([1]);
+  });
+
+  it('caseInsensitive works inside the conditions shape', () => {
+    const out = filterNode.execute([table], { conditions: [
+      { column: 'name', op: 'eq', value: 'BOB', caseInsensitive: true },
+    ], combine: 'and' });
+    expect(out.rows.map((r) => r.id)).toEqual([2]);
   });
 
   it('notNull keeps rows where cell is not null', () => {

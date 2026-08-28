@@ -12,10 +12,10 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // domain の正準リスト。UI ソースは domain を import しない方針だが、テストからのピン留め import は可。
-import { FILTER_OPS as DOMAIN_FILTER_OPS, ORDER_OPS as DOMAIN_ORDER_OPS, VALUELESS_OPS as DOMAIN_VALUELESS_OPS } from '../../domain/etl/nodes/filter';
+import { CASE_FOLD_OPS as DOMAIN_CASE_FOLD_OPS, FILTER_OPS as DOMAIN_FILTER_OPS, ORDER_OPS as DOMAIN_ORDER_OPS, VALUELESS_OPS as DOMAIN_VALUELESS_OPS } from '../../domain/etl/nodes/filter';
 import type { PropagationResultDto } from '../api/types';
 import { I18nProvider } from '../i18n';
-import { FILTER_OPS, FILTER_ORDER_OPS, FILTER_VALUELESS_OPS, NodeInspector } from './NodeInspector';
+import { FILTER_CASE_FOLD_OPS, FILTER_OPS, FILTER_ORDER_OPS, FILTER_VALUELESS_OPS, NodeInspector } from './NodeInspector';
 import { useToolBuilderStore } from './store';
 
 const upstream = { columns: [
@@ -540,9 +540,46 @@ describe('NodeInspector: filter の演算子バインディング（opBinding）
 });
 
 describe('NodeInspector: filter 演算子定数のピン留め（domain との一致）', () => {
-  it('UI の FILTER_OPS / FILTER_VALUELESS_OPS / FILTER_ORDER_OPS は domain の正準リストと一致する', () => {
+  it('UI の FILTER_OPS / FILTER_VALUELESS_OPS / FILTER_ORDER_OPS / FILTER_CASE_FOLD_OPS は domain の正準リストと一致する', () => {
     expect([...FILTER_OPS]).toEqual([...DOMAIN_FILTER_OPS]);
     expect([...FILTER_VALUELESS_OPS].sort()).toEqual([...DOMAIN_VALUELESS_OPS].sort());
     expect([...FILTER_ORDER_OPS].sort()).toEqual([...DOMAIN_ORDER_OPS].sort());
+    expect([...FILTER_CASE_FOLD_OPS].sort()).toEqual([...DOMAIN_CASE_FOLD_OPS].sort());
+  });
+});
+
+describe('NodeInspector: filter の大文字小文字を区別しない', () => {
+  it('文字列比較の演算子でだけチェックボックスを出し、チェックで caseInsensitive: true を書き戻す', async () => {
+    withUpstreamColumns();
+    render(<NodeInspector />);
+    // 既定 op（gte）は大小比較なのでチェックボックスを出さない。
+    expect(screen.queryByLabelText('Ignore case')).toBeNull();
+
+    await userEvent.selectOptions(screen.getByLabelText('Operator'), 'eq');
+    await userEvent.click(screen.getByLabelText('Ignore case'));
+    expect(configOf('filter-1')).toEqual({ column: 'age', op: 'eq', value: 18, caseInsensitive: true });
+
+    // チェックを外すとフラグは書き戻されない（既定 false をキーとして残さない）。
+    await userEvent.click(screen.getByLabelText('Ignore case'));
+    expect(configOf('filter-1')).toEqual({ column: 'age', op: 'eq', value: 18 });
+  });
+
+  it('大小比較の演算子へ戻すとフラグを書き戻さない（見えない残留設定を防ぐ）', async () => {
+    withUpstreamColumns();
+    render(<NodeInspector />);
+    await userEvent.selectOptions(screen.getByLabelText('Operator'), 'contains');
+    await userEvent.click(screen.getByLabelText('Ignore case'));
+    expect(configOf('filter-1')).toEqual({ column: 'age', op: 'contains', value: 18, caseInsensitive: true });
+
+    await userEvent.selectOptions(screen.getByLabelText('Operator'), 'gte');
+    expect(configOf('filter-1')).toEqual({ column: 'age', op: 'gte', value: 18 });
+    expect(screen.queryByLabelText('Ignore case')).toBeNull();
+  });
+
+  it('保存済みの caseInsensitive を読み込んでチェック済みで表示する', () => {
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'region', op: 'eq', value: 'tokyo', caseInsensitive: true });
+    withUpstreamColumns();
+    render(<NodeInspector />);
+    expect((screen.getByLabelText('Ignore case') as HTMLInputElement).checked).toBe(true);
   });
 });
