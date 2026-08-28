@@ -480,6 +480,9 @@ describe('エージェント実行エラー（AGENT_RUN / TOOL_ARGUMENTS / UNSAF
     expect(toolArgs('required argument missing: minimumScore'))
       .toBe('エージェントがツールを不正な引数で呼び出しました。ツールのスキーマとプロンプトを見直してください（モデルがツールの必須引数「minimumScore」を渡しませんでした。ツールの引数の説明を具体的にするか、指示の中でその値を明示してください）');
     expect(toolArgs("invalid argument 'score': expected number")).toContain('引数「score」の型が違います（number が必要）');
+    // 新形式は「受け取った値」も併記する（旧Runの保存済みメッセージは received 無しのまま上で解釈される）。
+    expect(toolArgs('invalid argument \'query\': expected string, received ["wireless headphones"] (array)'))
+      .toContain('引数「query」の型が違います（string が必要、受け取った値: ["wireless headphones"] (array)）');
     expect(toolArgs('unknown argument(s): region, month')).toContain('存在しない引数「region, month」');
   });
 

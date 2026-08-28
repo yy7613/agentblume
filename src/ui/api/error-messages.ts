@@ -528,11 +528,13 @@ function localizeAgentRunDetail(message: string, language: ErrorLanguage): strin
       : `the model omitted the required tool argument '${matched[1]}'. Describe that argument more concretely in the tool, or state its value in your request`;
   }
 
-  matched = /^invalid argument '(.+)': expected (.+)$/.exec(message);
+  // received 部は新形式のみ持つ（旧Runの保存済みトレースには無い）ため任意マッチにする。
+  matched = /^invalid argument '(.+)': expected (\w+)(?:, received (.+))?$/.exec(message);
   if (matched !== null) {
+    const received = matched[3];
     return ja
-      ? `ツールの引数「${matched[1]}」の型が違います（${matched[2]} が必要）。ツールの引数の説明を具体的にするか、指示の中でその値を明示してください`
-      : `the tool argument '${matched[1]}' had the wrong type (expected ${matched[2]}). Describe that argument more concretely in the tool, or state its value in your request`;
+      ? `ツールの引数「${matched[1]}」の型が違います（${matched[2]} が必要${received === undefined ? '' : `、受け取った値: ${received}`}）。ツールの引数の説明を具体的にするか、指示の中でその値を明示してください`
+      : `the tool argument '${matched[1]}' had the wrong type (expected ${matched[2]}${received === undefined ? '' : `, received ${received}`}). Describe that argument more concretely in the tool, or state its value in your request`;
   }
 
   matched = /^unknown argument\(s\): (.+)$/.exec(message);

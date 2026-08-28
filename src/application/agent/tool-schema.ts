@@ -93,6 +93,20 @@ export function toolToModelDefinition(tool: Tool): ModelToolDefinition {
   };
 }
 
+/**
+ * 差し戻しメッセージ用に、受け取った値を JSON（切り詰め）+ 型名で描写する。
+ * 「期待した型」だけでは小さいモデルが同じ間違いを繰り返しやすい——
+ * `["x"] (array)` のように**自分が何を送ったか**を見せると修復が1回で決まりやすい。
+ * 引数はトレース（tool-call イベント）に既に全文が残るものなので、ここで見せても露出は増えない。
+ */
+function describeReceived(value: JsonValue): string {
+  if (value === null) return 'null';
+  const kind = Array.isArray(value) ? 'array' : typeof value;
+  const json = JSON.stringify(value);
+  const shown = json.length > 120 ? `${json.slice(0, 117)}…` : json;
+  return `${shown} (${kind})`;
+}
+
 function normalizeValue(value: JsonValue | undefined, column: Column): Cell {
   if (value === null || value === undefined) {
     if (column.type === 'null' && value === null) return null;
@@ -122,7 +136,7 @@ function normalizeValue(value: JsonValue | undefined, column: Column): Cell {
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
       break;
   }
-  throw new ToolArgumentsError(`invalid argument '${column.name}': expected ${column.type}`);
+  throw new ToolArgumentsError(`invalid argument '${column.name}': expected ${column.type}, received ${describeReceived(value)}`);
 }
 
 export function validateToolArguments(schema: Schema | undefined, args: JsonObject): Row {

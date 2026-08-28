@@ -58,10 +58,19 @@ describe('Tool Calling schema', () => {
 
   it.each([
     [{ at: null }, /required/],
-    [{ month: 7 }, /expected string/],
+    // 期待型に加えて「受け取った値と型」を描写する（小さいモデルの修復が1回で決まるように）。
+    [{ month: 7 }, /expected string, received 7 \(number\)/],
+    [{ month: ['2026-07'] }, /expected string, received \["2026-07"\] \(array\)/],
+    [{ month: '2026-07', at: 'not-a-date' }, /expected date, received "not-a-date" \(string\)/],
     [{ month: '2026-07', extra: true }, /unknown argument/],
   ])('invalid argumentsを拒否する', (args, message) => {
     expect(() => validateToolArguments(schema, args)).toThrow(expect.objectContaining({ message: expect.stringMatching(message) }));
+  });
+
+  it('受け取った値の描写は120文字で切り詰める', () => {
+    const long = 'x'.repeat(200);
+    expect(() => validateToolArguments(schema, { month: [long] }))
+      .toThrow(expect.objectContaining({ message: expect.stringMatching(/received \["x+… \(array\)/) }));
   });
 
   it('output schema mismatchを拒否する', () => {
