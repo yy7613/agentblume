@@ -26,7 +26,7 @@ describe('output configuration dialog', () => {
     useToolBuilderStore.getState().addNode('graph-output');
     const id = useToolBuilderStore.getState().selectedNodeId as string;
     useToolBuilderStore.getState().setPropagation({
-      order: ['source-1', 'filter-1', id], hasErrors: false,
+      order: ['source-1', 'filter-1', id], terminalId: id, hasErrors: false,
       nodes: {
         'source-1': { nodeId: 'source-1', state: 'inferred', issues: [], schema: { columns: [{ name: 'id', type: 'number', nullable: false }, { name: 'name', type: 'string', nullable: false }] } },
         'filter-1': { nodeId: 'filter-1', state: 'confirmed', issues: [], schema: { columns: [{ name: 'id', type: 'number', nullable: false }, { name: 'name', type: 'string', nullable: false }] } },

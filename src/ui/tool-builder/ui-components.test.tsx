@@ -15,6 +15,7 @@ import { scope } from '../scope';
 
 const propagation: PropagationResultDto = {
   order: ['source-1', 'filter-1'],
+  terminalId: 'filter-1',
   hasErrors: false,
   nodes: {
     'source-1': { nodeId: 'source-1', state: 'inferred', issues: [], schema: { columns: [{ name: 'age', type: 'number', nullable: false }] } },
@@ -107,7 +108,7 @@ describe('NodeInspector', () => {
       },
     } as SerializedToolDto);
     useToolBuilderStore.getState().setPropagation({
-      order: ['left-1', 'right-1', 'join-1'], hasErrors: false,
+      order: ['left-1', 'right-1', 'join-1'], terminalId: 'join-1', hasErrors: false,
       nodes: {
         'left-1': { nodeId: 'left-1', state: 'inferred', issues: [], schema: { columns: [{ name: 'id', type: 'number', nullable: false }, { name: 'name', type: 'string', nullable: false }] } },
         'right-1': { nodeId: 'right-1', state: 'inferred', issues: [], schema: { columns: [{ name: 'id', type: 'number', nullable: false }, { name: 'score', type: 'number', nullable: false }] } },
@@ -345,7 +346,7 @@ describe('MetadataBar', () => {
       metadata: { internalId: metadata.internalId, workingName: metadata.workingName, displayName: metadata.displayName, publishName: metadata.publishName, owner: metadata.owner, version: '1.0.0', state: 'draft', tenant: scope },
       sideEffect: 'read-only', graph: { nodes: [{ id: 'args', type: 'agent-input', config: { schema: input, sample: { query: 'x' } } }], edges: [] },
     });
-    useToolBuilderStore.getState().setPropagation({ order: ['args'], hasErrors: false, nodes: { args: { nodeId: 'args', state: 'confirmed', issues: [], schema: input } } });
+    useToolBuilderStore.getState().setPropagation({ order: ['args'], terminalId: 'args', hasErrors: false, nodes: { args: { nodeId: 'args', state: 'confirmed', issues: [], schema: input } } });
     const saved = { metadata: { ...metadata, version: '1.0.1', state: 'draft', tenant: scope }, sideEffect: 'read-only', graph: { nodes: [], edges: [] } } as unknown as SerializedToolDto;
     const client = { saveTool: vi.fn().mockResolvedValue(saved), listVersions: vi.fn().mockResolvedValue(['1.0.0', '1.0.1']) } as unknown as ToolApiClient;
     render(<MetadataBar client={client} />);

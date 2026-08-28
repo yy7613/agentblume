@@ -12,7 +12,7 @@ vi.mock('./FlowCanvas', () => ({ FlowCanvas: () => <div aria-label="ETL canvas" 
 vi.mock('./NodePalette', () => ({ NodePalette: () => <aside aria-label="Node palette" /> }));
 
 const valid: PropagationResultDto = {
-  order: ['source-1', 'filter-1'], hasErrors: false,
+  order: ['source-1', 'filter-1'], terminalId: 'filter-1', hasErrors: false,
   nodes: {
     'source-1': { nodeId: 'source-1', state: 'inferred', issues: [], schema: { columns: [{ name: 'age', type: 'number', nullable: false }] } },
     'filter-1': { nodeId: 'filter-1', state: 'inferred', issues: [], schema: { columns: [{ name: 'age', type: 'number', nullable: false }] } },
@@ -117,7 +117,7 @@ describe('ToolBuilder preview integration', () => {
       { name: 'score', type: 'number', nullable: false },
     ] as const;
     const joinPropagation: PropagationResultDto = {
-      order: ['left-1', 'right-1', 'join-1'], hasErrors: false,
+      order: ['left-1', 'right-1', 'join-1'], terminalId: 'join-1', hasErrors: false,
       nodes: {
         'left-1': { nodeId: 'left-1', state: 'inferred', issues: [], schema: { columns: [joinColumns[0], joinColumns[1]] } },
         'right-1': { nodeId: 'right-1', state: 'inferred', issues: [], schema: { columns: [joinColumns[0], joinColumns[2]] } },

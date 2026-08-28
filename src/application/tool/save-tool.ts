@@ -80,8 +80,7 @@ export class SaveToolUseCase {
     //     デバウンス中の古い値で保存された場合や、保存後にデータソースの形が変わった場合）。
     //     実行時と同じ規則（schemaIncompatibility）で保存時に落とし、原因を保存操作の近くへ寄せる。
     if (input.outputSchema !== undefined) {
-      const terminalId = propagation.order.at(-1);
-      const terminalSchema = terminalId === undefined ? undefined : propagation.nodes[terminalId]?.schema;
+      const terminalSchema = propagation.nodes[propagation.terminalId]?.schema;
       const incompatibility = terminalSchema === undefined ? undefined : schemaIncompatibility(terminalSchema, input.outputSchema);
       if (incompatibility !== undefined) {
         throw new ToolValidationError(`SaveTool: declared output schema does not match the graph's inferred output (${incompatibility})`);

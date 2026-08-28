@@ -7,7 +7,7 @@ import { useToolBuilderStore } from './store';
 import { useDraftPreview } from './use-draft-preview';
 
 const propagation: PropagationResultDto = {
-  order: ['source-1', 'filter-1'], nodes: {}, hasErrors: false,
+  order: ['source-1', 'filter-1'], terminalId: 'filter-1', nodes: {}, hasErrors: false,
 };
 const preview: PreviewResultDto = {
   terminalId: 'filter-1', output: { schema: { columns: [] }, rows: [] }, nodes: {},

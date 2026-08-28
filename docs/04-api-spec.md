@@ -191,6 +191,7 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/agents` | Agent作成 | `agent:create` |
 | `GET` | `/agents` | workspace内のAgent latest一覧 | `agent:read` |
 | `GET` | `/agents/{id}` | Agent取得（latest / version固定） | `agent:read` |
+| `GET` | `/agents/{id}/diagnostics` | Tool呼び出しのプリフライト診断（参照解決・function定義・スキーマ整合・データソース・ドライランの段階別検査） | `agent:execute` |
 | `GET` | `/agents/{id}/versions` | Agent version一覧 | `agent:read` |
 | `POST` | `/agent-drafts/generate-prompt` | 未保存AgentのToolメタからsystem prompt草案生成 | `agent:edit` |
 | `POST` | `/agents/{id}/generate-prompt` | Skill/Toolメタからsystem prompt自動生成 | `agent:edit` |

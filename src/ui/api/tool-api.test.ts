@@ -34,7 +34,7 @@ describe('ToolApiClient', () => {
 
   it('draft infer/preview を正しい body と AbortSignal で呼ぶ', async () => {
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ propagation: { order: ['source'], nodes: {}, hasErrors: false } }))
+      .mockResolvedValueOnce(jsonResponse({ propagation: { order: ['source'], terminalId: 'source', nodes: {}, hasErrors: false } }))
       .mockResolvedValueOnce(jsonResponse({ result: { terminalId: 'source', output: { schema: { columns: [] }, rows: [] }, nodes: {} } }));
     const client = new ToolApiClient('/api', fetcher as typeof fetch);
     const controller = new AbortController();

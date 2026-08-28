@@ -25,6 +25,7 @@ const upstream = {
 };
 const propagation: PropagationResultDto = {
   order: ['source-1', 'filter-1'],
+  terminalId: 'filter-1',
   hasErrors: false,
   nodes: {
     'source-1': { nodeId: 'source-1', state: 'inferred', issues: [], schema: upstream },

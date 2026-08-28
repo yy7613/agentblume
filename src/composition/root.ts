@@ -38,6 +38,7 @@ import type { RunRepository } from '../domain/run/run-repository';
 import { InMemoryAgentRepository } from '../adapters/storage/in-memory-agent-repository';
 import { SqliteAgentRepository } from '../adapters/storage/sqlite-agent-repository';
 import { DeleteAgentUseCase } from '../application/agent/delete-agent';
+import { DiagnoseAgentToolsUseCase } from '../application/agent/diagnose-agent-tools';
 import { GenerateAgentPromptUseCase } from '../application/agent/generate-agent-prompt';
 import { QueryAgentsUseCase } from '../application/agent/query-agents';
 import { SaveAgentUseCase } from '../application/agent/save-agent';
@@ -332,6 +333,7 @@ export interface App {
   readonly queryAgents: QueryAgentsUseCase;
   readonly generateAgentPrompt: GenerateAgentPromptUseCase;
   readonly deleteAgent: DeleteAgentUseCase;
+  readonly diagnoseAgentTools: DiagnoseAgentToolsUseCase;
   readonly saveHarness: SaveHarnessUseCase;
   readonly queryHarnesses: QueryHarnessesUseCase;
   readonly validateHarness: ValidateHarnessUseCase;
@@ -817,6 +819,7 @@ export function createApp(options?: AppOptions): App {
     queryAgents,
     generateAgentPrompt,
     deleteAgent: new DeleteAgentUseCase(agentAdapter.repo),
+    diagnoseAgentTools: new DiagnoseAgentToolsUseCase(repo, engine, skillAdapter.repo, agentAdapter.repo, resolveDataSources),
     saveHarness: new SaveHarnessUseCase(harnessAdapter.repo, agentAdapter.repo),
     queryHarnesses: new QueryHarnessesUseCase(harnessAdapter.repo),
     validateHarness: new ValidateHarnessUseCase(agentAdapter.repo),

@@ -32,7 +32,7 @@ const run: AgentPreviewRunDto = {
   ],
 };
 
-function makeClient(overrides: Partial<Record<'runSavedAgent' | 'getAgent' | 'listAgents' | 'evaluate' | 'reflectRun' | 'listWiki' | 'resumeRun', unknown>> = {}) {
+function makeClient(overrides: Partial<Record<'runSavedAgent' | 'getAgent' | 'listAgents' | 'evaluate' | 'reflectRun' | 'listWiki' | 'resumeRun' | 'diagnoseAgent', unknown>> = {}) {
   return {
     listAgents: vi.fn().mockResolvedValue([{ internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '1.2.0', kind: 'normal', state: 'draft' }]),
     getAgent: vi.fn().mockResolvedValue(definition),
@@ -52,6 +52,47 @@ describe('AgentInspectorPage', () => {
     expect(await screen.findByText('skill-a')).toBeTruthy();
     expect(screen.getByText('tool-x')).toBeTruthy();
     await waitFor(() => expect(client.getAgent).toHaveBeenCalledWith('agent', expect.anything(), undefined, expect.any(AbortSignal)));
+  });
+
+  it('ツール診断を実行し、段階別の検査結果と原因を表示する', async () => {
+    const diagnoseAgent = vi.fn().mockResolvedValue({
+      agent: { internalId: 'agent', version: '1.2.0' },
+      status: 'error',
+      checks: [
+        { id: 'skills', status: 'ok' },
+        { id: 'function-names', status: 'ok' },
+      ],
+      tools: [{
+        internalId: 'tool-x', version: '2.0.0', source: 'direct', functionName: 'tool_x', status: 'error',
+        checks: [
+          { id: 'resolved', status: 'ok' },
+          { id: 'output-schema', status: 'error', detail: "declared output schema does not match the graph's inferred output (column count mismatch: expected 1, received 5)" },
+        ],
+      }],
+    });
+    const client = makeClient({ diagnoseAgent });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.click(await screen.findByRole('button', { name: 'Diagnose tools' }));
+    await waitFor(() => expect(diagnoseAgent).toHaveBeenCalledWith('agent', expect.anything(), '1.2.0', expect.any(AbortSignal)));
+    // 全体バッジ・検査ラベル・原因の生メッセージが出る。ok の項目も一覧される。
+    expect(await screen.findByText('Blocked')).toBeTruthy();
+    expect(screen.getByText('Skill references')).toBeTruthy();
+    expect(screen.getByText('Output schema consistency')).toBeTruthy();
+    expect(screen.getByText(/column count mismatch: expected 1, received 5/)).toBeTruthy();
+    expect(screen.getByText('tool_x')).toBeTruthy();
+    // 閉じるとパネルが消える。
+    await userEvent.click(screen.getByRole('button', { name: 'Close diagnostics' }));
+    expect(screen.queryByText('Blocked')).toBeNull();
+  });
+
+  it('診断リクエストの失敗はアラートとして表示する', async () => {
+    const client = makeClient({ diagnoseAgent: vi.fn().mockRejectedValue(new Error('server unreachable')) });
+    render(<AgentInspectorPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.click(await screen.findByRole('button', { name: 'Diagnose tools' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByText(/server unreachable/)).toBeTruthy();
   });
 
   it('応答をMastra Evalsで評価しスコアバーを表示する（v20）', async () => {

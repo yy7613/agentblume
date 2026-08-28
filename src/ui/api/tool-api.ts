@@ -13,6 +13,7 @@ import type {
   SaveAgentDto,
   SerializedAgentDto,
   AgentPromptDraftDto,
+  AgentDiagnosticsDto,
   AgentKindDto,
   AgentToolRefDto,
   AgentSubAgentRefDto,
@@ -237,6 +238,13 @@ export class ToolApiClient {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     if (version !== undefined) query.set('version', version);
     return (await this.request<{ agent: SerializedAgentDto }>(`/agents/${encodeURIComponent(internalId)}?${query}`, { signal })).agent;
+  }
+
+  /** Tool呼び出しのプリフライト診断（実行なしで「どの段階で呼び出せないか」を検査する）。 */
+  async diagnoseAgent(internalId: string, scope: TenantScopeDto, version?: string, signal?: AbortSignal): Promise<AgentDiagnosticsDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (version !== undefined) query.set('version', version);
+    return (await this.request<{ diagnostics: AgentDiagnosticsDto }>(`/agents/${encodeURIComponent(internalId)}/diagnostics?${query}`, { signal })).diagnostics;
   }
 
   async generateAgentPrompt(input: { readonly scope: TenantScopeDto; readonly displayName: string; readonly kind: AgentKindDto; readonly skills?: readonly AgentToolRefDto[]; readonly tools: readonly AgentToolRefDto[]; readonly agents?: readonly AgentSubAgentRefDto[]; readonly output?: StructuredOutputDto }): Promise<AgentPromptDraftDto> {

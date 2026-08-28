@@ -44,6 +44,28 @@ describe('agent routes', () => {
     expect(versions.json()).toEqual({ versions: ['1.0.0', '1.0.1'] });
   });
 
+  it('GET /agents/:id/diagnostics がツール呼び出しのプリフライト診断を返す', async () => {
+    await server.inject({ method: 'POST', url: '/agents', payload: body() });
+    const res = await server.inject({ method: 'GET', url: '/agents/assistant/diagnostics', query: scope });
+    expect(res.statusCode).toBe(200);
+    const { diagnostics } = res.json();
+    expect(diagnostics.status).toBe('ok');
+    expect(diagnostics.agent).toEqual({ internalId: 'assistant', version: '1.0.0' });
+    expect(diagnostics.checks).toEqual(expect.arrayContaining([
+      { id: 'skills', status: 'ok' },
+      { id: 'function-names', status: 'ok' },
+    ]));
+    expect(diagnostics.tools).toMatchObject([{ internalId: 'scores', version: '1.0.0', source: 'direct', functionName: 'filter_scores', status: 'ok' }]);
+    expect(diagnostics.tools[0].checks).toEqual(expect.arrayContaining([
+      { id: 'resolved', status: 'ok' },
+      { id: 'agent-input', status: 'ok' },
+      { id: 'execution', status: 'ok' },
+    ]));
+
+    const missing = await server.inject({ method: 'GET', url: '/agents/no-such-agent/diagnostics', query: scope });
+    expect(missing.statusCode).toBe(404);
+  });
+
   it('未保存・保存済みAgentのprompt草案を生成する', async () => {
     const draft = await server.inject({ method: 'POST', url: '/agent-drafts/generate-prompt', payload: { scope, displayName: 'Evaluator', kind: 'evaluator', tools: [{ internalId: 'scores', version: '1.0.0' }] } });
     expect(draft.statusCode).toBe(200);

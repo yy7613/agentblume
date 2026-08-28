@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { isAbortError, type ToolApiClient } from '../api/tool-api';
-import type { AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, EvaluationResultDto, RunTraceEventDto, SerializedAgentDto, WikiPageSummaryDto } from '../api/types';
+import type { AgentDiagnosticsDto, AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, DiagnosticCheckDto, DiagnosticStatusDto, EvaluationResultDto, RunTraceEventDto, SerializedAgentDto, WikiPageSummaryDto } from '../api/types';
 import { useI18n } from '../i18n';
 import { useElapsedSeconds } from '../chat/useElapsedSeconds';
 // 実行中の段階表示はChat画面と同じ文言・同じ閾値を使う（出所を一箇所に保つ）。
@@ -58,6 +58,8 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   const [aborter, setAborter] = useState<AbortController>();
   // ツール承認待ちで止まったRun。承認/拒否ボタンを出す対象を最新の1件に絞る。
   const [approvalRunId, setApprovalRunId] = useState<string>();
+  // ツール呼び出しのプリフライト診断。実行せずに「どの段階で呼び出せないか」を一覧表示する。
+  const [diagnostics, setDiagnostics] = useState<AgentDiagnosticsDto | 'loading' | { readonly failed: string }>();
   const [loadError, setLoadError] = useState<string>();
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -92,6 +94,27 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
 
   const agent = useMemo(() => agents.find((item) => item.internalId === selectedId), [agents, selectedId]);
   const agentName = agent?.displayName ?? text('Agent', 'エージェント');
+
+  // 対象エージェントを替えたら前の診断結果は無効。進行中のリクエストも中断する
+  // （中断しないと、遅れて届いた前エージェントの結果が setDiagnostics で復活する）。
+  const diagnoseAborter = useRef<AbortController | undefined>(undefined);
+  useEffect(() => { setDiagnostics(undefined); diagnoseAborter.current?.abort(); diagnoseAborter.current = undefined; }, [selectedId]);
+  useEffect(() => () => diagnoseAborter.current?.abort(), []);
+
+  async function diagnose(): Promise<void> {
+    if (agent === undefined || diagnostics === 'loading') return;
+    const controller = new AbortController();
+    diagnoseAborter.current?.abort();
+    diagnoseAborter.current = controller;
+    setDiagnostics('loading');
+    try {
+      const result = await client.diagnoseAgent(agent.internalId, scope, agent.latestVersion, controller.signal);
+      if (!controller.signal.aborted) setDiagnostics(result);
+    } catch (cause) {
+      // 中断は失敗ではない（エージェント切替時のリセットを上書きしない）。
+      if (!controller.signal.aborted && !isAbortError(cause)) setDiagnostics({ failed: messageOf(cause) });
+    }
+  }
 
   useEffect(() => { const node = threadRef.current; if (node !== null) node.scrollTop = node.scrollHeight; }, [turns, busy]);
   useEffect(() => { const el = inputRef.current; if (el === null) return; el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 168)}px`; }, [message]);
@@ -198,8 +221,15 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
           <CapGroup label={text('Skills', 'スキル')} tone="skill" items={definition.skills} text={text} />
           <CapGroup label={text('Tools', 'ツール')} tone="tool" items={definition.tools} text={text} />
           {definition.output !== undefined && <span className="ins-chip out">{text('Structured output', '構造化出力')}: {definition.output.name}</span>}
+          <button type="button" className="secondary ins-diag-btn" disabled={diagnostics === 'loading'} onClick={() => void diagnose()}>
+            {diagnostics === 'loading' ? text('Diagnosing…', '診断中…') : text('Diagnose tools', 'ツール診断')}
+          </button>
         </div>
       )}
+
+      {diagnostics !== undefined && diagnostics !== 'loading' && ('failed' in diagnostics
+        ? <div className="cc-alert" role="alert">{text('Diagnostics failed: ', '診断に失敗しました: ')}{diagnostics.failed}</div>
+        : <DiagnosticsPanel diagnostics={diagnostics} onClose={() => setDiagnostics(undefined)} text={text} />)}
 
       <div className="cc-thread" ref={threadRef}>
         <div className="cc-thread-inner">
@@ -299,6 +329,74 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
         <p className="cc-hint">{text('Preview mode · read-only tools only · Enter to send', 'プレビュー実行 · 読み取り専用ツールのみ · Enterで送信')}</p>
       </form>
     </main>
+  );
+}
+
+/** 検査項目idの表示ラベル。サーバー側 DiagnoseAgentToolsUseCase の id と対で保守する。未知idはそのまま表示する。 */
+const DIAGNOSTIC_CHECK_LABELS: Readonly<Record<string, readonly [string, string]>> = {
+  skills: ['Skill references', 'スキル参照'],
+  'tool-versions': ['Tool version consistency', 'ツールバージョン整合'],
+  'sub-agents': ['Sub-agent references', 'サブエージェント参照'],
+  'function-names': ['Function name uniqueness', 'Function名の一意性'],
+  resolved: ['Tool version exists', 'ツールバージョンの存在'],
+  'function-definition': ['Function definition', 'Function定義'],
+  'agent-input': ['Input schema matches agent-input', '入力スキーマとAgent Inputの一致'],
+  'data-sources': ['Data source resolution', 'データソース解決'],
+  graph: ['Graph validation', 'グラフ検証'],
+  execution: ['Sample execution', 'サンプル実行'],
+  'output-schema': ['Output schema consistency', '出力スキーマ整合'],
+  'operator-arguments': ['Operator arguments', '演算子引数'],
+  'side-effect': ['Side effect / approval', '副作用と承認'],
+};
+
+function diagnosticCheckLabel(id: string, text: Translate): string {
+  const pair = DIAGNOSTIC_CHECK_LABELS[id];
+  return pair === undefined ? id : text(pair[0], pair[1]);
+}
+
+function DiagnosticStatusMark({ status }: { readonly status: DiagnosticStatusDto }) {
+  return <span className={`ins-diag-mark ${status}`} aria-hidden="true">{status === 'ok' ? '✓' : status === 'warning' ? '!' : '✕'}</span>;
+}
+
+function DiagnosticCheckRow({ check, text }: { readonly check: DiagnosticCheckDto; readonly text: Translate }) {
+  return (
+    <li className={`ins-diag-check ${check.status}`}>
+      <DiagnosticStatusMark status={check.status} />
+      <span className="ins-diag-label">{diagnosticCheckLabel(check.id, text)}</span>
+      {check.detail !== undefined && <code className="ins-diag-detail">{check.detail}</code>}
+    </li>
+  );
+}
+
+function DiagnosticsPanel({ diagnostics, onClose, text }: { readonly diagnostics: AgentDiagnosticsDto; readonly onClose: () => void; readonly text: Translate }) {
+  const badge = diagnostics.status === 'ok'
+    ? text('No blockers', '問題なし')
+    : diagnostics.status === 'warning' ? text('Needs attention', '要確認') : text('Blocked', '呼び出し不可あり');
+  return (
+    <section className="ins-diag" aria-label={text('Tool call diagnostics', 'ツール呼び出し診断')}>
+      <header className="ins-diag-head">
+        <h4>{text('Tool call diagnostics', 'ツール呼び出し診断')} <small>{diagnostics.agent.internalId}@{diagnostics.agent.version}</small></h4>
+        <span className={`ins-diag-badge ${diagnostics.status}`}>{badge}</span>
+        <button type="button" className="ghost" aria-label={text('Close diagnostics', '診断を閉じる')} onClick={onClose}>×</button>
+      </header>
+      <ul className="ins-diag-list" aria-label={text('Agent checks', 'エージェント検査')}>
+        {diagnostics.checks.map((check) => <DiagnosticCheckRow key={check.id} check={check} text={text} />)}
+      </ul>
+      {diagnostics.tools.length === 0 && <p className="ins-none">{text('This agent references no tools.', 'このエージェントはツールを参照していません。')}</p>}
+      {diagnostics.tools.map((tool) => (
+        <div className="ins-diag-tool" key={`${tool.internalId}@${tool.version}`}>
+          <div className="ins-diag-tool-head">
+            <DiagnosticStatusMark status={tool.status} />
+            <b>{tool.functionName ?? tool.internalId}</b>
+            <small>{tool.internalId}@{tool.version}</small>
+            {tool.source === 'skill' && <span className="ins-chip skill">{text('via skill', 'スキル経由')}{tool.skillId === undefined ? '' : `: ${tool.skillId}`}</span>}
+          </div>
+          <ul className="ins-diag-list" aria-label={text(`Checks for ${tool.internalId}`, `${tool.internalId} の検査`)}>
+            {tool.checks.map((check) => <DiagnosticCheckRow key={check.id} check={check} text={text} />)}
+          </ul>
+        </div>
+      ))}
+    </section>
   );
 }
 

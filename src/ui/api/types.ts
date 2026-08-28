@@ -29,6 +29,8 @@ export interface NodeInferenceDto {
 }
 export interface PropagationResultDto {
   readonly order: readonly string[];
+  /** 実行終端ノードのid。出力スキーマは order.at(-1) ではなく必ずこれから引く（未接続agent-inputが末尾に来うる）。 */
+  readonly terminalId: string;
   readonly nodes: Readonly<Record<string, NodeInferenceDto>>;
   readonly hasErrors: boolean;
 }
@@ -182,6 +184,28 @@ export interface AgentPromptDraftDto {
   readonly sections: { readonly role: string; readonly skillGuide: string; readonly toolUsageGuide: string; readonly collaboratorGuide: string; readonly rules: string };
   readonly editable: true;
   readonly sources: readonly string[];
+}
+
+export type DiagnosticStatusDto = 'ok' | 'warning' | 'error';
+export interface DiagnosticCheckDto {
+  readonly id: string;
+  readonly status: DiagnosticStatusDto;
+  readonly detail?: string;
+}
+export interface ToolDiagnosticsDto {
+  readonly internalId: string;
+  readonly version: string;
+  readonly source: 'direct' | 'skill';
+  readonly skillId?: string;
+  readonly functionName?: string;
+  readonly status: DiagnosticStatusDto;
+  readonly checks: readonly DiagnosticCheckDto[];
+}
+export interface AgentDiagnosticsDto {
+  readonly agent: { readonly internalId: string; readonly version: string };
+  readonly status: DiagnosticStatusDto;
+  readonly checks: readonly DiagnosticCheckDto[];
+  readonly tools: readonly ToolDiagnosticsDto[];
 }
 
 export interface SerializedSkillDto {

@@ -141,6 +141,8 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   rule('POST', '/agents', 'create', 'agent'),
   rule('GET', '/agents', 'read', 'agent'),
   rule('GET', '/agents/:internalId', 'read', 'agent'),
+  // 診断はツールグラフのdry-run（データソース読み取り込み）を実行するため、preview系と同じ execute を要求する。
+  rule('GET', '/agents/:internalId/diagnostics', 'execute', 'agent'),
   rule('GET', '/agents/:internalId/versions', 'read', 'agent'),
   rule('DELETE', '/agents/:internalId', 'delete', 'agent', true),
   rule('POST', '/agent-drafts/generate-prompt', 'edit', 'agent'),

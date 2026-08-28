@@ -37,6 +37,12 @@ export interface NodeInference {
 export interface PropagationResult {
   /** トポロジカル順のノードid列。 */
   readonly order: NodeId[];
+  /**
+   * 実行終端ノードのid（validate の終端規則そのもの）。出力スキーマは**必ずこれ**から引く。
+   * `order.at(-1)` は終端ではない — 未接続の agent-input（引数宣言）は出次数0のまま
+   * トポロジカル順の末尾に来ることがある。
+   */
+  readonly terminalId: NodeId;
   /** nodeId → 推論結果。 */
   readonly nodes: Record<string, NodeInference>;
   /** いずれかのノードに severity:'error' の issue があれば true。 */
@@ -186,7 +192,7 @@ export class EtlEngine {
       record(id, inference.schema, combineStates([...upstreamStates, inference.state]), inference.issues);
     }
 
-    return { order: v.order, nodes, hasErrors };
+    return { order: v.order, terminalId: v.terminalId, nodes, hasErrors };
   }
 
   /**

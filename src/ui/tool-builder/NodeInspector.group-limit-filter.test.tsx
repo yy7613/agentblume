@@ -24,6 +24,7 @@ const upstream = { columns: [
 ] };
 const propagation: PropagationResultDto = {
   order: ['source-1', 'filter-1'],
+  terminalId: 'filter-1',
   hasErrors: false,
   nodes: {
     // filter-1 の下流に追加したノード（group-by / limit）は filter-1 の出力列を見る。

@@ -506,6 +506,30 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .ins-chip.out { background: #fff3e0; color: #8a5a12; border-color: #f4e0bd; }
 .ins-chip.muted { background: #f1f3f8; color: #97a1b5; }
 
+.ins-diag-btn { margin-left: auto; font-size: 11px; padding: 4px 10px; }
+.ins-diag { margin: 0; padding: 10px 22px 14px; background: #fbfcfe; border-bottom: 1px solid #e4e8f1; }
+.ins-diag-head { display: flex; align-items: center; gap: 10px; }
+.ins-diag-head h4 { margin: 0; font-size: 12px; color: #3d4a63; }
+.ins-diag-head h4 small { font-weight: 400; color: #8a94a8; margin-left: 6px; }
+.ins-diag-head button { margin-left: auto; }
+.ins-diag-badge { font-size: 10px; font-weight: 800; border-radius: 99px; padding: 3px 9px; }
+.ins-diag-badge.ok { background: #e6f4ec; color: #1f7a5c; }
+.ins-diag-badge.warning { background: #fff3df; color: #8a5a12; }
+.ins-diag-badge.error { background: #fdecee; color: #b73343; }
+.ins-diag-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.ins-diag-check { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 8px; font-size: 11px; color: #4f5d76; }
+.ins-diag-mark { flex: none; width: 15px; height: 15px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 800; }
+.ins-diag-mark.ok { background: #e6f4ec; color: #1f7a5c; }
+.ins-diag-mark.warning { background: #fff3df; color: #8a5a12; }
+.ins-diag-mark.error { background: #fdecee; color: #b73343; }
+.ins-diag-check.error .ins-diag-label { color: #b73343; font-weight: 700; }
+.ins-diag-check.warning .ins-diag-label { color: #8a5a12; font-weight: 700; }
+.ins-diag-detail { flex: 1 1 100%; margin-left: 23px; font-size: 10px; color: #59667d; overflow-wrap: anywhere; }
+.ins-diag-tool { margin-top: 10px; border: 1px solid #e7ebf3; border-radius: 10px; padding: 9px 12px; background: #fff; }
+.ins-diag-tool-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: 12px; }
+.ins-diag-tool-head b { color: #1f2a44; }
+.ins-diag-tool-head small { color: #8a94a8; }
+
 .ins-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0 2px; }
 .ins-metric { border: 1px solid #e7ebf3; border-radius: 10px; padding: 9px 11px; background: #fbfcfe; }
 .ins-metric b { display: block; font-size: 17px; font-weight: 750; color: #26304a; line-height: 1.15; }

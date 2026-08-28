@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { DeleteAgentUseCase } from '../application/agent/delete-agent';
+import type { DiagnoseAgentToolsUseCase } from '../application/agent/diagnose-agent-tools';
 import type { GenerateAgentPromptUseCase } from '../application/agent/generate-agent-prompt';
 import type { QueryAgentsUseCase } from '../application/agent/query-agents';
 import type { SaveAgentUseCase } from '../application/agent/save-agent';
@@ -15,6 +16,7 @@ export interface AgentRouteDeps {
   readonly queryAgents: QueryAgentsUseCase;
   readonly generateAgentPrompt: GenerateAgentPromptUseCase;
   readonly deleteAgent: DeleteAgentUseCase;
+  readonly diagnoseAgentTools: DiagnoseAgentToolsUseCase;
 }
 
 interface AgentParams { internalId: string }
@@ -64,6 +66,14 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
       version(query.version),
     );
     return { agent: serializeAgent(agent) };
+  });
+
+  // Tool呼び出しのプリフライト診断。実行せずに「どの段階で呼び出せなくなるか」を一覧で返す。
+  app.get<{ Params: AgentParams }>('/agents/:internalId/diagnostics', async (request) => {
+    const query = parseWith(versionQuerySchema, request.query, 'invalid query');
+    const agent = await deps.queryAgents.get(scopeOf(request), request.params.internalId, version(query.version));
+    const diagnostics = await deps.diagnoseAgentTools.execute(scopeOf(request), agent);
+    return { diagnostics };
   });
 
   app.get<{ Params: AgentParams }>('/agents/:internalId/versions', async (request) => {

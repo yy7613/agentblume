@@ -121,7 +121,6 @@ function inputSchema() {
 
 function outputSchema() {
   const propagation = useToolBuilderStore.getState().propagation;
-  if (propagation === undefined) return undefined;
-  const terminalId = propagation?.order.at(-1);
-  return terminalId === undefined ? undefined : propagation.nodes[terminalId]?.schema;
+  // 終端は必ず terminalId から引く。order.at(-1) は未接続の agent-input（引数宣言）でありうる。
+  return propagation === undefined ? undefined : propagation.nodes[propagation.terminalId]?.schema;
 }

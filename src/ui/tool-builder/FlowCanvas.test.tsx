@@ -108,6 +108,7 @@ describe('FlowCanvas（実描画）', () => {
     useToolBuilderStore.getState().reset();
     useToolBuilderStore.getState().setPropagation({
       order: ['source-1', 'filter-1'],
+      terminalId: 'filter-1',
       hasErrors: true,
       nodes: {
         'source-1': { nodeId: 'source-1', state: 'confirmed', issues: [], schema: { columns: [] } },
