@@ -70,7 +70,8 @@ module.exports = {
       name: 'ui-http-boundary-only',
       comment: 'UIはHTTP DTO/clientだけを所有し、backend内部レイヤを直接importしない',
       severity: 'error',
-      from: { path: '^src/ui' },
+      // テストはdomainの正準値（FILTER_OPS等）をピン留めして UI 側の複製と突き合わせるため対象外。
+      from: { path: '^src/ui', pathNot: '\\.test\\.(ts|tsx)$' },
       to: { path: '^src/(domain|application|api|adapters|composition)' },
     },
   ],
