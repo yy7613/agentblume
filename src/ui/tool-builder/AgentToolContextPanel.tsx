@@ -16,7 +16,8 @@ export function AgentToolContextPanel() {
   const inputConfig = inputNode?.data.config;
   const inputSchema = inputConfig?.['schema'] as SchemaDto | undefined;
   const columns = inputSchema?.columns ?? [];
-  const outputSchema = propagation === undefined ? undefined : propagation.nodes[propagation.order.at(-1) ?? '']?.schema;
+  // 終端は必ず terminalId から引く。order.at(-1) は未接続の agent-input（引数宣言）でありうる。
+  const outputSchema = propagation === undefined ? undefined : propagation.nodes[propagation.terminalId]?.schema;
   const updateColumns = (next: SchemaDto['columns']) => {
     if (inputNode === undefined || inputConfig === undefined) return;
     updateNodeConfig(inputNode.id, { ...inputConfig, schema: { columns: next } });
@@ -35,7 +36,9 @@ export function AgentToolContextPanel() {
             <p>{text('Edit the Agent Input schema here. Sample values remain in the node settings for design-time preview.', 'ここでAgent Inputのスキーマを編集できます。設計時プレビュー用のサンプル値はノード設定で保持します。')}</p>
             <div className="agent-argument-grid" role="table" aria-label={text('Agent arguments', 'エージェント引数')}>
               <span>{text('Name', '名前')}</span><span>{text('Type', '型')}</span><span>{text('Required', '必須')}</span><span aria-hidden="true" />
-              {columns.map((column, index) => <div className="agent-argument-row" role="row" key={`${column.name}-${index}`}>
+              {/* keyに column.name を混ぜない: 1文字入力するたびにkeyが変わって行が再マウントされ、
+                  入力欄がフォーカスを失う（「category」と打っても "c" しか入らない）。行の同一性は位置で決める。 */}
+              {columns.map((column, index) => <div className="agent-argument-row" role="row" key={index}>
                 <input aria-label={`${text('Argument name', '引数名')} ${index + 1}`} value={column.name} onChange={(event) => updateColumns(columns.map((current, i) => i === index ? { ...current, name: event.target.value } : current))} />
                 <select aria-label={`${text('Argument type', '引数型')} ${column.name || index + 1}`} value={column.type} onChange={(event) => updateColumns(columns.map((current, i) => i === index ? { ...current, type: event.target.value as DataType } : current))}>{DATA_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select>
                 <label className="check"><input aria-label={`${text('Argument required', '引数必須')} ${column.name || index + 1}`} type="checkbox" checked={!column.nullable} onChange={(event) => updateColumns(columns.map((current, i) => i === index ? { ...current, nullable: !event.target.checked } : current))} />{text('Required', '必須')}</label>
