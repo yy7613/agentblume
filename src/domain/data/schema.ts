@@ -43,6 +43,27 @@ export function columnNames(schema: Schema): string[] {
 }
 
 /**
+ * 宣言スキーマ（declared）に対する実スキーマ（actual）の非互換を1件説明する。互換なら undefined。
+ *
+ * 判定はTool実行時の出力検査と同一の規則（列数一致 / 宣言列が名前で存在し型一致 /
+ * 「実際はnullableなのに宣言が非nullable」は拒否・逆は許容）。列順は問わない。
+ * 保存時（宣言 vs 推論）と実行時（宣言 vs 実出力）が同じ規則で判定されることに意味があるため、
+ * どちらか一方だけを変更してはならない。
+ */
+export function schemaIncompatibility(actual: Schema, declared: Schema): string | undefined {
+  if (actual.columns.length !== declared.columns.length) {
+    return `column count mismatch: expected ${declared.columns.length}, received ${actual.columns.length}`;
+  }
+  for (const expected of declared.columns) {
+    const column = findColumn(actual, expected.name);
+    if (column === undefined || column.type !== expected.type || (column.nullable && !expected.nullable)) {
+      return `mismatch at '${expected.name}'`;
+    }
+  }
+  return undefined;
+}
+
+/**
  * 2つの型を統合する。
  * - 同型 → その型
  * - 片方が `'unknown'` → `'unknown'`

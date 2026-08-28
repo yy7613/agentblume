@@ -11,6 +11,7 @@
  * 4. `repo.save(tool)`。
  * 5. `return tool`。
  */
+import { schemaIncompatibility } from '../../domain/data/schema';
 import type { Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { VALUELESS_OPS, operatorArgumentSummaries, operatorBindingsOf, valueBindingsOf } from '../../domain/etl/nodes/filter';
@@ -72,6 +73,19 @@ export class SaveToolUseCase {
         )
         .join('; ');
       throw new ToolValidationError(`SaveTool: graph validation failed: ${messages}`);
+    }
+
+    // 1b. 宣言outputSchemaと推論結果の整合検証。不整合のまま保存すると、保存時ではなく
+    //     エージェント実行時に assertOutputMatchesSchema で初めて爆発する（UIのスキーマ推論が
+    //     デバウンス中の古い値で保存された場合や、保存後にデータソースの形が変わった場合）。
+    //     実行時と同じ規則（schemaIncompatibility）で保存時に落とし、原因を保存操作の近くへ寄せる。
+    if (input.outputSchema !== undefined) {
+      const terminalId = propagation.order.at(-1);
+      const terminalSchema = terminalId === undefined ? undefined : propagation.nodes[terminalId]?.schema;
+      const incompatibility = terminalSchema === undefined ? undefined : schemaIncompatibility(terminalSchema, input.outputSchema);
+      if (incompatibility !== undefined) {
+        throw new ToolValidationError(`SaveTool: declared output schema does not match the graph's inferred output (${incompatibility})`);
+      }
     }
 
     // 2. バージョン決定。

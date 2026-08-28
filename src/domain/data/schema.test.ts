@@ -7,6 +7,7 @@ import {
   inferCellType,
   inferColumn,
   inferSchemaFromRows,
+  schemaIncompatibility,
   unifyTypes,
 } from './schema';
 
@@ -218,5 +219,46 @@ describe('inferSchemaFromRows', () => {
     const snapshot = JSON.stringify(rows);
     inferSchemaFromRows(rows);
     expect(JSON.stringify(rows)).toBe(snapshot);
+  });
+});
+
+describe('schemaIncompatibility', () => {
+  const actual: Schema = { columns: [
+    { name: 'a', type: 'number', nullable: false },
+    { name: 'b', type: 'string', nullable: true },
+  ] };
+
+  it('同一スキーマ・列順違いは互換（undefined）', () => {
+    expect(schemaIncompatibility(actual, actual)).toBeUndefined();
+    expect(schemaIncompatibility(actual, { columns: [...actual.columns].reverse() })).toBeUndefined();
+  });
+
+  it('列数不一致は expected（宣言）/ received（実際）の向きで報告する', () => {
+    expect(schemaIncompatibility(actual, { columns: [actual.columns[0]!] }))
+      .toBe('column count mismatch: expected 1, received 2');
+  });
+
+  it('宣言列が実際に無い・型が違う場合は列名つきで報告する', () => {
+    expect(schemaIncompatibility(actual, { columns: [
+      { name: 'a', type: 'number', nullable: false },
+      { name: 'missing', type: 'string', nullable: true },
+    ] })).toBe("mismatch at 'missing'");
+    expect(schemaIncompatibility(actual, { columns: [
+      { name: 'a', type: 'string', nullable: false },
+      { name: 'b', type: 'string', nullable: true },
+    ] })).toBe("mismatch at 'a'");
+  });
+
+  it('nullableは「実際がnullableなのに宣言が非nullable」だけを拒否する（緩める方向は許容）', () => {
+    // b は実際 nullable:true → 宣言 nullable:false は拒否。
+    expect(schemaIncompatibility(actual, { columns: [
+      { name: 'a', type: 'number', nullable: false },
+      { name: 'b', type: 'string', nullable: false },
+    ] })).toBe("mismatch at 'b'");
+    // a は実際 nullable:false → 宣言 nullable:true は許容。
+    expect(schemaIncompatibility(actual, { columns: [
+      { name: 'a', type: 'number', nullable: true },
+      { name: 'b', type: 'string', nullable: true },
+    ] })).toBeUndefined();
   });
 });

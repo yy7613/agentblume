@@ -399,6 +399,24 @@ describe('SaveToolUseCase', () => {
     await expect(repo.listVersions(scopeA, 'tool-1')).resolves.toEqual([]);
   });
 
+  it('宣言outputSchemaが推論結果と不整合なら保存を拒否する（エージェント実行時まで持ち越さない）', async () => {
+    const { usecase, repo } = makeSut();
+    // validGraph の終端は [a:number, b:string] の2列。1列だけの宣言は列数不一致。
+    await expect(usecase.execute(makeInput({ outputSchema: { columns: [{ name: 'b', type: 'string', nullable: true }] } })))
+      .rejects.toThrow(/column count mismatch: expected 1, received 2/);
+    // 列数が合っても型が違えば列単位の不一致。
+    await expect(usecase.execute(makeInput({ outputSchema: { columns: [
+      { name: 'a', type: 'string', nullable: false },
+      { name: 'b', type: 'string', nullable: false },
+    ] } }))).rejects.toThrow(/declared output schema does not match/);
+    expect(repo.size).toBe(0);
+    // 実行時検査（assertOutputMatchesSchema）と同じ規則なので、保存できたToolは実行時にも通る。
+    await expect(usecase.execute(makeInput({ outputSchema: { columns: [
+      { name: 'a', type: 'number', nullable: false },
+      { name: 'b', type: 'string', nullable: false },
+    ] } }))).resolves.toBeDefined();
+  });
+
   it('GraphError（未知ノード type 等）はそのまま伝播する', async () => {
     const { usecase, repo } = makeSut();
     const badGraph: ToolGraph = {
@@ -447,7 +465,12 @@ describe('SaveToolUseCase', () => {
   it('inputSchema/outputSchema・sideEffect・メタが Tool に反映される', async () => {
     const { usecase } = makeSut();
     const inputSchema = { columns: [{ name: 'a', type: 'number' as const, nullable: false }] };
-    const outputSchema = { columns: [{ name: 'b', type: 'string' as const, nullable: true }] };
+    // validGraph の終端（json-source）の推論は [a:number, b:string]（いずれも非nullable）。
+    // 宣言側の nullable:true は「推論より緩い」ので許容され、そのまま保存されることを確認する。
+    const outputSchema = { columns: [
+      { name: 'a', type: 'number' as const, nullable: false },
+      { name: 'b', type: 'string' as const, nullable: true },
+    ] };
 
     const tool = await usecase.execute(
       makeInput({ sideEffect: 'write', inputSchema, outputSchema }),

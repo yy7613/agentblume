@@ -1,3 +1,4 @@
+import { schemaIncompatibility } from '../../domain/data/schema';
 import type { Cell, Column, Row, Schema, Table } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { operatorArgumentSummaries } from '../../domain/etl/nodes/filter';
@@ -143,14 +144,9 @@ function valueMatches(value: Cell | undefined, column: Column): boolean {
 
 export function assertOutputMatchesSchema(table: Table, schema: Schema | undefined): void {
   if (schema === undefined) return;
-  if (table.schema.columns.length !== schema.columns.length) {
-    throw new AgentRunError(`tool output schema column count mismatch: expected ${schema.columns.length}, received ${table.schema.columns.length}`);
-  }
-  for (const expected of schema.columns) {
-    const actual = table.schema.columns.find((column) => column.name === expected.name);
-    if (actual === undefined || actual.type !== expected.type || (actual.nullable && !expected.nullable)) {
-      throw new AgentRunError(`tool output schema mismatch at '${expected.name}'`);
-    }
+  const incompatibility = schemaIncompatibility(table.schema, schema);
+  if (incompatibility !== undefined) {
+    throw new AgentRunError(`tool output schema ${incompatibility}`);
   }
   for (const row of table.rows) {
     for (const column of schema.columns) {
