@@ -125,6 +125,22 @@ describe('FlowCanvas（実描画）', () => {
     expect(screen.queryByText("chart-output: mapping 'timeColumn' is required")).toBeNull();
   });
 
+  it('流れに繋がっていないノードにだけ「未接続」バッジを出し、繋ぐと消える', () => {
+    useToolBuilderStore.getState().reset();
+    // 選択中の filter-1 に対してソースは自動接続されないので、終端（out-degree 0）が filter-1 と csv の2つになる。
+    useToolBuilderStore.getState().addNode('csv-source');
+    const csvId = useToolBuilderStore.getState().selectedNodeId ?? '';
+    render(<I18nProvider initialLanguage="ja"><FlowCanvas /></I18nProvider>);
+    expect(screen.getAllByText('未接続')).toHaveLength(2);
+    expect(document.querySelectorAll('.tool-node.unconnected')).toHaveLength(2);
+    // source-1 は filter-1 へ繋がっているので対象外。
+    expect(document.querySelector(`.react-flow__node[data-id="source-1"] .tool-node`)?.className).not.toContain('unconnected');
+
+    act(() => useToolBuilderStore.getState().onConnect({ source: csvId, target: 'filter-1', sourceHandle: null, targetHandle: null }));
+    expect(screen.queryByText('未接続')).toBeNull();
+    expect(document.querySelector('.tool-node.unconnected')).toBeNull();
+  });
+
   it('ノード数が変わるとビューを再フィットする（onInit後のfitViewタイマー）', async () => {
     useToolBuilderStore.getState().reset();
     vi.useFakeTimers();

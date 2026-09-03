@@ -61,12 +61,31 @@ export async function runRepositoryContract(repo: RunRepository): Promise<void> 
   expect(scopes).toContainEqual({ tenantId: 'tenant', workspaceId: 'workspace' });
   expect(scopes).toContainEqual({ tenantId: 'other', workspaceId: 'workspace' });
 
+  // ツール実行由来の失敗（tool / nodeId）と mcp-server-skipped は永続化を往復し、payload の retention では
+  // message だけが伏せられて識別は残る（古い失敗からもUIがToolへ辿れる）。
+  const toolRef = { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' };
+  const toolFailure = failRun(running('run-tool-failure', '2026-07-03T13:00:00.000Z'), {
+    trace: [
+      { sequence: 1, kind: 'mcp-server-skipped', server: 'ghost', reason: 'not-found' },
+      { sequence: 2, kind: 'mcp-server-skipped', server: 'broken', reason: 'unreachable', detail: 'failed to start' },
+      { sequence: 3, kind: 'error', code: 'ETL_SCHEMA', message: 'select: column(s) not found: revenue', tool: toolRef, nodeId: 'pick' },
+    ],
+    failure: { code: 'ETL_SCHEMA', message: 'select: column(s) not found: revenue', tool: toolRef, nodeId: 'pick' },
+    completedAt: '2026-07-03T13:00:01.000Z',
+  });
+  await repo.save(toolFailure);
+  await expect(repo.find(scope, 'run-tool-failure')).resolves.toEqual(toolFailure);
+  await expect(repo.list(scope, { status: 'failed' })).resolves.toContainEqual(expect.objectContaining({ runId: 'run-tool-failure', failure: toolFailure.failure }));
+
   const retained = succeedRun(running('run-retained', '2026-07-03T12:00:00.000Z'), { response: 'sensitive payload', trace: [{ sequence: 1, kind: 'model-response', content: 'sensitive trace' }], usage: { totalTokens: 1 }, completedAt: '2026-07-03T12:00:01.000Z' });
   await repo.save(retained);
   expect(repo.applyRetention).toBeTypeOf('function');
   await repo.applyRetention?.(scope, { payloadBefore: '2026-07-04T00:00:00.000Z', traceBefore: '2026-07-01T00:00:00.000Z', deleteBefore: '2026-07-01T00:00:00.000Z' });
   const redacted = await repo.find(scope, 'run-retained');
   expect(redacted?.response).toBeUndefined(); expect(redacted?.trace).toMatchObject([{ kind: 'model-response' }]);
+  const redactedFailure = await repo.find(scope, 'run-tool-failure');
+  expect(redactedFailure?.failure).toEqual({ code: 'ETL_SCHEMA', message: '[redacted]', tool: toolRef, nodeId: 'pick' });
+  expect(redactedFailure?.trace).toEqual(toolFailure.trace);
   await repo.applyRetention?.(scope, { payloadBefore: '2026-07-04T00:00:00.000Z', traceBefore: '2026-07-04T00:00:00.000Z', deleteBefore: '2026-07-04T00:00:00.000Z' });
   await expect(repo.find(scope, 'run-retained')).resolves.toBeNull();
 }

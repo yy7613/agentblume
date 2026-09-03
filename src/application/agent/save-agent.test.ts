@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createAgent, type Agent } from '../../domain/agent/agent';
+import { DEFAULT_AGENT_RUNTIME_HARNESS, createAgent, type Agent } from '../../domain/agent/agent';
 import type { AgentRepository, AgentSummary } from '../../domain/agent/agent-repository';
+import { AgentValidationError } from '../../domain/agent/errors';
 import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
-import { SaveAgentUseCase } from './save-agent';
+import { SaveAgentUseCase, buildAgentAggregate } from './save-agent';
 import type { WikiRepository } from '../../domain/memory/wiki-repository';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
@@ -53,5 +54,33 @@ describe('SaveAgentUseCase sub-agents', () => {
     const saved = await new SaveAgentUseCase(agents, noTools, undefined, wiki).execute({ ...rootInput, wikis: [{ wikiId: 'customer-a' }] });
     expect(saved.wikis).toEqual([{ wikiId: 'customer-a' }]);
     await expect(new SaveAgentUseCase(new MapAgents(), noTools, undefined, wiki).execute({ ...rootInput, wikis: [{ wikiId: 'ghost' }] })).rejects.toThrow(/wiki not found: ghost/);
+  });
+});
+
+describe('buildAgentAggregate', () => {
+  it('省略可能な harness / persona / output / wikis / mcpServers は省略時にキーごと持たず、state 既定は draft', () => {
+    const plain = buildAgentAggregate(rootInput, v);
+    expect(plain.metadata).toMatchObject({ internalId: 'root', state: 'draft', version: v });
+    for (const key of ['harness', 'persona', 'output', 'wikis', 'mcpServers']) expect(plain).not.toHaveProperty(key);
+    expect(plain.skills).toEqual([]);
+    expect(plain.agents).toEqual([]);
+  });
+
+  it('指定した harness / output / state / 版 / wikis / mcpServers をそのまま集約へ載せる', () => {
+    const harness = { ...DEFAULT_AGENT_RUNTIME_HARNESS, webSearch: true };
+    const output = { name: 'answer', fields: [{ name: 'text', type: 'string' as const, required: true }] };
+    const full = buildAgentAggregate({ ...rootInput, harness, output, state: 'published', wikis: [{ wikiId: 'notes' }], mcpServers: ['files'] }, SemVer.of(2, 0, 0));
+    expect(full.harness).toEqual(harness);
+    expect(full.output).toMatchObject(output);
+    expect(full.metadata).toMatchObject({ state: 'published', version: SemVer.of(2, 0, 0) });
+    expect(full.wikis).toEqual([{ wikiId: 'notes' }]);
+    expect(full.mcpServers).toEqual(['files']);
+  });
+
+  it('persona は pseudo-user だけに載り、createAgent の不変条件（persona の kind 制約・自己参照）はそのまま投げる', () => {
+    const persona = { personaId: 'p1', version: v };
+    expect(buildAgentAggregate({ ...rootInput, kind: 'pseudo-user', persona }, v).persona).toEqual(persona);
+    expect(() => buildAgentAggregate({ ...rootInput, persona }, v)).toThrow(AgentValidationError);
+    expect(() => buildAgentAggregate({ ...rootInput, agents: [{ internalId: 'root', version: v, usage: 'x' }] }, v)).toThrow(/cannot reference itself/);
   });
 });

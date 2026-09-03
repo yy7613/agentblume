@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider';
 import { ModelProviderError, type ModelCapability, type ModelCompletion, type ModelCompletionRequest, type ModelProviderPort } from '../application/model/model-provider';
 import { SemVer } from '../domain/tool/semver';
+import { failRun, startRun } from '../domain/run/run';
 import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp, type App } from '../composition/root';
 import { clientAbortSignal } from './client-abort';
@@ -264,6 +265,46 @@ describe('POST /runs', () => {
     expect(response.json().error.runId).toEqual(expect.any(String));
     const trace = await server.inject({ method: 'GET', url: `/runs/${response.json().error.runId}/trace?tenantId=tenant&workspaceId=workspace` });
     expect(trace.json().run).toMatchObject({ status: 'failed', failure: { code: 'MODEL_PROVIDER' } });
+  });
+
+  it('ツール実行由来の失敗は 422 に tool / runId を添え、GET /runs と /runs/:runId/trace の failure にも同じ識別が入る', async () => {
+    // 引数の作り間違いを修復上限（1回）を超えて繰り返す: 2回目は差し戻さず、どのToolで落ちたかを添えて失敗する。
+    model.enqueue(
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'call-1', name: 'score_lookup', arguments: { name: 'Alice' } }] }, finishReason: 'tool_calls' },
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'call-2', name: 'score_lookup', arguments: { name: 'Alice' } }] }, finishReason: 'tool_calls' },
+    );
+    const response = await server.inject({ method: 'POST', url: '/runs', payload: {
+      scope, tool: { internalId: 'score-tool', version: '1.0.0' }, systemPrompt: 'Use the tool.', message: 'Alice score?', mode: 'preview',
+    } });
+    expect(response.statusCode).toBe(422);
+    const tool = { internalId: 'score-tool', version: '1.0.0', publishName: 'score_lookup' };
+    expect(response.json().error).toEqual({ code: 'TOOL_ARGUMENTS', message: 'required argument missing: score', tool, runId: expect.any(String) });
+    const runId = response.json().error.runId as string;
+
+    const trace = await server.inject({ method: 'GET', url: `/runs/${runId}/trace?tenantId=tenant&workspaceId=workspace` });
+    expect(trace.json().run).toMatchObject({ status: 'failed', failure: { code: 'TOOL_ARGUMENTS', message: 'required argument missing: score', tool } });
+    expect(trace.json().run.trace.at(-1)).toEqual({ sequence: 6, kind: 'error', code: 'TOOL_ARGUMENTS', message: 'required argument missing: score', tool });
+    const list = await server.inject({ method: 'GET', url: '/runs?tenantId=tenant&workspaceId=workspace&status=failed' });
+    expect(list.json().runs).toEqual([expect.objectContaining({ runId, failure: { code: 'TOOL_ARGUMENTS', message: 'required argument missing: score', tool } })]);
+  });
+
+  it('nodeId 付きの failure と mcp-server-skipped を持つ Run を参照系API（一覧・trace）がそのまま返す', async () => {
+    const tool = { internalId: 'score-tool', version: '1.0.0', publishName: 'score_lookup' };
+    const failure = { code: 'ETL_SCHEMA', message: 'select: column(s) not found: revenue', tool, nodeId: 'pick' };
+    const trace = [
+      { sequence: 1, kind: 'mcp-server-skipped' as const, server: 'ghost', reason: 'not-found' as const },
+      { sequence: 2, kind: 'error' as const, ...failure },
+    ];
+    await app.runRepo.save(failRun(
+      startRun({ runId: 'run-node-failure', scope, mode: 'preview', tool: { internalId: 'score-tool', version: '1.0.0' }, startedAt: '2026-07-11T00:00:00.000Z' }),
+      { trace, failure, completedAt: '2026-07-11T00:00:01.000Z' },
+    ));
+    const traced = await server.inject({ method: 'GET', url: '/runs/run-node-failure/trace?tenantId=tenant&workspaceId=workspace' });
+    expect(traced.statusCode).toBe(200);
+    expect(traced.json().run.failure).toEqual(failure);
+    expect(traced.json().run.trace).toEqual(trace);
+    const list = await server.inject({ method: 'GET', url: '/runs?tenantId=tenant&workspaceId=workspace' });
+    expect(list.json().runs).toEqual([expect.objectContaining({ runId: 'run-node-failure', failure, traceEventCount: 2 })]);
   });
 
   it('run一覧、status filter、scope分離を提供する', async () => {

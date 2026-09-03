@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { isAbortError, type ToolApiClient } from '../api/tool-api';
-import type { AgentDiagnosticsDto, AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, DiagnosticCheckDto, DiagnosticStatusDto, EvaluationResultDto, RunTraceEventDto, SerializedAgentDto, WikiPageSummaryDto } from '../api/types';
-import { useI18n } from '../i18n';
+import type { AgentDiagnosticsDto, AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, EvaluationResultDto, RunTraceEventDto, SerializedAgentDto, WikiPageSummaryDto } from '../api/types';
+import { localizeRunTraceError } from '../api/error-messages';
+import { DiagnosticsPanel } from '../components/DiagnosticsPanel';
+import { useI18n, type Language } from '../i18n';
 import { useElapsedSeconds } from '../chat/useElapsedSeconds';
 // 実行中の段階表示はChat画面と同じ文言・同じ閾値を使う（出所を一箇所に保つ）。
 import { runProgressHint } from '../chat/ChatPage';
@@ -229,7 +231,7 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
 
       {diagnostics !== undefined && diagnostics !== 'loading' && ('failed' in diagnostics
         ? <div className="cc-alert" role="alert">{text('Diagnostics failed: ', '診断に失敗しました: ')}{diagnostics.failed}</div>
-        : <DiagnosticsPanel diagnostics={diagnostics} onClose={() => setDiagnostics(undefined)} text={text} />)}
+        : <DiagnosticsPanel diagnostics={diagnostics} context="inspector" agentId={diagnostics.agent.internalId} onClose={() => setDiagnostics(undefined)} />)}
 
       <div className="cc-thread" ref={threadRef}>
         <div className="cc-thread-inner">
@@ -332,74 +334,6 @@ export function AgentInspectorPage({ client }: { readonly client: ToolApiClient 
   );
 }
 
-/** 検査項目idの表示ラベル。サーバー側 DiagnoseAgentToolsUseCase の id と対で保守する。未知idはそのまま表示する。 */
-const DIAGNOSTIC_CHECK_LABELS: Readonly<Record<string, readonly [string, string]>> = {
-  skills: ['Skill references', 'スキル参照'],
-  'tool-versions': ['Tool version consistency', 'ツールバージョン整合'],
-  'sub-agents': ['Sub-agent references', 'サブエージェント参照'],
-  'function-names': ['Function name uniqueness', 'Function名の一意性'],
-  resolved: ['Tool version exists', 'ツールバージョンの存在'],
-  'function-definition': ['Function definition', 'Function定義'],
-  'agent-input': ['Input schema matches agent-input', '入力スキーマとAgent Inputの一致'],
-  'data-sources': ['Data source resolution', 'データソース解決'],
-  graph: ['Graph validation', 'グラフ検証'],
-  execution: ['Sample execution', 'サンプル実行'],
-  'output-schema': ['Output schema consistency', '出力スキーマ整合'],
-  'operator-arguments': ['Operator arguments', '演算子引数'],
-  'side-effect': ['Side effect / approval', '副作用と承認'],
-};
-
-function diagnosticCheckLabel(id: string, text: Translate): string {
-  const pair = DIAGNOSTIC_CHECK_LABELS[id];
-  return pair === undefined ? id : text(pair[0], pair[1]);
-}
-
-function DiagnosticStatusMark({ status }: { readonly status: DiagnosticStatusDto }) {
-  return <span className={`ins-diag-mark ${status}`} aria-hidden="true">{status === 'ok' ? '✓' : status === 'warning' ? '!' : '✕'}</span>;
-}
-
-function DiagnosticCheckRow({ check, text }: { readonly check: DiagnosticCheckDto; readonly text: Translate }) {
-  return (
-    <li className={`ins-diag-check ${check.status}`}>
-      <DiagnosticStatusMark status={check.status} />
-      <span className="ins-diag-label">{diagnosticCheckLabel(check.id, text)}</span>
-      {check.detail !== undefined && <code className="ins-diag-detail">{check.detail}</code>}
-    </li>
-  );
-}
-
-function DiagnosticsPanel({ diagnostics, onClose, text }: { readonly diagnostics: AgentDiagnosticsDto; readonly onClose: () => void; readonly text: Translate }) {
-  const badge = diagnostics.status === 'ok'
-    ? text('No blockers', '問題なし')
-    : diagnostics.status === 'warning' ? text('Needs attention', '要確認') : text('Blocked', '呼び出し不可あり');
-  return (
-    <section className="ins-diag" aria-label={text('Tool call diagnostics', 'ツール呼び出し診断')}>
-      <header className="ins-diag-head">
-        <h4>{text('Tool call diagnostics', 'ツール呼び出し診断')} <small>{diagnostics.agent.internalId}@{diagnostics.agent.version}</small></h4>
-        <span className={`ins-diag-badge ${diagnostics.status}`}>{badge}</span>
-        <button type="button" className="ghost" aria-label={text('Close diagnostics', '診断を閉じる')} onClick={onClose}>×</button>
-      </header>
-      <ul className="ins-diag-list" aria-label={text('Agent checks', 'エージェント検査')}>
-        {diagnostics.checks.map((check) => <DiagnosticCheckRow key={check.id} check={check} text={text} />)}
-      </ul>
-      {diagnostics.tools.length === 0 && <p className="ins-none">{text('This agent references no tools.', 'このエージェントはツールを参照していません。')}</p>}
-      {diagnostics.tools.map((tool) => (
-        <div className="ins-diag-tool" key={`${tool.internalId}@${tool.version}`}>
-          <div className="ins-diag-tool-head">
-            <DiagnosticStatusMark status={tool.status} />
-            <b>{tool.functionName ?? tool.internalId}</b>
-            <small>{tool.internalId}@{tool.version}</small>
-            {tool.source === 'skill' && <span className="ins-chip skill">{text('via skill', 'スキル経由')}{tool.skillId === undefined ? '' : `: ${tool.skillId}`}</span>}
-          </div>
-          <ul className="ins-diag-list" aria-label={text(`Checks for ${tool.internalId}`, `${tool.internalId} の検査`)}>
-            {tool.checks.map((check) => <DiagnosticCheckRow key={check.id} check={check} text={text} />)}
-          </ul>
-        </div>
-      ))}
-    </section>
-  );
-}
-
 function CapGroup({ label, tone, items, text }: { readonly label: string; readonly tone: 'skill' | 'tool'; readonly items: readonly AgentToolRefDto[]; readonly text: Translate }) {
   return (
     <div className="ins-cap-group">
@@ -429,6 +363,7 @@ function TurnView({ turn, agentName, text, busy, inputText, approvalRunId, onRes
   readonly distillation: DistillState | undefined;
   readonly onDistill: () => void;
 }) {
+  const { language } = useI18n();
   if (turn.role === 'user') {
     return (
       <div className="cc-msg user">
@@ -509,7 +444,7 @@ function TurnView({ turn, agentName, text, busy, inputText, approvalRunId, onRes
               <li className={`ins-trace-item ${stepTone(event.kind)}`} key={event.sequence}>
                 <span className="ins-seq">{event.sequence}</span>
                 <span className="ins-kind">{event.kind}</span>
-                <span className="ins-detail">{traceDetail(event, text)}</span>
+                <span className="ins-detail">{traceDetail(event, text, language)}</span>
               </li>
             ))}
           </ol>
@@ -594,7 +529,7 @@ function stepTone(kind: RunTraceEventDto['kind']): string {
   return '';
 }
 
-function traceDetail(event: RunTraceEventDto, text: Translate): string {
+function traceDetail(event: RunTraceEventDto, text: Translate, language: Language): string {
   switch (event.kind) {
     case 'model-request':
       return `step ${event.step}${event.toolNames.length > 0 ? ` · ${text('offered', '提供')}: ${event.toolNames.join(', ')}` : ` · ${text('no tools', 'ツールなし')}`}`;
@@ -612,8 +547,11 @@ function traceDetail(event: RunTraceEventDto, text: Translate): string {
       return `${event.tool} (${event.sideEffect}) · ${event.prompt}`;
     case 'approval-resolved':
       return event.decision;
+    case 'mcp-server-skipped':
+      return `${text('MCP server skipped', 'MCPサーバーをスキップ')}: ${event.server} (${event.reason})${event.detail === undefined ? '' : ` · ${event.detail}`}`;
     case 'error':
-      return `${event.code}: ${event.message}`;
+      // 実行エラーの定型文は次の一手が分かる文言へ直す（変換できなければ原文のまま）。
+      return `${event.code}: ${localizeRunTraceError(event, language)}`;
   }
 }
 

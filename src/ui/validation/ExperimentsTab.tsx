@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { describeMcpServerSkipped, localizeRunTraceError } from '../api/error-messages';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentSummaryDto, EvaluationDatasetSummaryDto, EvaluatorProfileSummaryDto, ExperimentCaseResultDto, ExperimentDto, RunRecordDto, TenantScopeDto } from '../api/types';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -7,7 +8,7 @@ import { useI18n } from '../i18n';
 const message = (cause: unknown): string => cause instanceof Error ? cause.message : 'Request failed';
 
 export function ExperimentsTab({ client, scope }: { readonly client: ToolApiClient; readonly scope: TenantScopeDto }) {
-  const { text } = useI18n();
+  const { language, text } = useI18n();
   const [agents, setAgents] = useState<readonly AgentSummaryDto[]>([]);
   const [datasets, setDatasets] = useState<readonly EvaluationDatasetSummaryDto[]>([]);
   const [profiles, setProfiles] = useState<readonly EvaluatorProfileSummaryDto[]>([]);
@@ -94,7 +95,8 @@ export function ExperimentsTab({ client, scope }: { readonly client: ToolApiClie
           <div className="experiment-progress" role="progressbar" aria-label="Experiment progress" aria-valuemin={0} aria-valuemax={selected.progress.total} aria-valuenow={selected.progress.completed}><div style={{ width: `${percent}%` }} /></div><p>{selected.progress.completed}/{selected.progress.total} ({percent}%)</p>
           {selected.error !== undefined && <div className="api-error">{selected.error.code}: {selected.error.message}</div>}
           <div className="table-wrap"><table><thead><tr><th>{text('Case', 'ケース')}</th><th>{text('Status', '状態')}</th><th>{text('Scores / Judge snapshot', 'スコア / Judge記録')}</th><th>{text('Latency', '所要時間')}</th><th>{text('Tokens', 'トークン')}</th><th>{text('Runs', '実行')}</th></tr></thead><tbody>{results.map((result) => <tr key={`${result.caseId}-${result.repetition}`}><td>{result.caseId} #{result.repetition}</td><td>{result.status}{result.error !== undefined && <small> · {result.error.code}</small>}</td><td><div>{result.scores.map((score) => `${score.metric} ${score.score.toFixed(2)}${score.reason === undefined ? '' : ` (${score.reason})`}`).join(', ') || '—'}</div>{result.judgeEvaluations?.map((judge) => <small className={`judge-record ${judge.status}`} key={judge.metricId}>{judge.metricId} · {judge.status} · {judge.rubric.id}@{judge.rubric.version} · {judge.model.provider}/{judge.model.model}{judge.reason !== undefined ? ` · ${judge.reason}` : ''}{judge.error !== undefined ? ` · ${judge.error.code}: ${judge.error.message}` : ''}</small>)}</td><td>{result.latencyMs} ms</td><td>{result.usage.totalTokens ?? '—'}</td><td>{result.runIds.map((runId) => <button type="button" className="run-link" key={runId} onClick={() => void openTrace(runId)}>{runId}</button>)}</td></tr>)}</tbody></table></div>
-          {trace !== undefined && <details open className="ins-trace"><summary>{text('Run trace', '実行トレース')} · {trace.runId}</summary><div className="trace-list">{trace.trace.map((event) => <div className="trace-event" key={event.sequence}>{event.sequence} · {event.kind}</div>)}</div></details>}
+          {/* 失敗イベントだけは kind 名で終わらせず、言語化した原因と次の一手を出す（他の kind は従来どおり種別だけ）。 */}
+          {trace !== undefined && <details open className="ins-trace"><summary>{text('Run trace', '実行トレース')} · {trace.runId}</summary><div className="trace-list">{trace.trace.map((event) => <div className={`trace-event ${event.kind === 'error' || event.kind === 'mcp-server-skipped' ? 'error' : ''}`} key={event.sequence}>{event.sequence} · {event.kind === 'error' ? `${event.code}: ${localizeRunTraceError(event, language)}` : event.kind === 'mcp-server-skipped' ? describeMcpServerSkipped(event, language) : event.kind}</div>)}</div></details>}
         </>}
       </section>
     </div>

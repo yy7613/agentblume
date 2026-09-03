@@ -152,6 +152,14 @@ const GENERIC_HEADING: Bilingual = ['The request failed', 'リクエストに失
 /** 詳細が英語定型文（statusText / 'internal error' / 見出しの原文）で情報量が無い code。 */
 const OPAQUE_DETAIL = new Set(['INTERNAL', 'HTTP_ERROR', 'INVALID_API_RESPONSE']);
 
+/** tool-output-dispatcher.ts が agent-output の maxBytes 超過で投げる文（SESSION_QUOTA_EXCEEDED の見出しを使わない）。 */
+const AGENT_OUTPUT_TOO_LARGE = /^agent-output exceeds maxBytes \(\d+ > \d+\)/;
+/** セミコロンを含む1文として届く実行エラー・診断の定型文。localizeDetail の `;` 分割より先に丸ごと判定する対象。 */
+const SEMICOLON_WHOLE_SHAPES: readonly RegExp[] = [
+  AGENT_OUTPUT_TOO_LARGE,
+  /^(?:SaveTool: )?declared output schema does not match the graph's inferred output \(/,
+];
+
 /** Zod のフィールド名 → 画面ラベル。src/api/schemas.ts のキーに対応する。 */
 const FIELDS: Record<string, Bilingual> = {
   internalId: ['Internal ID', '内部ID'], workingName: ['Working name', '作業名'], displayName: ['Display name', '表示名'],
@@ -217,7 +225,9 @@ const TYPES: Record<string, Bilingual> = {
 };
 
 const REQUEST_LABEL = /^invalid (?:body|query|request|params|input):\s*/i;
-const FIELD_PATH = /^(\(root\)|[A-Za-z0-9_.]+):\s+(.+)$/;
+// `-` を許すのは、診断の graph 検査が `<nodeId>: <issue>` の形（nodeId は `filter-1` など）で届くため。
+// Zod のフィールドパスに `-` は現れないので、既存の挙動は変わらない。
+const FIELD_PATH = /^(\(root\)|[A-Za-z0-9_.-]+):\s+(.+)$/;
 
 /**
  * **モデル「実行」の失敗**だけを次の行動が分かる文言へ置き換える対象コード。
@@ -311,14 +321,15 @@ const DATA_TYPE_JA: Record<string, string> = {
 function localizeEtlDetail(message: string, language: ErrorLanguage): string | undefined {
   if (language !== 'ja') return undefined;
 
+  // 先頭の言い換えに続けて「次に何をするか」を添える（先頭句は既存表示・テストと合わせて固定）。
   let matched = /^node '(.+)' \(type '(.+)'\) expects (\d+) input\(s\) but has in-degree (\d+)$/.exec(message);
-  if (matched !== null) return `ノード「${matched[1]}」(${matched[2]})には${matched[3]}本の入力が必要ですが、${matched[4]}本接続されています`;
+  if (matched !== null) return `ノード「${matched[1]}」(${matched[2]})には${matched[3]}本の入力が必要ですが、${matched[4]}本接続されています。ノード「${matched[1]}」への接続を${matched[3]}本に直してください（余分な接続を外すか、足りない入力をつなぐ）`;
 
   matched = /^graph must have exactly one terminal node, found (\d+): (.+)$/.exec(message);
-  if (matched !== null) return `グラフの終端ノードは1つだけにしてください(現在${matched[1]}個: ${matched[2]})`;
+  if (matched !== null) return `グラフの終端ノードは1つだけにしてください(現在${matched[1]}個: ${matched[2]})。${matched[2]} のうち1つだけを最終出力として残し、他のノードは削除するか下流へつないでください`;
 
-  if (message === 'graph has no terminal node (out-degree 0)') return '終端ノード(出力)がありません';
-  if (message === 'graph has a cycle') return 'グラフに循環(ループ)があります。接続を見直してください';
+  if (message === 'graph has no terminal node (out-degree 0)') return '終端ノード(出力)がありません。「出力」からエージェント出力などのノードを置き、最後のノードにつないでください';
+  if (message === 'graph has a cycle') return 'グラフに循環(ループ)があります。下流から上流へ戻っている接続を1本外してください';
 
   matched = /^duplicate node id: (.+)$/.exec(message);
   if (matched !== null) return `ノードID「${matched[1]}」が重複しています`;
@@ -339,20 +350,20 @@ function localizeEtlDetail(message: string, language: ErrorLanguage): string | u
   if (matched !== null) return `ノード「${matched[1]}」への接続には入力ポートの指定が必要です`;
 
   matched = /^join: key column\(s\) not found: (.+)$/.exec(message);
-  if (matched !== null) return `結合キーの列が見つかりません: ${matched[1]}`;
+  if (matched !== null) return `結合キーの列が見つかりません: ${matched[1]}。結合(join)ノードのキー列「${matched[1]}」を、左右の入力に実際にある列名へ直してください`;
 
   matched = /^([A-Za-z][A-Za-z0-9_-]*): column\(s\) must be number: (.+)$/.exec(message);
   if (matched !== null) return `数値列が必要です: ${matched[2]}`;
 
   // 列不存在（`select` / `sort` / `group-by` などが共通で使う形。join のキー専用形は上で処理済み）。
   matched = /^([A-Za-z][A-Za-z0-9_-]*): column\(s\) not found: (.+)$/.exec(message);
-  if (matched !== null) return `列が見つかりません: ${matched[2]}`;
+  if (matched !== null) return `列が見つかりません: ${matched[2]}。${matched[1]}ノードで参照している列「${matched[2]}」を上流ノードの出力にある列名へ直すか、上流ノードの設定を見直してください`;
 
   // 単一列の型不一致（chart-output / analysis-utils / group-by が使う形）。
   matched = /^([A-Za-z][A-Za-z0-9_-]*): column '(.+)' must be (.+)$/.exec(message);
   if (matched !== null) {
     const types = (matched[3] ?? '').split(/ or |, /).map((type) => DATA_TYPE_JA[type.trim()] ?? type.trim()).join(' / ');
-    return `列「${matched[2]}」の型は ${types} が必要です`;
+    return `列「${matched[2]}」の型は ${types} が必要です。${matched[1]}ノードの手前に「型変換」(cast)ノードを挟んで列「${matched[2]}」を変換するか、別の列を選んでください`;
   }
 
   matched = /^([A-Za-z][A-Za-z0-9_-]*): duplicate aggregate name: (.+)$/.exec(message);
@@ -397,7 +408,7 @@ function localizeEtlDetail(message: string, language: ErrorLanguage): string | u
   if (matched !== null) return `${matched[1]}: 「${matched[2]}」の設定が必要です`;
 
   matched = /^([A-Za-z][A-Za-z0-9_-]*): invalid config: (.+)$/.exec(message);
-  if (matched !== null) return `${matched[1]}: 設定が不正です(${localizeDetail(matched[2] ?? '', 'ja')})`;
+  if (matched !== null) return `${matched[1]}: 設定が不正です(${localizeDetail(matched[2] ?? '', 'ja')})。${matched[1]}ノードの設定パネルで該当項目を直してください`;
 
   matched = /^upstream node '(.+)' has invalid config$/.exec(message);
   if (matched !== null) return `上流ノード「${matched[1]}」の設定が不正です`;
@@ -682,9 +693,216 @@ function localizeAgentRunDetail(message: string, language: ErrorLanguage): strin
       : `the conditions that bind argument '${matched[1]}' use different default operators. Set the same default operator on every condition`;
   }
 
+  // --- ツール定義（保存時 SaveTool / createTool）と実行時の同形メッセージ ------------
+  // 保存時は `SaveTool: ` が付き、実行時・診断では付かない。どちらも同じ直し方なので前置詞は任意にする。
+  if (message === 'SaveTool: workspace output requires sideEffect session-write or stronger') {
+    return ja
+      ? 'ワークスペース出力ノードを使うツールは副作用を session-write 以上にする必要があります。ツール画面のメタデータで副作用を session-write に変更してください'
+      : 'a tool with a workspace-output node needs side effect session-write or stronger. Set the side effect to session-write in the Tool Builder metadata';
+  }
+
+  if (message === 'SaveTool: Agent input bindings require an inputSchema') {
+    return ja
+      ? 'フィルタ条件がエージェント入力を参照していますが、ツールに引数（inputSchema）が宣言されていません。Agent Inputノードを追加して引数を宣言してください'
+      : 'a filter condition binds an agent input, but the tool declares no arguments (inputSchema). Add an Agent Input node and declare the arguments';
+  }
+
+  matched = /^SaveTool: Agent input binding references unknown field '(.+)'$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `フィルタ条件が宣言されていない引数「${matched[1]}」を参照しています。Agent Inputノードに「${matched[1]}」を追加するか、条件の参照先を既存の引数に変更してください`
+      : `a filter condition references the undeclared argument '${matched[1]}'. Add '${matched[1]}' to the Agent Input node, or point the condition at an existing argument`;
+  }
+
+  // 保存時（SaveTool:）と診断（output-schema 検査。末尾に「実行後に落ちる／再保存」の注記が付く）の両形。
+  matched = /^(?:SaveTool: )?declared output schema does not match the graph's inferred output \((.+?)\)(?: — the run fails after the tool executes; re-save the tool to refresh its output schema)?$/.exec(message);
+  if (matched !== null) {
+    const detail = localizeSchemaIncompatibility(matched[1] ?? '', language);
+    return ja
+      ? `宣言した出力スキーマがグラフから推論した出力と一致しません（${detail}）。ツール画面で出力スキーマを更新して保存し直してください`
+      : `the declared output schema does not match the output inferred from the graph (${detail}). Refresh the output schema in the Tool Builder and save again`;
+  }
+
+  if (message === 'createTool: agentTool.name must be a valid function name') {
+    return ja
+      ? 'エージェント向けのツール名が関数名として使えません。ツール画面の「エージェント向けコンテキスト」で、英数字・_・- のみ1〜64文字の名前を設定してください'
+      : 'the agent-facing tool name is not a valid function name. In the Tool Builder "Agent context" panel, set a name of 1-64 ASCII letters, digits, _ or -';
+  }
+
+  matched = /^sub-agent tool name is not a valid function name: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `サブエージェントの委譲ツール名「${matched[1]}」は関数名として使えません。サブエージェントの公開名を英数字・_・- のみに変更してください`
+      : `the sub-agent delegation tool name '${matched[1]}' is not a valid function name. Change the sub-agent's publish name to ASCII letters, digits, _ or -`;
+  }
+
+  // 実行時（tool-schema.ts）と保存時（SaveTool: 前置詞は localizeDetail が剥がす）。
+  matched = /^tool name is not a valid function name: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `ツール名「${matched[1]}」は関数名として使えません。ツール画面の「エージェント向けコンテキスト」で、英数字・_・- のみ1〜64文字の名前を設定してください`
+      : `the tool name '${matched[1]}' is not a valid function name. In the Tool Builder "Agent context" panel, set an agent-facing name of 1-64 ASCII letters, digits, _ or -`;
+  }
+
+  // opBinding: モデルが許可リスト外の演算子を渡した（TOOL_ARGUMENTS）。
+  matched = /^invalid operator '(.+)' for argument '(.+)': expected one of (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `モデルが引数「${matched[2]}」に許可されていない演算子「${matched[1]}」を渡しました（許可: ${matched[3]}）。ツールの引数の説明で使える演算子を明示するか、フィルタ条件の「AIに許可する演算子」を広げてください`
+      : `the model passed the operator '${matched[1]}' for argument '${matched[2]}', which is not allowed (allowed: ${matched[3]}). Describe the allowed operators in the tool argument, or widen the allowed operators on the filter condition`;
+  }
+
+  // agent-output の上限超過。SessionQuotaExceededError（413）で届くが、成果物の削除では直らない。
+  matched = /^agent-output exceeds maxBytes \((\d+) > (\d+)\); reduce rows or use workspace-output$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `ツールの出力（${matched[1]} バイト）がエージェント出力の上限（${matched[2]} バイト）を超えました。ツール画面で「行数制限」ノードなどで行数を減らすか、出力ノードを「ワークスペース出力」に切り替えてください`
+      : `the tool output (${matched[1]} bytes) exceeds the agent-output limit (${matched[2]} bytes). In the Tool Builder, reduce the rows (for example with a Limit node) or switch the output node to Workspace output`;
+  }
+
+  // --- プリフライト診断（diagnose-agent-tools.ts）の detail ---------------------
+  // 実行時に同文で落ちるものも多いので、実行エラーと同じ表で拾う。
+  matched = /^referenced (tool|skill|sub-agent) not found: (.+)$/.exec(message);
+  if (matched !== null) {
+    const kindJa = matched[1] === 'tool' ? 'ツール' : matched[1] === 'skill' ? 'スキル' : 'サブエージェント';
+    const sectionEn = matched[1] === 'tool' ? 'Tools' : matched[1] === 'skill' ? 'Skills' : 'Sub-agents';
+    return ja
+      ? `参照している${kindJa}「${matched[2]}」が見つかりません。エージェント画面の「${kindJa}」で参照を外すか、存在するバージョンへ付け替えてください`
+      : `the referenced ${matched[1]} '${matched[2]}' does not exist. In Agent Builder → ${sectionEn}, detach it or point the reference at an existing version`;
+  }
+
+  matched = /^ambiguous tool versions: (.+)@(.+) and \1@(.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `ツール「${matched[1]}」が複数のバージョン（${matched[2]} と ${matched[3]}）で参照されています。エージェント画面で直付けツールとスキル経由のツールを同じバージョンに揃えてください`
+      : `the tool '${matched[1]}' is referenced at two versions (${matched[2]} and ${matched[3]}). Align the direct tool reference and the skill's tool reference on one version in Agent Builder`;
+  }
+
+  matched = /^sub-agent tool name collides with an existing tool or sub-agent: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `サブエージェントの委譲ツール名「${matched[1]}」が既存のツールまたはサブエージェントと重複しています。サブエージェントの公開名を変えるか、重複するツールをエージェントから外してください`
+      : `the sub-agent delegation tool name '${matched[1]}' collides with an existing tool or sub-agent. Rename the sub-agent's publish name, or detach the conflicting tool from the agent`;
+  }
+
+  matched = /^duplicate function name\(s\): (.+) — later tools with the same name are unreachable$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `モデルへ公開する関数名「${matched[1]}」が重複しています（後ろのツールはモデルから呼べません）。ツール画面の「エージェント向けコンテキスト」で名前を変えるか、重複するツールをエージェントから外してください`
+      : `the function name(s) '${matched[1]}' are exposed to the model more than once (the later tools are unreachable). Rename them in the Tool Builder "Agent context" panel, or detach the duplicates from the agent`;
+  }
+
+  matched = /^side effect '(.+)' pauses the run for approval before this tool executes$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `副作用「${matched[1]}」のツールは実行前に承認待ちで停止します。自動で流したい場合はエージェントのハーネス設定でツール承認を無効にするか、read-only のツールへ差し替えてください`
+      : `the '${matched[1]}' side effect pauses the run for approval before this tool executes. To run unattended, turn off tool approval in the agent's harness settings, or switch to a read-only tool`;
+  }
+
+  matched = /^referenced MCP server not found: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `参照しているMCPサーバー「${matched[1]}」が登録されていません。MCP設定画面でサーバーを登録するか、エージェント画面のMCPサーバー一覧から外してください`
+      : `the referenced MCP server '${matched[1]}' is not registered. Register it in MCP settings, or remove it from the agent's MCP server list`;
+  }
+
+  matched = /^MCP server '(.+)' is disabled, so its tools are skipped at run time$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `MCPサーバー「${matched[1]}」は無効化されているため、そのツールは実行時に読み込まれません。MCP設定画面でサーバーを有効化してください`
+      : `the MCP server '${matched[1]}' is disabled, so its tools are skipped at run time. Enable it in MCP settings`;
+  }
+
+  // 診断の検査内部で起きた基盤側の失敗（検査全体を落とさず detail として報告される）。
+  // mcp-servers 検査: サーバー設定の解決に失敗。原文（接続エラー等）は括弧で残す。
+  matched = /^MCP server '(.+)' could not be resolved: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `MCPサーバー「${matched[1]}」を解決できませんでした（${matched[2]}）。MCP設定画面でサーバーの登録内容と接続を確認してから、診断をもう一度実行してください`
+      : `the MCP server '${matched[1]}' could not be resolved (${matched[2]}). Check the server registration and connection in MCP settings, then re-run the check`;
+  }
+
+  // harness 検査: Web検索プロバイダの設定（環境変数）の解決に失敗。
+  matched = /^search provider configuration could not be resolved: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `Web検索プロバイダの設定を解決できませんでした（${matched[1]}）。設定画面または .env の検索プロバイダの環境変数を確認してから、診断をもう一度実行してください`
+      : `the web search provider configuration could not be resolved (${matched[1]}). Check the search provider environment variables in Settings or .env, then re-run the check`;
+  }
+
+  matched = /^model settings could not be resolved: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `モデル設定を解決できませんでした（${matched[1]}）。設定画面のモデル設定でメインモデルを保存し、「テスト」で疎通を確認してください`
+      : `the model settings could not be resolved (${matched[1]}). Save the main model in model settings and run "Test" to check the connection`;
+  }
+
+  if (message === 'harness enables web search but no search provider is configured, so the web_search tool is not offered') {
+    return ja
+      ? 'ハーネス設定でWeb検索が有効ですが検索プロバイダが未設定のため、web_search ツールはモデルへ提供されません。サーバーの環境変数で検索プロバイダを設定するか、ハーネス設定のWeb検索を無効にしてください'
+      : 'the harness enables web search, but no search provider is configured, so the web_search tool is not offered. Configure a search provider in the server environment, or turn off web search in the harness settings';
+  }
+
+  if (message === 'harness enables file memory but the agent references no wiki, so memory tools have nothing to read') {
+    return ja
+      ? 'ハーネス設定でファイル記憶が有効ですがエージェントが参照するWikiが無いため、記憶ツールは何も読めません。エージェント画面で参照Wikiを追加するか、ハーネス設定のファイル記憶を無効にしてください'
+      : 'the harness enables file memory, but the agent references no wiki, so the memory tools have nothing to read. Add a wiki reference in Agent Builder, or turn off file memory in the harness settings';
+  }
+
+  if (message === 'tool is archived, so it should not be attached to an agent') {
+    return ja
+      ? 'このツールはアーカイブ済みのため、エージェントに接続したままにしないでください。エージェント画面で外すか、後継バージョンへ付け替えてください'
+      : 'this tool is archived and should not stay attached to an agent. Detach it in Agent Builder, or point the reference at a successor version';
+  }
+
+  if (message === 'tool is deprecated and may be archived later') {
+    return ja
+      ? 'このツールは非推奨で、今後アーカイブされる可能性があります。エージェント画面で後継バージョンへ付け替えることを検討してください'
+      : 'this tool is deprecated and may be archived later. Consider moving the reference to a successor version in Agent Builder';
+  }
+
+  // opBinding の診断（diagnose-agent-tools.ts checkOperatorArguments の4形）。
+  matched = /^operator argument '(.+)' has no operator that every condition allows$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `演算子を受け取る引数「${matched[1]}」に、すべての条件が共通して許可する演算子がありません。ツール画面のフィルタ条件で「AIに許可する演算子」を揃えてください`
+      : `no operator is allowed by every filter condition that binds argument '${matched[1]}'. Align the allowed operator lists on those conditions in the Tool Builder`;
+  }
+
+  matched = /^operator argument '(.+)' has conflicting default operators across conditions$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `演算子を受け取る引数「${matched[1]}」の既定の演算子が条件間で一致していません。ツール画面のフィルタ条件で既定の演算子を同じ値に揃えてください`
+      : `the conditions that bind argument '${matched[1]}' use different default operators. Set the same default operator on every condition in the Tool Builder`;
+  }
+
+  matched = /^operator argument '(.+)' is not declared in the input schema, so the binding is inactive at run time$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `演算子を受け取る引数「${matched[1]}」がツールの引数に宣言されていないため、実行時にこの束縛は無効になります。Agent Inputノードに string 型の引数「${matched[1]}」を追加してください`
+      : `the operator argument '${matched[1]}' is not declared in the tool's arguments, so the binding is inactive at run time. Add a string argument '${matched[1]}' on the Agent Input node`;
+  }
+
+  matched = /^operator argument '(.+)' must be declared as a string argument, but it is '(.+)'$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `演算子を受け取る引数「${matched[1]}」は string 型で宣言する必要がありますが、${matched[2]} 型になっています。Agent Inputノードで型を string に変更してください`
+      : `the operator argument '${matched[1]}' must be declared as a string argument, but it is '${matched[2]}'. Change its type to string on the Agent Input node`;
+  }
+
   if (message === 'run cancelled by the user') return ja ? '実行を中断しました' : 'the run was cancelled';
 
   return undefined;
+}
+
+/** schemaIncompatibility（domain/data/schema.ts）が返す不一致の要約。 */
+function localizeSchemaIncompatibility(detail: string, language: ErrorLanguage): string {
+  if (language !== 'ja') return detail;
+  const count = /^column count mismatch: expected (\d+), received (\d+)$/.exec(detail);
+  if (count !== null) return `列数の不一致: 宣言 ${count[1]} 列 / 推論 ${count[2]} 列`;
+  const column = /^mismatch at '(.+)'$/.exec(detail);
+  if (column !== null) return `列「${column[1]}」が不一致`;
+  return detail;
 }
 
 /**
@@ -880,6 +1098,13 @@ function localizeDetail(raw: string, language: ErrorLanguage): string {
   // が原文のまま別セグメントとして残り、日本語訳と重複した表示になる。
   const etlWhole = localizeEtlDetail(stripped, language);
   if (etlWhole !== undefined) return etlWhole;
+  // 実行エラー・診断の定型文にもセミコロンを含む1文がある（`agent-output exceeds maxBytes (...); reduce rows ...` /
+  // `declared output schema ... — the run fails after the tool executes; re-save ...`）。その形だけ分割前に丸ごと判定する。
+  // 全メッセージで丸ごと判定すると、`; ` 連結された診断の複数 detail を貪欲な `(.+)` が1件として飲み込む。
+  if (SEMICOLON_WHOLE_SHAPES.some((shape) => shape.test(stripped))) {
+    const runWhole = localizeAgentRunDetail(stripped, language);
+    if (runWhole !== undefined) return runWhole;
+  }
   // SaveTool 由来の詳細もセミコロンを含む1文があり得るため、`;` 分割より先に丸ごと判定する。
   // - `SaveTool: graph validation failed: <nodeId>: <issue>` は <issue> 部分（単一 issue）を丸ごと
   //   和訳判定へ回し、和訳できたら `<nodeId>: <和訳文>` として返す（見出しは code 側が補う）。
@@ -895,6 +1120,10 @@ function localizeDetail(raw: string, language: ErrorLanguage): string {
     }
     const saveToolWhole = localizeMessageText(stripped, language);
     if (saveToolWhole !== undefined) return saveToolWhole;
+    // 保存時は実行時と同文の検査に `SaveTool: ` を前置して投げる（`SaveTool: tool inputSchema does not match ...` /
+    // `SaveTool: tool name is not a valid function name: ...`）。前置詞を剥がして実行時の表で拾う。
+    const saveToolBody = localizeMessageText(stripped.slice('SaveTool: '.length), language);
+    if (saveToolBody !== undefined) return saveToolBody;
   }
   return stripped
     .split(/;\s*/)
@@ -921,10 +1150,26 @@ function headingFor(payload: ApiErrorPayload, language: ErrorLanguage): string {
 export function localizeApiErrorMessage(payload: ApiErrorPayload, language: ErrorLanguage = detectErrorLanguage()): string {
   const raw = payload.serverMessage.trim();
   if (isModelFailure(payload.code, raw)) return modelMessage(raw, language);
+  // agent-output の上限超過は SessionQuotaExceededError（413・SESSION_QUOTA_EXCEEDED）として届くが、
+  // 見出しの「不要な成果物を削除」では直らない（ツールの出力行数の問題）。詳細文だけを出す。
+  if (payload.code === 'SESSION_QUOTA_EXCEEDED' && AGENT_OUTPUT_TOO_LARGE.test(raw)) return localizeDetail(raw, language);
   const heading = headingFor(payload, language);
   const detail = OPAQUE_DETAIL.has(payload.code) ? '' : localizeDetail(raw, language);
-  if (detail === '' || detail === heading) return heading;
+  // 詳細が見出しと同文なら重ねない。英語は詳細が括弧内の小文字始まり（'the run was cancelled'）、
+  // 見出しが大文字始まり（'The run was cancelled'）なので大小を無視して比べる。
+  if (detail === '' || detail.toLowerCase() === heading.toLowerCase()) return heading;
   return language === 'ja' ? `${heading}（${detail}）` : `${heading} (${detail})`;
+}
+
+/**
+ * 保存済み Run の `failure`（code + message。HTTP status は持たない）の表示文言。
+ * code に見出しがあれば `localizeApiErrorMessage` と同じ「見出し（詳細）」、無ければ status 由来の
+ * 汎用見出しを付けずに詳細だけを出す（「リクエストに失敗しました」は保存済み Run には合わない）。
+ */
+export function localizeRunFailure(failure: { readonly code: string; readonly message: string }, language: ErrorLanguage = detectErrorLanguage()): string {
+  const raw = failure.message.trim();
+  if (HEADINGS[failure.code] === undefined && !isModelFailure(failure.code, raw)) return localizeDetail(raw, language) || raw;
+  return localizeApiErrorMessage({ status: 0, code: failure.code, serverMessage: raw }, language);
 }
 
 /**
@@ -937,4 +1182,105 @@ export function localizeApiErrorMessage(payload: ApiErrorPayload, language: Erro
  */
 export function localizeSchemaIssueMessage(message: string, language: ErrorLanguage): string {
   return localizeMessageText(message, language) ?? message;
+}
+
+/**
+ * プリフライト診断（DiagnoseAgentToolsUseCase / Tool draft 診断）の `detail` の文言。
+ * detail は実行時エラーと同じ英語定型文なので、実行エラーと同じ変換表を通す。
+ * 変換できなければ原文をそのまま返す。
+ */
+export function localizeDiagnosticDetail(message: string, language: ErrorLanguage = detectErrorLanguage()): string {
+  return localizeDetail(message, language) || message;
+}
+
+/**
+ * Run トレースの `error` イベント（`code` + `message`）の表示文言。
+ * 引数修復の再試行は `<message> (retrying 1/1)` の形で保存されるため、接尾辞を剥がしてから
+ * 本文を変換し、再試行の注記を言語に合わせて付け直す。
+ */
+export function localizeRunTraceError(event: { readonly code: string; readonly message: string }, language: ErrorLanguage = detectErrorLanguage()): string {
+  // 末尾の空白は許す。`$` 直前に空白があると接尾辞が本文側に残り、`required argument missing: (.+)` の
+  // 引数名として「month (retrying 1/1)」のように取り込まれてしまう。
+  const retry = /\s*\(retrying (\d+)\/(\d+)\)\s*$/.exec(event.message);
+  const body = retry === null ? event.message : event.message.slice(0, retry.index);
+  const localized = localizeDetail(body, language) || body.trim();
+  if (retry === null) return localized;
+  const note = language === 'ja' ? `（再試行 ${retry[1]}/${retry[2]}）` : `(retrying ${retry[1]}/${retry[2]})`;
+  // 本文が無い（接尾辞だけ）なら区切りの空白を付けない。
+  if (localized === '') return note;
+  return language === 'ja' ? `${localized}${note}` : `${localized} ${note}`;
+}
+
+/**
+ * ローカライズ済みの失敗文言を「原因」と「次の一手」に分ける（RunFailureNotice が次の一手を先頭に太字で出すため）。
+ *
+ * この層の文言は「原因。次の一手」（ja）/「cause. Next step」（en）の形で、見出しつきなら
+ * 「見出し（原因。次の一手）」。最後の文境界で切り、見出しは原因側へ戻す。末尾の括弧書き
+ * （`... retry. (offline)` のような原文の補足）は文として扱わず、その前の境界で切る。
+ * 分けられなければ全文を次の一手として返す（何も落とさない）。
+ */
+export function splitFailureMessage(message: string, language: ErrorLanguage): { readonly cause?: string; readonly action: string } {
+  const ja = language === 'ja';
+  const trimmed = message.trim().replace(ja ? /。$/ : /\.$/, '');
+  const separator = ja ? '。' : '. ';
+  // 末尾の括弧書きを飛ばして、最後の文境界を探す。
+  const lastBoundary = (body: string): number => {
+    let index = body.lastIndexOf(separator);
+    while (index !== -1) {
+      const after = body.slice(index + separator.length).trim();
+      if (after !== '' && !after.startsWith('(') && !after.startsWith('（')) return index;
+      index = index === 0 ? -1 : body.lastIndexOf(separator, index - 1);
+    }
+    return -1;
+  };
+  // 「見出し（本文）」の形で本文に文境界があれば本文を分け、見出しは原因側へ戻す（見出し自体に文境界があってもよい）。
+  const wrapped = (ja ? /^(.*?)（(.+)）$/ : /^(.*?) \((.+)\)$/).exec(trimmed);
+  if (wrapped !== null) {
+    const heading = wrapped[1] ?? '';
+    const body = wrapped[2] ?? '';
+    const index = lastBoundary(body);
+    if (index !== -1) {
+      const bodyCause = body.slice(0, index).trim();
+      return { cause: ja ? `${heading}（${bodyCause}）` : `${heading} (${bodyCause})`, action: body.slice(index + separator.length).trim() };
+    }
+  }
+  const index = lastBoundary(trimmed);
+  if (index === -1) return { action: trimmed };
+  // 文境界で始まる文（先頭が「。」）では原因が空になる。空の原因行を描かせない。
+  const cause = trimmed.slice(0, index).trim();
+  const action = trimmed.slice(index + separator.length).trim();
+  return cause === '' ? { action } : { cause, action };
+}
+
+/**
+ * Run トレースの `mcp-server-skipped` イベントの表示文言。
+ * MCPサーバーを解決できずツールを注入しなかった（Run 自体は続く）ことと、理由別の直し方を1文で伝える。
+ * `detail` は接続失敗の生メッセージなので括弧で原文を残す（握りつぶさない）。
+ */
+export function describeMcpServerSkipped(
+  event: { readonly server: string; readonly reason: 'not-found' | 'disabled' | 'unreachable'; readonly detail?: string },
+  language: ErrorLanguage = detectErrorLanguage(),
+): string {
+  const ja = language === 'ja';
+  const detail = event.detail === undefined || event.detail === '' ? '' : (ja ? `。詳細: ${event.detail}` : `. Detail: ${event.detail}`);
+  if (event.reason === 'not-found') {
+    return ja
+      ? `MCPサーバー「${event.server}」のツールを読み込めませんでした（未登録）。MCP設定画面でサーバーを登録・有効化し、接続をテストしてください${detail}`
+      : `The tools of MCP server '${event.server}' were not loaded (server not registered). Register and enable the server in MCP settings, then test the connection${detail}`;
+  }
+  if (event.reason === 'disabled') {
+    return ja
+      ? `MCPサーバー「${event.server}」のツールを読み込めませんでした（無効化中）。MCP設定画面でサーバーを有効化し、接続をテストしてください${detail}`
+      : `The tools of MCP server '${event.server}' were not loaded (server disabled). Enable the server in MCP settings, then test the connection${detail}`;
+  }
+  if (event.reason === 'unreachable') {
+    return ja
+      ? `MCPサーバー「${event.server}」のツールを読み込めませんでした（接続失敗）。MCP設定画面で接続をテストし、サーバーの起動状態・URL・コマンドを確認してください${detail}`
+      : `The tools of MCP server '${event.server}' were not loaded (unreachable). Test the connection in MCP settings and check that the server is running and its URL or command is correct${detail}`;
+  }
+  // 型上は到達しないが、新しいサーバーが未知の reason を送ってきても「接続失敗」と言い切らず、理由をそのまま添える。
+  const reason: string = event.reason;
+  return ja
+    ? `MCPサーバー「${event.server}」のツールを読み込めませんでした（${reason}）。MCP設定画面でサーバーの設定と接続を確認してください${detail}`
+    : `The tools of MCP server '${event.server}' were not loaded (${reason}). Check the server settings and test the connection in MCP settings${detail}`;
 }

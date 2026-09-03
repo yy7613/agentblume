@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { failRun, resumeRunRecord, startRun, succeedRun, waitRunForApproval, type RunApprovalCheckpoint } from './run';
+import { failRun, redactRun, resumeRunRecord, startRun, succeedRun, waitRunForApproval, type RunApprovalCheckpoint } from './run';
 
 const started = startRun({ runId: 'run-1', scope: { tenantId: 't', workspaceId: 'w' }, mode: 'preview', tool: { internalId: 'tool' }, startedAt: '2026-07-03T00:00:00.000Z' });
 
@@ -55,5 +55,33 @@ describe('RunRecord transitions', () => {
     expect(succeedRun(resumed, { response: 'ok', trace: [], usage: {}, completedAt: '2026-07-03T00:00:02.000Z' }).checkpoint).toBeUndefined();
     expect(failRun(resumed, { trace: [], failure: { code: 'X', message: 'bad' }, completedAt: '2026-07-03T00:00:02.000Z' }).checkpoint).toBeUndefined();
     expect(() => resumeRunRecord(resumed)).toThrow(/not waiting for approval/);
+  });
+
+  it('failRun は failure（tool 参照を含む）を複製し、呼び出し側の後続変更を受けない', () => {
+    const tool = { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' };
+    const failed = failRun(started, { trace: [], failure: { code: 'ETL_SCHEMA', message: 'bad', tool, nodeId: 'pick' }, completedAt: '2026-07-03T00:00:01.000Z' });
+    expect(failed.failure).toEqual({ code: 'ETL_SCHEMA', message: 'bad', tool: { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' }, nodeId: 'pick' });
+    tool.publishName = 'changed';
+    expect(failed.failure?.tool?.publishName).toBe('score_lookup');
+    expect(failed.failure?.tool).not.toBe(tool);
+  });
+
+  it('redactRun は failure の message だけを伏せ、tool / nodeId は残す（trace だけの redact は failure に触らない）', () => {
+    const tool = { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' };
+    const failure = { code: 'ETL_SCHEMA', message: 'secret detail', tool, nodeId: 'pick' };
+    const failed = failRun(started, { trace: [{ sequence: 1, kind: 'error', ...failure }], failure, completedAt: '2026-07-03T00:00:01.000Z' });
+
+    const payloadOnly = redactRun(failed, { payload: true, trace: false });
+    expect(payloadOnly.failure).toEqual({ code: 'ETL_SCHEMA', message: '[redacted]', tool, nodeId: 'pick' });
+    expect(payloadOnly.failure?.tool).not.toBe(failed.failure?.tool);
+    expect(payloadOnly.trace).toEqual(failed.trace);
+
+    const traceOnly = redactRun(failed, { payload: false, trace: true });
+    expect(traceOnly.failure).toEqual(failure);
+    expect(traceOnly.trace).toEqual([]);
+
+    // nodeId の無い failure に nodeId キーを生やさない。
+    const plain = failRun(started, { trace: [], failure: { code: 'X', message: 'bad', tool }, completedAt: '2026-07-03T00:00:01.000Z' });
+    expect(Object.hasOwn(redactRun(plain, { payload: true, trace: false }).failure ?? {}, 'nodeId')).toBe(false);
   });
 });

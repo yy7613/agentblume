@@ -1,23 +1,57 @@
 import { useEffect, useMemo, useState } from 'react';
+import type { Edge } from '@xyflow/react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { ToolSummaryDto } from '../api/types';
+import type { PropagationResultDto, ToolSummaryDto } from '../api/types';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { DiagnosticsPanel, TOOL_SECTION, type LocalTarget } from '../components/DiagnosticsPanel';
 import { DraftRestoreBanner } from '../components/DraftRestoreBanner';
 import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
 import { useReportUnsavedChanges } from '../unsaved-changes';
 import { useI18n } from '../i18n';
-import { ScreenLink } from '../navigation';
+import { ScreenLink, usePendingOpen, type OpenTarget } from '../navigation';
 import { FlowCanvas } from './FlowCanvas';
 import { MetadataBar } from './MetadataBar';
 import { NodeInspector } from './NodeInspector';
 import { NodePalette } from './NodePalette';
 import { PreviewPanel } from './PreviewPanel';
 import { useDraftPreview } from './use-draft-preview';
-import { AgentToolContextPanel } from './AgentToolContextPanel';
-import { useToolBuilderStore, type ToolBuilderDraft } from './store';
+import { AGENT_CONTEXT_NAME_INPUT_ID, AgentToolContextPanel } from './AgentToolContextPanel';
+import { catalogItem } from './node-catalog';
+import { useToolBuilderStore, type ToolBuilderDraft, type ToolFlowNode } from './store';
 import { scope } from '../scope';
 
 function message(cause: unknown): string { return cause instanceof Error ? cause.message : 'Request failed'; }
+
+/**
+ * 出力（終端）ノードのid。検証結果があればその terminalId、無ければ out-degree 0 の出力系ノード
+ * （agent-input は引数宣言なので除く）。出力スキーマの問題を直すときに選択する。
+ */
+export function terminalNodeId(nodes: readonly ToolFlowNode[], edges: readonly Pick<Edge, 'source'>[], propagation: PropagationResultDto | undefined): string | undefined {
+  if (propagation !== undefined && nodes.some((node) => node.id === propagation.terminalId)) return propagation.terminalId;
+  const sources = new Set(edges.map((edge) => edge.source));
+  const terminals = nodes.filter((node) => node.data.nodeType !== 'agent-input' && !sources.has(node.id));
+  return (terminals.find((node) => catalogItem(node.data.nodeType)?.kind === 'sink') ?? terminals[0])?.id;
+}
+
+/**
+ * 診断結果や実行失敗が指す「直す場所」へ移る。ノードはキャンバスで選択（設定パネルが開く）、
+ * エージェント向けコンテキストは入力欄へフォーカス、出力は終端ノードを選択する。
+ * DOM を触るので、対象が描画済みになってから呼ぶ（ToolBuilder は view が editor になった後の effect で呼ぶ）。
+ */
+export function focusToolTarget(target: LocalTarget): void {
+  const store = useToolBuilderStore.getState();
+  if (target.nodeId !== undefined && store.nodes.some((node) => node.id === target.nodeId)) store.selectNode(target.nodeId);
+  if (target.section === TOOL_SECTION.output) {
+    const terminal = terminalNodeId(store.nodes, store.edges, store.propagation);
+    if (terminal !== undefined) store.selectNode(terminal);
+  }
+  if (target.section === TOOL_SECTION.agentContext) {
+    const input = document.getElementById(AGENT_CONTEXT_NAME_INPUT_ID);
+    // jsdom には scrollIntoView が無いので任意呼び出しにする。
+    input?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    input?.focus();
+  }
+}
 
 export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
   useDraftPreview(client);
@@ -29,6 +63,8 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
   const [listError, setListError] = useState<string>();
   // 削除は確認してから実行する（取り消せない操作を1クリックで走らせない）。
   const [pendingDelete, setPendingDelete] = useState<ToolSummaryDto>();
+  // 「開いたうえで直す場所へ」の依頼。editor が描画されてから DOM / 選択を触るため effect で消費する。
+  const [focusRequest, setFocusRequest] = useState<LocalTarget>();
 
   // 下書きの自動保存。グラフとメタデータだけを退避し、推論結果やプレビューは復元時に再計算させる。
   const metadata = useToolBuilderStore((state) => state.metadata);
@@ -62,14 +98,16 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
     setView('editor');
   }
   async function backToList(): Promise<void> { setView('list'); await refreshTools(); }
-  async function openTool(internalId: string): Promise<void> {
+  /** 一覧・他画面からの依頼で保存済みToolを開く。開けたら true（失敗は一覧にエラーを出して false）。 */
+  async function openTool(internalId: string): Promise<boolean> {
     setBusy(true); setListError(undefined);
     try {
       const [tool, versions] = await Promise.all([client.getTool(internalId, scope), client.listVersions(internalId, scope)]);
       useToolBuilderStore.getState().loadTool(tool);
       useToolBuilderStore.getState().setVersions(versions);
       setView('editor');
-    } catch (cause) { setListError(message(cause)); }
+      return true;
+    } catch (cause) { setListError(message(cause)); return false; }
     finally { setBusy(false); }
   }
   async function removeTool(internalId: string): Promise<void> {
@@ -78,6 +116,20 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
     catch (cause) { setListError(message(cause)); }
     finally { setBusy(false); setPendingDelete(undefined); }
   }
+  // 診断結果や他画面の「ツールを開く」からの依頼。mount 時と表示中の両方で受け、開いたら nodeId / section の場所へ移る。
+  usePendingOpen('Tool', (target) => void openToolAt(target));
+  async function openToolAt(target: OpenTarget): Promise<void> {
+    // 開けなかった依頼の場所指定は残さない（残すと、次に開いた別のToolの編集画面で同名ノードの選択や入力欄へのフォーカスが起きる）。
+    const opened = await openTool(target.internalId);
+    if (opened && (target.nodeId !== undefined || target.section !== undefined)) {
+      setFocusRequest({ ...(target.nodeId === undefined ? {} : { nodeId: target.nodeId }), ...(target.section === undefined ? {} : { section: target.section }) });
+    }
+  }
+  useEffect(() => {
+    if (focusRequest === undefined || view !== 'editor' || busy) return;
+    focusToolTarget(focusRequest);
+    setFocusRequest(undefined);
+  }, [focusRequest, view, busy]);
 
   if (view === 'list') {
     return <main className="agent-builder tool-list-page">
@@ -109,7 +161,22 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
     <div className="tool-builder">
       <MetadataBar client={client} onSaved={draft.clear} />
       <div className="builder-workspace"><NodePalette client={client} /><FlowCanvas /><NodeInspector client={client} /></div>
-      <div className="result-workspace"><PreviewPanel /><AgentToolContextPanel /></div>
+      <div className="result-workspace"><ToolDraftDiagnostics /><PreviewPanel /><AgentToolContextPanel /></div>
     </div>
   </div>;
+}
+
+/**
+ * 「呼び出し診断」（MetadataBar のボタン）の結果。プレビュー・エージェント向けコンテキストの上に
+ * 全幅で出し、閉じるまで残す（直しながら参照できるよう、編集で自動的には消さない）。
+ */
+export function ToolDraftDiagnostics() {
+  const diagnostics = useToolBuilderStore((state) => state.diagnostics);
+  const setDiagnostics = useToolBuilderStore((state) => state.setDiagnostics);
+  const { text } = useI18n();
+  if (diagnostics === undefined || diagnostics === 'loading') return null;
+  if ('failed' in diagnostics) {
+    return <div className="tool-diagnostics"><div className="api-error" role="alert">{text('Diagnostics failed: ', '診断に失敗しました: ')}{diagnostics.failed} <button type="button" className="ghost" aria-label={text('Close diagnostics', '診断を閉じる')} onClick={() => setDiagnostics(undefined)}>×</button></div></div>;
+  }
+  return <div className="tool-diagnostics"><DiagnosticsPanel diagnostics={{ kind: 'tool', tool: diagnostics }} context="tool-editor" onOpenLocal={focusToolTarget} onClose={() => setDiagnostics(undefined)} /></div>;
 }

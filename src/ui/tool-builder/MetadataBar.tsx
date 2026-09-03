@@ -1,14 +1,17 @@
-import { useCallback, useState } from 'react';
-import type { ToolApiClient } from '../api/tool-api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { isAbortError, type ToolApiClient } from '../api/tool-api';
 import type { SideEffectDto } from '../api/types';
 import { InlineFeedback } from '../components/InlineFeedback';
-import { currentGraph, missingRequiredMetadata, useToolBuilderStore, type RequiredMetadataKey } from './store';
+import { buildSaveDto, missingRequiredMetadata, saveBlocker, useToolBuilderStore, type RequiredMetadataKey, type SaveBlocker } from './store';
 import { useI18n } from '../i18n';
 import { scope } from '../scope';
+
+type Translate = (english: string, japanese: string) => string;
 
 /** onSaved: 保存が成功した直後に呼ぶ（ToolBuilder側で退避中の下書きを消すために使う）。 */
 export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClient; readonly onSaved?: () => void }) {
   const metadata = useToolBuilderStore((state) => state.metadata);
+  const nodes = useToolBuilderStore((state) => state.nodes);
   const setMetadata = useToolBuilderStore((state) => state.setMetadata);
   const currentVersion = useToolBuilderStore((state) => state.currentVersion);
   const versions = useToolBuilderStore((state) => state.versions);
@@ -17,11 +20,18 @@ export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClien
   const loadTool = useToolBuilderStore((state) => state.loadTool);
   const setSaveError = useToolBuilderStore((state) => state.setSaveError);
   const propagation = useToolBuilderStore((state) => state.propagation);
+  const propagationPending = useToolBuilderStore((state) => state.propagationPending);
+  const previewLoading = useToolBuilderStore((state) => state.previewLoading);
   const draftIssue = useToolBuilderStore((state) => state.draftIssue);
   const saveError = useToolBuilderStore((state) => state.saveError);
+  const diagnostics = useToolBuilderStore((state) => state.diagnostics);
+  const setDiagnostics = useToolBuilderStore((state) => state.setDiagnostics);
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string>();
   const dismissNotice = useCallback(() => setSavedNotice(undefined), []);
+  // 呼び出し診断の進行中の要求。新しい要求で前の要求を中断し、遅れて届いた古い結果を新しい結果と取り違えない。
+  const diagnoseAborter = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => diagnoseAborter.current?.abort(), []);
   const { text } = useI18n();
 
   const label: Record<RequiredMetadataKey, string> = {
@@ -31,29 +41,16 @@ export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClien
     publishName: text('Publish name', '公開名'),
     owner: text('Owner', '所有者'),
   };
-  // 保存ボタンのdisabledは「必須項目の未入力」と「保存中」だけで決める。
-  // 検証エラーで押せなくなる状態を作らないので、入力し直せば必ず復帰する。
+  // 保存ガード（優先順）: 必須項目 → function 名 → Agent Input の衝突 → 検証待ち → グラフエラー。
+  // どれも入力し直す・繋ぎ直す・待つことで解消でき、押せないまま行き止まりになる状態は作らない。
   const missing = missingRequiredMetadata(metadata);
-  const missingText = missing.map((key) => label[key]).join(text(', ', '、'));
+  const blocker = saveBlocker({ metadata, nodes, propagation, propagationPending, previewLoading, draftIssue });
+  const blockerText = blocker === undefined ? undefined : describeBlocker(blocker, label, text);
 
   async function save(): Promise<void> {
     setSaving(true); setSaveError(undefined); setSavedNotice(undefined);
     try {
-      const tool = await client.saveTool({
-        scope,
-        internalId: metadata.internalId,
-        workingName: metadata.workingName,
-        displayName: metadata.displayName,
-        publishName: metadata.publishName,
-        owner: metadata.owner,
-        sideEffect: metadata.sideEffect,
-        graph: currentGraph(),
-        ...(metadata.agentName.trim() !== '' && metadata.agentDescription.trim() !== ''
-          ? { agentTool: { name: metadata.agentName, description: metadata.agentDescription } }
-          : {}),
-        ...(inputSchema() !== undefined ? { inputSchema: inputSchema() } : {}),
-        ...(outputSchema() !== undefined ? { outputSchema: outputSchema() } : {}),
-      });
+      const tool = await client.saveTool(buildSaveDto());
       const nextVersions = await client.listVersions(metadata.internalId, scope);
       setSavedVersion(tool.metadata.version, nextVersions);
       setSavedNotice(tool.metadata.version);
@@ -61,6 +58,26 @@ export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClien
     } catch (cause) {
       setSaveError(cause instanceof Error ? cause.message : 'Save failed');
     } finally { setSaving(false); }
+  }
+
+  // 保存せずに、保存と同じ DTO でツール呼び出しの前提（function 定義・引数・グラフ・サンプル実行…）を検査する。
+  // 検証待ちでは止めない: グラフが壊れているときこそ、どの段階で落ちるかを知りたい。
+  async function diagnose(): Promise<void> {
+    const controller = new AbortController();
+    diagnoseAborter.current?.abort();
+    diagnoseAborter.current = controller;
+    setDiagnostics('loading');
+    // 要求中に別のToolを読み込む・リセットすると diagnostics は消える。その遅延結果は捨てる。
+    // 「消えたあとで再要求した」場合、store は再び 'loading' になるので、それだけでは前の要求の結果を
+    // 見分けられない。自分の controller が最新であることも条件にする（前の結果を出して新しい結果を捨てない）。
+    const current = () => diagnoseAborter.current === controller && useToolBuilderStore.getState().diagnostics === 'loading';
+    try {
+      const result = await client.diagnoseToolDraft(buildSaveDto(), controller.signal);
+      if (current()) setDiagnostics(result);
+    } catch (cause) {
+      if (controller.signal.aborted || isAbortError(cause)) return;
+      if (current()) setDiagnostics({ failed: cause instanceof Error ? cause.message : text('Request failed', 'リクエストが失敗しました') });
+    }
   }
 
   async function refreshVersions(): Promise<void> {
@@ -102,9 +119,10 @@ export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClien
             <option value="">{versions.length === 0 ? text('No saved versions', '保存済みバージョンなし') : text('Select version', 'バージョンを選択')}</option>
             {versions.map((version) => <option key={version} value={version}>{version}</option>)}
           </select>
-          <button type="button" className="primary" disabled={saving || missing.length > 0} onClick={() => void save()}>{saving ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
+          <button type="button" className="secondary" disabled={missing.length > 0 || diagnostics === 'loading'} title={text('Check whether an Agent could call this Tool as it is now, without saving.', '保存せずに、今の内容でエージェントから呼び出せるかを検査します。')} onClick={() => void diagnose()}>{diagnostics === 'loading' ? text('Diagnosing…', '診断中…') : text('Check readiness', '呼び出し診断')}</button>
+          <button type="button" className="primary" disabled={saving || blocker !== undefined} title={blockerText} onClick={() => void save()}>{saving ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
         </div>
-        {missing.length > 0 && <small className="empty-state" style={{ textAlign: 'right' }}>{text(`${missingText} required to save.`, `${missingText}が未入力です。`)}</small>}
+        {blockerText !== undefined && <small className={`save-blocker ${blocker?.kind === 'invalid-function-name' || blocker?.kind === 'agent-input-conflict' || blocker?.kind === 'graph-errors' ? 'field-error' : 'empty-state'}`} style={{ textAlign: 'right', maxWidth: '520px' }}>{blockerText}</small>}
         {saveError !== undefined && <div className="api-error" role="alert" style={{ margin: 0, maxWidth: '420px', textAlign: 'right' }}>{saveError}</div>}
         {savedNotice !== undefined && <InlineFeedback kind="success" autoHideMs={4000} onDismiss={dismissNotice}>{text(`Saved version ${savedNotice}`, `保存しました バージョン ${savedNotice}`)}</InlineFeedback>}
       </div>
@@ -112,15 +130,23 @@ export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClien
   );
 }
 
-function inputSchema() {
-  const graph = currentGraph();
-  const node = graph.nodes.find((candidate) => candidate.type === 'agent-input');
-  const config = node?.config as { schema?: import('../api/types').SchemaDto } | undefined;
-  return config?.schema;
-}
-
-function outputSchema() {
-  const propagation = useToolBuilderStore.getState().propagation;
-  // 終端は必ず terminalId から引く。order.at(-1) は未接続の agent-input（引数宣言）でありうる。
-  return propagation === undefined ? undefined : propagation.nodes[propagation.terminalId]?.schema;
+/** 保存できない理由の文言。何を直せば保存できるかまで書く。 */
+function describeBlocker(blocker: SaveBlocker, label: Record<RequiredMetadataKey, string>, text: Translate): string {
+  switch (blocker.kind) {
+    case 'missing-metadata': {
+      const missingText = blocker.keys.map((key) => label[key]).join(text(', ', '、'));
+      return text(`${missingText} required to save.`, `${missingText}が未入力です。`);
+    }
+    case 'invalid-function-name':
+      return text(
+        `"${blocker.name}" is not a valid function name for models. Set an agent-facing name of 1–64 ASCII letters, digits, _ or - in the Agent context panel.`,
+        `「${blocker.name}」はモデルへ公開できる function 名ではありません。「エージェント向けコンテキスト」で英数字・_・- の1〜64文字のツール名を設定してください`,
+      );
+    case 'agent-input-conflict':
+      return text('Multiple Agent Input nodes declare different arguments. Keep a single Agent Input node.', 'Agent Inputノードが複数あり引数が一致しません。1つに統合してください');
+    case 'validation-pending':
+      return text('Waiting for graph validation…', 'グラフ検証の完了を待っています…');
+    case 'graph-errors':
+      return text('Fix the graph errors before saving so the tool keeps its output contract.', 'グラフにエラーがあるため出力スキーマを確定できません。エラーを直してから保存してください');
+  }
 }

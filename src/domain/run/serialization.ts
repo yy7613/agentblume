@@ -3,6 +3,8 @@ import { SIDE_EFFECTS, type SideEffect } from '../tool/metadata';
 import type { RunRecord, RunStatus } from './run';
 
 const nodeOutputSchema = z.object({ nodeId: z.string(), rowCount: z.number().int().nonnegative(), truncated: z.boolean() });
+/** 失敗したツール実行の識別（error イベントと failure が共有する）。 */
+const failureToolRefSchema = z.object({ internalId: z.string().min(1), version: z.string().optional(), publishName: z.string().optional() });
 const traceSchema = z.discriminatedUnion('kind', [
   z.object({ sequence: z.number().int().positive(), kind: z.literal('model-request'), step: z.number().int().positive(), toolNames: z.array(z.string()) }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('tool-call'), name: z.string(), arguments: z.record(z.string(), z.unknown()) }),
@@ -13,7 +15,10 @@ const traceSchema = z.discriminatedUnion('kind', [
   z.object({ sequence: z.number().int().positive(), kind: z.literal('approval-requested'), tool: z.string(), sideEffect: z.enum(SIDE_EFFECTS as [SideEffect, ...SideEffect[]]), prompt: z.string() }),
   // decidedBy は後から足したので任意。既に保存されている Run のトレースには入っていない。
   z.object({ sequence: z.number().int().positive(), kind: z.literal('approval-resolved'), decision: z.enum(['approve', 'reject']), decidedBy: z.string().min(1).optional() }),
-  z.object({ sequence: z.number().int().positive(), kind: z.literal('error'), code: z.string(), message: z.string() }),
+  // 後から足した kind。kind 単位の追加なので、これを持たない旧 Run のトレースはそのまま読める。
+  z.object({ sequence: z.number().int().positive(), kind: z.literal('mcp-server-skipped'), server: z.string(), reason: z.enum(['not-found', 'disabled', 'unreachable']), detail: z.string().optional() }),
+  // tool / nodeId は後から足したので任意。ツール実行由来の失敗だけが持ち、旧 Run には入っていない。
+  z.object({ sequence: z.number().int().positive(), kind: z.literal('error'), code: z.string(), message: z.string(), tool: failureToolRefSchema.optional(), nodeId: z.string().optional() }),
 ]);
 
 const checkpointContentPartSchema = z.discriminatedUnion('type', [
@@ -60,7 +65,7 @@ const runSchema = z.object({
     kind: z.literal('estimated'), amount: z.number().nonnegative(), currency: z.literal('USD'),
     price: z.object({ currency: z.literal('USD'), inputPerMillionTokens: z.number().nonnegative(), outputPerMillionTokens: z.number().nonnegative(), effectiveAt: z.string().min(1) }),
   }).optional(),
-  failure: z.object({ code: z.string(), message: z.string() }).optional(),
+  failure: z.object({ code: z.string(), message: z.string(), tool: failureToolRefSchema.optional(), nodeId: z.string().optional() }).optional(),
   checkpoint: checkpointSchema.optional(),
 }).refine((record) => record.tool !== undefined || record.agent !== undefined, {
   message: 'run requires a tool or agent reference',

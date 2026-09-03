@@ -525,10 +525,48 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .ins-diag-check.error .ins-diag-label { color: #b73343; font-weight: 700; }
 .ins-diag-check.warning .ins-diag-label { color: #8a5a12; font-weight: 700; }
 .ins-diag-detail { flex: 1 1 100%; margin-left: 23px; font-size: 10px; color: #59667d; overflow-wrap: anywhere; }
+/* 問題のある行: 原因（次の一手つき）を主文にし、検査名・生idは小さく添える。ok 行は1行に畳む。 */
+.ins-diag-check:not(.ok) { align-items: flex-start; }
+.ins-diag-body { flex: 1 1 auto; min-width: 0; display: grid; gap: 3px; }
+.ins-diag-body .ins-diag-label { font-size: 10px; font-weight: 700; }
+.ins-diag-body .ins-diag-detail { margin: 0; font-size: 12px; line-height: 1.5; color: #2d3a57; }
+.ins-diag-check.error .ins-diag-body .ins-diag-detail { color: #7e2530; }
+.ins-diag-check.warning .ins-diag-body .ins-diag-detail { color: #6b4507; }
+.ins-diag-id { font-size: 9px; font-weight: 400; color: #97a1b5; margin-left: 4px; }
+.ins-diag-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.ins-diag-check.clickable { cursor: pointer; border-radius: 8px; }
+.ins-diag-check.clickable:hover { background: #f4f6fb; }
 .ins-diag-tool { margin-top: 10px; border: 1px solid #e7ebf3; border-radius: 10px; padding: 9px 12px; background: #fff; }
 .ins-diag-tool-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: 12px; }
 .ins-diag-tool-head b { color: #1f2a44; }
 .ins-diag-tool-head small { color: #8a94a8; }
+/* 診断パネル共通（DiagnosticsPanel）: 件数・ノードチップ・「開いて直す」ボタン・編集画面への配置 */
+.ins-diag-counts { font-size: 10px; color: #6d7890; white-space: nowrap; }
+.ins-diag-node { font-size: 10px; color: #4f5d76; background: #eef1f8; border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
+.ins-diag-node code { font-size: 10px; color: #33499c; }
+.diag-fix-btn { padding: 2px 8px; font-size: 10px; line-height: 1.4; border-radius: 6px; color: #33499c; border-color: #c9d2f5; background: #f4f6ff; }
+.diag-fix-btn:hover { background: #e9eefc; }
+.diag-toggle-btn { padding: 1px 8px; font-size: 11px; margin-left: 6px; vertical-align: baseline; }
+.ins-diag-agent-editor, .ins-diag-tool-editor { border: 1px solid #dce1eb; border-radius: 10px; margin: 0 0 14px; padding: 10px 14px 14px; }
+.result-workspace > .tool-diagnostics { grid-column: 1 / -1; padding: 12px 20px 0; background: white; border-bottom: 1px solid #eceff5; }
+.result-workspace > .tool-diagnostics .ins-diag { margin-bottom: 12px; }
+.result-workspace > .tool-diagnostics .api-error { display: flex; align-items: center; gap: 10px; }
+.result-workspace > .tool-diagnostics .api-error button { margin-left: auto; }
+.field-warning { display: block; margin-top: 4px; font-size: 11px; line-height: 1.4; color: #8a5a12; background: #fff3df; border-radius: 6px; padding: 5px 8px; }
+.save-blocker { line-height: 1.4; }
+.inline-issue.warning, .node-issue.warning { color: #8a5a12; }
+.inline-issue.warning { background: #fff3df; }
+.unconnected-badge { justify-self: start; border-radius: 99px; padding: 2px 6px; background: #fff3df; }
+.tool-node.unconnected { border-style: dashed; border-color: #d9a34a; }
+/* ツール選択行のバッジ: 直近の診断で壊れているツールを選んだ瞬間に分かるようにする */
+.diag-badge { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: 6px; border-radius: 50%; font-size: 9px; font-weight: 800; vertical-align: middle; cursor: help; }
+.diag-badge.ok { background: #e6f4ec; color: #1f7a5c; }
+.diag-badge.warning { background: #fff3df; color: #8a5a12; }
+.diag-badge.error { background: #fdecee; color: #b73343; }
+.agent-definition-card h2:focus { outline: 2px solid #6576f1; outline-offset: 3px; border-radius: 4px; }
+.agent-tool-option.unregistered { border-color: #f0c98a; background: #fffaf1; }
+.agent-tool-option.unregistered code { color: #8a5a12; white-space: normal; }
+.validation-status.bad { color: #b73343; }
 
 .ins-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0 2px; }
 .ins-metric { border: 1px solid #e7ebf3; border-radius: 10px; padding: 9px 11px; background: #fbfcfe; }

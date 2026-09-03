@@ -98,8 +98,11 @@ describe('tool routes', () => {
     it('inputSchema / outputSchema / state を渡すと保存結果へ反映される', async () => {
       const schema = { columns: [{ name: 'id', type: 'number', nullable: false }] };
       // outputSchema は終端の推論結果と整合しないと保存が拒否されるため、select を1列に絞る。
+      // inputSchema は同じ schema を宣言する agent-input ノードが無いと保存が拒否される（実行時契約）。
+      const base = makeGraph(['id']);
+      const graph = { ...base, nodes: [...base.nodes, { id: 'args', type: 'agent-input', config: { schema, sample: { id: 1 } } }] };
       const res = await postTool(
-        saveBody({ graph: makeGraph(['id']), inputSchema: schema, outputSchema: schema, state: 'published' }),
+        saveBody({ graph, inputSchema: schema, outputSchema: schema, state: 'published' }),
       );
       expect(res.statusCode).toBe(201);
       const { tool } = res.json();

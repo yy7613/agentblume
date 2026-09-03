@@ -108,6 +108,28 @@ function makeSut(): { usecase: SaveToolUseCase; repo: FakeToolRepository } {
 }
 
 describe('SaveToolUseCase', () => {
+  it('function 名として公開できない名前は保存を拒否し、agentTool.name があればそちらで判定する', async () => {
+    const { usecase, repo } = makeSut();
+    await expect(usecase.execute(makeInput({ publishName: 'bad name' })))
+      .rejects.toThrow(new ToolValidationError('SaveTool: tool name is not a valid function name: bad name'));
+    expect(repo.size).toBe(0);
+    // 実行時（toolToModelDefinition）は agentTool.name が publishName より優先されるので、保存時も同じ名前を見る。
+    await expect(usecase.execute(makeInput({ publishName: 'bad name', agentTool: { name: 'good_name', description: 'Look up scores.' } })))
+      .resolves.toMatchObject({ agentTool: { name: 'good_name' } });
+  });
+
+  it('inputSchema と agent-input ノードの不整合は実行時と同じメッセージで保存を拒否する', async () => {
+    const { usecase, repo } = makeSut();
+    const declared = { columns: [{ name: 'minimumScore', type: 'number' as const, nullable: false }] };
+    await expect(usecase.execute(makeInput({ inputSchema: declared })))
+      .rejects.toThrow(new ToolValidationError('SaveTool: tool declares inputSchema but has no agent-input node'));
+    const graph: ToolGraph = { nodes: [...validGraph.nodes, { id: 'arguments', type: 'agent-input', config: { schema: declared, sample: { minimumScore: 0 } } }], edges: [] };
+    await expect(usecase.execute(makeInput({ graph, inputSchema: { columns: [{ name: 'other', type: 'number', nullable: false }] } })))
+      .rejects.toThrow(new ToolValidationError("SaveTool: tool inputSchema does not match agent-input node 'arguments'"));
+    expect(repo.size).toBe(0);
+    await expect(usecase.execute(makeInput({ graph, inputSchema: declared }))).resolves.toMatchObject({ inputSchema: declared });
+  });
+
   it('初回保存は 1.0.0 になり、repo に保存される', async () => {
     const { usecase, repo } = makeSut();
 
@@ -472,8 +494,10 @@ describe('SaveToolUseCase', () => {
       { name: 'b', type: 'string' as const, nullable: true },
     ] };
 
+    // inputSchema は同じ schema を宣言する agent-input ノードが必要（無いと実行時契約違反として保存が拒否される）。
+    const graph: ToolGraph = { nodes: [...validGraph.nodes, { id: 'args', type: 'agent-input', config: { schema: inputSchema, sample: { a: 1 } } }], edges: [] };
     const tool = await usecase.execute(
-      makeInput({ sideEffect: 'write', inputSchema, outputSchema }),
+      makeInput({ sideEffect: 'write', graph, inputSchema, outputSchema }),
     );
 
     expect(tool.sideEffect).toBe('write');
@@ -484,7 +508,7 @@ describe('SaveToolUseCase', () => {
     expect(tool.metadata.displayName).toBe('Display');
     expect(tool.metadata.owner).toBe('owner@example.com');
     expect(tool.metadata.tenant).toEqual(scopeA);
-    expect(tool.graph).toEqual(validGraph);
+    expect(tool.graph).toEqual(graph);
   });
 
   it('workspace-output / graph-output / chart-output はいずれもsideEffect read-onlyでの保存を拒否する（G21）', async () => {
@@ -509,8 +533,48 @@ describe('SaveToolUseCase', () => {
     // G21: chart-output はこの3条件のうち唯一漏れていたsink種別。read-only保存を拒否できることを確認する。
     await expect(usecase.execute(makeInput({ internalId: 'chart-tool', graph: chartGraph, sideEffect: 'read-only' }))).rejects.toThrow(ToolValidationError);
     expect(repo.size).toBe(0);
+    // 境界・異常系（function 名・agent-input 契約・検査順）はファイル末尾の describe を参照。
 
     const saved = await usecase.execute(makeInput({ internalId: 'chart-tool-ok', graph: chartGraph, sideEffect: 'session-write' }));
     expect(saved.sideEffect).toBe('session-write');
+  });
+});
+
+describe('SaveToolUseCase 境界・異常系（function 名・agent-input 契約・検査順）', () => {
+  const declared = { columns: [{ name: 'minimumScore', type: 'number' as const, nullable: false }] };
+
+  it('publishName は 64 文字まで保存でき、65 文字は拒否する', async () => {
+    const { usecase, repo } = makeSut();
+    const longest = 'a'.repeat(64);
+    await expect(usecase.execute(makeInput({ publishName: longest }))).resolves.toMatchObject({ metadata: { publishName: longest } });
+    await expect(usecase.execute(makeInput({ internalId: 'too-long', publishName: `${longest}a` })))
+      .rejects.toThrow(new ToolValidationError(`SaveTool: tool name is not a valid function name: ${longest}a`));
+    expect(repo.size).toBe(1);
+  });
+
+  it('agentTool.name が不正なら publishName が正しくても拒否する（実効名は agentTool.name）', async () => {
+    const { usecase, repo } = makeSut();
+    await expect(usecase.execute(makeInput({ agentTool: { name: 'bad name', description: 'Look up scores.' } })))
+      .rejects.toThrow(new ToolValidationError('SaveTool: tool name is not a valid function name: bad name'));
+    expect(repo.size).toBe(0);
+  });
+
+  it('検査順: sink の副作用 → バインド検証 → function 名 → agent-input 契約 → グラフ検証（先に見つかった違反が勝つ）', async () => {
+    const { usecase, repo } = makeSut();
+    const source = { id: 'src', type: 'json-source' as const, config: { rows: [{ score: 1 }] } };
+    const sinkGraph: ToolGraph = {
+      nodes: [source, { id: 'sink', type: 'workspace-output', config: { name: 'ws', artifactKind: 'table', writeMode: 'create', onConflict: 'new-revision', previewRows: 1 } }],
+      edges: [{ from: 'src', to: 'sink' }],
+    };
+    await expect(usecase.execute(makeInput({ publishName: 'bad name', graph: sinkGraph }))).rejects.toThrow(/workspace output requires sideEffect/);
+    const bindingGraph: ToolGraph = {
+      nodes: [source, { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: 'ghost' } } }],
+      edges: [{ from: 'src', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ publishName: 'bad name', graph: bindingGraph, inputSchema: declared }))).rejects.toThrow(/unknown field 'ghost'/);
+    await expect(usecase.execute(makeInput({ publishName: 'bad name', inputSchema: declared }))).rejects.toThrow(/not a valid function name: bad name/);
+    await expect(usecase.execute(makeInput({ graph: invalidGraph, inputSchema: declared }))).rejects.toThrow(/has no agent-input node/);
+    await expect(usecase.execute(makeInput({ graph: invalidGraph }))).rejects.toThrow(/graph validation failed/);
+    expect(repo.size).toBe(0);
   });
 });

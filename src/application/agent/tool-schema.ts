@@ -76,6 +76,17 @@ function withOperatorEnums(schema: JsonSchemaObject, graph: ToolGraph, inputSche
   return { ...schema, properties };
 }
 
+/** LLMへ公開する function 名の形式（OpenAI 互換 API の制約: 英数字・`_`・`-` で 1〜64 文字）。 */
+const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * function 名として公開できる文字列か。`toolToModelDefinition` が実行時に投げる判定そのもので、
+ * 保存時の拒否（SaveTool）・プリフライト診断も同じ関数を使い、規則を1か所に置く。
+ */
+export function isValidFunctionName(name: string): boolean {
+  return FUNCTION_NAME_PATTERN.test(name);
+}
+
 /**
  * Tool を LLM へ公開する function definition へ変換する。
  * filter の opBinding が参照する引数プロパティには、許可演算子の enum と英語の説明文を付与する
@@ -83,7 +94,7 @@ function withOperatorEnums(schema: JsonSchemaObject, graph: ToolGraph, inputSche
  */
 export function toolToModelDefinition(tool: Tool): ModelToolDefinition {
   const name = tool.agentTool?.name ?? tool.metadata.publishName;
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+  if (!isValidFunctionName(name)) {
     throw new AgentRunError(`tool name is not a valid function name: ${name}`);
   }
   return {
@@ -178,4 +189,27 @@ export function schemasEqual(left: Schema | undefined, right: Schema | undefined
     const other = right.columns[index];
     return other !== undefined && column.name === other.name && column.type === other.type && column.nullable === other.nullable;
   });
+}
+
+/**
+ * inputSchema と agent-input ノードの不整合を、実行時 `graphWithArguments` と同じ規則・同じ英文で
+ * 返す（整合していれば undefined）。保存時の拒否（SaveTool）とプリフライト診断が共有し、
+ * 「保存できた Tool は実行時にこの理由では落ちない」を1つの判定で保証する。
+ * - inputSchema に列があるのに agent-input ノードが無い → 引数を受け取る場所が無い。
+ * - agent-input ノードの schema が inputSchema と一致しない → 引数の形が食い違う。
+ * 2条件は排他（前者はノード0件、後者はノード1件以上が前提）なので、検査順は結果に影響しない。
+ * 未保存の入力（SaveToolInput）でも使えるよう、Tool 全体ではなく graph と inputSchema だけを受ける。
+ */
+export function agentInputInconsistency(tool: { readonly graph: ToolGraph; readonly inputSchema?: Schema | undefined }): string | undefined {
+  const inputNodes = tool.graph.nodes.filter((node) => node.type === 'agent-input');
+  if ((tool.inputSchema?.columns.length ?? 0) > 0 && inputNodes.length === 0) {
+    return 'tool declares inputSchema but has no agent-input node';
+  }
+  for (const node of inputNodes) {
+    const config = node.config as { schema?: Schema } | null;
+    if (!schemasEqual(tool.inputSchema, config?.schema)) {
+      return `tool inputSchema does not match agent-input node '${node.id}'`;
+    }
+  }
+  return undefined;
 }

@@ -51,6 +51,7 @@ const HELP: Readonly<Record<ScreenName, ScreenHelp>> = {
       { en: 'Start from a source node and connect transforms toward one output node.', ja: 'ソースノードから始め、変換をつないで1つの出力ノードへ流します。' },
       { en: 'The preview panel shows sample rows as soon as the graph is valid.', ja: 'グラフが有効になると、プレビューにサンプル行が出ます。' },
       { en: 'Fill the metadata and save a version so Agents can reference it.', ja: 'メタデータを入力してバージョンを保存すると、エージェントから参照できます。' },
+      { en: '"Check readiness" runs the same preflight an Agent run would, without saving, and points at the node or setting to fix.', ja: '「呼び出し診断」は保存せずにエージェント実行と同じ事前検査を行い、直すべきノードや設定を示します。' },
     ],
     doc: 'docs/06-etl-tool-builder.md',
   },
@@ -68,6 +69,7 @@ const HELP: Readonly<Record<ScreenName, ScreenHelp>> = {
     steps: [
       { en: 'Fill the required fields, then select the Skills and Tools it may use.', ja: '必須項目を入力し、使用するスキルとツールを選びます。' },
       { en: '"Generate draft" writes a system prompt from that selection — review it before saving.', ja: '「草案を生成」は選択内容からシステムプロンプトを書きます。保存前に必ず確認してください。' },
+      { en: '"Check integration" verifies, without saving, that every attached Tool can actually be called; saving also runs it and summarizes the result.', ja: '「組み込みチェック」は保存せずに、割り当てたツールを実際に呼び出せるかを検査します。保存時にも自動で実行され、結果を要約します。' },
       { en: 'After saving, try it in the Chat screen.', ja: '保存したらチャット画面で試します。' },
     ],
     doc: 'docs/03-domain-model.md',

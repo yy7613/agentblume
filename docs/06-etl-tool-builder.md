@@ -277,6 +277,9 @@ flowchart TB
 - 引数スキーマ → LLM Tool Calling 用 **Input Schema** に変換。
 - Agent向けTool契約の **name / description** は、画面表示用metadataと別に保存できる。未設定の既存Toolは公開名・表示名から後方互換で導出する。
 - 出力スキーマ → 実行後にアプリ側で検証する **Output Schema**。
+- **保存時に契約を検証する**: モデルへ公開する function 名（`agentTool.name`、未設定なら公開名）が `[A-Za-z0-9_-]{1,64}` に合うこと、引数スキーマと Agent Input ノードの列が一致すること、宣言した出力スキーマがグラフの推論結果と矛盾しないこと。いずれも実行時と同じ判定関数で検査し、違反は保存ボタンの横に「何を直すか」付きで表示する（実行して初めて分かる状態を作らない）。
+- **呼び出し診断**（保存前の下書きに対する事前検査）: Tool Builder の「呼び出し診断」ボタンは `POST /tool-drafts/diagnose` で function 定義・引数整合・データソース解決・グラフ検証・サンプル実行・出力スキーマ整合・演算子引数・副作用・公開状態を段階別に検査し、問題のある項目には直す場所（ノード／エージェント向けコンテキスト／出力）を開くボタンを付ける。検査項目の一覧は [19-troubleshooting.md](./19-troubleshooting.md#実行前に見つける-組み込みチェック--呼び出し診断)。
+- **失敗箇所への導線**: エージェント実行でツールが失敗すると、失敗したツールとノードIDが Run のトレース（`error` イベントの `tool` / `nodeId`）に残り、チャット・動作確認・ステータス画面から「ツール「…」のノード「…」を開いて直す」で該当ノードを選択した状態の Tool Builder へ移動できる。
 - Zod（実装時検証）と JSON Schema（保存・交換）の使い分けは [02-tech-stack.md](./02-tech-stack.md#zod-と-json-schema-の使い分けideas-v2-1) 参照。
 - スキーマ・APIの詳細は [04-api-spec.md](./04-api-spec.md#4-tool-callingスキーマinput--output) 参照。
 

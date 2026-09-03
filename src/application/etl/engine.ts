@@ -16,7 +16,7 @@
  * 入力（graph / config / 上流テーブル）は破壊的変更しない。
  */
 import type { Schema, SchemaState, Table } from '../../domain/data/types';
-import { GraphError } from '../../domain/etl/errors';
+import { EtlError, GraphError } from '../../domain/etl/errors';
 import type { NodeId } from '../../domain/etl/ids';
 import type { EtlNode, SchemaIssue } from '../../domain/etl/node';
 import type { NodeRegistry } from '../../domain/etl/registry';
@@ -222,8 +222,16 @@ export class EtlEngine {
         return t;
       });
 
-      const config = node.validateConfig(graphNode.config);
-      const produced = node.execute(inputTables, config);
+      let produced: Table;
+      try {
+        const config = node.validateConfig(graphNode.config);
+        produced = node.execute(inputTables, config);
+      } catch (error) {
+        // どのノードで落ちたかを付けて伝播する（ノード実装は自分の id を知らない）。
+        // message は変えない: 利用者向けのローカライズが message の正規表現一致に依存している。
+        if (error instanceof EtlError && error.nodeId === undefined) error.nodeId = id;
+        throw error;
+      }
       const { table, truncated } = limitRows(produced, rowLimit);
 
       tableById.set(id, table);

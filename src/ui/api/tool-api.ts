@@ -14,6 +14,8 @@ import type {
   SerializedAgentDto,
   AgentPromptDraftDto,
   AgentDiagnosticsDto,
+  ToolDiagnosticsDto,
+  RunFailureToolRefDto,
   AgentKindDto,
   AgentToolRefDto,
   AgentSubAgentRefDto,
@@ -111,14 +113,24 @@ import { localizeApiErrorMessage } from './error-messages';
  * 原文は serverMessage に保持する。
  */
 export class ApiError extends Error {
+  // declare にして、無いときはキー自体を作らない（クラスフィールドの define 意味論だと undefined 値の
+  // キーが生え、'nodeId' in error や toEqual の比較で「ある」と誤認される）。
+  /** 失敗がツール実行由来のとき、サーバーが特定したツール（publishName は公開 function 名）。 */
+  declare readonly tool?: RunFailureToolRefDto;
+  /** 失敗がツール内の特定ノード由来のとき、そのノードID。 */
+  declare readonly nodeId?: string;
+
   constructor(
     readonly status: number,
     readonly code: string,
     readonly serverMessage: string,
     readonly runId?: string,
+    context?: { readonly tool?: RunFailureToolRefDto; readonly nodeId?: string },
   ) {
     super(localizeApiErrorMessage({ status, code, serverMessage }));
     this.name = 'ApiError';
+    if (context?.tool !== undefined) this.tool = context.tool;
+    if (context?.nodeId !== undefined) this.nodeId = context.nodeId;
   }
 }
 
@@ -245,6 +257,16 @@ export class ToolApiClient {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     if (version !== undefined) query.set('version', version);
     return (await this.request<{ diagnostics: AgentDiagnosticsDto }>(`/agents/${encodeURIComponent(internalId)}/diagnostics?${query}`, { signal })).diagnostics;
+  }
+
+  /** 未保存のAgent編集内容に対するプリフライト診断（保存せずに「組み込んだら呼び出せるか」を確認する）。 */
+  async diagnoseAgentDraft(input: SaveAgentDto, signal?: AbortSignal): Promise<AgentDiagnosticsDto> {
+    return (await this.request<{ diagnostics: AgentDiagnosticsDto }>('/agent-drafts/diagnose', { method: 'POST', body: JSON.stringify(input), signal })).diagnostics;
+  }
+
+  /** 未保存のTool編集内容に対するプリフライト診断（Agent側の検査項目をTool単体で実行する）。 */
+  async diagnoseToolDraft(input: SaveToolDto, signal?: AbortSignal): Promise<ToolDiagnosticsDto> {
+    return (await this.request<{ diagnostics: ToolDiagnosticsDto }>('/tool-drafts/diagnose', { method: 'POST', body: JSON.stringify(input), signal })).diagnostics;
   }
 
   async generateAgentPrompt(input: { readonly scope: TenantScopeDto; readonly displayName: string; readonly kind: AgentKindDto; readonly skills?: readonly AgentToolRefDto[]; readonly tools: readonly AgentToolRefDto[]; readonly agents?: readonly AgentSubAgentRefDto[]; readonly output?: StructuredOutputDto }): Promise<AgentPromptDraftDto> {
@@ -912,12 +934,13 @@ export class ToolApiClient {
       }
     }
     if (!response.ok) {
-      const error = body as { error?: { code?: string; message?: string; runId?: string } };
+      const error = body as { error?: { code?: string; message?: string; runId?: string; tool?: RunFailureToolRefDto; nodeId?: string } };
       throw new ApiError(
         response.status,
         error.error?.code ?? 'HTTP_ERROR',
         error.error?.message ?? response.statusText,
         error.error?.runId,
+        { ...(error.error?.tool === undefined ? {} : { tool: error.error.tool }), ...(error.error?.nodeId === undefined ? {} : { nodeId: error.error.nodeId }) },
       );
     }
     return body as T;

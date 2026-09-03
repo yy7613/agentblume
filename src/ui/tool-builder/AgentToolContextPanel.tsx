@@ -4,6 +4,9 @@ import { useI18n } from '../i18n';
 
 const DATA_TYPES: readonly DataType[] = ['string', 'number', 'boolean', 'date', 'null', 'unknown'];
 
+/** 診断結果の「エージェント向けコンテキストへ移動」がフォーカスを当てる入力欄のid（文言に依存しない固定id）。 */
+export const AGENT_CONTEXT_NAME_INPUT_ID = 'agent-tool-context-name';
+
 /** Tool Builder内でAgentへ渡すFunction Calling契約を編集・確認する。 */
 export function AgentToolContextPanel() {
   const metadata = useToolBuilderStore((state) => state.metadata);
@@ -26,7 +29,7 @@ export function AgentToolContextPanel() {
   return <section className="agent-tool-context" aria-label={text('Agent tool context', 'エージェント向けツール情報')}>
     <div className="panel-title"><div><span className="eyebrow">{text('Agent context', 'エージェント向けコンテキスト')}</span><h2>{text('Tool Calling contract', 'Tool Calling契約')}</h2></div><span className="version-chip">{metadata.sideEffect}</span></div>
     <p className="agent-context-hint">{text('This is the exact context an Agent receives when this Tool is attached.', 'AgentがこのToolを使う際に受け取る契約情報です。')}</p>
-    <label>{text('Tool name', 'ツール名')}<input aria-label={text('Agent-facing name', 'エージェント向けツール名')} placeholder={text('e.g. search_customers', '例: search_customers')} value={metadata.agentName} onChange={(event) => setMetadata('agentName', event.target.value)} /><small>{text('1–64 ASCII letters, numbers, _ or -.', '英数字・_・- を使った1〜64文字のFunction名です。')}</small></label>
+    <label>{text('Tool name', 'ツール名')}<input id={AGENT_CONTEXT_NAME_INPUT_ID} aria-label={text('Agent-facing name', 'エージェント向けツール名')} placeholder={text('e.g. search_customers', '例: search_customers')} value={metadata.agentName} onChange={(event) => setMetadata('agentName', event.target.value)} /><small>{text('1–64 ASCII letters, numbers, _ or -.', '英数字・_・- を使った1〜64文字のFunction名です。')}</small></label>
     <label>{text('Description', '説明')}<textarea aria-label={text('Agent-facing description', 'エージェント向け説明')} rows={4} placeholder={text('When should the Agent call this Tool, and what does it return?', 'このツールを呼び出す条件と、返す情報を記述します。')} value={metadata.agentDescription} onChange={(event) => setMetadata('agentDescription', event.target.value)} /><small>{text('Describe when the Agent should call it and what it returns.', 'いつ呼び出すか、何を返すかを記述します。')}</small></label>
     <section className="agent-contract-spec">
       <h3>{text('Arguments', '引数')}</h3>

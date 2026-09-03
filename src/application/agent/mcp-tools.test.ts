@@ -90,6 +90,12 @@ describe('McpToolset.resolve', () => {
     expect(toolset.definitions().map((definition) => definition.name)).toEqual(['mcp__ok__ping']);
     // disabled と未登録は接続すらしない。
     expect(client.listed).toEqual(['ok', 'broken']);
+    // スキップしたサーバーは理由つきで、Agentの参照順に残す（Run開始時のトレースへ載せる）。
+    expect(toolset.skipped()).toEqual([
+      { server: 'off', reason: 'disabled' },
+      { server: 'broken', reason: 'unreachable', detail: "MCP server 'broken' failed to start" },
+      { server: 'ghost', reason: 'not-found' },
+    ]);
   });
 
   it('object でない inputSchema のツールはスキップする', async () => {
@@ -145,9 +151,32 @@ describe('McpToolset.resolve', () => {
     await expect(toolset.execute({ id: 'c3', name: 'mcp__flaky__ghost', arguments: {} })).rejects.toThrow(/unknown MCP tool/);
   });
 
+  it('listTools が McpClientError 以外を投げたらスキップせず、そのまま伝播する', async () => {
+    const servers = new InMemoryMcpServerRepository();
+    await servers.save(config('ok'));
+    await servers.save(config('bug'));
+    const failure = new TypeError('listTools returned garbage');
+    const client = new FakeMcpClient({ ok: [{ name: 'ping', inputSchema: objectSchema }], bug: failure });
+    await expect(McpToolset.resolve({ scope, serverNames: ['ok', 'bug'], servers, client })).rejects.toBe(failure);
+  });
+
+  it('重複したサーバー名は1回だけ解決し、スキップ理由も1件だけ残す', async () => {
+    const servers = new InMemoryMcpServerRepository();
+    await servers.save(config('broken'));
+    const client = new FakeMcpClient({ broken: new McpClientError('down') });
+    const toolset = await McpToolset.resolve({ scope, serverNames: ['ghost', 'broken', 'ghost', 'broken'], servers, client });
+    expect(client.listed).toEqual(['broken']);
+    expect(toolset.skipped()).toEqual([
+      { server: 'ghost', reason: 'not-found' },
+      { server: 'broken', reason: 'unreachable', detail: 'down' },
+    ]);
+    expect(toolset.definitions()).toEqual([]);
+  });
+
   it('empty() は定義を持たず何も解決しない', async () => {
     const toolset = McpToolset.empty();
     expect(toolset.definitions()).toEqual([]);
+    expect(toolset.skipped()).toEqual([]);
     expect(toolset.isMcpTool('mcp__a__b')).toBe(false);
     await expect(toolset.execute({ id: 'c1', name: 'mcp__a__b', arguments: {} })).rejects.toThrow(/unknown MCP tool/);
   });

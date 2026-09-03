@@ -180,6 +180,7 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `PUT` | `/tools/{id}` | Toolフロー更新 | `tool:edit` |
 | `POST` | `/tools/{id}/preview` | 固定サンプルでプレビュー実行 | `tool:execute` |
 | `POST` | `/tools/{id}/infer-schema` | スキーマ伝播・推論 | `tool:edit` |
+| `POST` | `/tool-drafts/diagnose` | 未保存Toolのプリフライト診断（`POST /tools` と同じbodyを受け、保存せずに検査。§3.1） | `tool:execute` |
 | `POST` | `/tools/{id}/publish` | 公開（エイリアス/互換性管理） | `tool:publish` |
 | `POST` | `/tools/{id}/expose-mcp` | MCPサーバとして公開 | `deployment:publish` |
 | `POST` | `/skills` | Skill作成 | `skill:create` |
@@ -191,8 +192,9 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/agents` | Agent作成 | `agent:create` |
 | `GET` | `/agents` | workspace内のAgent latest一覧 | `agent:read` |
 | `GET` | `/agents/{id}` | Agent取得（latest / version固定） | `agent:read` |
-| `GET` | `/agents/{id}/diagnostics` | Tool呼び出しのプリフライト診断（参照解決・function定義・スキーマ整合・データソース・ドライランの段階別検査） | `agent:execute` |
+| `GET` | `/agents/{id}/diagnostics` | Tool呼び出しのプリフライト診断（参照解決・function定義・スキーマ整合・データソース・ドライランの段階別検査。§3.1） | `agent:execute` |
 | `GET` | `/agents/{id}/versions` | Agent version一覧 | `agent:read` |
+| `POST` | `/agent-drafts/diagnose` | 未保存Agentのプリフライト診断（`POST /agents` と同じbodyを受け、保存せずに検査。§3.1） | `agent:execute` |
 | `POST` | `/agent-drafts/generate-prompt` | 未保存AgentのToolメタからsystem prompt草案生成 | `agent:edit` |
 | `POST` | `/agents/{id}/generate-prompt` | Skill/Toolメタからsystem prompt自動生成 | `agent:edit` |
 | `POST` | `/agents/{id}/export` | Mastraコードへ一方向エクスポート | `agent:edit` |
@@ -206,6 +208,49 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `GET` | `/operations/audit` | 監査ログの参照（誰が何をしたか） | `audit-log:read` |
 | `GET`/`POST` | `/auth/*` | ログイン/コールバック/セッション | — |
 | `POST` | `/webhooks/{trigger}` | Webhookトリガー（Phase3） | Service Principal |
+
+### 3.1 プリフライト診断（diagnostics）
+
+「作ったToolがAgentから呼び出せない」原因は複数の層に潜むが、実行時には最初に踏んだ1つしか見えない。診断は**実行経路と同じ判定関数**で各段階を個別に検査し、モデル呼び出し・副作用なしで一覧を返す（ドライランは設計時サンプル値で行う）。保存済みは `GET /agents/{id}/diagnostics`、未保存は `POST /agent-drafts/diagnose`（body は `POST /agents` と同じ）と `POST /tool-drafts/diagnose`（body は `POST /tools` と同じ）。draft の `version` は未保存の印として `0.0.0` で報告する。
+
+```jsonc
+// GET /agents/{id}/diagnostics ・ POST /agent-drafts/diagnose → { "diagnostics": AgentDiagnostics }
+{
+  "agent": { "internalId": "assistant", "version": "1.0.0" },
+  "status": "error",                       // ok | warning | error（配下すべての最悪値）
+  "checks": [ { "id": "skills", "status": "ok" }, { "id": "model", "status": "error", "detail": "configured model provider does not support tool-calling" } ],
+  "tools": [ ToolDiagnostics ]
+}
+// POST /tool-drafts/diagnose → { "diagnostics": ToolDiagnostics }
+{
+  "internalId": "scores", "version": "0.0.0", "source": "direct", // skill経由なら "skill" + skillId
+  "functionName": "filter_scores",         // function definition を組めた場合のみ
+  "status": "error",
+  "checks": [ { "id": "graph", "status": "error", "detail": "sel: unknown column: missing", "nodeId": "sel" } ]
+}
+```
+
+`detail` は実行時エラーと同じ英文（UI側で日本語化する）。`nodeId` は失敗がグラフ内の特定ノード由来のとき（`graph` / `execution`）だけ付く。
+
+| 対象 | check id | 意味（error になる条件 / warning になる条件） |
+|---|---|---|
+| Agent | `skills` | Skill参照が解決できない |
+| Agent | `tool-versions` | 直付けとSkill由来で同一Toolの版が食い違う（実行時 ambiguous tool versions） |
+| Agent | `sub-agents` | サブエージェント参照切れ / `ask_{publishName}` が既存Tool・サブエージェントと衝突 / `ask_` 名が function 名の形式（`^[A-Za-z0-9_-]{1,64}$`）でない |
+| Agent | `function-names` | LLMへ公開する function 名の重複（後のToolへ永久に届かない） |
+| Agent | `mcp-servers` | 参照MCPサーバーが未登録（error） / disabled で実行時にスキップされる（warning）。実行時は黙ってスキップするため診断でしか見えない |
+| Agent | `model` | 設定中モデルが tool-calling（呼び出し可能物があり functionInvocation が有効なとき）/ structured output（`output` 指定時）を持たない、または設定を解決できない。モデル配線が無い環境では項目自体を出さない |
+| Agent | `harness` | warning のみ: webSearch 有効だが検索プロバイダ未設定 / fileMemory 有効だが Wiki 参照が無い |
+| Tool | `resolved` | 参照先の Tool version が存在しない（Agent診断のみ） |
+| Tool | `state` | `archived`（Agentに付けるべきでない: error） / `deprecated`（今後 archived になり得る: warning） |
+| Tool | `function-definition` | function definition を組めない（名前の形式・input列の重複） |
+| Tool | `agent-input` | inputSchema に列があるのに agent-input ノードが無い / ノードの schema が inputSchema と一致しない（実行時 graphWithArguments と同一判定。保存時にも同じ規則で拒否する） |
+| Tool | `data-sources` | データソース参照が解決できない |
+| Tool | `graph` | 解決済みグラフのスキーマ伝播エラー・構造違反（`nodeId` は最初のエラーノード） |
+| Tool | `execution` | 設計時サンプル値でのドライランがノード実行エラーになる（`nodeId` は投げたノード） |
+| Tool | `output-schema` | 宣言 outputSchema が推論終端と不整合（実行後に落ちる。再保存で更新） |
+| Tool | `operator-arguments` | opBinding の許可リストが空・既定演算子の不一致・引数型が string でない（error） / 引数が inputSchema に無く実行時に不活性（warning） |
+| Tool | `side-effect` | warning のみ: 非 read-only は承認ゲートで停止する |
 
 ### プロンプト自動生成（目玉機能）のリクエスト/レスポンス例
 

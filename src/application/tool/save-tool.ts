@@ -2,6 +2,8 @@
  * アプリ層: SaveToolUseCase（v2 実装契約 §10）
  *
  * 手順:
+ * 0. 実行時契約の事前検証: function 名の形式（`isValidFunctionName`）と inputSchema /
+ *    agent-input ノードの整合（`agentInputInconsistency`）。違反 → ToolValidationError。
  * 1. 保存前グラフ検証: `engine.propagateSchemas(input.graph)`。
  *    `hasErrors === true` → ToolValidationError（検証済み構成のみ保存する）。
  *    GraphError 等の例外はそのまま伝播。
@@ -25,6 +27,7 @@ import type { AgentToolContract, Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import type { EtlEngine } from '../etl/engine';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
+import { agentInputInconsistency, isValidFunctionName } from '../agent/tool-schema';
 
 /** SaveToolUseCase の入力。 */
 export interface SaveToolInput {
@@ -59,13 +62,27 @@ export class SaveToolUseCase {
       throw new ToolValidationError('SaveTool: workspace output requires sideEffect session-write or stronger');
     }
     validateAgentInputBindings(input.graph, input.inputSchema);
+    // 0. LLM へ公開する function 名と agent-input 契約。どちらも実行時（toolToModelDefinition /
+    //    graphWithArguments）に初めて落ちる不整合なので、実行側と同じ判定関数で保存時に拒否し、
+    //    原因を保存操作の近くへ寄せる（保存できた Tool は実行時にこの理由では落ちない）。
+    const functionName = input.agentTool?.name ?? input.publishName;
+    if (!isValidFunctionName(functionName)) {
+      throw new ToolValidationError(`SaveTool: tool name is not a valid function name: ${functionName}`);
+    }
+    const inconsistency = agentInputInconsistency({ graph: input.graph, inputSchema: input.inputSchema });
+    if (inconsistency !== undefined) throw new ToolValidationError(`SaveTool: ${inconsistency}`);
     // 1. 保存前グラフ検証（GraphError 等はそのまま伝播）。
     const executableGraph = this.resolveDataSources === undefined
       ? input.graph
       : await this.resolveDataSources.execute(input.scope, input.graph);
     const propagation = this.engine.propagateSchemas(executableGraph);
     if (propagation.hasErrors) {
-      const messages = Object.values(propagation.nodes)
+      // トポロジカル順（propagation.order）で並べ、根本原因（上流）の issue を先頭にする。
+      // Object.values(nodes) は整数風のノードid（'10' 等）を数値順に前へ寄せるため、下流の派生 issue が
+      // 先頭に来て「まずどこを直すか」を誤らせる。
+      const messages = propagation.order
+        .map((nodeId) => propagation.nodes[nodeId])
+        .filter((node): node is NonNullable<typeof node> => node !== undefined)
         .flatMap((node) =>
           node.issues
             .filter((issue) => issue.severity === 'error')

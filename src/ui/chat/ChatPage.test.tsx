@@ -2,7 +2,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ToolApiClient } from '../api/tool-api';
+import { ApiError, type ToolApiClient } from '../api/tool-api';
+import { I18nProvider } from '../i18n';
+import { NavigationProvider, consumePendingOpen } from '../navigation';
 import { ChatPage } from './ChatPage';
 afterEach(cleanup);
 async function sendMessage(message = 'hello'): Promise<void> {
@@ -98,6 +100,45 @@ describe('ChatPage', () => {
     expect(screen.getByText(/55 tokens/)).toBeTruthy();
     expect(screen.getByText(/Model response/)).toBeTruthy();
     expect(screen.getByText(/E_X: bad/)).toBeTruthy();
+  });
+
+  it('Run の失敗（ApiError）は失敗トレースを引き直し、次の一手・失敗箇所・直す場所へのボタン・技術的な詳細を返答の位置に出す', async () => {
+    const failed = new ApiError(422, 'TOOL_ARGUMENTS', 'required argument missing: year', 'run-fail', { tool: { internalId: 'sales-lookup', version: '1.0.0', publishName: 'sales_lookup' }, nodeId: 'in-1' });
+    const getRunTrace = vi.fn().mockResolvedValue({
+      runId: 'run-fail', scope: { tenantId: 'local', workspaceId: 'default' }, status: 'failed', mode: 'preview', startedAt: 'now',
+      trace: [
+        { sequence: 1, kind: 'tool-call', name: 'sales_lookup', arguments: { month: '2026-06' } },
+        { sequence: 2, kind: 'error', code: 'TOOL_ARGUMENTS', message: 'required argument missing: year' },
+      ],
+    });
+    const client = { listAgents: vi.fn().mockResolvedValue(oneAgent), runSavedAgent: vi.fn().mockRejectedValue(failed), getRunTrace } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage('sales please');
+    await waitFor(() => expect(getRunTrace).toHaveBeenCalledWith('run-fail', { tenantId: 'local', workspaceId: 'default' }));
+    const alert = await screen.findByRole('alert');
+    // 次の一手が先頭・太字。失敗箇所はツール名 + ノードID。
+    expect(alert.querySelector('strong')?.textContent).toBe('Describe that argument more concretely in the tool, or state its value in your request');
+    expect(alert.textContent).toContain('Failed in tool sales_lookup v1.0.0 · node in-1');
+    expect(screen.getByRole('button', { name: 'Open node "in-1" in tool "sales_lookup"' })).toBeTruthy();
+    // 生の code: message とモデルが渡した引数は折りたたみの中。
+    const details = screen.getByText('Technical details').closest('details');
+    expect(details?.textContent).toContain('TOOL_ARGUMENTS: required argument missing: year');
+    expect(details?.textContent).toContain('{"month":"2026-06"}');
+    // 返答の位置（エージェント名の吹き出し）に出て、再試行もできる。
+    expect(screen.getByText('Agent')).toBeTruthy();
+    expect(screen.queryByText('Error')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+  });
+
+  it('失敗トレースの取得に失敗しても通知自体は出す（best-effort）', async () => {
+    const failed = new ApiError(502, 'MODEL_PROVIDER', 'fetch failed', 'run-fail');
+    const client = { listAgents: vi.fn().mockResolvedValue(oneAgent), runSavedAgent: vi.fn().mockRejectedValue(failed), getRunTrace: vi.fn().mockRejectedValue(new Error('gone')) } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage();
+    expect(await screen.findByRole('button', { name: 'Open model settings' })).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('Could not reach the model server');
   });
 
   it('実行失敗をエラー吹き出しで表示する（非Error理由もハンドル）', async () => {
@@ -416,5 +457,144 @@ describe('ChatPage', () => {
         vi.useRealTimers();
       }
     });
+  });
+});
+
+/**
+ * Run 失敗の通知（RunFailureNotice）まわりの境界。トレースを引けない・runId が無い・古いクライアント・
+ * 承認再開の失敗・中断・再試行後の見え方・日本語UI。
+ */
+describe('ChatPage の失敗通知（境界）', () => {
+  const scope = { tenantId: 'local', workspaceId: 'default' };
+  const agents = [{ internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '1.0.0', kind: 'normal', state: 'draft' }];
+
+  afterEach(() => {
+    consumePendingOpen('Tool'); consumePendingOpen('Agent');
+    // I18nProvider(ja) は localStorage に言語を書く。後続テストの ApiError（構築時に言語を判定する）へ漏らさない。
+    localStorage.removeItem('agentcontext.language');
+  });
+
+  it('runId の無い失敗（HTTP 層の ApiError）はトレースを引かず、通知と再試行だけを出す', async () => {
+    const getRunTrace = vi.fn();
+    const client = { listAgents: vi.fn().mockResolvedValue(agents), runSavedAgent: vi.fn().mockRejectedValue(new ApiError(502, 'HTTP_ERROR', 'Bad Gateway')), getRunTrace } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage();
+    const alert = await screen.findByRole('alert');
+    expect(getRunTrace).not.toHaveBeenCalled();
+    expect(alert.querySelector('strong')?.textContent).toBe('Check that it is running, then retry');
+    expect(alert.textContent).toContain('Could not reach the API server');
+    expect(screen.getByText('Technical details').closest('details')?.textContent).not.toContain('Last tool call');
+    expect(screen.queryByText('Error')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+  });
+
+  it('getRunTrace を持たないクライアントでも通知を出し、エージェント側のボタンは選択中のエージェントを区画つきで開く', async () => {
+    const navigate = vi.fn();
+    const client = { listAgents: vi.fn().mockResolvedValue(agents), runSavedAgent: vi.fn().mockRejectedValue(new ApiError(422, 'AGENT_RUN', 'model requested unknown tool: lookup', 'run-old')) } as unknown as ToolApiClient;
+    render(<NavigationProvider navigate={navigate}><ChatPage client={client} /></NavigationProvider>);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage();
+    expect((await screen.findByRole('alert')).textContent).toContain('Check the tools attached to this agent');
+    await userEvent.click(screen.getByRole('button', { name: 'Open agent settings' }));
+    expect(navigate).toHaveBeenCalledWith('Agent');
+    expect(consumePendingOpen('Agent')).toEqual({ internalId: 'agent', section: 'tools' });
+  });
+
+  it('失敗したツールのノードを開くボタンは、ツール・バージョン・ノード・区画を揃えて Tool 画面へ渡す', async () => {
+    const navigate = vi.fn();
+    const failed = new ApiError(422, 'TOOL_ARGUMENTS', 'required argument missing: year', 'run-fail', { tool: { internalId: 'sales-lookup', version: '1.0.0', publishName: 'sales_lookup' }, nodeId: 'in-1' });
+    const client = { listAgents: vi.fn().mockResolvedValue(agents), runSavedAgent: vi.fn().mockRejectedValue(failed), getRunTrace: vi.fn().mockRejectedValue(new Error('gone')) } as unknown as ToolApiClient;
+    render(<NavigationProvider navigate={navigate}><ChatPage client={client} /></NavigationProvider>);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage();
+    await userEvent.click(await screen.findByRole('button', { name: 'Open node "in-1" in tool "sales_lookup"' }));
+    expect(navigate).toHaveBeenCalledWith('Tool');
+    expect(consumePendingOpen('Tool')).toEqual({ internalId: 'sales-lookup', version: '1.0.0', nodeId: 'in-1', section: 'agent-context' });
+  });
+
+  it('失敗の通知は会話ログに残り、再試行の成功応答はその後ろに積まれる', async () => {
+    const runSavedAgent = vi.fn()
+      .mockRejectedValueOnce(new ApiError(422, 'AGENT_RUN', 'model requested unknown tool: lookup', 'run-fail'))
+      .mockResolvedValueOnce({ runId: 'run-ok', response: 'recovered', trace: [], usage: {}, mode: 'preview' });
+    const client = { listAgents: vi.fn().mockResolvedValue(agents), runSavedAgent, getRunTrace: vi.fn().mockRejectedValue(new Error('gone')) } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage('please help');
+    const alert = await screen.findByRole('alert');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    const answer = await screen.findByText('recovered');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    // 通知（先）→ 成功応答（後）の順。
+    expect(alert.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('成功した Run のトレースに mcp-server-skipped があれば、ステップ行として理由つきで言語化する（失敗通知は出さない）', async () => {
+    const run = { runId: 'run-skip', mode: 'preview', response: 'ok', usage: {}, trace: [
+      { sequence: 1, kind: 'mcp-server-skipped', server: 'files', reason: 'not-found' },
+      { sequence: 2, kind: 'model-response', content: 'ok' },
+    ] };
+    const client = { listAgents: vi.fn().mockResolvedValue(agents), runSavedAgent: vi.fn().mockResolvedValue(run) } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage();
+    expect(await screen.findByText(/MCP server 'files' were not loaded \(server not registered\)/)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('中断は失敗通知にしない（role=alert も技術的な詳細も出さない）', async () => {
+    const runSavedAgent = vi.fn((_input: unknown, signal?: AbortSignal) => new Promise((_resolve, reject) => {
+      signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+    }));
+    const client = { listAgents: vi.fn().mockResolvedValue(agents), runSavedAgent } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage('slow question');
+    await userEvent.click(await screen.findByRole('button', { name: 'Stop run' }));
+    await screen.findByText('Run cancelled. Your message is back in the composer.');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('Technical details')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  it('承認後の再開で Run が失敗しても同じ通知（失敗箇所・直前のツール呼び出し）を出し、再試行は再開を呼び直す', async () => {
+    const waiting = {
+      runId: 'run-approval', mode: 'preview', response: 'Approve write_rows?', usage: {}, trace: [],
+      status: 'waiting-approval', checkpoint: { prompt: 'Approve write_rows?', expiresAt: '2026-07-27T00:00:00.000Z', tool: 'write_rows', sideEffect: 'write' },
+    };
+    const failed = new ApiError(422, 'ETL_SCHEMA', 'sort: column(s) not found: total', 'run-approval', { tool: { internalId: 'writer', version: '1.0.0', publishName: 'write_rows' }, nodeId: 'sort-1' });
+    const resumeRun = vi.fn().mockRejectedValue(failed);
+    const getRunTrace = vi.fn().mockResolvedValue({ runId: 'run-approval', scope, status: 'failed', mode: 'preview', startedAt: 'now', trace: [
+      { sequence: 1, kind: 'approval-resolved', decision: 'approve' },
+      { sequence: 2, kind: 'tool-call', name: 'write_rows', arguments: { rows: 3 } },
+    ] });
+    const client = { listAgents: vi.fn().mockResolvedValue(agents), runSavedAgent: vi.fn().mockResolvedValue(waiting), resumeRun, getRunTrace } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage('write the rows');
+    await screen.findByRole('group', { name: 'Tool approval' });
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Failed in tool write_rows v1.0.0 · node sort-1');
+    expect(screen.getByText('Technical details').closest('details')?.textContent).toContain('{"rows":3}');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledTimes(2));
+  });
+
+  it('日本語UIでは通知の失敗箇所・ボタン・折りたたみが日本語になり、吹き出しの名前はエージェント名のまま', async () => {
+    // ApiError は構築時に言語を判定するので、I18nProvider(ja) が localStorage へ書いた後に作る。
+    const runSavedAgent = vi.fn().mockImplementation(() => Promise.reject(new ApiError(422, 'TOOL_ARGUMENTS', 'required argument missing: year', 'run-fail', { tool: { internalId: 'sales-lookup', publishName: 'sales_lookup' }, nodeId: 'in-1' })));
+    const client = { listAgents: vi.fn().mockResolvedValue(agents), runSavedAgent, getRunTrace: vi.fn().mockRejectedValue(new Error('gone')) } as unknown as ToolApiClient;
+    render(<I18nProvider initialLanguage="ja"><ChatPage client={client} /></I18nProvider>);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.type(screen.getByLabelText('チャットメッセージ'), 'hello');
+    await userEvent.click(screen.getByRole('button', { name: '送信' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.querySelector('strong')?.textContent).toBe('ツールの引数の説明を具体的にするか、指示の中でその値を明示してください');
+    expect(alert.textContent).toContain('失敗箇所: ツール sales_lookup · ノード in-1');
+    expect(screen.getByRole('button', { name: 'ツール「sales_lookup」のノード「in-1」を開いて直す' })).toBeTruthy();
+    expect(screen.getByText('技術的な詳細')).toBeTruthy();
+    expect(screen.getByText('Agent')).toBeTruthy();
+    expect(screen.queryByText('エラー')).toBeNull();
   });
 });

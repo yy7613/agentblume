@@ -4,9 +4,11 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, SerializedAgentDto } from '../api/types';
+import { I18nProvider } from '../i18n';
+import { NavigationProvider, consumePendingOpen } from '../navigation';
 import { AgentInspectorPage } from './AgentInspectorPage';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); consumePendingOpen('Tool'); });
 
 async function sendMessage(message = 'Inspect this run'): Promise<void> {
   await userEvent.type(screen.getByLabelText('Inspect message'), message);
@@ -83,6 +85,88 @@ describe('AgentInspectorPage', () => {
     expect(screen.getByText('tool_x')).toBeTruthy();
     // 閉じるとパネルが消える。
     await userEvent.click(screen.getByRole('button', { name: 'Close diagnostics' }));
+    expect(screen.queryByText('Blocked')).toBeNull();
+  });
+
+  it('診断の問題行から「ツールを開く」で Tool 画面へ対象を預けて遷移する', async () => {
+    const diagnoseAgent = vi.fn().mockResolvedValue({
+      agent: { internalId: 'agent', version: '1.2.0' }, status: 'error', checks: [{ id: 'skills', status: 'ok' }],
+      tools: [{ internalId: 'tool-x', version: '2.0.0', source: 'direct', functionName: 'tool_x', status: 'error', checks: [{ id: 'graph', status: 'error', nodeId: 'filter-1', detail: 'graph has a cycle' }] }],
+    });
+    const navigate = vi.fn();
+    render(<NavigationProvider navigate={navigate}><AgentInspectorPage client={makeClient({ diagnoseAgent })} /></NavigationProvider>);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.click(await screen.findByRole('button', { name: 'Diagnose tools' }));
+    await screen.findByText('Blocked');
+    // どのノードで落ちたかを示し、そのツールをそのノードで開いて直せる。
+    expect(screen.getByText('filter-1')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Open node "filter-1"' }));
+    expect(navigate).toHaveBeenCalledWith('Tool');
+    expect(consumePendingOpen('Tool')).toEqual({ internalId: 'tool-x', version: '2.0.0', nodeId: 'filter-1' });
+  });
+
+  it('トレースの error は次の一手が分かる文言へ直す（日本語UI）', async () => {
+    const failed: AgentPreviewRunDto = {
+      runId: 'run-l', mode: 'preview', response: '', usage: {},
+      trace: [{ sequence: 1, kind: 'error', code: 'AGENT_RUN', message: 'tool call limit exceeded: maximum 8' }],
+    };
+    render(<I18nProvider initialLanguage="ja"><AgentInspectorPage client={makeClient({ runSavedAgent: vi.fn().mockResolvedValue(failed) })} /></I18nProvider>);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.type(screen.getByLabelText('動作確認メッセージ'), 'go');
+    await userEvent.click(screen.getByRole('button', { name: '送信' }));
+    expect(await screen.findByText(/AGENT_RUN: 1回の実行で使えるツール呼び出しの上限（8回）に達しました/)).toBeTruthy();
+    expect(screen.queryByText(/tool call limit exceeded/)).toBeNull();
+  });
+
+  it('トレースの error は再試行の注記を言語に合わせて付け直し、mcp-server-skipped の行も描く（日本語UI）', async () => {
+    const failed: AgentPreviewRunDto = {
+      runId: 'run-retry', mode: 'preview', response: '', usage: {},
+      trace: [
+        { sequence: 1, kind: 'mcp-server-skipped', server: 'files', reason: 'disabled' },
+        { sequence: 2, kind: 'error', code: 'TOOL_ARGUMENTS', message: 'required argument missing: month (retrying 1/1)' },
+      ],
+    };
+    render(<I18nProvider initialLanguage="ja"><AgentInspectorPage client={makeClient({ runSavedAgent: vi.fn().mockResolvedValue(failed) })} /></I18nProvider>);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.type(screen.getByLabelText('動作確認メッセージ'), 'go');
+    await userEvent.click(screen.getByRole('button', { name: '送信' }));
+    expect(await screen.findByText('TOOL_ARGUMENTS: モデルがツールの必須引数「month」を渡しませんでした。ツールの引数の説明を具体的にするか、指示の中でその値を明示してください（再試行 1/1）')).toBeTruthy();
+    expect(screen.queryByText(/retrying 1\/1/)).toBeNull();
+    expect(screen.getByText('MCPサーバーをスキップ: files (disabled)')).toBeTruthy();
+  });
+
+  it('英語UIでは再試行の注記を原文の形で残し、mcp-server-skipped の detail を添える', async () => {
+    const failed: AgentPreviewRunDto = {
+      runId: 'run-retry-en', mode: 'preview', response: '', usage: {},
+      trace: [
+        { sequence: 1, kind: 'mcp-server-skipped', server: 'files', reason: 'unreachable', detail: 'ECONNREFUSED' },
+        { sequence: 2, kind: 'error', code: 'TOOL_ARGUMENTS', message: 'required argument missing: month (retrying 1/1)' },
+      ],
+    };
+    render(<AgentInspectorPage client={makeClient({ runSavedAgent: vi.fn().mockResolvedValue(failed) })} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage('go');
+    expect(await screen.findByText("TOOL_ARGUMENTS: the model omitted the required tool argument 'month'. Describe that argument more concretely in the tool, or state its value in your request (retrying 1/1)")).toBeTruthy();
+    expect(screen.getByText('MCP server skipped: files (unreachable) · ECONNREFUSED')).toBeTruthy();
+  });
+
+  it('診断中はボタンを無効にし、エージェントを切り替えると進行中の診断を中断して結果を捨てる', async () => {
+    const pending: { readonly resolve: (value: unknown) => void; readonly signal: AbortSignal | undefined }[] = [];
+    const diagnoseAgent = vi.fn((_id: string, _scope: unknown, _version: string | undefined, signal?: AbortSignal) => new Promise((resolve) => { pending.push({ resolve, signal }); }));
+    const listAgents = vi.fn().mockResolvedValue([
+      { internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '1.2.0', kind: 'normal', state: 'draft' },
+      { internalId: 'other', displayName: 'Other', publishName: 'other', latestVersion: '1.0.0', kind: 'normal', state: 'draft' },
+    ]);
+    render(<AgentInspectorPage client={makeClient({ diagnoseAgent, listAgents })} />);
+    await screen.findByRole('option', { name: /Other/ });
+    await userEvent.click(await screen.findByRole('button', { name: 'Diagnose tools' }));
+    expect((screen.getByRole('button', { name: 'Diagnosing…' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(pending).toHaveLength(1);
+
+    await userEvent.selectOptions(screen.getByRole('combobox'), 'other');
+    expect(pending[0]?.signal?.aborted).toBe(true);
+    expect(await screen.findByRole('button', { name: 'Diagnose tools' })).toBeTruthy();
+    await act(async () => { pending[0]?.resolve({ agent: { internalId: 'agent', version: '1.2.0' }, status: 'error', checks: [{ id: 'model', status: 'error', detail: 'x' }], tools: [] }); });
     expect(screen.queryByText('Blocked')).toBeNull();
   });
 

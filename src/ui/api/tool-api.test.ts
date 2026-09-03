@@ -68,6 +68,52 @@ describe('ToolApiClient', () => {
     expect(fetcher.mock.calls[2]?.[0]).toContain('version=1.0.0');
   });
 
+  it('エラー本文の tool / nodeId（失敗箇所）を ApiError へ載せ、無いときはキー自体を持たない', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'ETL_SCHEMA', message: 'select: column(s) not found: revenue', runId: 'run-9', tool: { internalId: 'sales', version: '1.2.0', publishName: 'sales_lookup' }, nodeId: 'pick' } }, 422))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'ETL_SCHEMA', message: 'select: column(s) not found: revenue', tool: { internalId: 'sales' } } }, 422))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'AGENT_RUN', message: 'model requested unknown tool: x' } }, 422));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    const withNode = await client.listTools(scope).catch((cause: unknown) => cause);
+    expect(withNode).toEqual(expect.objectContaining({ runId: 'run-9', tool: { internalId: 'sales', version: '1.2.0', publishName: 'sales_lookup' }, nodeId: 'pick' }));
+    const toolOnly = await client.listTools(scope).catch((cause: unknown) => cause) as Record<string, unknown>;
+    expect(toolOnly['tool']).toEqual({ internalId: 'sales' });
+    expect(Object.prototype.hasOwnProperty.call(toolOnly, 'nodeId')).toBe(false);
+    const neither = await client.listTools(scope).catch((cause: unknown) => cause) as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(neither, 'tool')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(neither, 'nodeId')).toBe(false);
+  });
+
+  it('エラー本文が想定外の形（error 無し・文字列・tool が文字列）でも ApiError を組み立てて落ちない', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ message: 'legacy' }, 500))
+      .mockResolvedValueOnce(new Response('"just a string"', { status: 502, statusText: 'Bad Gateway', headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'X', message: 'm', tool: 'oops' } }, 422));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    const noError = await client.listTools(scope).catch((cause: unknown) => cause);
+    expect(noError).toEqual(expect.objectContaining({ status: 500, code: 'HTTP_ERROR' }));
+    const stringBody = await client.listTools(scope).catch((cause: unknown) => cause);
+    expect(stringBody).toEqual(expect.objectContaining({ status: 502, code: 'HTTP_ERROR', serverMessage: 'Bad Gateway' }));
+    const weirdTool = await client.listTools(scope).catch((cause: unknown) => cause);
+    // 形の検証は表示側（RunFailureNotice）が行う。ここでは値をそのまま持ち回るだけで例外にしない。
+    expect(weirdTool).toEqual(expect.objectContaining({ code: 'X' }));
+  });
+
+  it('draft 診断は保存と同じ body を POST し、応答の diagnostics を返す', async () => {
+    const agentDiagnostics = { agent: { internalId: 'a', version: '0.0.0' }, status: 'ok', checks: [], tools: [] };
+    const toolDiagnostics = { internalId: 't', version: '0.0.0', source: 'direct', status: 'ok', checks: [] };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ diagnostics: agentDiagnostics }))
+      .mockResolvedValueOnce(jsonResponse({ diagnostics: toolDiagnostics }));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    const agentInput = { scope, internalId: 'a', workingName: 'w', displayName: 'd', publishName: 'p', owner: 'o', kind: 'normal' as const, systemPrompt: 's', tools: [] };
+    await expect(client.diagnoseAgentDraft(agentInput)).resolves.toEqual(agentDiagnostics);
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/agent-drafts/diagnose', expect.objectContaining({ method: 'POST', body: JSON.stringify(agentInput) }));
+    const toolInput = { scope, internalId: 't', workingName: 'w', displayName: 'd', publishName: 'p', owner: 'o', sideEffect: 'read-only' as const, graph: { nodes: [], edges: [] } };
+    await expect(client.diagnoseToolDraft(toolInput)).resolves.toEqual(toolDiagnostics);
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/tool-drafts/diagnose', expect.objectContaining({ method: 'POST', body: JSON.stringify(toolInput) }));
+  });
+
   it('非2xxをApiErrorへ正規化し、messageはローカライズ・原文はserverMessageへ保持する', async () => {
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'ETL_GRAPH', message: 'broken graph' } }, 422));
     const client = new ToolApiClient('', fetcher as typeof fetch);

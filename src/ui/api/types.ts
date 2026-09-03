@@ -191,6 +191,8 @@ export interface DiagnosticCheckDto {
   readonly id: string;
   readonly status: DiagnosticStatusDto;
   readonly detail?: string;
+  /** 失敗がツール内の特定ノード由来のとき、そのノードID（graph / execution 検査）。 */
+  readonly nodeId?: string;
 }
 export interface ToolDiagnosticsDto {
   readonly internalId: string;
@@ -236,7 +238,15 @@ export type RunTraceEventDto =
   | { readonly sequence: number; readonly kind: 'approval-requested'; readonly tool: string; readonly sideEffect: SideEffectDto; readonly prompt: string }
   // decidedBy は承認した主体。認可・監査を入れる前に保存されたRunには入っていないので任意。
   | { readonly sequence: number; readonly kind: 'approval-resolved'; readonly decision: 'approve' | 'reject'; readonly decidedBy?: string }
-  | { readonly sequence: number; readonly kind: 'error'; readonly code: string; readonly message: string };
+  /** MCPサーバーを解決できずツールを注入しなかった（Runは続く）。reason: not-found / disabled / unreachable。 */
+  | { readonly sequence: number; readonly kind: 'mcp-server-skipped'; readonly server: string; readonly reason: 'not-found' | 'disabled' | 'unreachable'; readonly detail?: string }
+  /** tool / nodeId は失敗がツール実行由来のときだけ入る（どのツールのどのノードで落ちたか）。古いRunには無い。 */
+  | { readonly sequence: number; readonly kind: 'error'; readonly code: string; readonly message: string; readonly tool?: RunFailureToolRefDto; readonly nodeId?: string };
+
+/** 失敗したツール実行の識別（publishName はモデルへ公開した function 名）。 */
+export interface RunFailureToolRefDto { readonly internalId: string; readonly version?: string; readonly publishName?: string }
+/** Runの失敗理由。tool / nodeId はツール実行由来の失敗だけが持つ。 */
+export interface RunFailureDto { readonly code: string; readonly message: string; readonly tool?: RunFailureToolRefDto; readonly nodeId?: string }
 
 /** POST /runs / POST /runs/:runId/resume が waiting-approval で返す承認プロンプト。 */
 export interface AgentRunApprovalPromptDto {
@@ -451,7 +461,7 @@ export interface RunSummaryDto {
   readonly completedAt?: string;
   readonly response?: string;
   readonly structuredResponse?: Readonly<Record<string, unknown>>;
-  readonly failure?: { readonly code: string; readonly message: string };
+  readonly failure?: RunFailureDto;
   readonly usage?: AgentPreviewRunDto['usage'];
   readonly latency?: RunLatencyDto;
   readonly estimatedCost?: RunEstimatedCostDto;

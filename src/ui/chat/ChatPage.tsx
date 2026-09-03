@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { isAbortError, type ToolApiClient } from '../api/tool-api';
+import { describeMcpServerSkipped, localizeRunTraceError, type ErrorLanguage } from '../api/error-messages';
+import { ApiError, isAbortError, type ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, AgentSummaryDto, HarnessRunDto, HarnessSummaryDto, RunImageAttachmentDto, RunTraceEventDto, SessionArtifactDto } from '../api/types';
+import { RunFailureNotice, type RunFailureNoticeProps } from '../components/RunFailureNotice';
 import { useModalBehavior } from '../hooks/useModalBehavior';
 import { useI18n } from '../i18n';
 import { useElapsedSeconds } from './useElapsedSeconds';
@@ -15,7 +17,8 @@ type ChatTurn =
   | { readonly role: 'assistant'; readonly run: AgentPreviewRunDto | HarnessRunDto }
   // cancelled は「利用者が中断した」印。失敗ではないので赤いエラー表示ではなく控えめな通知として描く
   // （buildHistory は role だけを見るため、error turn と同じく履歴からは除かれる）。
-  | { readonly role: 'error'; readonly text: string; readonly onRetry?: () => void; readonly cancelled?: boolean };
+  // failure は Run の失敗（ApiError）のときだけ入る: 失敗箇所・直す場所へのボタン・失敗直前のツール呼び出しを出す。
+  | { readonly role: 'error'; readonly text: string; readonly onRetry?: () => void; readonly cancelled?: boolean; readonly failure?: RunFailureNoticeProps };
 
 const sparkIcon = (
   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
@@ -136,10 +139,33 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       if (activeSessionId !== undefined && typeof sessions.listSessionArtifacts === 'function') void sessions.listSessionArtifacts(activeSessionId, scope).then(setArtifacts).catch(() => {});
     } catch (cause) {
       if (isAbortError(cause)) restoreCancelled(content, attachedImages);
-      else pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void send({ content, images: attachedImages }) });
+      else {
+        const failure = cause instanceof ApiError ? await describeFailure(cause, target.kind === 'agent' ? target.item.internalId : undefined) : undefined;
+        pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void send({ content, images: attachedImages }), ...(failure === undefined ? {} : { failure }) });
+      }
     } finally {
       setBusy(false); setAborter(undefined);
     }
+  }
+
+  /**
+   * Run の失敗を通知（RunFailureNotice）の材料にする。
+   * モデルがツールへ何を渡したかは失敗の一番の手掛かりだが、POST /runs のエラー本文には入らないので、
+   * runId があれば保存済みトレースを引き直す（best-effort: 取れなくても通知自体は出す）。
+   */
+  async function describeFailure(cause: ApiError, agentInternalId: string | undefined): Promise<RunFailureNoticeProps> {
+    const base: RunFailureNoticeProps = {
+      code: cause.code, message: cause.message, serverMessage: cause.serverMessage,
+      ...(cause.tool === undefined ? {} : { tool: cause.tool }),
+      ...(cause.nodeId === undefined ? {} : { nodeId: cause.nodeId }),
+      ...(cause.runId === undefined ? {} : { runId: cause.runId }),
+      ...(agentInternalId === undefined ? {} : { agent: { internalId: agentInternalId } }),
+    };
+    if (cause.runId === undefined || typeof (client as Partial<ToolApiClient>).getRunTrace !== 'function') return base;
+    try {
+      const record = await client.getRunTrace(cause.runId, scope);
+      return { ...base, trace: record.trace };
+    } catch { return base; }
   }
 
   /**
@@ -206,7 +232,11 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
     } catch (cause) {
       if (isAbortError(cause)) pushTurn({ role: 'error', cancelled: true, text: text('Run cancelled.', '実行を中断しました。') });
-      else pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void resolveToolApproval(runId, decision) });
+      else {
+        // 承認後にツールが実行されて落ちる失敗もここへ来るので、send と同じ通知にする。
+        const failure = cause instanceof ApiError ? await describeFailure(cause, target?.kind === 'agent' ? target.item.internalId : undefined) : undefined;
+        pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void resolveToolApproval(runId, decision), ...(failure === undefined ? {} : { failure }) });
+      }
     } finally {
       setBusy(false); setAborter(undefined);
     }
@@ -373,6 +403,8 @@ function Turn({ turn, agentName, text, busy, approvalRunId, onResolveApproval }:
   readonly approvalRunId?: string;
   readonly onResolveApproval: (runId: string, decision: 'approve' | 'reject') => void;
 }) {
+  // トレースの error / mcp-server-skipped の文言は React の外の変換表（error-messages.ts）を言語つきで呼ぶ。
+  const { language } = useI18n();
   if (turn.role === 'user') {
     return (
       <div className="cc-msg user">
@@ -388,8 +420,9 @@ function Turn({ turn, agentName, text, busy, approvalRunId, onResolveApproval }:
       <div className="cc-msg error">
         <span className="cc-avatar error" aria-hidden="true">!</span>
         <div className="cc-bubble">
-          <span className="cc-name">{text('Error', 'エラー')}</span>
-          <p role="alert">{turn.text}</p>
+          {/* Run の失敗はアシスタントの返答が来るはずだった場所に、エージェント名つきで出す（直す手段が失敗した場所にある）。 */}
+          <span className="cc-name">{turn.failure === undefined ? text('Error', 'エラー') : agentName}</span>
+          {turn.failure === undefined ? <p role="alert">{turn.text}</p> : <RunFailureNotice {...turn.failure} />}
           {turn.onRetry !== undefined && <button type="button" className="secondary" disabled={busy} onClick={turn.onRetry}>{text('Retry', '再試行')}</button>}
         </div>
       </div>
@@ -426,7 +459,7 @@ function Turn({ turn, agentName, text, busy, approvalRunId, onResolveApproval }:
           <div className="cc-steps">
             {run.trace.map((event) => (
               <span className={`cc-step ${stepTone(event.kind)}`} key={event.sequence}>
-                <i className="cc-step-dot" />{traceLabel(event, text)}
+                <i className="cc-step-dot" />{traceLabel(event, text, language)}
               </span>
             ))}
           </div>
@@ -469,7 +502,7 @@ function stepTone(kind: RunTraceEventDto['kind']): string {
   return '';
 }
 
-function traceLabel(event: RunTraceEventDto, text: Translate): string {
+function traceLabel(event: RunTraceEventDto, text: Translate, language: ErrorLanguage): string {
   switch (event.kind) {
     case 'model-request':
       return `${text('Model request', 'モデル要求')} · step ${event.step}${event.toolNames.length > 0 ? ` · ${event.toolNames.join(', ')}` : ''}`;
@@ -487,8 +520,11 @@ function traceLabel(event: RunTraceEventDto, text: Translate): string {
       return `${text('Approval requested', '承認待ち')} · ${event.tool} (${event.sideEffect})`;
     case 'approval-resolved':
       return `${text('Approval', '承認')} · ${event.decision}`;
+    case 'mcp-server-skipped':
+      return describeMcpServerSkipped(event, language);
     case 'error':
-      return `${event.code}: ${event.message}`;
+      // code は残す（トラブルシューティングの索引になる）。本文は `(retrying n/m)` 接尾辞を含めて言語化する。
+      return `${event.code}: ${localizeRunTraceError(event, language)}`;
   }
 }
 

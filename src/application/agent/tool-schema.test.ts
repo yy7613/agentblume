@@ -4,12 +4,71 @@ import { FILTER_OPS } from '../../domain/etl/nodes/filter';
 import { SemVer } from '../../domain/tool/semver';
 import { createTool } from '../../domain/tool/tool';
 import { AgentRunError, ToolArgumentsError } from './errors';
-import { assertOutputMatchesSchema, schemaToJsonSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
+import { agentInputInconsistency, assertOutputMatchesSchema, isValidFunctionName, schemaToJsonSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
 
 const schema: Schema = { columns: [
   { name: 'month', type: 'string', nullable: false },
   { name: 'at', type: 'date', nullable: true },
 ] };
+
+describe('function 名と agent-input 契約の共有判定', () => {
+  it('isValidFunctionName は toolToModelDefinition と同じ規則（英数字・_・- で 1〜64 文字）', () => {
+    expect(isValidFunctionName('score_lookup')).toBe(true);
+    expect(isValidFunctionName('a-B9')).toBe(true);
+    expect(isValidFunctionName('x'.repeat(64))).toBe(true);
+    expect(isValidFunctionName('')).toBe(false);
+    expect(isValidFunctionName('bad name')).toBe(false);
+    expect(isValidFunctionName('ask_bad.name')).toBe(false);
+    expect(isValidFunctionName('x'.repeat(65))).toBe(false);
+  });
+
+  it('isValidFunctionName の境界: 先頭数字・記号だけの名前は規則上許容し、Unicode・空白・改行・区切り記号は拒否する', () => {
+    // 先頭の数字は OpenAI 互換 API の制約（英数字・_・-）で禁止されていないので許容する（現状の挙動を固定）。
+    expect(isValidFunctionName('1st_lookup')).toBe(true);
+    expect(isValidFunctionName('-')).toBe(true);
+    expect(isValidFunctionName('_')).toBe(true);
+    expect(isValidFunctionName(`ask_${'a'.repeat(60)}`)).toBe(true);
+    expect(isValidFunctionName(`ask_${'a'.repeat(61)}`)).toBe(false);
+    expect(isValidFunctionName('スコア検索')).toBe(false);
+    expect(isValidFunctionName('score lookup')).toBe(false);
+    expect(isValidFunctionName(' ')).toBe(false);
+    expect(isValidFunctionName('score\n')).toBe(false);
+    expect(isValidFunctionName('score.lookup')).toBe(false);
+    expect(isValidFunctionName('score/lookup')).toBe(false);
+  });
+
+  it('agentInputInconsistency の境界: schema を持たない config・config undefined・複数ノードのうち不一致の1つを名指しする', () => {
+    const declared: Schema = { columns: [{ name: 'minimumScore', type: 'number', nullable: false }] };
+    const matching = { id: 'arguments', type: 'agent-input', config: { schema: declared, sample: { minimumScore: 0 } } };
+    expect(agentInputInconsistency({ graph: { nodes: [{ id: 'bare', type: 'agent-input', config: {} }], edges: [] }, inputSchema: declared }))
+      .toBe("tool inputSchema does not match agent-input node 'bare'");
+    expect(agentInputInconsistency({ graph: { nodes: [{ id: 'none', type: 'agent-input', config: undefined }], edges: [] }, inputSchema: declared }))
+      .toBe("tool inputSchema does not match agent-input node 'none'");
+    expect(agentInputInconsistency({ graph: { nodes: [matching, { id: 'stale', type: 'agent-input', config: { schema: { columns: [] } } }], edges: [] }, inputSchema: declared }))
+      .toBe("tool inputSchema does not match agent-input node 'stale'");
+    // agent-input 以外のノードの config は見ない。
+    expect(agentInputInconsistency({ graph: { nodes: [matching, { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0 } }], edges: [] }, inputSchema: declared })).toBeUndefined();
+    // nullable の違いも不一致（schemasEqual と同じ厳密比較）。
+    expect(agentInputInconsistency({ graph: { nodes: [matching], edges: [] }, inputSchema: { columns: [{ name: 'minimumScore', type: 'number', nullable: true }] } }))
+      .toBe("tool inputSchema does not match agent-input node 'arguments'");
+  });
+
+  it('agentInputInconsistency は実行時 graphWithArguments と同じ2メッセージを返す', () => {
+    const declared: Schema = { columns: [{ name: 'minimumScore', type: 'number', nullable: false }] };
+    const argumentsNode = { id: 'arguments', type: 'agent-input', config: { schema: declared, sample: { minimumScore: 0 } } };
+    expect(agentInputInconsistency({ graph: { nodes: [argumentsNode], edges: [] }, inputSchema: declared })).toBeUndefined();
+    // 引数を持たない Tool（inputSchema 無し・空）はノードが無くてよい。
+    expect(agentInputInconsistency({ graph: { nodes: [], edges: [] } })).toBeUndefined();
+    expect(agentInputInconsistency({ graph: { nodes: [], edges: [] }, inputSchema: { columns: [] } })).toBeUndefined();
+    expect(agentInputInconsistency({ graph: { nodes: [], edges: [] }, inputSchema: declared })).toBe('tool declares inputSchema but has no agent-input node');
+    expect(agentInputInconsistency({ graph: { nodes: [argumentsNode], edges: [] }, inputSchema: { columns: [{ name: 'other', type: 'string', nullable: false }] } }))
+      .toBe("tool inputSchema does not match agent-input node 'arguments'");
+    // inputSchema 未宣言でノードだけある場合も不一致。config が壊れていても投げない。
+    expect(agentInputInconsistency({ graph: { nodes: [argumentsNode], edges: [] } })).toBe("tool inputSchema does not match agent-input node 'arguments'");
+    expect(agentInputInconsistency({ graph: { nodes: [{ id: 'broken', type: 'agent-input', config: null }], edges: [] }, inputSchema: declared }))
+      .toBe("tool inputSchema does not match agent-input node 'broken'");
+  });
+});
 
 describe('Tool Calling schema', () => {
   it('SchemaをJSON Schemaへ変換する', () => {

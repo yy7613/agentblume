@@ -125,6 +125,8 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   rule('POST', '/tools/:internalId/preview', 'execute', 'tool'),
   rule('POST', '/tool-drafts/infer-schema', 'edit', 'tool'),
   rule('POST', '/tool-drafts/preview', 'execute', 'tool'),
+  // 診断はグラフの dry-run（データソース読み取り込み）を含むため、preview と同じ execute を要求する。
+  rule('POST', '/tool-drafts/diagnose', 'execute', 'tool'),
   rule('POST', '/tool-drafts/suggest-analysis-config', 'edit', 'tool'),
   rule('GET', '/runtime/capabilities', 'read', 'workspace'),
 
@@ -145,6 +147,7 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   rule('GET', '/agents/:internalId/diagnostics', 'execute', 'agent'),
   rule('GET', '/agents/:internalId/versions', 'read', 'agent'),
   rule('DELETE', '/agents/:internalId', 'delete', 'agent', true),
+  rule('POST', '/agent-drafts/diagnose', 'execute', 'agent'),
   rule('POST', '/agent-drafts/generate-prompt', 'edit', 'agent'),
   rule('POST', '/agents/:internalId/generate-prompt', 'edit', 'agent'),
 

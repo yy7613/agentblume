@@ -47,6 +47,19 @@ export interface McpToolResult {
   readonly preview: readonly Readonly<Record<string, unknown>>[];
 }
 
+/** Run開始時にツールを注入しなかったMCPサーバーと、その理由。 */
+export interface McpSkippedServer {
+  readonly server: string;
+  readonly reason: 'not-found' | 'disabled' | 'unreachable';
+  /** unreachable のときの McpClientError メッセージ。 */
+  readonly detail?: string;
+}
+
+/** 参照サーバー1件の解決結果。解決できたサーバーはツール一覧、できなかったサーバーはスキップ理由を持つ。 */
+type ResolvedMcpServer =
+  | { readonly config: McpServerConfig; readonly tools: readonly McpToolDescriptor[] }
+  | { readonly skipped: McpSkippedServer };
+
 export interface ResolveMcpToolsetOptions {
   readonly scope: TenantScope;
   /** Agentが参照するMCPサーバー名（重複は無視する）。 */
@@ -90,35 +103,42 @@ export class McpToolset {
     private readonly client: McpClientPort | undefined,
     private readonly tools: ReadonlyMap<string, McpBoundTool>,
     private readonly defs: readonly ModelToolDefinition[],
+    private readonly skippedServers: readonly McpSkippedServer[],
   ) {}
 
   /** MCPを使わないRun（未設定Agent・ポート未注入・functionInvocation:false）用の空集合。 */
   static empty(): McpToolset {
-    return new McpToolset(undefined, new Map(), []);
+    return new McpToolset(undefined, new Map(), [], []);
   }
 
   /**
    * 参照サーバーを解決してツール定義を組み立てる。
-   * 存在しない／disabled のサーバーと listTools に失敗したサーバーはスキップする。
+   * 存在しない／disabled のサーバーと listTools に失敗したサーバーはスキップし、
+   * その理由を `skipped()` で読めるように残す（Run開始時のトレースに記録するため）。
    */
   static async resolve(options: ResolveMcpToolsetOptions): Promise<McpToolset> {
     const requested = [...new Set(options.serverNames)];
     const found = await Promise.all(requested.map((name) => options.servers.find(options.scope, name)));
-    // 未登録・disabled はスキップする: Agent定義を保ったままサーバーを一時停止できるようにする。
-    const configs = found.filter((config): config is McpServerConfig => config !== null && !config.disabled);
-    // listTools は並行に投げ、落ちたサーバーだけを除いて残りで続行する。
-    const listed = await Promise.all(configs.map(async (config) => {
+    // 参照順を保ったまま1サーバーずつ解決する。listTools は並行に投げ、落ちたサーバーだけを除いて残りで続行する。
+    const resolved = await Promise.all(requested.map(async (name, index): Promise<ResolvedMcpServer> => {
+      const config = found[index] ?? null;
+      // 未登録・disabled はスキップする（接続もしない）: Agent定義を保ったままサーバーを一時停止できるようにする。
+      if (config === null) return { skipped: { server: name, reason: 'not-found' } };
+      if (config.disabled) return { skipped: { server: name, reason: 'disabled' } };
       try { return { config, tools: await options.client.listTools(config, options.signal) }; }
       catch (error) {
-        if (error instanceof McpClientError) return { config, tools: [] as readonly McpToolDescriptor[] };
+        if (error instanceof McpClientError) return { skipped: { server: name, reason: 'unreachable', detail: error.message } };
         throw error;
       }
     }));
+    const skipped = resolved.flatMap((entry) => ('skipped' in entry ? [entry.skipped] : []));
 
     const taken = new Set(options.reservedNames ?? []);
     const tools = new Map<string, McpBoundTool>();
     const defs: ModelToolDefinition[] = [];
-    for (const { config, tools: descriptors } of listed) {
+    for (const entry of resolved) {
+      if ('skipped' in entry) continue;
+      const { config, tools: descriptors } = entry;
       for (const descriptor of descriptors) {
         if (typeof descriptor?.name !== 'string' || descriptor.name.trim() === '') continue;
         // inputSchema が object スキーマでないツールはスキップする。
@@ -132,11 +152,14 @@ export class McpToolset {
         defs.push({ name, description: toolDescription(config.name, descriptor), parameters });
       }
     }
-    return new McpToolset(options.client, tools, defs);
+    return new McpToolset(options.client, tools, defs, skipped);
   }
 
   /** モデルへ渡すMCPツール定義（解決できたサーバーのぶんだけ）。 */
   definitions(): readonly ModelToolDefinition[] { return this.defs; }
+
+  /** ツールを注入しなかった参照サーバー（Agentの参照順）。Run開始時のトレースに1件ずつ残す。 */
+  skipped(): readonly McpSkippedServer[] { return this.skippedServers; }
 
   isMcpTool(name: string): boolean { return this.tools.has(name); }
 

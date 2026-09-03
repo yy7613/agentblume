@@ -14,7 +14,8 @@ import {
   ToolValidationError,
   VersionConflictError,
 } from '../domain/tool/errors';
-import { AgentRunError, ToolArgumentsError, UnsafeToolError } from '../application/agent/errors';
+import { AgentRunError, ToolArgumentsError, ToolExecutionError, UnsafeToolError } from '../application/agent/errors';
+import type { RunFailureToolRef } from '../domain/run/run';
 import { ModelProviderError } from '../application/model/model-provider';
 import { RunFailedError } from '../application/agent/errors';
 import { RunNotFoundError } from '../domain/run/errors';
@@ -37,10 +38,14 @@ import { SecretCipherError } from '../application/model-settings/secret-cipher';
 import { ModelCatalogError } from '../application/model-settings/model-catalog';
 import { SharedValidationError } from '../domain/shared/errors';
 
-/** HTTP エラーレスポンス表現。 */
+/**
+ * HTTP エラーレスポンス表現。
+ * `tool` / `nodeId` はツール実行由来の失敗（ToolExecutionError）だけが持ち、
+ * 利用者がどのToolのどのノードを直せばよいかをUIが示すために使う。
+ */
 export interface HttpError {
   readonly status: number;
-  readonly body: { error: { code: string; message: string; runId?: string } };
+  readonly body: { error: { code: string; message: string; runId?: string; tool?: RunFailureToolRef; nodeId?: string } };
 }
 
 /**
@@ -79,12 +84,19 @@ function httpError(status: number, code: string, message: string): HttpError {
  * | ModelProviderError | 502 | MODEL_PROVIDER |
  * | RunNotFoundError | 404 | RUN_NOT_FOUND |
  * | RunFailedError | 元例外のstatus/code + runId |
+ * | ToolExecutionError | 元例外のstatus/code + tool（+ nodeId） |
  * | その他 | 500 | INTERNAL（message 'internal error' 固定） |
  */
 export function toHttpError(err: unknown): HttpError {
   if (err instanceof RunFailedError) {
     const mapped = toHttpError(err.cause);
     return { status: mapped.status, body: { error: { ...mapped.body.error, runId: err.runId } } };
+  }
+  // ツール実行の失敗は元例外のstatus/codeを保ったまま、どのTool・どのノードで起きたかを足す
+  // （RunFailedError(ToolExecutionError(cause)) なら runId + tool + nodeId が揃う）。
+  if (err instanceof ToolExecutionError) {
+    const mapped = toHttpError(err.cause);
+    return { status: mapped.status, body: { error: { ...mapped.body.error, tool: err.tool, ...(err.nodeId === undefined ? {} : { nodeId: err.nodeId }) } } };
   }
   if (err instanceof BadRequestError) return httpError(400, err.code, err.message);
   // 認証フックを通っていないのにスコープを要求した（＝公開パスの設定ミス）。

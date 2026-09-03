@@ -8,6 +8,13 @@
 /** ETL ドメインの基底エラー。`code` で機械判別する。 */
 export class EtlError extends Error {
   readonly code: string;
+  /**
+   * 失敗したグラフノードの id。ノード実装は自分の id を知らないため、EtlEngine が
+   * validateConfig / execute の例外を捕まえて付ける（既に付いていれば上書きしない）。
+   * message には混ぜない: UI のローカライズは message の正規表現一致で行っており、
+   * 文言を変えると既存の対応表が外れるため、識別は別フィールドで運ぶ。
+   */
+  nodeId?: string;
 
   constructor(code: string, message: string) {
     super(message);

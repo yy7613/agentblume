@@ -77,7 +77,7 @@ sequenceDiagram
 
 | 項目 | 内容 |
 |---|---|
-| name | `ask_{publishName}`（保存時に Tool 公開名との衝突を検証） |
+| name | `ask_{publishName}`（保存時に Tool 公開名との衝突を検証。publishName は function 名規則 `[A-Za-z0-9_-]{1,64}` に従う必要があり、外れると委譲先として使えない。Agent Builder が入力時に警告し、「組み込みチェック」の `sub-agents` 検査でも検出する） |
 | description | 参照の `usage`（委譲基準）+ サブAgentの表示名 |
 | input schema | `{ message: string }`（required）— 委譲内容は自然言語で渡す |
 | result | サブの応答テキスト。構造化出力を持つサブはそのJSON |
@@ -137,6 +137,7 @@ flowchart LR
 - **Sub-agentsピッカー**: Toolピッカーと同型（Agent一覧から選択・バージョン固定・自分自身は除外）+ 各参照の `usage` テキスト入力（必須）。
 - **プロンプト自動生成**: 既存のSkillセクションと同様に「協働者」セクションを自動生成（サブの表示名と `usage` から）。生成結果は人がレビュー・編集（既存原則）。
 - **実効副作用の表示**: サブを追加した時点で実効副作用（read-only / write / external-action）をバッジ表示し、preview不可になる構成を保存前に警告（即時バリデーション原則）。
+- **組み込みチェック**: ツール・スキル・サブエージェント・MCPサーバー・ハーネス・構造化出力の選択が変わるたびに `POST /agent-drafts/diagnose` で下書きを診断し（保存後は保存版を自動診断）、参照切れ・function 名の重複／不正・スキーマ不整合・MCP未登録／無効・モデルの対応機能不足・ハーネス機能の前提欠落を、選択肢のバッジと項目ごとの「直す場所を開く」ボタン付きで示す。検査項目は [19-troubleshooting.md](./19-troubleshooting.md#実行前に見つける-組み込みチェック--呼び出し診断)。
 
 ---
 

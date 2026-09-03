@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { startRun, waitRunForApproval, type RunApprovalCheckpoint } from './run';
+import { failRun, startRun, waitRunForApproval, type RunApprovalCheckpoint } from './run';
 import { deserializeRun, serializeRun } from './serialization';
 
 describe('Run serialization', () => {
@@ -64,5 +64,56 @@ describe('Run serialization', () => {
       kind: 'tool-approval', agentRef: { internalId: 'agent', version: '1.0.0' }, messages: [], pendingCalls: [], executedToolRefs: [],
       budget: { remainingModelRounds: 1, remainingToolCalls: 1 }, step: 1, expiresAt: 'x', prompt: 'p',
     } })).toThrow(/waiting-approval/);
+  });
+
+  it('ツール実行由来の失敗（tool / nodeId）と mcp-server-skipped を往復し、それらを持たない旧recordも読める', () => {
+    const started = startRun({ runId: 'run-failed', scope: { tenantId: 't', workspaceId: 'w' }, mode: 'preview', agent: { internalId: 'agent', version: '1.0.0' }, startedAt: 'now' });
+    const tool = { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' };
+    const message = 'select: column(s) not found: revenue';
+    const record = failRun(started, {
+      trace: [
+        { sequence: 1, kind: 'mcp-server-skipped', server: 'ghost', reason: 'not-found' },
+        { sequence: 2, kind: 'mcp-server-skipped', server: 'broken', reason: 'unreachable', detail: 'failed to start' },
+        { sequence: 3, kind: 'error', code: 'ETL_SCHEMA', message, tool, nodeId: 'pick' },
+      ],
+      failure: { code: 'ETL_SCHEMA', message, tool, nodeId: 'pick' },
+      completedAt: 'later',
+    });
+    expect(deserializeRun(JSON.parse(JSON.stringify(serializeRun(record))))).toEqual(record);
+
+    // 旧record: tool / nodeId を持たない error イベントと failure はそのまま読める。
+    const legacy = failRun(started, { trace: [{ sequence: 1, kind: 'error', code: 'X', message: 'bad' }], failure: { code: 'X', message: 'bad' }, completedAt: 'later' });
+    expect(deserializeRun(JSON.parse(JSON.stringify(legacy)))).toEqual(legacy);
+
+    // 未知の reason は拒否する。
+    expect(() => deserializeRun({ ...record, trace: [{ sequence: 1, kind: 'mcp-server-skipped', server: 'x', reason: 'bogus' }] })).toThrow();
+  });
+
+  it('error イベント / failure / tool 参照の未知キーは捨てて読み、識別の型が壊れたものは拒否する', () => {
+    const started = startRun({ runId: 'run-x', scope: { tenantId: 't', workspaceId: 'w' }, mode: 'preview', agent: { internalId: 'agent', version: '1.0.0' }, startedAt: 'now' });
+    // version / publishName を省略した tool 参照も往復する（キーは生えない）。
+    const tool = { internalId: 'score-tool' };
+    const record = failRun(started, { trace: [{ sequence: 1, kind: 'error', code: 'X', message: 'bad', tool, nodeId: 'n' }], failure: { code: 'X', message: 'bad', tool, nodeId: 'n' }, completedAt: 'later' });
+    const roundTripped = deserializeRun(JSON.parse(JSON.stringify(serializeRun(record))));
+    expect(roundTripped).toEqual(record);
+    expect(roundTripped.failure?.tool).toEqual({ internalId: 'score-tool' });
+
+    // 未知キー（将来の追加・手編集）は strict に拒否せず落として読む。
+    const withExtra = {
+      ...record,
+      trace: [{ sequence: 1, kind: 'error', code: 'X', message: 'bad', tool: { internalId: 'score-tool', extra: true }, nodeId: 'n', extra: 1 }],
+      failure: { code: 'X', message: 'bad', tool: { internalId: 'score-tool', extra: true }, nodeId: 'n', extra: 'x' },
+    };
+    const stripped = deserializeRun(JSON.parse(JSON.stringify(withExtra)));
+    expect(stripped).toEqual(record);
+    expect(Object.hasOwn(stripped.failure ?? {}, 'extra')).toBe(false);
+    expect(Object.hasOwn(stripped.failure?.tool ?? {}, 'extra')).toBe(false);
+
+    // 識別の型が壊れているものは読まない（internalId 空文字・nodeId 非文字列・internalId 欠落・detail 非文字列・server 欠落）。
+    expect(() => deserializeRun({ ...record, failure: { code: 'X', message: 'bad', tool: { internalId: '' } } })).toThrow();
+    expect(() => deserializeRun({ ...record, failure: { code: 'X', message: 'bad', nodeId: 7 } })).toThrow();
+    expect(() => deserializeRun({ ...record, trace: [{ sequence: 1, kind: 'error', code: 'X', message: 'bad', tool: { version: '1.0.0' } }] })).toThrow();
+    expect(() => deserializeRun({ ...record, trace: [{ sequence: 1, kind: 'mcp-server-skipped', server: 'x', reason: 'unreachable', detail: 42 }] })).toThrow();
+    expect(() => deserializeRun({ ...record, trace: [{ sequence: 1, kind: 'mcp-server-skipped', reason: 'not-found' }] })).toThrow();
   });
 });

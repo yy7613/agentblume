@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, type ReactNode } from 'react';
 import type { ScreenName } from './screens';
 
 /**
@@ -38,4 +38,68 @@ export function ScreenLink({ to, children, className = 'screen-link' }: {
 }) {
   const navigate = useNavigateScreen();
   return <button type="button" className={className} onClick={() => navigate(to)}>{children}</button>;
+}
+
+// ---------------------------------------------------------------------------
+// 「その画面で特定の項目を開く」遷移
+//
+// エラーや診断結果から「このツールを開いて直す」へ一手で行けるようにする。画面遷移そのものは
+// 上の NavigateScreen（未保存確認つき）に委ね、開く対象だけをここで受け渡す。
+// 遷移先の画面は mount 時に `usePendingOpen` で対象を受け取り、既に表示中の画面は
+// window イベントで受け取る（同じ画面内の別項目へ移る場合）。
+// ---------------------------------------------------------------------------
+
+/**
+ * 開く対象。internalId は Tool / Agent / Skill 等の永続ID。
+ * nodeId / section は「開いたうえで直す場所まで連れて行く」ための任意情報:
+ * - nodeId: Tool Builder でそのノードを選択して設定パネルを開く（実行失敗・診断のノード特定から）
+ * - section: 画面内の区画（例: Tool の 'agent-context' = エージェント向けコンテキスト、Agent の 'harness' / 'tools' / 'mcp'）
+ */
+export interface OpenTarget {
+  readonly internalId: string;
+  readonly version?: string;
+  readonly nodeId?: string;
+  readonly section?: string;
+}
+
+const OPEN_EVENT = 'agentblume:open-target';
+const pendingOpen = new Map<ScreenName, OpenTarget>();
+
+/** 指定画面へ遷移し、その画面に対象を開くよう依頼する関数を返す。Provider の外では遷移だけが no-op。 */
+export function useOpenInScreen(): (screen: ScreenName, target: OpenTarget) => void {
+  const navigate = useNavigateScreen();
+  return (screen, target) => {
+    pendingOpen.set(screen, target);
+    navigate(screen);
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: { screen } }));
+  };
+}
+
+/** テスト・画面側が明示的に取り出すための同期API。取り出すと消える（1回限り）。 */
+export function consumePendingOpen(screen: ScreenName): OpenTarget | undefined {
+  const target = pendingOpen.get(screen);
+  pendingOpen.delete(screen);
+  return target;
+}
+
+/**
+ * 画面側フック: mount 時と、表示中に open 依頼が来たときに handler を呼ぶ。
+ * handler は最新のクロージャを使えるよう ref 経由で参照する（依存配列に入れない）。
+ */
+export function usePendingOpen(screen: ScreenName, handler: (target: OpenTarget) => void): void {
+  const latest = useRef(handler);
+  latest.current = handler;
+  useEffect(() => {
+    const deliver = () => {
+      const target = consumePendingOpen(screen);
+      if (target !== undefined) latest.current(target);
+    };
+    deliver();
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<{ screen?: ScreenName }>).detail;
+      if (detail?.screen === screen) deliver();
+    };
+    window.addEventListener(OPEN_EVENT, listener);
+    return () => window.removeEventListener(OPEN_EVENT, listener);
+  }, [screen]);
 }

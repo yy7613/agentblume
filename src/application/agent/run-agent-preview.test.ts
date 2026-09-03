@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createAgent, DEFAULT_AGENT_RUNTIME_HARNESS, type Agent, type AgentRuntimeHarness } from '../../domain/agent/agent';
 import type { AgentRepository, AgentSummary } from '../../domain/agent/agent-repository';
 import type { Schema } from '../../domain/data/types';
+import { SchemaError } from '../../domain/etl/errors';
 import { createDefaultRegistry } from '../../domain/etl/nodes/index';
 import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { ToolSummary } from '../../domain/tool/metadata';
@@ -12,8 +13,9 @@ import type { RunRecord } from '../../domain/run/run';
 import type { RunRepository } from '../../domain/run/run-repository';
 import { EtlEngine } from '../etl/engine';
 import type { JsonObject, ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../model/model-provider';
-import { AgentRunError, RunFailedError, UnsafeToolError } from './errors';
+import { AgentRunError, RunFailedError, ToolArgumentsError, ToolExecutionError, UnsafeToolError } from './errors';
 import { queryWorkspaceTable, RunAgentPreviewUseCase, type RunObservabilityOptions } from './run-agent-preview';
+import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import { toolToModelDefinition } from './tool-schema';
 import { FakeWikiRepository } from '../memory/memory-repositories.fixtures';
 import { createWikiSpace } from '../../domain/memory/wiki-space';
@@ -739,6 +741,158 @@ describe('RunAgentPreviewUseCase', () => {
   it('inputSchemaにagent-inputがなければ実行を拒否する', async () => {
     const model = new QueueModel([{ message: { role: 'assistant', content: null, toolCalls: [{ id: 'x', name: 'score_lookup', arguments: { name: 'A', score: 1 } }] }, finishReason: 'tool_calls' }]);
     await expect(useCase(makeTool('read-only', false), model).execute(input)).rejects.toThrow(/no agent-input/);
+  });
+
+  it('実行時にノードが落ちたら、どのToolのどのノードかを例外・failure・traceに添える', async () => {
+    // agent-input(name, score) → select(revenue): 保存はできるが実行時に select が SchemaError を投げる Tool。
+    const tool = createTool({
+      metadata: { internalId: 'score-tool', workingName: 'score-draft', displayName: 'Score lookup', publishName: 'score_lookup', version: SemVer.parse('1.2.0'), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only',
+      graph: {
+        nodes: [
+          { id: 'input', type: 'agent-input', config: { schema: inputSchema, sample: { name: 'sample', score: 0 } } },
+          { id: 'pick', type: 'select', config: { columns: ['revenue'] } },
+        ],
+        edges: [{ from: 'input', to: 'pick' }],
+      },
+      inputSchema,
+      outputSchema: inputSchema,
+    });
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 })]);
+    const runs = new MemoryRuns();
+    const toolRef = { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' };
+    const message = 'select: column(s) not found: revenue';
+
+    const rejection: unknown = await new RunAgentPreviewUseCase(new StaticRepository(tool), new EtlEngine(createDefaultRegistry()), model, runs, () => 'run-1')
+      .execute(input).then(() => undefined, (error: unknown) => error);
+
+    // 例外: RunFailedError(ToolExecutionError(SchemaError))。元例外は cause に残り、message は変わらない。
+    expect(rejection).toBeInstanceOf(RunFailedError);
+    const cause = (rejection as RunFailedError).cause;
+    expect(cause).toBeInstanceOf(ToolExecutionError);
+    expect(cause).not.toBeInstanceOf(AgentRunError);
+    expect(cause).toMatchObject({ code: 'ETL_SCHEMA', message, tool: toolRef, nodeId: 'pick' });
+    expect((cause as ToolExecutionError).cause).toBeInstanceOf(SchemaError);
+
+    // 保存された Run: failure と末尾の error イベントの両方に tool / nodeId が入る。
+    const record = runs.records.get('run-1');
+    expect(record?.status).toBe('failed');
+    expect(record?.failure).toEqual({ code: 'ETL_SCHEMA', message, tool: toolRef, nodeId: 'pick' });
+    expect(record?.trace.at(-1)).toEqual({ sequence: record?.trace.length, kind: 'error', code: 'ETL_SCHEMA', message, tool: toolRef, nodeId: 'pick' });
+  });
+
+  it('validateConfig の失敗（ConfigError）も落ちたノードの id を添えて ETL_CONFIG のまま失敗する', async () => {
+    const tool = createTool({
+      metadata: { internalId: 'score-tool', workingName: 'score-draft', displayName: 'Score lookup', publishName: 'score_lookup', version: SemVer.parse('1.2.0'), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only',
+      graph: {
+        nodes: [
+          { id: 'input', type: 'agent-input', config: { schema: inputSchema, sample: { name: 'sample', score: 0 } } },
+          { id: 'broken', type: 'select', config: { columns: 'not-an-array' } },
+        ],
+        edges: [{ from: 'input', to: 'broken' }],
+      },
+      inputSchema, outputSchema: inputSchema,
+    });
+    const runs = new MemoryRuns();
+    const rejection: unknown = await new RunAgentPreviewUseCase(new StaticRepository(tool), new EtlEngine(createDefaultRegistry()), new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 })]), runs, () => 'run-1')
+      .execute(input).then(() => undefined, (error: unknown) => error);
+    expect(rejection).toBeInstanceOf(RunFailedError);
+    expect((rejection as RunFailedError).cause).toMatchObject({ name: 'ToolExecutionError', code: 'ETL_CONFIG', nodeId: 'broken', tool: { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' } });
+    expect(runs.records.get('run-1')?.failure).toMatchObject({ code: 'ETL_CONFIG', nodeId: 'broken', message: expect.stringContaining('select: invalid config') });
+  });
+
+  it('ツール引数の修復上限を超えたら TOOL_ARGUMENTS のまま tool を添えて失敗する（nodeId は無い）', async () => {
+    const model = new QueueModel([
+      toolCall('c1', 'score_lookup', { name: 'Alice' }),
+      toolCall('c2', 'score_lookup', { name: 'Alice' }),
+      stop('never reached'),
+    ]);
+    const runs = new MemoryRuns();
+    const toolRef = { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' };
+    const rejection: unknown = await new RunAgentPreviewUseCase(new StaticRepository(makeTool()), new EtlEngine(createDefaultRegistry()), model, runs, () => 'run-1')
+      .execute(input).then(() => undefined, (error: unknown) => error);
+
+    expect(rejection).toBeInstanceOf(RunFailedError);
+    const cause = (rejection as RunFailedError).cause;
+    expect(cause).toBeInstanceOf(ToolExecutionError);
+    expect((cause as ToolExecutionError).cause).toBeInstanceOf(ToolArgumentsError);
+    // 2回目は差し戻さない（モデル往復は2回で止まる）。
+    expect(model.requests).toHaveLength(2);
+    const record = runs.records.get('run-1');
+    expect(record?.failure).toEqual({ code: 'TOOL_ARGUMENTS', message: 'required argument missing: score', tool: toolRef });
+    expect(Object.hasOwn(record?.failure ?? {}, 'nodeId')).toBe(false);
+    expect(record?.trace.filter((event) => event.kind === 'error')).toEqual([
+      { sequence: 3, kind: 'error', code: 'TOOL_ARGUMENTS', message: 'required argument missing: score (retrying 1/1)', tool: toolRef },
+      { sequence: 6, kind: 'error', code: 'TOOL_ARGUMENTS', message: 'required argument missing: score', tool: toolRef },
+    ]);
+  });
+
+  it('出力スキーマ不一致（assertOutputMatchesSchema）は tool を添えて AGENT_RUN で失敗し、nodeId は持たない', async () => {
+    // agent-input(name, score) → select(name) だが outputSchema は (name, score) のまま: 実行後の出力検証で落ちる Tool。
+    const tool = createTool({
+      metadata: { internalId: 'score-tool', workingName: 'score-draft', displayName: 'Score lookup', publishName: 'score_lookup', version: SemVer.parse('1.2.0'), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only',
+      graph: {
+        nodes: [
+          { id: 'input', type: 'agent-input', config: { schema: inputSchema, sample: { name: 'sample', score: 0 } } },
+          { id: 'narrow', type: 'select', config: { columns: ['name'] } },
+        ],
+        edges: [{ from: 'input', to: 'narrow' }],
+      },
+      inputSchema, outputSchema: inputSchema,
+    });
+    const runs = new MemoryRuns();
+    const toolRef = { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' };
+    const rejection: unknown = await new RunAgentPreviewUseCase(new StaticRepository(tool), new EtlEngine(createDefaultRegistry()), new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 })]), runs, () => 'run-1')
+      .execute(input).then(() => undefined, (error: unknown) => error);
+
+    expect(rejection).toBeInstanceOf(RunFailedError);
+    const cause = (rejection as RunFailedError).cause;
+    expect(cause).toBeInstanceOf(ToolExecutionError);
+    expect((cause as ToolExecutionError).cause).toBeInstanceOf(AgentRunError);
+    const record = runs.records.get('run-1');
+    expect(record?.failure).toEqual({ code: 'AGENT_RUN', message: expect.stringMatching(/^tool output schema /), tool: toolRef });
+    expect(Object.hasOwn(record?.failure ?? {}, 'nodeId')).toBe(false);
+  });
+
+  it('inputSchema と agent-input の不整合は保存時（SaveTool）と同じ文言で実行時に失敗し、tool は添えるが nodeId は持たない', async () => {
+    const toolRef = { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' };
+    const engine = new EtlEngine(createDefaultRegistry());
+    const nameOnly: Schema = { columns: [{ name: 'name', type: 'string', nullable: false }] };
+    const mismatched = createTool({
+      metadata: { internalId: 'score-tool', workingName: 'score-draft', displayName: 'Score lookup', publishName: 'score_lookup', version: SemVer.parse('1.2.0'), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only',
+      graph: { nodes: [{ id: 'input', type: 'agent-input', config: { schema: nameOnly, sample: { name: 'sample' } } }], edges: [] },
+      inputSchema, outputSchema: inputSchema,
+    });
+    const mismatchRuns = new MemoryRuns();
+    await expect(new RunAgentPreviewUseCase(new StaticRepository(mismatched), engine, new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 })]), mismatchRuns, () => 'run-1').execute(input))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ name: 'ToolExecutionError', code: 'AGENT_RUN', message: "tool inputSchema does not match agent-input node 'input'" }) });
+    expect(mismatchRuns.records.get('run-1')?.failure).toEqual({ code: 'AGENT_RUN', message: "tool inputSchema does not match agent-input node 'input'", tool: toolRef });
+
+    const missingRuns = new MemoryRuns();
+    await expect(new RunAgentPreviewUseCase(new StaticRepository(makeTool('read-only', false)), engine, new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 })]), missingRuns, () => 'run-1').execute(input))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ name: 'ToolExecutionError', code: 'AGENT_RUN', message: 'tool declares inputSchema but has no agent-input node' }) });
+    expect(missingRuns.records.get('run-1')?.failure).toEqual({ code: 'AGENT_RUN', message: 'tool declares inputSchema but has no agent-input node', tool: toolRef });
+  });
+
+  it('ツール実行中に中断されたら tool で包まず RUN_CANCELLED として記録する', async () => {
+    const controller = new AbortController();
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 })]);
+    const runs = new MemoryRuns();
+    // ツール実行の非同期区間（データソース解決）で切断を再現する: abort してから失敗する。
+    const abortingResolver = { execute: async () => { controller.abort(); throw new Error('data source fetch aborted'); } } as unknown as ResolveDataSourceGraphUseCase;
+    const usecase = new RunAgentPreviewUseCase(new StaticRepository(makeTool()), new EtlEngine(createDefaultRegistry()), model, runs, () => 'run-abort', undefined, undefined, undefined, undefined, undefined, undefined, undefined, abortingResolver);
+    const rejection: unknown = await usecase.execute(input, controller.signal).then(() => undefined, (error: unknown) => error);
+
+    expect(rejection).toBeInstanceOf(RunFailedError);
+    expect((rejection as RunFailedError).cause).not.toBeInstanceOf(ToolExecutionError);
+    const record = runs.records.get('run-abort');
+    expect(record?.status).toBe('failed');
+    expect(record?.failure).toEqual({ code: 'RUN_CANCELLED', message: 'run cancelled by the user' });
+    expect(Object.hasOwn(record?.failure ?? {}, 'tool')).toBe(false);
+    expect(record?.trace.at(-1)).toEqual({ sequence: record?.trace.length, kind: 'error', code: 'RUN_CANCELLED', message: 'run cancelled by the user' });
   });
 
   it('unknown tool、call上限超過、capability不足を拒否する', async () => {
@@ -1525,6 +1679,13 @@ describe('RunAgentPreviewUseCase MCP tools', () => {
     expect(model.requests[0]?.tools?.map((definition) => definition.name)).toEqual(['mcp__files__read_file']);
     expect(mcpClient.listed).toEqual(['files', 'broken']);
     expect(run.response).toBe('done');
+    // スキップは黙って落とさず、理由つきでAgentの参照順にトレースへ残す（最初のモデル往復より前）。
+    expect(run.trace.filter((event) => event.kind === 'mcp-server-skipped')).toEqual([
+      { sequence: 1, kind: 'mcp-server-skipped', server: 'broken', reason: 'unreachable', detail: 'failed to start' },
+      { sequence: 2, kind: 'mcp-server-skipped', server: 'off', reason: 'disabled' },
+      { sequence: 3, kind: 'mcp-server-skipped', server: 'ghost', reason: 'not-found' },
+    ]);
+    expect(run.trace[3]).toMatchObject({ sequence: 4, kind: 'model-request' });
   });
 
   it('mcpServers未指定Agentとポート未注入の実行は従来どおりMCPツールを提示しない', async () => {
@@ -1621,6 +1782,59 @@ describe('RunAgentPreviewUseCase MCP tools', () => {
       .rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/budget exhausted: tool calls/) }) });
     expect(mcpClient.calls).toHaveLength(2);
   });
+
+  it('MCPサーバーだけを参照するAgentでも tool-calling 非対応モデルを拒否し、functionInvocation:false なら拒否しない', async () => {
+    const chatOnly = () => new QueueModel([stop('answered')], ['chat']);
+    const mcpClient = new FakeMcpClient({ files: [{ name: 'read_file', inputSchema: mcpObjectSchema }] });
+    await expect(harnessUseCase({ agent: mcpAgent('mcp-only', ['files']), model: chatOnly(), mcpServers: await mcpServerRepo('files'), mcpClient })
+      .executeSaved({ scope, agentId: 'mcp-only', message: 'go', mode: 'preview' }))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ message: 'configured model provider does not support tool-calling' }) });
+    // 判定はプリフライト診断（'model' 検査）と同じく「参照があるか」で行うので、MCPポート未配線でも同じ理由で拒否する。
+    await expect(harnessUseCase({ agent: mcpAgent('mcp-only-unwired', ['files']), model: chatOnly() })
+      .executeSaved({ scope, agentId: 'mcp-only-unwired', message: 'go', mode: 'preview' }))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ message: 'configured model provider does not support tool-calling' }) });
+    // functionInvocation:false は呼び出し可能なものが無いので、MCP参照があっても tool-calling を要求しない。
+    const run = await harnessUseCase({ agent: mcpAgent('mcp-closed-chat', ['files'], harnessOf({ functionInvocation: false })), model: chatOnly(), mcpServers: await mcpServerRepo('files'), mcpClient })
+      .executeSaved({ scope, agentId: 'mcp-closed-chat', message: 'go', mode: 'preview' });
+    expect(run.response).toBe('answered');
+    expect(mcpClient.listed).toEqual([]);
+  });
+
+  it('listTools が McpClientError 以外を投げたらスキップせず、Run を INTERNAL で失敗させる（現状仕様）', async () => {
+    const runs = new MemoryRuns();
+    const mcpClient = new FakeMcpClient({ files: new TypeError('listTools returned garbage') });
+    await expect(harnessUseCase({ agent: mcpAgent('mcp-bug', ['files']), model: new QueueModel([stop('never')]), runs, mcpServers: await mcpServerRepo('files'), mcpClient })
+      .executeSaved({ scope, agentId: 'mcp-bug', message: 'go', mode: 'preview' }))
+      .rejects.toMatchObject({ cause: expect.any(TypeError) });
+    const record = runs.records.get('run-1');
+    expect(record?.status).toBe('failed');
+    expect(record?.failure).toEqual({ code: 'INTERNAL', message: 'internal error' });
+    expect(record?.trace).toEqual([{ sequence: 1, kind: 'error', code: 'INTERNAL', message: 'internal error' }]);
+  });
+
+  it('approve 再開でも prepareLoop が走るため mcp-server-skipped を再記録する（現状仕様: 承認の前後で同じサーバーが2件、sequence は連番）', async () => {
+    const agent = mcpAgent('mcp-skip-resume', ['files', 'ghost'], harnessOf({ toolApproval: true }));
+    const runs = new MemoryRuns();
+    const model = new QueueModel([toolCall('c1', 'mcp__files__read_file', { path: 'a.txt' }), stop('read it')]);
+    const mcpClient = new FakeMcpClient({ files: [{ name: 'read_file', inputSchema: mcpObjectSchema }] }, { 'files/read_file': { content: 'hello', isError: false } });
+    const usecase = harnessUseCase({ agent, model, runs, mcpServers: await mcpServerRepo('files'), mcpClient });
+    const paused = await usecase.executeSaved({ scope, agentId: 'mcp-skip-resume', message: 'go', mode: 'preview', interactive: true });
+    expect(kinds(paused)).toEqual(['mcp-server-skipped', 'model-request', 'approval-requested']);
+
+    const resumed = await usecase.resumeSavedRun({ scope, runId: paused.runId, decision: 'approve' });
+    expect(resumed.response).toBe('read it');
+    expect(kinds(resumed)).toEqual([
+      'mcp-server-skipped', 'model-request', 'approval-requested',
+      'mcp-server-skipped', 'approval-resolved', 'tool-call', 'tool-result', 'model-request', 'model-response',
+    ]);
+    expect(resumed.trace.filter((event) => event.kind === 'mcp-server-skipped')).toEqual([
+      { sequence: 1, kind: 'mcp-server-skipped', server: 'ghost', reason: 'not-found' },
+      { sequence: 4, kind: 'mcp-server-skipped', server: 'ghost', reason: 'not-found' },
+    ]);
+    const sequences = resumed.trace.map((event) => event.sequence);
+    expect(sequences).toEqual(sequences.map((_sequence, index) => index + 1));
+    expect(runs.records.get(paused.runId)?.trace.map((event) => event.sequence)).toEqual(sequences);
+  });
 });
 
 /**
@@ -1689,8 +1903,9 @@ describe('RunAgentPreviewUseCase 自動リトライ（修復ループ）', () =>
 
     expect(run.response).toBe('Alice: 42');
     expect(runs.records.get('run-1')?.status).toBe('succeeded');
+    // 差し戻しの記録にもどのToolかを添える（UIが失敗イベントからToolへ辿れる）。
     expect(run.trace.filter((event) => event.kind === 'error')).toMatchObject([
-      { kind: 'error', code: 'TOOL_ARGUMENTS', message: expect.stringContaining('retrying 1/1') },
+      { kind: 'error', code: 'TOOL_ARGUMENTS', message: expect.stringContaining('retrying 1/1'), tool: { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' } },
     ]);
     // 差し戻しはツール結果としてモデルへ返る。
     expect(JSON.stringify(model.requests[1]?.messages)).toContain('required argument missing: score');

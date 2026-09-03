@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { describeMcpServerSkipped, localizeRunTraceError } from '../api/error-messages';
 import type { ToolApiClient } from '../api/tool-api';
 import type {
   RunRecordDto, ScenarioRunDto, ScenarioSummaryDto, SerializedScenarioDto, SurveyQuestionDto, TenantScopeDto,
@@ -75,7 +76,8 @@ export function RunsTab({ client, scope }: { readonly client: ToolApiClient; rea
         </div>
         {trace !== undefined && <div className="trace-list"><strong>{text('Run trace', '実行トレース')} · {trace.runId}</strong>
           {trace.response !== undefined && <div className="chat-response"><span>{text('Response', '応答')}</span><p>{trace.response}</p></div>}
-          {trace.trace.map((event) => <div className={`trace-event ${event.kind.startsWith('tool-') ? 'tool' : ''}`} key={event.sequence}><span>{event.sequence}</span><p>{event.kind === 'model-response' ? event.content : event.kind === 'tool-call' ? `${event.name} ${JSON.stringify(event.arguments)}` : event.kind === 'error' ? `${event.code} ${event.message}` : event.kind}</p></div>)}
+          {/* error / mcp-server-skipped は生メッセージのまま出さず、実行エラーと同じ変換表で言語化する（次の一手つき）。 */}
+          {trace.trace.map((event) => <div className={`trace-event ${event.kind.startsWith('tool-') ? 'tool' : event.kind === 'error' || event.kind === 'mcp-server-skipped' ? 'error' : ''}`} key={event.sequence}><span>{event.sequence}</span><p>{event.kind === 'model-response' ? event.content : event.kind === 'tool-call' ? `${event.name} ${JSON.stringify(event.arguments)}` : event.kind === 'error' ? `${event.code}: ${localizeRunTraceError(event, language)}` : event.kind === 'mcp-server-skipped' ? describeMcpServerSkipped(event, language) : event.kind}</p></div>)}
         </div>}
         <h3>{text('Survey', 'アンケート')}</h3>
         {selected.survey.length === 0 ? <p className="empty-state">{text('No survey answers were recorded.', 'アンケート回答は記録されていません。')}</p> : <div className="survey-result">

@@ -2,72 +2,67 @@
  * アプリ層: Agent Tool 呼び出しのプリフライト診断。
  *
  * 「作った Tool がエージェントから呼び出せない」とき、原因は参照切れ・名前衝突・スキーマ
- * 不整合・データソース欠落など複数の層に分かれて潜むが、実行時には**最初に踏んだ1つ**が
- * Run 失敗の1行になって返るだけで全体像が見えない。ここでは実行経路と同じ関数
- * （`toolToModelDefinition` / `schemasEqual` / `propagateSchemas` / `preview` /
- * `schemaIncompatibility` / `operatorArgumentSummaries`）で各段階を**個別に**検査し、
- * どの段階で何が壊れているかの一覧を返す。検証ロジックは実行側と共有し、二重実装を作らない
- * — 診断が ok の項目は、実行時にも同じ理由では落ちない。
+ * 不整合・データソース欠落・モデル能力・MCP 設定など複数の層に分かれて潜むが、実行時には
+ * **最初に踏んだ1つ**が Run 失敗の1行になって返るだけで全体像が見えない。ここでは Agent 単位の
+ * 検査（参照解決・版曖昧性・委譲ツール名・function 名の一意性・MCP サーバー・モデル能力・
+ * ハーネス前提）を行い、Tool 単位の検査は `DiagnoseToolUseCase` へ委譲する。検証ロジックは
+ * 実行側と共有し、二重実装を作らない — 診断が ok の項目は、実行時にも同じ理由では落ちない。
  *
- * 検査は静的（モデル呼び出しなし・副作用なし）。engine.preview は設計時サンプル値での
- * ドライランで、sink の副作用は application 層の dispatcher が担うため発生しない。
+ * 検査は静的（モデル呼び出しなし・副作用なし）。`modelCapabilities` は設定の解決だけを行い、
+ * 補完は呼ばない。
  */
 import type { Agent } from '../../domain/agent/agent';
-import { subAgentToolName } from '../../domain/agent/agent';
+import { DEFAULT_AGENT_RUNTIME_HARNESS, subAgentToolName } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
-import { schemaIncompatibility } from '../../domain/data/schema';
-import type { Schema } from '../../domain/data/types';
-import type { ToolGraph } from '../../domain/etl/graph';
-import { operatorArgumentSummaries } from '../../domain/etl/nodes/filter';
+import type { McpServerRepository } from '../../domain/mcp/mcp-server-repository';
 import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
-import type { SemVer } from '../../domain/tool/semver';
+import { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
-import type { EtlEngine } from '../etl/engine';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
-import { schemasEqual, toolToModelDefinition } from './tool-schema';
+import type { EtlEngine } from '../etl/engine';
+import type { ModelCapability } from '../model/model-provider';
+import { DiagnoseToolUseCase, error, messageOf, ok, warning, worst } from '../tool/diagnose-tool';
+import type { DiagnosticCheck, DiagnosticStatus, ToolCheckId, ToolDiagnostics } from '../tool/diagnose-tool';
+import { buildAgentAggregate, type SaveAgentInput } from './save-agent';
+import { isValidFunctionName } from './tool-schema';
 
-export type DiagnosticStatus = 'ok' | 'warning' | 'error';
+// Tool 単位の型は diagnose-tool.ts へ移した。既存の import 元を壊さないよう再公開する。
+export type { DiagnosticCheck, DiagnosticStatus, ToolCheckId, ToolDiagnostics } from '../tool/diagnose-tool';
 
 /** Agent単位の検査項目。 */
-export type AgentCheckId = 'skills' | 'tool-versions' | 'sub-agents' | 'function-names';
-/** Tool単位の検査項目。実行時に対応する失敗地点がある順に並べる。 */
-export type ToolCheckId =
-  | 'resolved'            // Tool version が存在するか（AgentValidationError: referenced tool not found）
-  | 'function-definition' // LLMへ公開する function definition を組めるか（AgentRunError: invalid function name 等）
-  | 'agent-input'         // inputSchema と agent-input ノードの一致（graphWithArguments の実行時検査と同一）
-  | 'data-sources'        // データソース参照の解決（DataSourceValidationError）
-  | 'graph'               // 解決済みグラフのスキーマ伝播（GraphError / schema issue）
-  | 'execution'           // 設計時サンプル値でのドライラン（ノード実行エラー）
-  | 'output-schema'       // 宣言 outputSchema と推論終端の整合（assertOutputMatchesSchema と同一規則）
-  | 'operator-arguments'  // opBinding の許可リスト・既定演算子・引数宣言の整合
-  | 'side-effect';        // 非 read-only は承認ゲートで停止する（失敗ではないので warning）
-
-export interface DiagnosticCheck<Id extends string = string> {
-  readonly id: Id;
-  readonly status: DiagnosticStatus;
-  /** 原因の生メッセージ（実行時エラーと同じ英語文）。ok のときは省略。 */
-  readonly detail?: string;
-}
-
-export interface ToolDiagnostics {
-  readonly internalId: string;
-  readonly version: string;
-  /** 参照の出所。skill 経由なら skillId を持つ。 */
-  readonly source: 'direct' | 'skill';
-  readonly skillId?: string;
-  /** LLMへ公開される function 名（定義を組めた場合のみ）。 */
-  readonly functionName?: string;
-  readonly status: DiagnosticStatus;
-  readonly checks: readonly DiagnosticCheck<ToolCheckId>[];
-}
+export type AgentCheckId =
+  | 'skills'          // Skill 参照の解決
+  | 'tool-versions'   // 直付け + Skill 由来の同一 Tool の版曖昧性
+  | 'sub-agents'      // サブエージェント参照の解決と委譲ツール名（ask_*）の衝突・形式
+  | 'function-names'  // LLMへ公開する function 名の一意性
+  | 'mcp-servers'     // 参照 MCP サーバーの存在と有効/無効
+  | 'model'           // 設定中モデルの能力（tool-calling / structured output）
+  | 'harness';        // ハーネス機能の前提（検索プロバイダ・Wiki 参照）
 
 export interface AgentDiagnostics {
   readonly agent: { readonly internalId: string; readonly version: string };
   readonly status: DiagnosticStatus;
   readonly checks: readonly DiagnosticCheck<AgentCheckId>[];
   readonly tools: readonly ToolDiagnostics[];
+}
+
+/**
+ * 追加の依存。位置引数の既存 5 つは変えず、後ろの options で受ける。
+ * どれも省略可で、省略した検査は「配線されていない」として ok（model は項目自体を出さない）。
+ */
+export interface DiagnoseAgentToolsOptions {
+  /** Tool 単位の診断。省略時は engine / resolveDataSources から組み立てる。 */
+  readonly diagnoseTool?: DiagnoseToolUseCase;
+  readonly mcpServers?: McpServerRepository;
+  /**
+   * 設定中モデルの能力を解決する。切替可能な配線では保存済み設定を解決してから capabilities() を
+   * 読む必要がある（同期契約は「最後に解決したアダプタ」の能力を返す）ため非同期で受ける。
+   */
+  readonly modelCapabilities?: () => Promise<readonly ModelCapability[]>;
+  /** web_search ツールを提供できる検索プロバイダが1つ以上あるか。 */
+  readonly webSearchConfigured?: () => boolean;
 }
 
 interface EffectiveToolRef {
@@ -77,25 +72,19 @@ interface EffectiveToolRef {
   readonly skillId?: string;
 }
 
-function worst(statuses: readonly DiagnosticStatus[]): DiagnosticStatus {
-  if (statuses.includes('error')) return 'error';
-  if (statuses.includes('warning')) return 'warning';
-  return 'ok';
-}
-
-function ok<Id extends string>(id: Id): DiagnosticCheck<Id> { return { id, status: 'ok' }; }
-function error<Id extends string>(id: Id, detail: string): DiagnosticCheck<Id> { return { id, status: 'error', detail }; }
-function warning<Id extends string>(id: Id, detail: string): DiagnosticCheck<Id> { return { id, status: 'warning', detail }; }
-function messageOf(cause: unknown): string { return cause instanceof Error ? cause.message : String(cause); }
-
 export class DiagnoseAgentToolsUseCase {
+  private readonly diagnoseTool: DiagnoseToolUseCase;
+
   constructor(
     private readonly tools: ToolRepository,
-    private readonly engine: EtlEngine,
+    engine: EtlEngine,
     private readonly skills?: SkillRepository,
     private readonly agents?: AgentRepository,
-    private readonly resolveDataSources?: ResolveDataSourceGraphUseCase,
-  ) {}
+    resolveDataSources?: ResolveDataSourceGraphUseCase,
+    private readonly options: DiagnoseAgentToolsOptions = {},
+  ) {
+    this.diagnoseTool = options.diagnoseTool ?? new DiagnoseToolUseCase(engine, resolveDataSources);
+  }
 
   async execute(scope: TenantScope, agent: Agent): Promise<AgentDiagnostics> {
     const agentChecks: DiagnosticCheck<AgentCheckId>[] = [];
@@ -112,7 +101,7 @@ export class DiagnoseAgentToolsUseCase {
     const toolDiagnostics: ToolDiagnostics[] = [];
     const loadedTools: Tool[] = [];
     for (const ref of effective) {
-      const { diagnostics, tool } = await this.diagnoseTool(scope, ref);
+      const { diagnostics, tool } = await this.diagnoseToolRef(scope, ref);
       toolDiagnostics.push(diagnostics);
       if (tool !== undefined) loadedTools.push(tool);
     }
@@ -127,6 +116,17 @@ export class DiagnoseAgentToolsUseCase {
     agentChecks.push(duplicates.length === 0
       ? ok('function-names')
       : error('function-names', `duplicate function name(s): ${duplicates.join(', ')} — later tools with the same name are unreachable`));
+
+    // 6. MCP サーバー参照。実行時は未登録・disabled を黙ってスキップするので、ここで初めて見える。
+    agentChecks.push(await this.checkMcpServers(scope, agent));
+
+    // 7. 設定中モデルの能力（実行時: prepareLoop のガードと同じ2メッセージ）。配線が無ければ項目を出さない。
+    if (this.options.modelCapabilities !== undefined) {
+      agentChecks.push(await this.checkModel(agent, effective.length));
+    }
+
+    // 8. ハーネス機能の前提。満たさなくても Run は失敗しないが、期待したツールが提示されない。
+    agentChecks.push(this.checkHarness(agent));
 
     const status = worst([...agentChecks, ...toolDiagnostics.flatMap((tool) => tool.checks)].map((check) => check.status));
     return {
@@ -166,136 +166,114 @@ export class DiagnoseAgentToolsUseCase {
         continue;
       }
       takenToolNames.add(toolName);
+      // publishName は function 名の形式で検証されずに保存できる。ask_ 名がモデルへ渡せない形なら
+      // 委譲ツールは提示できない（Tool 側の function-definition と同じ規則）。
+      if (!isValidFunctionName(toolName)) {
+        subAgentIssues.push(`sub-agent tool name is not a valid function name: ${toolName}`);
+        continue;
+      }
       askNames.push(toolName);
     }
     return { askNames, subAgentIssues };
   }
 
-  private async diagnoseTool(scope: TenantScope, ref: EffectiveToolRef): Promise<{ diagnostics: ToolDiagnostics; tool?: Tool }> {
-    const checks: DiagnosticCheck<ToolCheckId>[] = [];
+  /** 参照を解決し（resolved 検査）、実体の検査は DiagnoseToolUseCase に委ねる。 */
+  private async diagnoseToolRef(scope: TenantScope, ref: EffectiveToolRef): Promise<{ diagnostics: ToolDiagnostics; tool?: Tool }> {
     const base = { internalId: ref.internalId, version: ref.version.toString(), source: ref.source, ...(ref.skillId === undefined ? {} : { skillId: ref.skillId }) };
 
     const tool = await this.tools.findVersion(scope, ref.internalId, ref.version);
     if (tool === null) {
-      checks.push(error('resolved', `referenced tool not found: ${ref.internalId}@${ref.version.toString()}`));
+      const checks: DiagnosticCheck<ToolCheckId>[] = [error('resolved', `referenced tool not found: ${ref.internalId}@${ref.version.toString()}`)];
       return { diagnostics: { ...base, status: 'error', checks } };
     }
-    checks.push(ok('resolved'));
 
-    // LLMへ公開する function definition（名前の形式・引数スキーマ）。
-    let functionName: string | undefined;
-    try {
-      functionName = toolToModelDefinition(tool).name;
-      checks.push(ok('function-definition'));
-    } catch (cause) {
-      checks.push(error('function-definition', messageOf(cause)));
-    }
-
-    checks.push(this.checkAgentInput(tool));
-
-    // データソース解決 → グラフ検証 → ドライラン → 出力スキーマ整合。
-    // 前段が失敗したら後段は検査しない（解決できないグラフは検証も実行もできない）。
-    const resolved = await this.checkDataSources(scope, tool, checks);
-    if (resolved !== undefined) this.checkGraph(tool, resolved, checks);
-
-    checks.push(...this.checkOperatorArguments(tool));
-
-    if (tool.sideEffect !== 'read-only') {
-      checks.push(warning('side-effect', `side effect '${tool.sideEffect}' pauses the run for approval before this tool executes`));
-    }
-
+    const result = await this.diagnoseTool.execute(scope, tool);
     return {
       diagnostics: {
         ...base,
-        ...(functionName === undefined ? {} : { functionName }),
-        status: worst(checks.map((check) => check.status)),
-        checks,
+        ...(result.functionName === undefined ? {} : { functionName: result.functionName }),
+        status: result.status,
+        checks: [ok('resolved'), ...result.checks],
       },
       tool,
     };
   }
 
-  /** 実行時 `graphWithArguments` が投げる2つの検査を、実行せずに同じメッセージで再現する。 */
-  private checkAgentInput(tool: Tool): DiagnosticCheck<ToolCheckId> {
-    const inputNodes = tool.graph.nodes.filter((node) => node.type === 'agent-input');
-    if ((tool.inputSchema?.columns.length ?? 0) > 0 && inputNodes.length === 0) {
-      return error('agent-input', 'tool declares inputSchema but has no agent-input node');
-    }
-    for (const node of inputNodes) {
-      const config = node.config as { schema?: Schema };
-      if (!schemasEqual(tool.inputSchema, config.schema)) {
-        return error('agent-input', `tool inputSchema does not match agent-input node '${node.id}'`);
-      }
-    }
-    return ok('agent-input');
-  }
-
-  private async checkDataSources(scope: TenantScope, tool: Tool, checks: DiagnosticCheck<ToolCheckId>[]): Promise<ToolGraph | undefined> {
-    if (this.resolveDataSources === undefined) {
-      // 実行側も resolver 未配線ならグラフをそのまま流す。診断も同じ前提に立つ。
-      checks.push(ok('data-sources'));
-      return tool.graph;
-    }
-    try {
-      const resolved = await this.resolveDataSources.execute(scope, tool.graph);
-      checks.push(ok('data-sources'));
-      return resolved;
-    } catch (cause) {
-      checks.push(error('data-sources', messageOf(cause)));
-      return undefined;
-    }
-  }
-
-  private checkGraph(tool: Tool, resolved: ToolGraph, checks: DiagnosticCheck<ToolCheckId>[]): void {
-    try {
-      const propagation = this.engine.propagateSchemas(resolved);
-      if (propagation.hasErrors) {
-        const messages = Object.values(propagation.nodes)
-          .flatMap((node) => node.issues.filter((issue) => issue.severity === 'error').map((issue) => `${node.nodeId}: ${issue.message}`))
-          .join('; ');
-        checks.push(error('graph', messages));
-        return;
-      }
-      checks.push(ok('graph'));
-
-      // 設計時サンプル値でのドライラン（副作用なし。ノード実行時にしか出ないエラーを拾う）。
-      try {
-        this.engine.preview(resolved, { rowLimit: 100 });
-        checks.push(ok('execution'));
-      } catch (cause) {
-        checks.push(error('execution', messageOf(cause)));
-      }
-
-      if (tool.outputSchema !== undefined) {
-        const terminalSchema = propagation.nodes[propagation.terminalId]?.schema;
-        const incompatibility = terminalSchema === undefined ? undefined : schemaIncompatibility(terminalSchema, tool.outputSchema);
-        checks.push(incompatibility === undefined
-          ? ok('output-schema')
-          : error('output-schema', `declared output schema does not match the graph's inferred output (${incompatibility}) — the run fails after the tool executes; re-save the tool to refresh its output schema`));
-      }
-    } catch (cause) {
-      // GraphError（構造違反）等。伝播自体ができないグラフはドライランも出力整合も検査できない。
-      checks.push(error('graph', messageOf(cause)));
-    }
-  }
-
-  private checkOperatorArguments(tool: Tool): DiagnosticCheck<ToolCheckId>[] {
-    const summaries = operatorArgumentSummaries(
-      tool.graph.nodes.filter((node) => node.type === 'filter').map((node) => node.config),
-    );
-    if (summaries.length === 0) return [];
+  /**
+   * 参照 MCP サーバーの存在と有効/無効。実行時（McpToolset.resolve）は未登録・disabled を黙って
+   * スキップするため、「ツールが1つも来ない」原因がここでしか分からない。
+   * 未登録は設定ミス（error）、disabled は意図的な一時停止でもあり得る（warning）。
+   */
+  private async checkMcpServers(scope: TenantScope, agent: Agent): Promise<DiagnosticCheck<AgentCheckId>> {
+    // createAgent は重複参照を拒否するが、Agent は interface なので防御的に一意化し、同じ名前を二重報告しない。
+    const names = [...new Set(agent.mcpServers ?? [])];
+    const repo = this.options.mcpServers;
+    if (names.length === 0 || repo === undefined) return ok('mcp-servers');
     const errors: string[] = [];
     const warnings: string[] = [];
-    for (const summary of summaries) {
-      const column = tool.inputSchema?.columns.find((candidate) => candidate.name === summary.field);
-      if (summary.allowed.length === 0) errors.push(`operator argument '${summary.field}' has no operator that every condition allows`);
-      if (summary.defaultOpMixed) errors.push(`operator argument '${summary.field}' has conflicting default operators across conditions`);
-      if (column === undefined) warnings.push(`operator argument '${summary.field}' is not declared in the input schema, so the binding is inactive at run time`);
-      else if (column.type !== 'string') errors.push(`operator argument '${summary.field}' must be declared as a string argument, but it is '${column.type}'`);
+    for (const name of names) {
+      let config: Awaited<ReturnType<McpServerRepository['find']>>;
+      try {
+        config = await repo.find(scope, name);
+      } catch (cause) {
+        // リポジトリ障害は診断全体（HTTP 500）ではなく、この項目の error として報告する
+        // （model 検査の「設定を解決できない」と同じ扱い）。
+        errors.push(`MCP server '${name}' could not be resolved: ${messageOf(cause)}`);
+        continue;
+      }
+      if (config === null) errors.push(`referenced MCP server not found: ${name}`);
+      else if (config.disabled) warnings.push(`MCP server '${name}' is disabled, so its tools are skipped at run time`);
     }
-    if (errors.length > 0) return [error('operator-arguments', [...errors, ...warnings].join('; '))];
-    if (warnings.length > 0) return [warning('operator-arguments', warnings.join('; '))];
-    return [ok('operator-arguments')];
+    if (errors.length > 0) return error('mcp-servers', [...errors, ...warnings].join('; '));
+    if (warnings.length > 0) return warning('mcp-servers', warnings.join('; '));
+    return ok('mcp-servers');
+  }
+
+  /**
+   * 設定中モデルの能力。実行時 prepareLoop のガードと同じ判定・同じメッセージで、Run を始める前に
+   * 「このモデルではツールを渡せない / 構造化出力できない」を報告する。
+   * 呼び出し可能物（Tool・サブエージェント・MCP）が無い、または functionInvocation:false なら
+   * tool-calling は要らない。設定の解決自体に失敗したら、その理由を error として返す。
+   */
+  private async checkModel(agent: Agent, effectiveToolCount: number): Promise<DiagnosticCheck<AgentCheckId>> {
+    let capabilities: readonly ModelCapability[];
+    try {
+      capabilities = await (this.options.modelCapabilities as () => Promise<readonly ModelCapability[]>)();
+    } catch (cause) {
+      return error('model', `model settings could not be resolved: ${messageOf(cause)}`);
+    }
+    const issues: string[] = [];
+    const functionInvocation = agent.harness?.functionInvocation ?? DEFAULT_AGENT_RUNTIME_HARNESS.functionInvocation;
+    const hasCallables = functionInvocation && (effectiveToolCount > 0 || agent.agents.length > 0 || (agent.mcpServers ?? []).length > 0);
+    if (hasCallables && !capabilities.includes('tool-calling')) issues.push('configured model provider does not support tool-calling');
+    if (agent.output !== undefined && !capabilities.includes('structured-output')) issues.push('configured model provider does not support structured output');
+    return issues.length === 0 ? ok('model') : error('model', issues.join('; '));
+  }
+
+  /**
+   * ハーネス機能の前提。AgentRuntimeHarnessRuntime.definitions() は前提が揃わないツールを黙って
+   * 提示しないので、「有効にしたのに web_search / memory_* が出ない」原因はここで伝える。
+   */
+  private checkHarness(agent: Agent): DiagnosticCheck<AgentCheckId> {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    if (agent.harness?.webSearch === true) {
+      // 検索プロバイダ設定の解決自体が失敗しても診断全体は落とさず、この項目の error として報告する。
+      let configured: boolean | undefined;
+      try {
+        configured = this.options.webSearchConfigured?.();
+      } catch (cause) {
+        errors.push(`search provider configuration could not be resolved: ${messageOf(cause)}`);
+      }
+      if (configured === false) {
+        warnings.push('harness enables web search but no search provider is configured, so the web_search tool is not offered');
+      }
+    }
+    if (agent.harness?.fileMemory === true && (agent.wikis ?? []).length === 0) {
+      warnings.push('harness enables file memory but the agent references no wiki, so memory tools have nothing to read');
+    }
+    if (errors.length > 0) return error('harness', [...errors, ...warnings].join('; '));
+    return warnings.length === 0 ? ok('harness') : warning('harness', warnings.join('; '));
   }
 }
 
@@ -327,4 +305,19 @@ function duplicateFunctionNames(tools: readonly ToolDiagnostics[], askNames: rea
     seen.add(name);
   }
   return [...duplicates];
+}
+
+/** 未保存 Agent の診断入力。SaveAgentInput から採番指示（bump）を除いたもの。 */
+export type AgentDraftInput = Omit<SaveAgentInput, 'bump'>;
+
+/** 未保存 draft を表す版。採番は保存時に決まるので、診断結果にはこの値が「未保存」の印として載る。 */
+export const DRAFT_AGENT_VERSION: SemVer = SemVer.of(0, 0, 0);
+
+/**
+ * SaveAgentUseCase と同じ形で Agent 集約を組み立てる純関数（リポジトリ参照・保存なし）。
+ * 未保存 draft の診断は、保存されるものと**同じ createAgent 検証**を通った Agent を検査対象にする
+ * ことで、「診断は通ったが保存で弾かれる」食い違いを避ける。
+ */
+export function buildDraftAgent(input: AgentDraftInput, version: SemVer = DRAFT_AGENT_VERSION): Agent {
+  return buildAgentAggregate(input, version);
 }

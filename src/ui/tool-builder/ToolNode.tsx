@@ -1,6 +1,7 @@
 import { type CSSProperties } from 'react';
 import { Handle, Position, useStore, type NodeProps } from '@xyflow/react';
 import { localizeSchemaIssueMessage } from '../api/error-messages';
+import { unconnectedNodeIds } from './draft-readiness';
 import { catalogItem, inputHandleId } from './node-catalog';
 import { useToolBuilderStore, type ToolFlowNode } from './store';
 import { useI18n } from '../i18n';
@@ -27,13 +28,15 @@ export function constantSizeHandleStyle(zoom: number, extra?: CSSProperties): CS
 
 export function ToolNode({ id, data, selected }: NodeProps<ToolFlowNode>) {
   const inference = useToolBuilderStore((state) => state.propagation?.nodes[id]);
+  // 流れに繋がっていないノードをキャンバス上でも示す（boolean を選ぶので再描画は変化時だけ）。
+  const unconnected = useToolBuilderStore((state) => unconnectedNodeIds(state.nodes, state.edges).includes(id));
   const zoom = useStore((state) => state.transform[2]);
   const { text, language } = useI18n();
   const hasError = inference?.issues.some((issue) => issue.severity === 'error') ?? false;
   const item = catalogItem(data.nodeType);
   const isSource = item.kind === 'source';
   return (
-    <div className={`tool-node ${selected ? 'selected' : ''} ${hasError ? 'invalid' : ''}`}>
+    <div className={`tool-node ${selected ? 'selected' : ''} ${hasError ? 'invalid' : ''} ${unconnected ? 'unconnected' : ''}`}>
       {item.inputArity === 1 && (
         <Handle type="target" position={Position.Left} style={constantSizeHandleStyle(zoom)} />
       )}
@@ -51,6 +54,7 @@ export function ToolNode({ id, data, selected }: NodeProps<ToolFlowNode>) {
       {inference !== undefined && (
         <span className={`state-badge state-${inference.state}`}>{STATE_LABEL[inference.state]}</span>
       )}
+      {unconnected && <small className="node-issue warning unconnected-badge">{text('not connected', '未接続')}</small>}
       {inference?.issues.map((issue, index) => (
         <small className={`node-issue ${issue.severity}`} key={`${issue.message}-${index}`}>{localizeSchemaIssueMessage(issue.message, language)}</small>
       ))}

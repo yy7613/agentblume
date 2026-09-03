@@ -12,12 +12,13 @@ import {
   VersionConflictError,
 } from '../domain/tool/errors';
 import { BadRequestError, toHttpError } from './error-mapping';
-import { AgentRunError, ToolArgumentsError, UnsafeToolError } from '../application/agent/errors';
+import { AgentRunError, ToolArgumentsError, ToolExecutionError, UnsafeToolError } from '../application/agent/errors';
 import { ModelProviderError } from '../application/model/model-provider';
 import { RunFailedError } from '../application/agent/errors';
 import { RunNotFoundError } from '../domain/run/errors';
 import { SkillNotFoundError, SkillValidationError, SkillVersionConflictError } from '../domain/skill/errors';
 import { InvalidFileContentError } from '../domain/data-source/errors';
+import { SessionQuotaExceededError } from '../domain/session/errors';
 
 describe('toHttpError', () => {
   it.each([
@@ -48,6 +49,57 @@ describe('toHttpError', () => {
     expect(toHttpError(new RunFailedError('run-1', new ModelProviderError('offline')))).toEqual({
       status: 502, body: { error: { code: 'MODEL_PROVIDER', message: 'offline', runId: 'run-1' } },
     });
+  });
+
+  it('ToolExecutionErrorは元status/codeを維持してtool / nodeIdを付け、RunFailedError経由ならrunIdも揃う', () => {
+    const tool = { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' };
+    const schema = new SchemaError('select: column(s) not found: revenue');
+    schema.nodeId = 'pick';
+    expect(toHttpError(new ToolExecutionError(tool, schema))).toEqual({
+      status: 422, body: { error: { code: 'ETL_SCHEMA', message: 'select: column(s) not found: revenue', tool, nodeId: 'pick' } },
+    });
+    expect(toHttpError(new RunFailedError('run-1', new ToolExecutionError(tool, schema)))).toEqual({
+      status: 422, body: { error: { code: 'ETL_SCHEMA', message: 'select: column(s) not found: revenue', tool, nodeId: 'pick', runId: 'run-1' } },
+    });
+    // nodeId の無い失敗はキー自体を出さない。
+    expect(toHttpError(new ToolExecutionError(tool, new ConfigError('bad config')))).toEqual({
+      status: 422, body: { error: { code: 'ETL_CONFIG', message: 'bad config', tool } },
+    });
+    // 元例外が未知なら従来どおり 500 INTERNAL（詳細は漏らさない）のまま、識別だけを足す。
+    expect(toHttpError(new ToolExecutionError(tool, new Error('secret internal detail')))).toEqual({
+      status: 500, body: { error: { code: 'INTERNAL', message: 'internal error', tool } },
+    });
+  });
+
+  it('ToolExecutionErrorは元例外ごとの status を保つ（422 TOOL_ARGUMENTS / 403 UNSAFE_TOOL / 413 SESSION_QUOTA_EXCEEDED / 422 AGENT_RUN）', () => {
+    const tool = { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' };
+    expect(toHttpError(new ToolExecutionError(tool, new ToolArgumentsError('required argument missing: score')))).toEqual({
+      status: 422, body: { error: { code: 'TOOL_ARGUMENTS', message: 'required argument missing: score', tool } },
+    });
+    expect(toHttpError(new ToolExecutionError(tool, new UnsafeToolError('unsafe')))).toEqual({
+      status: 403, body: { error: { code: 'UNSAFE_TOOL', message: 'unsafe', tool } },
+    });
+    expect(toHttpError(new ToolExecutionError(tool, new SessionQuotaExceededError('artifact too large')))).toEqual({
+      status: 413, body: { error: { code: 'SESSION_QUOTA_EXCEEDED', message: 'artifact too large', tool } },
+    });
+    expect(toHttpError(new ToolExecutionError(tool, new AgentRunError('tool output schema is missing column revenue')))).toEqual({
+      status: 422, body: { error: { code: 'AGENT_RUN', message: 'tool output schema is missing column revenue', tool } },
+    });
+  });
+
+  it('ToolExecutionErrorの元例外が Error でない・未知でも 500 INTERNAL のまま詳細を漏らさず、nodeId キーを生やさない', () => {
+    const tool = { internalId: 'score-tool' };
+    for (const cause of ['secret string', undefined, new Error('secret internal detail')]) {
+      const mapped = toHttpError(new RunFailedError('run-1', new ToolExecutionError(tool, cause)));
+      expect(mapped).toEqual({ status: 500, body: { error: { code: 'INTERNAL', message: 'internal error', tool, runId: 'run-1' } } });
+      expect(Object.hasOwn(mapped.body.error, 'nodeId')).toBe(false);
+      expect(JSON.stringify(mapped)).not.toContain('secret');
+    }
+    // 二重に包まれても外側の識別が勝ち、status / code / nodeId は根本原因から決まる。
+    const schema = new SchemaError('bad schema');
+    schema.nodeId = 'inner';
+    const nested = new ToolExecutionError({ internalId: 'outer' }, new ToolExecutionError({ internalId: 'inner' }, schema));
+    expect(toHttpError(nested)).toEqual({ status: 422, body: { error: { code: 'ETL_SCHEMA', message: 'bad schema', tool: { internalId: 'outer' }, nodeId: 'inner' } } });
   });
 
   it('具象クラスは基底クラスの分岐に飲み込まれない（判定順序）', () => {

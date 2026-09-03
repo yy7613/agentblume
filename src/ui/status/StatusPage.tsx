@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
+import { describeMcpServerSkipped, localizeRunFailure, localizeRunTraceError } from '../api/error-messages';
 import type { AuditEntryDto, BackupSummaryDto, OperationsStatusDto, RunFeedbackDto, RunRecordDto, RunSummaryDto, RunTraceEventDto, TenantScopeDto } from '../api/types';
 import { useI18n } from '../i18n';
 import { InlineFeedback } from '../components/InlineFeedback';
+import { RunFailureNotice } from '../components/RunFailureNotice';
 import { scope } from '../scope';
 
 export function StatusPage({ client }: { readonly client: ToolApiClient }) {
@@ -73,7 +75,16 @@ export function StatusPage({ client }: { readonly client: ToolApiClient }) {
           <div className="run-detail-title"><div><span className={`run-status ${selected.status}`}>{selected.status}</span><h2>{selected.runId}</h2></div><code>{selected.agent?.internalId ?? selected.tool?.internalId ?? 'unknown'}@{selected.agent?.version ?? selected.tool?.version ?? 'latest'}</code></div>
           <dl className="run-observation"><div><dt>{text('Purpose', '目的')}</dt><dd>{selected.purpose ?? 'interactive'}</dd></div><div><dt>{text('Model', 'モデル')}</dt><dd>{selected.model === undefined ? text('unknown', '不明') : `${selected.model.provider} / ${selected.model.model}`}</dd></div><div><dt>{text('Latency', 'レイテンシ')}</dt><dd>{selected.latency === undefined ? '—' : `${selected.latency.totalMs.toFixed(1)} ms (model ${selected.latency.modelMs.toFixed(1)} / tool ${selected.latency.toolMs.toFixed(1)})`}</dd></div><div><dt>{text('Estimated cost', '推定コスト')}</dt><dd>{selected.estimatedCost === undefined ? text('unavailable', '未算出') : `$${selected.estimatedCost.amount.toFixed(6)} ${selected.estimatedCost.currency}`}</dd></div></dl>
           {selected.response !== undefined && <div className="chat-response"><span>{text('Response', '応答')}</span>{selected.structuredResponse === undefined ? <p>{selected.response}</p> : <pre>{JSON.stringify(selected.structuredResponse, null, 2)}</pre>}</div>}
-          {selected.failure !== undefined && <div className="api-error"><strong>{selected.failure.code}</strong> {selected.failure.message}</div>}
+          {/* 保存済み failure は生メッセージ。文言は言語化し、失敗箇所（tool / nodeId）と直す場所へのボタン、失敗直前のツール呼び出しを添える。 */}
+          {selected.failure !== undefined && <RunFailureNotice
+            code={selected.failure.code}
+            message={localizeRunFailure(selected.failure, language)}
+            serverMessage={selected.failure.message}
+            {...(selected.failure.tool === undefined ? {} : { tool: selected.failure.tool })}
+            {...(selected.failure.nodeId === undefined ? {} : { nodeId: selected.failure.nodeId })}
+            {...(selected.agent === undefined ? {} : { agent: { internalId: selected.agent.internalId } })}
+            trace={selected.trace}
+          />}
           {selected.agent?.version !== undefined && <section className="run-feedback" aria-label={text('Run feedback', '実行フィードバック')}><h3>{text('Feedback', 'フィードバック')}</h3><div className="feedback-thumbs"><button type="button" className={thumb === 'up' ? 'selected' : 'secondary'} onClick={() => editThumb('up')}>👍 {text('Good', '良い')}</button><button type="button" className={thumb === 'down' ? 'selected' : 'secondary'} onClick={() => editThumb('down')}>👎 {text('Needs work', '要改善')}</button></div><label>{text('Rating', '評価')}<select value={rating} onChange={(event) => editRating(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}</select></label><label>{text('Issue tags (comma separated)', '課題タグ（カンマ区切り）')}<input value={issueTags} onChange={(event) => editIssueTags(event.target.value)} placeholder="incorrect, unsafe, slow" /></label><label>{text('Comment', 'コメント')}<textarea value={comment} maxLength={2000} onChange={(event) => editComment(event.target.value)} /></label><button type="button" onClick={() => void saveFeedback()}>{feedback === undefined ? text('Save feedback', 'フィードバックを保存') : text('Update feedback', 'フィードバックを更新')}</button>{feedbackSaved && <InlineFeedback kind="success" autoHideMs={3000} onDismiss={() => setFeedbackSaved(false)}>{text('Saved', '保存しました')}</InlineFeedback>}</section>}
           <div className="trace-list">{selected.trace.map((event) => <StatusTraceEvent key={event.sequence} event={event} onOpenChild={(runId) => void select(runId)} />)}</div>
         </>}
@@ -246,13 +257,15 @@ function OperationsSummary({ status, text }: { readonly status: OperationsStatus
 function Metric({ label, value }: { readonly label: string; readonly value: string }) { return <div><span>{label}</span><strong>{value}</strong></div>; }
 
 function StatusTraceEvent({ event, onOpenChild }: { readonly event: RunTraceEventDto; readonly onOpenChild: (runId: string) => void }) {
+  const { language } = useI18n();
   if (event.kind === 'model-request') return <div className="trace-event"><span>{event.sequence}</span><p>Model request · step {event.step}</p></div>;
   if (event.kind === 'tool-call') return <div className="trace-event tool"><span>{event.sequence}</span><p><strong>{event.name}</strong> {JSON.stringify(event.arguments)}</p></div>;
   if (event.kind === 'tool-result') return <div className="trace-event tool"><span>{event.sequence}</span><div><strong>{event.name}</strong>{event.nodes.map((node) => <code key={node.nodeId}>{node.nodeId}: {node.rowCount} row(s){node.truncated ? ' · truncated' : ''}</code>)}</div></div>;
   if (event.kind === 'agent_call') return <div className={`trace-event agent ${event.ok ? '' : 'error'}`}><span>{event.sequence}</span><div><strong>{event.toolName}</strong> → {event.agentRef.internalId}@{event.agentRef.version} {event.ok ? '✓' : '✗'}<small>{event.summary}</small>{event.childRunId !== '' && <button type="button" className="run-link secondary" onClick={() => onOpenChild(event.childRunId)}>child run</button>}</div></div>;
-  if (event.kind === 'error') return <div className="trace-event error"><span>{event.sequence}</span><p><strong>{event.code}</strong> {event.message}</p></div>;
+  if (event.kind === 'error') return <div className="trace-event error"><span>{event.sequence}</span><p><strong>{event.code}</strong> {localizeRunTraceError(event, language)}</p></div>;
   if (event.kind === 'compaction') return <div className="trace-event"><span>{event.sequence}</span><p>Compaction · {event.beforeChars} → {event.afterChars} chars</p></div>;
   if (event.kind === 'approval-requested') return <div className="trace-event tool"><span>{event.sequence}</span><p><strong>Approval requested</strong> {event.tool} ({event.sideEffect})</p></div>;
   if (event.kind === 'approval-resolved') return <div className="trace-event tool"><span>{event.sequence}</span><p><strong>Approval</strong> {event.decision}</p></div>;
+  if (event.kind === 'mcp-server-skipped') return <div className="trace-event error"><span>{event.sequence}</span><p>{describeMcpServerSkipped(event, language)}</p></div>;
   return <div className="trace-event"><span>{event.sequence}</span><p>{event.content}</p></div>;
 }

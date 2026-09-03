@@ -13,11 +13,15 @@ import type {
   GraphNodeDto,
   PreviewResultDto,
   PropagationResultDto,
+  SaveToolDto,
+  SchemaDto,
   SerializedToolDto,
   SideEffectDto,
+  ToolDiagnosticsDto,
   ToolGraphDto,
 } from '../api/types';
 import { catalogItem, inputHandleId, toInputOf, type ToolNodeType } from './node-catalog';
+import { scope } from '../scope';
 
 export interface ToolNodeData extends Record<string, unknown> {
   readonly nodeType: ToolNodeType;
@@ -48,8 +52,15 @@ interface ToolBuilderState {
   propagation?: PropagationResultDto;
   preview?: PreviewResultDto;
   previewLoading: boolean;
+  /**
+   * グラフや設定が変わってから、検証結果（propagation か draftIssue）が届くまで true。
+   * 自動プレビューは300msデバウンスするので、その待ち時間も「検証中」として保存を止めるために持つ。
+   */
+  propagationPending: boolean;
   /** 自動プレビュー（スキーマ推論／プレビュー）の失敗。草案の状態なのでプレビュー領域へ出す。 */
   draftIssue?: string;
+  /** 「呼び出し診断」（Tool下書きのプリフライト診断）。'loading' は要求中、failed は取得失敗（診断結果そのものではない）。 */
+  diagnostics?: ToolDiagnosticsDto | 'loading' | { readonly failed: string };
   /** 明示保存・バージョン操作の失敗。操作の近傍（保存ボタン直下）へ出す。 */
   saveError?: string;
   currentVersion?: string;
@@ -65,6 +76,7 @@ interface ToolBuilderState {
   setPropagation(propagation?: PropagationResultDto): void;
   setPreview(preview?: PreviewResultDto): void;
   setDraftIssue(draftIssue?: string): void;
+  setDiagnostics(diagnostics?: ToolDiagnosticsDto | 'loading' | { readonly failed: string }): void;
   setSaveError(saveError?: string): void;
   setSavedVersion(version: string, versions: readonly string[]): void;
   setVersions(versions: readonly string[]): void;
@@ -94,11 +106,114 @@ export function missingRequiredMetadata(metadata: ToolMetadataState): readonly R
   return REQUIRED_METADATA_KEYS.filter((key) => metadata[key].trim() === '');
 }
 
+/** モデルへ公開できる function 名の形（domain/tool の AgentToolContract と同じ制約）。 */
+export const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * 保存ペイロードの agentTool。名前と説明の両方が入っているときだけ載せる（片方だけではサーバーが400にする）。
+ * 載せないときはサーバーが publishName を function 名として公開する。
+ */
+export function agentToolOf(metadata: ToolMetadataState): { readonly name: string; readonly description: string } | undefined {
+  return metadata.agentName.trim() !== '' && metadata.agentDescription.trim() !== ''
+    ? { name: metadata.agentName, description: metadata.agentDescription }
+    : undefined;
+}
+
+/** モデルに実際に見える function 名。agentTool があればその名前、なければ publishName。 */
+export function effectiveFunctionName(metadata: ToolMetadataState): string {
+  return agentToolOf(metadata)?.name ?? metadata.publishName;
+}
+
+/**
+ * agent-input ノードが宣言する引数スキーマ。
+ * 複数の agent-input が違うスキーマを宣言していると、保存は先頭だけを inputSchema にして通ってしまい、
+ * 実行時に別のノードで「inputSchema と一致しない」と落ちる。ここで衝突として検出して保存を止める。
+ */
+export function declaredInputSchema(nodes: readonly ToolFlowNode[]): { readonly schema?: SchemaDto; readonly conflict: boolean } {
+  const schemas = nodes
+    .filter((node) => node.data.nodeType === 'agent-input')
+    .map((node) => (node.data.config as { schema?: SchemaDto })['schema']);
+  const first = schemas[0];
+  if (first === undefined) return { conflict: false };
+  const signature = JSON.stringify(first.columns);
+  const conflict = schemas.some((schema) => JSON.stringify(schema?.columns) !== signature);
+  return { schema: first, conflict };
+}
+
+/** 保存を止める理由（優先順）。undefined なら保存できる。文言は画面側が付ける。 */
+export type SaveBlocker =
+  | { readonly kind: 'missing-metadata'; readonly keys: readonly RequiredMetadataKey[] }
+  | { readonly kind: 'invalid-function-name'; readonly name: string }
+  | { readonly kind: 'agent-input-conflict' }
+  | { readonly kind: 'validation-pending' }
+  | { readonly kind: 'graph-errors' };
+
+/**
+ * 保存前ガード。以前は必須メタデータだけで保存を許していたため、function 名が無効なツール・
+ * 引数が食い違うツール・出力スキーマの無いツールが保存でき、エージェント実行時に初めて壊れた。
+ */
+export function saveBlocker(state: Pick<ToolBuilderState, 'metadata' | 'nodes' | 'propagation' | 'previewLoading' | 'draftIssue' | 'propagationPending'>): SaveBlocker | undefined {
+  const keys = missingRequiredMetadata(state.metadata);
+  if (keys.length > 0) return { kind: 'missing-metadata', keys };
+  const name = effectiveFunctionName(state.metadata);
+  if (!FUNCTION_NAME_PATTERN.test(name)) return { kind: 'invalid-function-name', name };
+  if (declaredInputSchema(state.nodes).conflict) return { kind: 'agent-input-conflict' };
+  // 設定未完了（自動検証がサーバーへ送る前に止めた）や検証APIの失敗も、出力スキーマを確定できないので保存しない。
+  if (state.draftIssue !== undefined) return { kind: 'graph-errors' };
+  if (state.propagationPending || state.previewLoading || state.propagation === undefined) return { kind: 'validation-pending' };
+  if (state.propagation.hasErrors) return { kind: 'graph-errors' };
+  return undefined;
+}
+
+/**
+ * 保存 API と下書き診断 API へ送る DTO の唯一の組み立て口（両者が別々に組むと検査対象がずれる）。
+ * outputSchema は終端ノード（terminalId）の推論結果。order.at(-1) は未接続 agent-input でありうるので使わない。
+ */
+export function buildSaveDto(state: Pick<ToolBuilderState, 'metadata' | 'nodes' | 'edges' | 'propagation'> = useToolBuilderStore.getState()): SaveToolDto {
+  const { metadata } = state;
+  const agentTool = agentToolOf(metadata);
+  const inputSchema = declaredInputSchema(state.nodes).schema;
+  const outputSchema = state.propagation === undefined ? undefined : state.propagation.nodes[state.propagation.terminalId]?.schema;
+  return {
+    scope,
+    internalId: metadata.internalId,
+    workingName: metadata.workingName,
+    displayName: metadata.displayName,
+    publishName: metadata.publishName,
+    owner: metadata.owner,
+    sideEffect: metadata.sideEffect,
+    graph: flowToGraph(state.nodes, state.edges),
+    ...(agentTool === undefined ? {} : { agentTool }),
+    ...(inputSchema === undefined ? {} : { inputSchema }),
+    ...(outputSchema === undefined ? {} : { outputSchema }),
+  };
+}
+
+/**
+ * セッションへ成果物を書き込む終端（workspace-output / graph-output / chart-output、または
+ * agent-output の overflow=store-and-reference）を持つか。サーバー（application/tool/save-tool.ts の
+ * hasSessionStorageSink）と同じ集合で、read-only のままだと保存が400になるため sideEffect を自動で上げる。
+ */
+export function requiresSessionWrite(nodes: readonly ToolFlowNode[]): boolean {
+  return nodes.some((node) =>
+    node.data.nodeType === 'workspace-output' || node.data.nodeType === 'graph-output' || node.data.nodeType === 'chart-output'
+    || (node.data.nodeType === 'agent-output' && node.data.config['overflow'] === 'store-and-reference'));
+}
+
+/** read-only のままではサーバーが拒否するグラフなら session-write へ上げたメタデータを返す。 */
+function bumpSideEffect(metadata: ToolMetadataState, nodes: readonly ToolFlowNode[]): { readonly metadata: ToolMetadataState } | Record<never, never> {
+  return metadata.sideEffect === 'read-only' && requiresSessionWrite(nodes)
+    ? { metadata: { ...metadata, sideEffect: 'session-write' as const } }
+    : {};
+}
+
 /**
  * 保存失敗は「次の保存試行の開始時」と「保存内容が変わったとき」だけ消す。
  * 自動プレビューが上書きしないので、ユーザーはメッセージを読み切れる。
  */
 const clearSaveError = { saveError: undefined } as const;
+/** 保存内容が変わった: 検証結果が届くまで保存を待たせる。 */
+const markPending = { propagationPending: true } as const;
 
 /**
  * 選択・移動だけの変更では保存失敗メッセージを消さない。
@@ -208,7 +323,9 @@ function initialState() {
     propagation: undefined,
     preview: undefined,
     previewLoading: false,
+    propagationPending: true,
     draftIssue: undefined,
+    diagnostics: undefined,
     saveError: undefined,
     currentVersion: undefined,
     versions: [] as readonly string[],
@@ -263,27 +380,32 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
           ...(item.inputArity === 2 ? { targetHandle: inputHandleId(0) } : {}),
         }]
       : [];
+    const nodes = [...state.nodes, node];
     return {
-      nodes: [...state.nodes, node], edges: [...state.edges, ...edge], selectedNodeId: id,
-      ...clearSaveError,
-      ...((type === 'workspace-output' || type === 'graph-output') && state.metadata.sideEffect === 'read-only' ? { metadata: { ...state.metadata, sideEffect: 'session-write' as const } } : {}),
+      nodes, edges: [...state.edges, ...edge], selectedNodeId: id,
+      ...clearSaveError, ...markPending,
+      ...bumpSideEffect(state.metadata, nodes),
     };
   }),
   onNodesChange: (changes) => set((state) => ({
     nodes: applyNodeChanges(changes, state.nodes),
-    ...(changesSavePayload(changes) ? clearSaveError : {}),
+    ...(changesSavePayload(changes) ? { ...clearSaveError, ...markPending } : {}),
   })),
-  onEdgesChange: (changes) => set((state) => ({ edges: applyEdgeChanges(changes, state.edges), ...clearSaveError })),
-  onConnect: (connection) => set((state) => ({ edges: addEdge(connection, state.edges), ...clearSaveError })),
+  onEdgesChange: (changes) => set((state) => ({ edges: applyEdgeChanges(changes, state.edges), ...clearSaveError, ...markPending })),
+  onConnect: (connection) => set((state) => ({ edges: addEdge(connection, state.edges), ...clearSaveError, ...markPending })),
   selectNode: (selectedNodeId) => set({ selectedNodeId }),
-  updateNodeConfig: (nodeId, config) => set((state) => ({
-    nodes: state.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, config } } : node),
-    ...clearSaveError,
-  })),
+  updateNodeConfig: (nodeId, config) => set((state) => {
+    const nodes = state.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, config } } : node);
+    // agent-output の overflow を store-and-reference へ変えた場合もセッション書き込みになる。
+    return { nodes, ...clearSaveError, ...markPending, ...bumpSideEffect(state.metadata, nodes) };
+  }),
   setPreviewLoading: (previewLoading) => set({ previewLoading }),
-  setPropagation: (propagation) => set({ propagation }),
+  // 検証結果が届いた（undefined でも失敗として届いたと見なし、続く setDraftIssue が理由を持つ）。
+  setPropagation: (propagation) => set({ propagation, propagationPending: false }),
   setPreview: (preview) => set({ preview }),
-  setDraftIssue: (draftIssue) => set({ draftIssue }),
+  // 理由付きの失敗も「検証が終わった」印。undefined（要求開始時のクリア）では pending を触らない。
+  setDraftIssue: (draftIssue) => set(draftIssue === undefined ? { draftIssue } : { draftIssue, propagationPending: false }),
+  setDiagnostics: (diagnostics) => set({ diagnostics }),
   setSaveError: (saveError) => set({ saveError }),
   setSavedVersion: (currentVersion, versions) => set({ currentVersion, versions }),
   setVersions: (versions) => set({ versions }),
@@ -315,8 +437,10 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
       selectedNodeId: tool.graph.nodes[0]?.id,
       currentVersion: tool.metadata.version,
       propagation: undefined,
+      propagationPending: true,
       preview: undefined,
       draftIssue: undefined,
+      diagnostics: undefined,
       saveError: undefined,
       versions: state.versions,
     };
@@ -328,8 +452,10 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
     edges: draft.edges.map((edge) => ({ ...edge })),
     selectedNodeId: draft.nodes[0]?.id,
     propagation: undefined,
+    propagationPending: true,
     preview: undefined,
     draftIssue: undefined,
+    diagnostics: undefined,
     saveError: undefined,
   }),
   reset: () => set(initialState()),

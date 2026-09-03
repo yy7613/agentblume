@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, type ToolApiClient } from '../api/tool-api';
-import type { PreviewResultDto, PropagationResultDto, SerializedToolDto } from '../api/types';
+import type { PreviewResultDto, PropagationResultDto, SerializedToolDto, ToolDiagnosticsDto } from '../api/types';
 import { I18nProvider } from '../i18n';
 import { MetadataBar } from './MetadataBar';
 import { NodeInspector } from './NodeInspector';
 import { PreviewPanel } from './PreviewPanel';
-import { useToolBuilderStore } from './store';
+import { buildSaveDto, useToolBuilderStore } from './store';
 import { AgentChatPanel } from './AgentChatPanel';
 import { NodePalette } from './NodePalette';
 import { scope } from '../scope';
@@ -376,6 +376,8 @@ describe('MetadataBar', () => {
   });
 
   it('必須項目に印を付け、未入力なら保存を無効化して理由を近傍に示す', () => {
+    // 検証結果は届いている状態にして、必須項目だけが保存を止めているのを見る。
+    useToolBuilderStore.getState().setPropagation(propagation);
     render(<MetadataBar client={{} as ToolApiClient} />);
     expect(document.querySelectorAll('.required-mark')).toHaveLength(5);
     const save = () => screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
@@ -396,6 +398,7 @@ describe('MetadataBar', () => {
 
   it('保存失敗を保存ボタン近傍に出し、状態バッジを草案検証のままにして再保存できる', async () => {
     fillRequiredMetadata();
+    useToolBuilderStore.getState().setPropagation(propagation);
     const client = {
       saveTool: vi.fn().mockRejectedValue(new Error('SaveTool: graph validation failed')),
       listVersions: vi.fn().mockResolvedValue([]),
@@ -416,6 +419,7 @@ describe('MetadataBar', () => {
 
   it('保存成功をバージョン付きで保存ボタン近傍に知らせる', async () => {
     fillRequiredMetadata();
+    useToolBuilderStore.getState().setPropagation(propagation);
     const metadata = useToolBuilderStore.getState().metadata;
     const tool = {
       metadata: { ...metadata, tenant: scope, version: '1.0.1', state: 'draft' },
@@ -425,6 +429,210 @@ describe('MetadataBar', () => {
     render(<MetadataBar client={client} />);
     await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
     expect((await screen.findByRole('status')).textContent).toBe('Saved version 1.0.1');
+  });
+
+  it('function 名として無効な publishName では保存を止め、エージェント向け名の設定を促す', () => {
+    useToolBuilderStore.getState().setPropagation(propagation);
+    fillRequiredMetadata();
+    // agentTool が無いときはサーバーが publishName を function 名として公開する。空白を含む名前は呼び出せない。
+    useToolBuilderStore.getState().setMetadata('publishName', 'customer search');
+    render(<MetadataBar client={{} as ToolApiClient} />);
+    const save = () => screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
+    expect(save().disabled).toBe(true);
+    expect(screen.getByText(/"customer search" is not a valid function name for models\. Set an agent-facing name/)).toBeTruthy();
+
+    // 名前 + 説明の両方が入ると agentTool.name がモデルに見える名前になるので保存できる。
+    act(() => useToolBuilderStore.getState().setMetadata('agentName', 'search_customers'));
+    expect(save().disabled).toBe(true);
+    act(() => useToolBuilderStore.getState().setMetadata('agentDescription', 'Search customers by age.'));
+    expect(save().disabled).toBe(false);
+    expect(screen.queryByText(/is not a valid function name/)).toBeNull();
+  });
+
+  it('複数の Agent Input が違う引数を宣言していると保存を止める', () => {
+    fillRequiredMetadata();
+    useToolBuilderStore.getState().addNode('agent-input');
+    useToolBuilderStore.getState().addNode('agent-input');
+    const [first, second] = useToolBuilderStore.getState().nodes.filter((node) => node.data.nodeType === 'agent-input');
+    useToolBuilderStore.getState().updateNodeConfig(second!.id, { schema: { columns: [{ name: 'other', type: 'number', nullable: false }] }, sample: { other: 1 } });
+    useToolBuilderStore.getState().setPropagation(propagation);
+    render(<MetadataBar client={{} as ToolApiClient} />);
+    const save = () => screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
+    expect(save().disabled).toBe(true);
+    expect(screen.getByText('Multiple Agent Input nodes declare different arguments. Keep a single Agent Input node.')).toBeTruthy();
+
+    // 同じスキーマなら衝突ではない（先頭の宣言を inputSchema として保存する）。
+    act(() => { useToolBuilderStore.getState().updateNodeConfig(second!.id, first!.data.config); useToolBuilderStore.getState().setPropagation(propagation); });
+    expect(save().disabled).toBe(false);
+  });
+
+  it('グラフ検証の完了を待つ間と、検証エラーの間は保存を止める', () => {
+    fillRequiredMetadata();
+    render(<MetadataBar client={{} as ToolApiClient} />);
+    const save = () => screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
+    // 検証結果がまだ無い: 待つ。
+    expect(save().disabled).toBe(true);
+    expect(screen.getByText('Waiting for graph validation…')).toBeTruthy();
+
+    act(() => useToolBuilderStore.getState().setPropagation({ ...propagation, hasErrors: true }));
+    expect(save().disabled).toBe(true);
+    expect(screen.getByText('Fix the graph errors before saving so the tool keeps its output contract.')).toBeTruthy();
+
+    // 設定未完了（自動検証がサーバーへ送る前に止めた）も出力スキーマを確定できないので同じ扱い。
+    act(() => { useToolBuilderStore.getState().setPropagation(undefined); useToolBuilderStore.getState().setDraftIssue('Configuration is incomplete: graph-output-1'); });
+    expect(save().disabled).toBe(true);
+    expect(screen.getByText('Fix the graph errors before saving so the tool keeps its output contract.')).toBeTruthy();
+
+    act(() => { useToolBuilderStore.getState().setDraftIssue(undefined); useToolBuilderStore.getState().setPropagation(propagation); });
+    expect(save().disabled).toBe(false);
+    expect(screen.queryByText(/Waiting for graph validation|Fix the graph errors/)).toBeNull();
+
+    // グラフを編集すると、次の検証結果が届くまで再び待つ（デバウンス中の古い結果で保存しない）。
+    act(() => useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'age', op: 'gt', value: 1 }));
+    expect(save().disabled).toBe(true);
+    expect(screen.getByText('Waiting for graph validation…')).toBeTruthy();
+  });
+
+  it('呼び出し診断は保存と同じ DTO を diagnoseToolDraft へ送り、検証待ちでも押せる', async () => {
+    fillRequiredMetadata();
+    const metadata = useToolBuilderStore.getState().metadata;
+    const result = { internalId: metadata.internalId, version: 'draft', source: 'direct', functionName: metadata.publishName, status: 'ok', checks: [{ id: 'function-definition', status: 'ok' }] };
+    const tool = { metadata: { ...metadata, tenant: scope, version: '1.0.0', state: 'draft' }, sideEffect: metadata.sideEffect, graph: { nodes: [], edges: [] } } as unknown as SerializedToolDto;
+    const diagnoseToolDraft = vi.fn().mockResolvedValue(result);
+    const saveTool = vi.fn().mockResolvedValue(tool);
+    const client = { diagnoseToolDraft, saveTool, listVersions: vi.fn().mockResolvedValue(['1.0.0']) } as unknown as ToolApiClient;
+    render(<MetadataBar client={client} />);
+
+    // 検証待ちでは Save は無効だが、診断は「どこで落ちるか」を知るためのものなので押せる。
+    expect((screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Check readiness' }));
+    await waitFor(() => expect(diagnoseToolDraft).toHaveBeenCalledOnce());
+    expect(useToolBuilderStore.getState().diagnostics).toEqual(result);
+
+    act(() => useToolBuilderStore.getState().setPropagation(propagation));
+    await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+    await waitFor(() => expect(saveTool).toHaveBeenCalledOnce());
+    // 診断時点では outputSchema が未確定だっただけで、それ以外は保存と同じ内容を送っている。
+    const diagnosed = diagnoseToolDraft.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(diagnosed).not.toHaveProperty('outputSchema');
+    expect(saveTool.mock.calls[0]?.[0]).toEqual({ ...diagnosed, outputSchema: propagation.nodes['filter-1']!.schema });
+  });
+
+  it('呼び出し診断は必須メタデータが揃うまで押せず、失敗は理由つきで store に残す', async () => {
+    const diagnoseToolDraft = vi.fn().mockRejectedValue(new Error('server unreachable'));
+    render(<MetadataBar client={{ diagnoseToolDraft } as unknown as ToolApiClient} />);
+    const check = () => screen.getByRole('button', { name: 'Check readiness' }) as HTMLButtonElement;
+    expect(check().disabled).toBe(true);
+    act(() => fillRequiredMetadata());
+    expect(check().disabled).toBe(false);
+    await userEvent.click(check());
+    await waitFor(() => expect(useToolBuilderStore.getState().diagnostics).toEqual({ failed: 'server unreachable' }));
+    // Error 以外の reject は既定文言。
+    (diagnoseToolDraft as ReturnType<typeof vi.fn>).mockRejectedValueOnce('offline');
+    await userEvent.click(check());
+    await waitFor(() => expect(useToolBuilderStore.getState().diagnostics).toEqual({ failed: 'Request failed' }));
+  });
+
+  describe('呼び出し診断の境界', () => {
+    const okResult: ToolDiagnosticsDto = { internalId: 'customer-filter', version: 'draft', source: 'direct', functionName: 'adult_customers', status: 'ok', checks: [{ id: 'function-definition', status: 'ok' }] };
+    const check = () => screen.getByRole('button', { name: /Check readiness|Diagnosing…/ }) as HTMLButtonElement;
+    type Deferred = { readonly resolve: (value: ToolDiagnosticsDto) => void; readonly reject: (cause: unknown) => void; readonly signal: AbortSignal | undefined };
+    function deferredClient(): { readonly client: ToolApiClient; readonly pending: Deferred[] } {
+      const pending: Deferred[] = [];
+      const diagnoseToolDraft = vi.fn((_dto: unknown, signal?: AbortSignal) => new Promise<ToolDiagnosticsDto>((resolve, reject) => { pending.push({ resolve, reject, signal }); }));
+      return { client: { diagnoseToolDraft } as unknown as ToolApiClient, pending };
+    }
+
+    it('要求中は押せず、グラフエラーがあっても押せて、送るのは buildSaveDto() そのもの', async () => {
+      fillRequiredMetadata();
+      useToolBuilderStore.getState().setPropagation({ ...propagation, hasErrors: true });
+      const { client, pending } = deferredClient();
+      render(<MetadataBar client={client} />);
+      expect((screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement).disabled).toBe(true);
+      expect(check().disabled).toBe(false);
+
+      await userEvent.click(check());
+      expect(client.diagnoseToolDraft).toHaveBeenCalledWith(buildSaveDto(), expect.any(AbortSignal));
+      expect(check().disabled).toBe(true);
+      expect(check().textContent).toBe('Diagnosing…');
+      expect(useToolBuilderStore.getState().diagnostics).toBe('loading');
+
+      await act(async () => { pending[0]?.resolve(okResult); });
+      expect(check().disabled).toBe(false);
+      expect(check().textContent).toBe('Check readiness');
+      expect(useToolBuilderStore.getState().diagnostics).toEqual(okResult);
+    });
+
+    it('要求中にリセット・読み込みで診断が消えたら、遅れて届いた結果も失敗も捨てる', async () => {
+      fillRequiredMetadata();
+      const { client, pending } = deferredClient();
+      render(<MetadataBar client={client} />);
+      await userEvent.click(check());
+      act(() => useToolBuilderStore.getState().reset());
+      expect(useToolBuilderStore.getState().diagnostics).toBeUndefined();
+      await act(async () => { pending[0]?.resolve(okResult); });
+      expect(useToolBuilderStore.getState().diagnostics).toBeUndefined();
+
+      act(() => fillRequiredMetadata());
+      await userEvent.click(check());
+      act(() => useToolBuilderStore.getState().loadTool({
+        metadata: { internalId: 'other', workingName: 'w', displayName: 'Other', publishName: 'other', owner: 'o', version: '1.0.0', state: 'draft', tenant: scope },
+        sideEffect: 'read-only', graph: { nodes: [], edges: [] },
+      } as SerializedToolDto));
+      await act(async () => { pending[1]?.reject(new Error('late failure')); });
+      expect(useToolBuilderStore.getState().diagnostics).toBeUndefined();
+    });
+
+    it('リセット後に再要求したとき、前の要求を中断し、前の結果が先に届いても新しい結果を採る（取り違えない）', async () => {
+      fillRequiredMetadata();
+      const { client, pending } = deferredClient();
+      render(<MetadataBar client={client} />);
+      await userEvent.click(check());
+      act(() => { useToolBuilderStore.getState().reset(); fillRequiredMetadata(); });
+      await userEvent.click(check());
+      expect(pending).toHaveLength(2);
+      expect(pending[0]?.signal?.aborted).toBe(true);
+      expect(pending[1]?.signal?.aborted).toBe(false);
+
+      // 前の要求の結果（error）が後から届いても store は 'loading' のまま。
+      const stale: ToolDiagnosticsDto = { ...okResult, internalId: 'stale', status: 'error', checks: [{ id: 'graph', status: 'error', detail: 'graph has a cycle' }] };
+      await act(async () => { pending[0]?.resolve(stale); });
+      expect(useToolBuilderStore.getState().diagnostics).toBe('loading');
+      await act(async () => { pending[1]?.resolve(okResult); });
+      expect(useToolBuilderStore.getState().diagnostics).toEqual(okResult);
+    });
+
+    it('中断された要求の AbortError は失敗として出さない', async () => {
+      fillRequiredMetadata();
+      const { client, pending } = deferredClient();
+      const { unmount } = render(<MetadataBar client={client} />);
+      await userEvent.click(check());
+      unmount();
+      expect(pending[0]?.signal?.aborted).toBe(true);
+      await act(async () => { pending[0]?.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+      expect(useToolBuilderStore.getState().diagnostics).toBe('loading');
+    });
+  });
+});
+
+describe('PreviewPanel の未接続ノード', () => {
+  it('出力ノードへ至る流れに繋がっていないノードを名指しで示す', () => {
+    // 選択中の filter-1 に対して source は自動接続されないため、終端（out-degree 0）が2つになる。
+    useToolBuilderStore.getState().addNode('csv-source');
+    const added = useToolBuilderStore.getState().nodes.at(-1)?.id ?? '';
+    render(<PreviewPanel />);
+    expect(screen.getByText(`Not connected: filter-1, ${added}. Connect every node into the flow that ends at the output node.`)).toBeTruthy();
+    // 繋ぐと消える。
+    act(() => useToolBuilderStore.getState().onConnect({ source: added, target: 'filter-1', sourceHandle: null, targetHandle: null }));
+    expect(screen.queryByText(/Not connected:/)).toBeNull();
+  });
+
+  it('日本語UIでは未接続ノードの案内も日本語で出す', () => {
+    useToolBuilderStore.getState().addNode('select');
+    const select = useToolBuilderStore.getState().nodes.at(-1)?.id ?? '';
+    useToolBuilderStore.getState().onEdgesChange([{ type: 'remove', id: `filter-1-${select}` }]);
+    render(<I18nProvider initialLanguage="ja"><PreviewPanel /></I18nProvider>);
+    expect(screen.getByText(`未接続のノード: filter-1、${select}。出力ノードへ至る流れにつなげてください`)).toBeTruthy();
   });
 });
 
@@ -465,6 +673,6 @@ describe('AgentChatPanel', () => {
     await userEvent.type(screen.getByLabelText('Chat message'), 'Use the tool');
     await userEvent.click(screen.getByRole('button', { name: 'Run agent' }));
     expect(await screen.findByText(/Failed trace · run-f/)).toBeTruthy();
-    expect(screen.getByText(/MODEL_PROVIDER/)).toBeTruthy();
+    expect(screen.getAllByText(/MODEL_PROVIDER/).length).toBeGreaterThan(0);
   });
 });

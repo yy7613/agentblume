@@ -695,6 +695,170 @@ describe('EtlEngine.preview', () => {
 
     expect(() => engine.preview(graph)).toThrow(SchemaError);
   });
+
+  describe('失敗ノードの識別（EtlError.nodeId）', () => {
+    function caughtFrom(engine: EtlEngine, graph: ToolGraph): unknown {
+      try { engine.preview(graph); } catch (error) { return error; }
+      throw new Error('expected preview to throw');
+    }
+
+    it('execute が投げた EtlError に落ちたノードの id を付け、message は変えない', () => {
+      const graph: ToolGraph = {
+        nodes: [
+          { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('id'), 'confirmed', [{ id: 'x' }]) },
+          { id: 'sel', type: 'stub-select', config: { columns: ['missing'] } satisfies SelectConfig },
+        ],
+        edges: [{ from: 's', to: 'sel' }],
+      };
+      const error = caughtFrom(makeEngine(), graph);
+      expect(error).toBeInstanceOf(SchemaError);
+      expect(error).toMatchObject({ code: 'ETL_SCHEMA', nodeId: 'sel', message: 'select: column not found: missing' });
+    });
+
+    it('validateConfig が投げた ConfigError にもノード id を付ける', () => {
+      const graph: ToolGraph = {
+        nodes: [
+          { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+          { id: 'bad', type: 'stub-strict', config: {} },
+        ],
+        edges: [{ from: 's', to: 'bad' }],
+      };
+      const error = caughtFrom(makeEngine(), graph);
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as ConfigError).nodeId).toBe('bad');
+    });
+
+    it('既に nodeId を持つ EtlError は上書きしない', () => {
+      // 入れ子のグラフを実行するノードなどが内側の id を先に付けている場合を模す。
+      const presetNode: EtlNode<Record<string, never>> = {
+        type: 'stub-preset',
+        kind: 'transform',
+        inputArity: 1,
+        validateConfig: () => ({}),
+        inferSchema: (inputs): SchemaInference => ({ schema: inputs[0] ?? { columns: [] }, state: 'confirmed', issues: [] }),
+        execute: () => { const error = new SchemaError('inner failure'); error.nodeId = 'inner'; throw error; },
+      };
+      const registry = makeRegistry();
+      registry.register(presetNode);
+      const graph: ToolGraph = {
+        nodes: [
+          { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+          { id: 'outer', type: 'stub-preset', config: {} },
+        ],
+        edges: [{ from: 's', to: 'outer' }],
+      };
+      expect(caughtFrom(new EtlEngine(registry), graph)).toMatchObject({ nodeId: 'inner', message: 'inner failure' });
+    });
+
+    it('グラフ検証（GraphError）はノード実行前の失敗なので nodeId を持たない', () => {
+      const graph: ToolGraph = {
+        nodes: [
+          { id: 'a', type: 'stub-pass', config: {} },
+          { id: 'b', type: 'stub-pass', config: {} },
+        ],
+        edges: [{ from: 'a', to: 'b' }, { from: 'b', to: 'a' }],
+      };
+      const error = caughtFrom(makeEngine(), graph);
+      expect(error).toBeInstanceOf(GraphError);
+      expect((error as GraphError).nodeId).toBeUndefined();
+    });
+
+    it('先頭（source）ノードで落ちたら、その id を付けて下流は実行しない', () => {
+      let downstreamRuns = 0;
+      const boomSource: EtlNode<Record<string, never>> = {
+        type: 'stub-boom-source',
+        kind: 'source',
+        inputArity: 0,
+        validateConfig: () => ({}),
+        inferSchema: (): SchemaInference => ({ schema: schemaOf('a'), state: 'confirmed', issues: [] }),
+        execute: () => { throw new SchemaError('source exploded'); },
+      };
+      const counting: EtlNode<Record<string, never>> = {
+        type: 'stub-counting',
+        kind: 'transform',
+        inputArity: 1,
+        validateConfig: () => ({}),
+        inferSchema: (inputs): SchemaInference => ({ schema: inputs[0] ?? { columns: [] }, state: 'confirmed', issues: [] }),
+        execute: (inputs) => { downstreamRuns += 1; return inputs[0] as Table; },
+      };
+      const registry = makeRegistry();
+      registry.register(boomSource);
+      registry.register(counting);
+      const graph: ToolGraph = {
+        nodes: [
+          { id: 'first', type: 'stub-boom-source', config: {} },
+          { id: 'last', type: 'stub-counting', config: {} },
+        ],
+        edges: [{ from: 'first', to: 'last' }],
+      };
+      expect(caughtFrom(new EtlEngine(registry), graph)).toMatchObject({ code: 'ETL_SCHEMA', nodeId: 'first', message: 'source exploded' });
+      expect(downstreamRuns).toBe(0);
+    });
+
+    it('EtlError でない例外（TypeError）は nodeId を付けず同一インスタンスのまま伝播する', () => {
+      const thrown = new TypeError("Cannot read properties of undefined (reading 'rows')");
+      const buggy: EtlNode<Record<string, never>> = {
+        type: 'stub-buggy',
+        kind: 'transform',
+        inputArity: 1,
+        validateConfig: () => ({}),
+        inferSchema: (inputs): SchemaInference => ({ schema: inputs[0] ?? { columns: [] }, state: 'confirmed', issues: [] }),
+        execute: () => { throw thrown; },
+      };
+      const registry = makeRegistry();
+      registry.register(buggy);
+      const graph: ToolGraph = {
+        nodes: [
+          { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) },
+          { id: 'bug', type: 'stub-buggy', config: {} },
+        ],
+        edges: [{ from: 's', to: 'bug' }],
+      };
+      const error = caughtFrom(new EtlEngine(registry), graph);
+      expect(error).toBe(thrown);
+      expect('nodeId' in (error as object)).toBe(false);
+    });
+
+    it('propagateSchemas は validateConfig / inferSchema の例外に nodeId を付けない（id は issue にだけ残す）', () => {
+      const configFailure = new ConfigError('stub-shared: not configured');
+      const inferenceFailure = new SchemaError('stub-inferring: cannot infer');
+      const sharedConfig: EtlNode<Record<string, never>> = {
+        type: 'stub-shared-config',
+        kind: 'transform',
+        inputArity: 1,
+        validateConfig: () => { throw configFailure; },
+        inferSchema: (inputs): SchemaInference => ({ schema: inputs[0] ?? { columns: [] }, state: 'confirmed', issues: [] }),
+        execute: (inputs) => inputs[0] as Table,
+      };
+      const inferring: EtlNode<Record<string, never>> = {
+        type: 'stub-inferring',
+        kind: 'transform',
+        inputArity: 1,
+        validateConfig: () => ({}),
+        inferSchema: () => { throw inferenceFailure; },
+        execute: (inputs) => inputs[0] as Table,
+      };
+      const registry = makeRegistry();
+      registry.register(sharedConfig);
+      registry.register(inferring);
+      const source: ToolGraph['nodes'][number] = { id: 's', type: 'stub-source', config: sourceConfig(schemaOf('a'), 'confirmed', []) };
+      const configGraph: ToolGraph = { nodes: [source, { id: 'cfg', type: 'stub-shared-config', config: {} }], edges: [{ from: 's', to: 'cfg' }] };
+
+      // validateConfig の失敗はノード単位の issue に隔離され、例外オブジェクト自体は触られない。
+      const propagation = new EtlEngine(registry).propagateSchemas(configGraph);
+      expect(propagation.nodes['cfg']?.issues).toEqual([{ severity: 'error', message: "node 'cfg' has invalid config: stub-shared: not configured" }]);
+      expect(configFailure.nodeId).toBeUndefined();
+
+      // inferSchema の例外は従来どおりそのまま伝播し、nodeId は付かない。
+      const inferenceGraph: ToolGraph = { nodes: [source, { id: 'inf', type: 'stub-inferring', config: {} }], edges: [{ from: 's', to: 'inf' }] };
+      expect(() => new EtlEngine(registry).propagateSchemas(inferenceGraph)).toThrow(inferenceFailure);
+      expect(inferenceFailure.nodeId).toBeUndefined();
+
+      // 同じグラフを preview すると validateConfig の失敗に id が付く（付けるのは preview だけの責務）。
+      expect(caughtFrom(new EtlEngine(registry), configGraph)).toBe(configFailure);
+      expect(configFailure.nodeId).toBe('cfg');
+    });
+  });
 });
 
 describe('EtlEngine グラフ検証（GraphError）', () => {

@@ -50,23 +50,7 @@ export class SaveAgentUseCase {
     catch (error) { throw error instanceof AgentValidationError ? new AgentValidationError(`SaveAgent: ${error.message}`) : error; }
     const versions = await this.agents.listVersions(input.scope, input.internalId);
     const version = versions.length === 0 ? SemVer.of(1, 0, 0) : max(versions).bump(input.bump ?? 'patch');
-    const agent = createAgent({
-      metadata: {
-        internalId: input.internalId, workingName: input.workingName, displayName: input.displayName,
-        publishName: input.publishName, version, owner: input.owner,
-        state: input.state ?? 'draft', tenant: input.scope,
-      },
-      kind: input.kind,
-      systemPrompt: input.systemPrompt,
-      skills: input.skills ?? [],
-      tools: input.tools,
-      agents: subAgents,
-      wikis: input.wikis ?? [],
-      mcpServers: input.mcpServers ?? [],
-      ...(input.harness !== undefined ? { harness: input.harness } : {}),
-      ...(input.persona !== undefined ? { persona: input.persona } : {}),
-      ...(input.output !== undefined ? { output: input.output } : {}),
-    });
+    const agent = buildAgentAggregate(input, version);
     // 実効副作用が深さ上限内で算出できることを確認（循環・過深の委譲を保存時に弾く）。
     try { await resolveEffectiveSideEffect(input.scope, agent, { tools: this.tools, agents: this.agents, skills: this.skills }); }
     catch (error) { throw error instanceof AgentValidationError ? new AgentValidationError(`SaveAgent: ${error.message}`) : error; }
@@ -77,4 +61,29 @@ export class SaveAgentUseCase {
 
 function max(versions: readonly SemVer[]): SemVer {
   return versions.reduce((current, version) => version.compare(current) > 0 ? version : current);
+}
+
+/**
+ * 保存入力から Agent 集約を組み立てる純関数（リポジトリ参照・保存なし）。
+ * 保存本体と、未保存 draft のプリフライト診断（DiagnoseAgentToolsUseCase）が同じ組み立てを通ることで、
+ * 「診断は通ったが保存で弾かれる」食い違いを作らない。bump は採番にしか使わないので受け取らない。
+ */
+export function buildAgentAggregate(input: Omit<SaveAgentInput, 'bump'>, version: SemVer): Agent {
+  return createAgent({
+    metadata: {
+      internalId: input.internalId, workingName: input.workingName, displayName: input.displayName,
+      publishName: input.publishName, version, owner: input.owner,
+      state: input.state ?? 'draft', tenant: input.scope,
+    },
+    kind: input.kind,
+    systemPrompt: input.systemPrompt,
+    skills: input.skills ?? [],
+    tools: input.tools,
+    agents: input.agents ?? [],
+    wikis: input.wikis ?? [],
+    mcpServers: input.mcpServers ?? [],
+    ...(input.harness !== undefined ? { harness: input.harness } : {}),
+    ...(input.persona !== undefined ? { persona: input.persona } : {}),
+    ...(input.output !== undefined ? { output: input.output } : {}),
+  });
 }

@@ -8,7 +8,7 @@ import type { Cell, Row, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { isFilterOp, operatorArgumentSummaries, VALUELESS_OPS, type OperatorArgumentSummary } from '../../domain/etl/nodes/filter';
 import type { RunId } from '../../domain/run/ids';
-import type { RunApprovalCheckpoint, RunCheckpointMessage, RunCheckpointToolCall, RunLatencyBreakdown, RunMode, RunModelSnapshot, RunPurpose, RunRecord, RunStatus, RunTraceEvent, RunUsage } from '../../domain/run/run';
+import type { RunApprovalCheckpoint, RunCheckpointMessage, RunCheckpointToolCall, RunFailureToolRef, RunLatencyBreakdown, RunMode, RunModelSnapshot, RunPurpose, RunRecord, RunStatus, RunTraceEvent, RunUsage } from '../../domain/run/run';
 import { failRun, resumeRunRecord, startRun, succeedRun, waitRunForApproval } from '../../domain/run/run';
 import { RunNotFoundError } from '../../domain/run/errors';
 import type { RunRepository } from '../../domain/run/run-repository';
@@ -23,9 +23,9 @@ import type { ToolRepository } from '../../domain/tool/tool-repository';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
 import { EtlEngine } from '../etl/engine';
 import type { JsonObject, ModelCompletion, ModelContentPart, ModelMessage, ModelProviderPort, ModelRequestMessage, ModelToolCall, ModelToolDefinition, ModelUsage } from '../model/model-provider';
-import { AgentRunError, RunFailedError, ToolArgumentsError, UnsafeToolError } from './errors';
+import { AgentRunError, RunFailedError, ToolArgumentsError, ToolExecutionError, UnsafeToolError } from './errors';
 import { failureFrom, sanitizeRunTrace } from './run-trace';
-import { assertOutputMatchesSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
+import { agentInputInconsistency, assertOutputMatchesSchema, toolToModelDefinition, validateToolArguments } from './tool-schema';
 import { toModelResponseFormat, validateStructuredResponse } from './structured-output';
 import { HARD_MAX_DEPTH, composeAgentSystemPrompt, resolveAgentCapabilities, resolveEffectiveSideEffect, type ResolvedSubAgent } from './resolve-agent-capabilities';
 import type { TelemetryPort } from '../operations/telemetry';
@@ -491,23 +491,19 @@ function graphWithArguments(tool: Tool, row: Row): ToolGraph {
     operatorArgumentSummaries(tool.graph.nodes.filter((node) => node.type === 'filter').map((node) => node.config))
       .map((summary) => [summary.field, summary] as const),
   );
-  let replaced = 0;
+  // 引数宣言と agent-input ノードの整合は、保存時（SaveTool）・診断（DiagnoseTool）と同じ判定関数で
+  // 検査する。実行時にだけ通る別実装を残すと「診断は ok なのに実行で落ちる」食い違いが再発する。
+  const inconsistency = agentInputInconsistency(tool);
+  if (inconsistency !== undefined) throw new AgentRunError(inconsistency);
   const nodes = tool.graph.nodes.map((node) => {
     if (node.type === 'agent-input') {
-      replaced += 1;
       const config = node.config as { schema?: Schema };
-      if (!schemasEqual(tool.inputSchema, config.schema)) {
-        throw new AgentRunError(`tool inputSchema does not match agent-input node '${node.id}'`);
-      }
       return { ...node, config: { ...config, sample: row } };
     }
     if (node.type !== 'filter') return node;
     const config = filterConfigWithArguments(node.id, node.config, row, optionalFields, operatorSummaries);
     return config === node.config ? node : { ...node, config };
   });
-  if ((tool.inputSchema?.columns.length ?? 0) > 0 && replaced === 0) {
-    throw new AgentRunError('tool declares inputSchema but has no agent-input node');
-  }
   return { nodes, edges: tool.graph.edges };
 }
 
@@ -702,7 +698,8 @@ export class RunAgentPreviewUseCase {
        * abort後は握り潰した副次的な失敗（接続断など）も混ざるため、signal を最優先で見る。
        */
       const failure = signal?.aborted === true ? { code: RUN_CANCELLED_CODE, message: RUN_CANCELLED_MESSAGE } : failureFrom(error);
-      trace.push({ sequence: trace.length + 1, kind: 'error', code: failure.code, message: failure.message });
+      // failure の tool / nodeId（ツール実行由来のときだけ）もトレースへ写し、UIが失敗イベントから直接Toolへ辿れるようにする。
+      trace.push({ sequence: trace.length + 1, kind: 'error', ...failure });
       const latency = this.latency(startedTick, timing, baseTotalMs);
       const failed = failRun(started, { trace: sanitizeRunTrace(trace), failure, latency, completedAt: this.now().toISOString() });
       await this.runRepo.save(failed);
@@ -768,7 +765,9 @@ export class RunAgentPreviewUseCase {
     const harness = ctx.harness ?? DEFAULT_AGENT_RUNTIME_HARNESS;
     const maxModelRounds = ctx.harness === undefined ? MAX_MODEL_ROUNDS : HARNESS_MAX_MODEL_ROUNDS;
     const maxToolCalls = ctx.harness === undefined ? MAX_TOOL_CALLS : HARNESS_MAX_TOOL_CALLS;
-    const hasCallables = harness.functionInvocation && (tools.length > 0 || ctx.subAgents.length > 0);
+    // MCPサーバー由来のツールも function calling で呼ばれるので、モデルの対応判定に含める
+    // （プリフライト診断の 'model' 検査と同じ条件にし、診断 ok で実行時に落ちる食い違いを避ける）。
+    const hasCallables = harness.functionInvocation && (tools.length > 0 || ctx.subAgents.length > 0 || (ctx.mcpServers?.length ?? 0) > 0);
     if (hasCallables && !this.model.capabilities().includes('tool-calling')) {
       throw new AgentRunError('configured model provider does not support tool-calling');
     }
@@ -797,6 +796,11 @@ export class RunAgentPreviewUseCase {
     const mcp = harness.functionInvocation
       ? await this.resolveMcpToolset(ctx, builtInDefinitions.map((definition) => definition.name), signal)
       : McpToolset.empty();
+    // 解決できなかったサーバーはRunを止めずに続けるが、黙って落とさずトレースへ残す
+    // （「Agentに書いたはずのツールが出てこない」理由を利用者が読めるようにする）。
+    for (const skipped of mcp.skipped()) {
+      trace.push({ sequence: trace.length + 1, kind: 'mcp-server-skipped', ...skipped });
+    }
     const definitions = harness.functionInvocation ? [...builtInDefinitions, ...mcp.definitions()] : [];
     /**
      * 承認ゲートの発火条件。
@@ -973,13 +977,20 @@ export class RunAgentPreviewUseCase {
       try {
         state.messages.push(await this.executeToolTimed(selected, call, trace, timing, ctx, loop.agent));
       } catch (error) {
+        const toolRef = this.failureToolRef(selected, call);
         // 引数の作り間違いはモデル側の誤りなので、Runを落とさずツール結果として差し戻して呼び直させる。
         // スキーマ不一致など**ツール定義側**の誤り（AgentRunError）は差し戻しても直らないため対象外。
-        if (!(error instanceof ToolArgumentsError) || state.toolArgumentRepairs >= MAX_TOOL_ARGUMENT_REPAIRS) throw error;
-        state.toolArgumentRepairs += 1;
-        trace.push({ sequence: trace.length + 1, kind: 'error', code: error.code, message: `${error.message} (retrying ${state.toolArgumentRepairs}/${MAX_TOOL_ARGUMENT_REPAIRS})` });
-        state.messages.push({ role: 'tool', toolCallId: call.id, content: JSON.stringify({ error: error.message, hint: `Call '${call.name}' again with corrected arguments that match its schema.` }) });
-        continue;
+        if (error instanceof ToolArgumentsError && state.toolArgumentRepairs < MAX_TOOL_ARGUMENT_REPAIRS) {
+          state.toolArgumentRepairs += 1;
+          trace.push({ sequence: trace.length + 1, kind: 'error', code: error.code, message: `${error.message} (retrying ${state.toolArgumentRepairs}/${MAX_TOOL_ARGUMENT_REPAIRS})`, tool: toolRef });
+          state.messages.push({ role: 'tool', toolCallId: call.id, content: JSON.stringify({ error: error.message, hint: `Call '${call.name}' again with corrected arguments that match its schema.` }) });
+          continue;
+        }
+        // 中断は「利用者が止めた」であってこのToolの失敗ではないので、そのまま上へ返す（executeRun が RUN_CANCELLED にする）。
+        if (loop.signal?.aborted === true) throw error;
+        // 直せない失敗は「どのToolのどのノードで起きたか」を添えて落とす。元例外は cause に残るので
+        // HTTP の status/code と Run の failure code は従来どおり元例外から決まる。
+        throw new ToolExecutionError(toolRef, error);
       }
       state.executed.push(this.toolRef(selected));
     }
@@ -1206,6 +1217,11 @@ export class RunAgentPreviewUseCase {
 
   private toolRef(tool: Tool): NonNullable<RunRecord['tool']> {
     return { internalId: tool.metadata.internalId, publishName: tool.metadata.publishName, version: tool.metadata.version.toString() };
+  }
+
+  /** 失敗したツール実行の識別。publishName はモデルが呼んだ function 名（＝モデルへ公開した定義名）。 */
+  private failureToolRef(tool: Tool, call: ModelToolCall): RunFailureToolRef {
+    return { internalId: tool.metadata.internalId, version: tool.metadata.version.toString(), publishName: call.name };
   }
 
   private agentRef(agent: Agent): NonNullable<RunRecord['agent']> {

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { DeleteAgentUseCase } from '../application/agent/delete-agent';
-import type { DiagnoseAgentToolsUseCase } from '../application/agent/diagnose-agent-tools';
+import { buildDraftAgent, type DiagnoseAgentToolsUseCase } from '../application/agent/diagnose-agent-tools';
 import type { GenerateAgentPromptUseCase } from '../application/agent/generate-agent-prompt';
 import type { QueryAgentsUseCase } from '../application/agent/query-agents';
 import type { SaveAgentUseCase } from '../application/agent/save-agent';
@@ -87,6 +87,25 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
     parseWith(scopeQuerySchema, request.query, 'invalid query');
     await deps.deleteAgent.execute(scopeOf(request), request.params.internalId);
     return reply.status(204).send();
+  });
+
+  // 未保存 Agent のプリフライト診断。保存と同じ body を受け、保存と同じ createAgent 検証を通した
+  // Agent を検査する（保存はしない）。版は未保存の印として 0.0.0 で報告する。
+  app.post('/agent-drafts/diagnose', async (request) => {
+    const body = parseWith(saveAgentBodySchema, request.body, 'invalid body');
+    const scope = scopeOf(request);
+    const agent = buildDraftAgent({
+      ...body,
+      scope,
+      skills: body.skills.map((skill) => ({ internalId: skill.internalId, version: version(skill.version) as SemVer })),
+      tools: body.tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer })),
+      agents: body.agents.map((sub) => ({ internalId: sub.internalId, version: version(sub.version) as SemVer, usage: sub.usage })),
+      wikis: body.wikis,
+      mcpServers: body.mcpServers,
+      ...(body.harness !== undefined ? { harness: body.harness } : {}),
+    });
+    const diagnostics = await deps.diagnoseAgentTools.execute(scope, agent);
+    return { diagnostics };
   });
 
   app.post('/agent-drafts/generate-prompt', async (request) => {

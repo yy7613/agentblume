@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { describeMcpServerSkipped, localizeRunTraceError } from '../api/error-messages';
 import { ApiError, type ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, RunRecordDto, RunTraceEventDto } from '../api/types';
+import { RunFailureNotice, type RunFailureNoticeProps } from '../components/RunFailureNotice';
 import { useToolBuilderStore } from './store';
 import { useI18n } from '../i18n';
 import { scope } from '../scope';
@@ -12,6 +14,8 @@ export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
   const [message, setMessage] = useState('');
   const [run, setRun] = useState<AgentPreviewRunDto>();
   const [failedRun, setFailedRun] = useState<RunRecordDto>();
+  // Run の失敗（ApiError）は失敗箇所・直す場所つきの通知、それ以外（ネットワーク等）は文言だけ。
+  const [failure, setFailure] = useState<RunFailureNoticeProps>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const controller = useRef<AbortController | undefined>(undefined);
@@ -24,7 +28,7 @@ export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
     controller.current?.abort();
     const request = new AbortController();
     controller.current = request;
-    setLoading(true); setError(undefined);
+    setLoading(true); setError(undefined); setFailure(undefined);
     try {
       const result = await client.runAgent({
         scope,
@@ -35,10 +39,27 @@ export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
       setFailedRun(undefined);
     } catch (cause) {
       if (request.signal.aborted) return;
-      if (cause instanceof ApiError && cause.runId !== undefined) {
-        try { setFailedRun(await client.getRunTrace(cause.runId, scope)); }
-        catch { setFailedRun(undefined); }
-        setError(`${cause.message} · run ${cause.runId}`);
+      if (cause instanceof ApiError) {
+        // 失敗した Run の保存済みトレースは best-effort で引く（モデルがツールへ何を渡したかを見せるため）。
+        let record: RunRecordDto | undefined;
+        if (cause.runId !== undefined) {
+          try { record = await client.getRunTrace(cause.runId, scope); }
+          catch { record = undefined; }
+        }
+        setFailedRun(record);
+        // サーバーが失敗箇所を返さない古い応答でも、失敗が**ツール定義由来**なら編集中のツールを失敗箇所にする。
+        // モデル障害・認証・接続失敗まで「ツールを開いて直す」へ誘導すると、直す場所を取り違えさせる。
+        const editedTool = toolDerivedFailure(cause.code, cause.serverMessage)
+          ? { internalId: metadata.internalId, version: currentVersion, ...(metadata.publishName === '' ? {} : { publishName: metadata.publishName }) }
+          : undefined;
+        const failedTool = cause.tool ?? editedTool;
+        setFailure({
+          code: cause.code, message: cause.message, serverMessage: cause.serverMessage,
+          ...(failedTool === undefined ? {} : { tool: failedTool }),
+          ...(cause.nodeId === undefined ? {} : { nodeId: cause.nodeId }),
+          ...(cause.runId === undefined ? {} : { runId: cause.runId }),
+          ...(record === undefined ? {} : { trace: record.trace }),
+        });
       } else setError(cause instanceof Error ? cause.message : 'Agent run failed');
     } finally {
       if (controller.current === request) setLoading(false);
@@ -51,6 +72,7 @@ export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
     <div className="chat-compose"><textarea aria-label={text('Chat message', 'チャットメッセージ')} rows={2} placeholder={text('Ask the Agent to use this Tool…', 'このツールを使うようエージェントに依頼…')} value={message} onChange={(event) => setMessage(event.target.value)} /><button type="button" className="primary" disabled={currentVersion === undefined || loading || message.trim() === ''} onClick={() => void send()}>{loading ? text('Running…', '実行中…') : text('Run agent', 'エージェントを実行')}</button></div>
     {currentVersion === undefined && <p className="empty-state">{text('Save a validated Tool before connecting it to an Agent.', '検証済みツールを保存するとエージェントへ接続できます。')}</p>}
     {error !== undefined && <div className="api-error" role="alert">{error}</div>}
+    {failure !== undefined && <RunFailureNotice {...failure} />}
     {run !== undefined && <>
       <div className="chat-response"><span>{text('Assistant', 'アシスタント')}</span><p>{run.response}</p></div>
       <div className="trace-list"><strong>Trace · {run.runId}</strong>{run.trace.map((event) => <TraceEvent key={event.sequence} event={event} />)}</div>
@@ -59,11 +81,19 @@ export function AgentChatPanel({ client }: { readonly client: ToolApiClient }) {
   </section>;
 }
 
+/** 失敗がツール定義・ツール実行に由来するか（code とサーバー原文で判定。fix-targets の TOOL_DEFINITION_SHAPES と同じ形）。 */
+function toolDerivedFailure(code: string, serverMessage: string): boolean {
+  if (code.startsWith('ETL_') || code === 'TOOL_ARGUMENTS' || code === 'UNSAFE_TOOL') return true;
+  return /tool output|tool inputSchema|tool declares inputSchema|tool name is not a valid function name|agent-output exceeds maxBytes|filter node '.+' references/.test(serverMessage);
+}
+
 function TraceEvent({ event }: { readonly event: RunTraceEventDto }) {
-  const { text } = useI18n();
+  const { language, text } = useI18n();
   if (event.kind === 'model-request') return <div className="trace-event"><span>{event.sequence}</span><p>{text('Model request', 'モデル要求')} · step {event.step}{event.toolNames.length > 0 ? ` · ${event.toolNames.join(', ')}` : ''}</p></div>;
   if (event.kind === 'tool-call') return <div className="trace-event tool"><span>{event.sequence}</span><p><strong>{event.name}</strong> {JSON.stringify(event.arguments)}</p></div>;
   if (event.kind === 'tool-result') return <div className="trace-event tool"><span>{event.sequence}</span><div><strong>{text('Node outputs', 'ノード出力')}</strong>{event.nodes.map((node) => <code key={node.nodeId}>{node.nodeId}: {node.rowCount} {text('row(s)', '行')}{node.truncated ? text(' · truncated', ' · 切り詰め') : ''}</code>)}</div></div>;
-  if (event.kind === 'error') return <div className="trace-event error"><span>{event.sequence}</span><p><strong>{event.code}</strong> {event.message}</p></div>;
+  // code は行の本文に出さない（上の RunFailureNotice の「技術的な詳細」に生の code: message がある）。ホバーで確認できるよう title に残す。
+  if (event.kind === 'error') return <div className="trace-event error"><span>{event.sequence}</span><p title={event.code}>{localizeRunTraceError(event, language)}</p></div>;
+  if (event.kind === 'mcp-server-skipped') return <div className="trace-event error"><span>{event.sequence}</span><p>{describeMcpServerSkipped(event, language)}</p></div>;
   return <div className="trace-event"><span>{event.sequence}</span><p>{text('Model response', 'モデル応答')}</p></div>;
 }

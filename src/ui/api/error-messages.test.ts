@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { detectErrorLanguage, localizeApiErrorMessage, localizeSchemaIssueMessage } from './error-messages';
+import { describeMcpServerSkipped, detectErrorLanguage, localizeApiErrorMessage, localizeDiagnosticDetail, localizeRunFailure, localizeRunTraceError, localizeSchemaIssueMessage, splitFailureMessage } from './error-messages';
 
 function ja(status: number, code: string, serverMessage: string): string {
   return localizeApiErrorMessage({ status, code, serverMessage }, 'ja');
@@ -283,14 +283,14 @@ describe('ETL定型文の日本語化（GraphError / ConfigError / SchemaError�
   it.each([
     [
       "node 'join-1' (type 'join') expects 2 input(s) but has in-degree 3",
-      'ノード「join-1」(join)には2本の入力が必要ですが、3本接続されています',
+      'ノード「join-1」(join)には2本の入力が必要ですが、3本接続されています。ノード「join-1」への接続を2本に直してください（余分な接続を外すか、足りない入力をつなぐ）',
     ],
     [
       'graph must have exactly one terminal node, found 2: a, b',
-      'グラフの終端ノードは1つだけにしてください(現在2個: a, b)',
+      'グラフの終端ノードは1つだけにしてください(現在2個: a, b)。a, b のうち1つだけを最終出力として残し、他のノードは削除するか下流へつないでください',
     ],
-    ['graph has no terminal node (out-degree 0)', '終端ノード(出力)がありません'],
-    ['graph has a cycle', 'グラフに循環(ループ)があります。接続を見直してください'],
+    ['graph has no terminal node (out-degree 0)', '終端ノード(出力)がありません。「出力」からエージェント出力などのノードを置き、最後のノードにつないでください'],
+    ['graph has a cycle', 'グラフに循環(ループ)があります。下流から上流へ戻っている接続を1本外してください'],
     ['duplicate node id: source-1', 'ノードID「source-1」が重複しています'],
     ['edge references unknown node id: ghost-1', '存在しないノード「ghost-1」への接続があります'],
     [
@@ -309,12 +309,12 @@ describe('ETL定型文の日本語化（GraphError / ConfigError / SchemaError�
       "node 'join-1' (type 'join') requires explicit input ports on incoming edges",
       'ノード「join-1」への接続には入力ポートの指定が必要です',
     ],
-    ['join: key column(s) not found: id, region', '結合キーの列が見つかりません: id, region'],
+    ['join: key column(s) not found: id, region', '結合キーの列が見つかりません: id, region。結合(join)ノードのキー列「id, region」を、左右の入力に実際にある列名へ直してください'],
     ['summary-statistics: column(s) must be number: score', '数値列が必要です: score'],
-    ['group-by: column(s) not found: region, amount', '列が見つかりません: region, amount'],
-    ['sort: column(s) not found: age', '列が見つかりません: age'],
-    ["group-by: column 'active' must be number or date or string", '列「active」の型は 数値 / 日付 / 文字列 が必要です'],
-    ["summary-statistics: column 'score' must be number", '列「score」の型は 数値 が必要です'],
+    ['group-by: column(s) not found: region, amount', '列が見つかりません: region, amount。group-byノードで参照している列「region, amount」を上流ノードの出力にある列名へ直すか、上流ノードの設定を見直してください'],
+    ['sort: column(s) not found: age', '列が見つかりません: age。sortノードで参照している列「age」を上流ノードの出力にある列名へ直すか、上流ノードの設定を見直してください'],
+    ["group-by: column 'active' must be number or date or string", '列「active」の型は 数値 / 日付 / 文字列 が必要です。group-byノードの手前に「型変換」(cast)ノードを挟んで列「active」を変換するか、別の列を選んでください'],
+    ["summary-statistics: column 'score' must be number", '列「score」の型は 数値 が必要です。summary-statisticsノードの手前に「型変換」(cast)ノードを挟んで列「score」を変換するか、別の列を選んでください'],
     ['group-by: duplicate aggregate name: total', '集計の出力列名が重複しています: total'],
     ["group-by: aggregate 'total' requires a column for op 'sum'", '集計「total」には sum の対象列が必要です'],
     ["group-by: input column 'region' conflicts with generated column", 'group-by: 入力列「region」が自動生成される列と重複しています'],
@@ -388,7 +388,7 @@ describe('localizeSchemaIssueMessage（ノード単位のSchemaIssue/propagation
 
   it('<node>: invalid config: <zod> はzod部分も再帰的に日本語化する', () => {
     expect(localizeSchemaIssueMessage('join: invalid config: mode: Invalid option: expected one of "inner"|"left"|"right"|"full"', 'ja'))
-      .toBe('join: 設定が不正です(モード: 次のいずれかを指定してください: inner / left / right / full)');
+      .toBe('join: 設定が不正です(モード: 次のいずれかを指定してください: inner / left / right / full)。joinノードの設定パネルで該当項目を直してください');
   });
 
   it('伝播issue（上流ノード無効・union厳密不一致・生成列との衝突）を日本語化する', () => {
@@ -402,7 +402,7 @@ describe('localizeSchemaIssueMessage（ノード単位のSchemaIssue/propagation
 
   it('グラフレベルの定型文（GraphErrorが投げるもの）も同じ関数で日本語化できる', () => {
     expect(localizeSchemaIssueMessage('graph has a cycle', 'ja'))
-      .toBe('グラフに循環(ループ)があります。接続を見直してください');
+      .toBe('グラフに循環(ループ)があります。下流から上流へ戻っている接続を1本外してください');
   });
 
   it('英語UIでは変換せず原文のまま返す', () => {
@@ -599,5 +599,476 @@ describe('SaveTool の opBinding 検証（TOOL_VALIDATION）の日本語化', ()
     const localized = toolValidation(raw);
     expect(localized).toContain("filter-2: filter: column not found: age");
     expect(localized).toContain('graph validation failed');
+  });
+});
+
+/**
+ * 保存時（SaveTool / createTool）・実行時・診断で同文になるツール定義の検査。どれも「どの画面の
+ * どこを直すか」まで出ること、`SaveTool: ` 前置詞の有無で結果が変わらないことを確かめる。
+ */
+describe('ツール定義・関数名・演算子・出力上限のメッセージ', () => {
+  function toolValidation(message: string, language: 'en' | 'ja' = 'ja'): string {
+    return localizeApiErrorMessage({ status: 400, code: 'TOOL_VALIDATION', serverMessage: message }, language);
+  }
+  function agentRun(message: string, language: 'en' | 'ja' = 'ja'): string {
+    return localizeApiErrorMessage({ status: 422, code: 'AGENT_RUN', serverMessage: message }, language);
+  }
+
+  it('ワークスペース出力の副作用不足は、メタデータの副作用変更へ誘導する', () => {
+    expect(toolValidation('SaveTool: workspace output requires sideEffect session-write or stronger')).toContain('副作用を session-write に変更');
+    expect(toolValidation('SaveTool: workspace output requires sideEffect session-write or stronger', 'en')).toContain('Set the side effect to session-write');
+  });
+
+  it('Agent input 束縛と inputSchema の不整合は、Agent Input ノードへ誘導する', () => {
+    expect(toolValidation('SaveTool: Agent input bindings require an inputSchema')).toContain('Agent Inputノードを追加して引数を宣言');
+    expect(toolValidation("SaveTool: Agent input binding references unknown field 'minAge'")).toContain('引数「minAge」を参照しています。Agent Inputノードに「minAge」を追加');
+    expect(toolValidation("SaveTool: Agent input binding references unknown field 'minAge'", 'en')).toContain("Add 'minAge' to the Agent Input node");
+  });
+
+  it('出力スキーマの不一致は、保存時・診断の両形を同じ案内にし、不一致の要約も日本語化する', () => {
+    expect(toolValidation("SaveTool: declared output schema does not match the graph's inferred output (mismatch at 'total')"))
+      .toBe('ツール定義を確認してください（宣言した出力スキーマがグラフから推論した出力と一致しません（列「total」が不一致）。ツール画面で出力スキーマを更新して保存し直してください）');
+    // 診断（output-schema 検査）はセミコロンを含む注記付きの1文。分割せず丸ごと変換する。
+    expect(localizeDiagnosticDetail("declared output schema does not match the graph's inferred output (column count mismatch: expected 3, received 2) — the run fails after the tool executes; re-save the tool to refresh its output schema", 'ja'))
+      .toBe('宣言した出力スキーマがグラフから推論した出力と一致しません（列数の不一致: 宣言 3 列 / 推論 2 列）。ツール画面で出力スキーマを更新して保存し直してください');
+    expect(localizeDiagnosticDetail("declared output schema does not match the graph's inferred output (mismatch at 'total')", 'en'))
+      .toContain("(mismatch at 'total'). Refresh the output schema in the Tool Builder");
+  });
+
+  it('関数名として使えないツール名は、Agent context パネルでの命名規則を示す（保存時・実行時・createTool）', () => {
+    expect(toolValidation('createTool: agentTool.name must be a valid function name')).toContain('「エージェント向けコンテキスト」で、英数字・_・- のみ1〜64文字');
+    expect(toolValidation('SaveTool: tool name is not a valid function name: 売上 検索')).toContain('ツール名「売上 検索」は関数名として使えません');
+    expect(agentRun('tool name is not a valid function name: 売上 検索', 'en')).toContain("the tool name '売上 検索' is not a valid function name. In the Tool Builder \"Agent context\" panel");
+    expect(localizeDiagnosticDetail('sub-agent tool name is not a valid function name: ask_営業', 'ja')).toContain('委譲ツール名「ask_営業」は関数名として使えません。サブエージェントの公開名を');
+  });
+
+  it('SaveTool 前置詞つきの実行時同形メッセージも前置詞を剥がして変換する', () => {
+    expect(toolValidation("SaveTool: tool inputSchema does not match agent-input node 'in'")).toContain('Agent Inputノード「in」の列が一致していません');
+    expect(toolValidation('SaveTool: tool declares inputSchema but has no agent-input node')).toContain('引数ノードを追加してください');
+  });
+
+  it('許可されていない演算子は、引数名・演算子・許可リストと直し方を示す', () => {
+    const raw = "invalid operator 'like' for argument 'op': expected one of eq, neq, gt";
+    expect(localizeApiErrorMessage({ status: 422, code: 'TOOL_ARGUMENTS', serverMessage: raw }, 'ja'))
+      .toContain('引数「op」に許可されていない演算子「like」を渡しました（許可: eq, neq, gt）。ツールの引数の説明で使える演算子を明示するか、フィルタ条件の「AIに許可する演算子」を広げてください');
+    expect(localizeApiErrorMessage({ status: 422, code: 'TOOL_ARGUMENTS', serverMessage: raw }, 'en'))
+      .toContain("the operator 'like' for argument 'op', which is not allowed (allowed: eq, neq, gt)");
+  });
+
+  it('agent-output の上限超過は 413/SESSION_QUOTA_EXCEEDED でも「成果物を削除」ではなく行数削減・ワークスペース出力へ誘導する', () => {
+    const raw = 'agent-output exceeds maxBytes (120000 > 65536); reduce rows or use workspace-output';
+    expect(localizeApiErrorMessage({ status: 413, code: 'SESSION_QUOTA_EXCEEDED', serverMessage: raw }, 'ja'))
+      .toBe('ツールの出力（120000 バイト）がエージェント出力の上限（65536 バイト）を超えました。ツール画面で「行数制限」ノードなどで行数を減らすか、出力ノードを「ワークスペース出力」に切り替えてください');
+    expect(localizeApiErrorMessage({ status: 413, code: 'SESSION_QUOTA_EXCEEDED', serverMessage: raw }, 'en'))
+      .toBe('the tool output (120000 bytes) exceeds the agent-output limit (65536 bytes). In the Tool Builder, reduce the rows (for example with a Limit node) or switch the output node to Workspace output');
+    // 本来のセッション容量超過（成果物の上限）は従来の見出しのまま。
+    expect(localizeApiErrorMessage({ status: 413, code: 'SESSION_QUOTA_EXCEEDED', serverMessage: 'session quota exceeded' }, 'ja')).toContain('不要な成果物を削除');
+  });
+});
+
+/**
+ * プリフライト診断（組み込みチェック / 呼び出し診断 / ツール診断）の detail。実行時と同じ表を通し、
+ * 各行が「どの画面で何を直すか」で終わることを確かめる。
+ */
+describe('localizeDiagnosticDetail（診断 detail の文言）', () => {
+  it.each([
+    ['referenced tool not found: sales-lookup@1.2.0', '参照しているツール「sales-lookup@1.2.0」が見つかりません。エージェント画面の「ツール」で参照を外すか、存在するバージョンへ付け替えてください', "the referenced tool 'sales-lookup@1.2.0' does not exist. In Agent Builder → Tools, detach it or point the reference at an existing version"],
+    ['referenced skill not found: triage@1.0.0', '参照しているスキル「triage@1.0.0」が見つかりません。エージェント画面の「スキル」で参照を外すか、存在するバージョンへ付け替えてください', "the referenced skill 'triage@1.0.0' does not exist. In Agent Builder → Skills, detach it or point the reference at an existing version"],
+    ['referenced sub-agent not found: scorer@2.0.0', '参照しているサブエージェント「scorer@2.0.0」が見つかりません。エージェント画面の「サブエージェント」で参照を外すか、存在するバージョンへ付け替えてください', "the referenced sub-agent 'scorer@2.0.0' does not exist. In Agent Builder → Sub-agents, detach it or point the reference at an existing version"],
+    ['ambiguous tool versions: sales@1.0.0 and sales@1.1.0', 'ツール「sales」が複数のバージョン（1.0.0 と 1.1.0）で参照されています。エージェント画面で直付けツールとスキル経由のツールを同じバージョンに揃えてください', "the tool 'sales' is referenced at two versions (1.0.0 and 1.1.0). Align the direct tool reference and the skill's tool reference on one version in Agent Builder"],
+    ['sub-agent tool name collides with an existing tool or sub-agent: ask_scorer', 'サブエージェントの委譲ツール名「ask_scorer」が既存のツールまたはサブエージェントと重複しています。サブエージェントの公開名を変えるか、重複するツールをエージェントから外してください', "the sub-agent delegation tool name 'ask_scorer' collides with an existing tool or sub-agent. Rename the sub-agent's publish name, or detach the conflicting tool from the agent"],
+    ['duplicate function name(s): lookup, ask_scorer — later tools with the same name are unreachable', 'モデルへ公開する関数名「lookup, ask_scorer」が重複しています（後ろのツールはモデルから呼べません）。ツール画面の「エージェント向けコンテキスト」で名前を変えるか、重複するツールをエージェントから外してください', "the function name(s) 'lookup, ask_scorer' are exposed to the model more than once (the later tools are unreachable). Rename them in the Tool Builder \"Agent context\" panel, or detach the duplicates from the agent"],
+    ["side effect 'write' pauses the run for approval before this tool executes", '副作用「write」のツールは実行前に承認待ちで停止します。自動で流したい場合はエージェントのハーネス設定でツール承認を無効にするか、read-only のツールへ差し替えてください', "the 'write' side effect pauses the run for approval before this tool executes. To run unattended, turn off tool approval in the agent's harness settings, or switch to a read-only tool"],
+    ['referenced MCP server not found: files', '参照しているMCPサーバー「files」が登録されていません。MCP設定画面でサーバーを登録するか、エージェント画面のMCPサーバー一覧から外してください', "the referenced MCP server 'files' is not registered. Register it in MCP settings, or remove it from the agent's MCP server list"],
+    ["MCP server 'files' is disabled, so its tools are skipped at run time", 'MCPサーバー「files」は無効化されているため、そのツールは実行時に読み込まれません。MCP設定画面でサーバーを有効化してください', "the MCP server 'files' is disabled, so its tools are skipped at run time. Enable it in MCP settings"],
+    ['model settings could not be resolved: main slot is empty', 'モデル設定を解決できませんでした（main slot is empty）。設定画面のモデル設定でメインモデルを保存し、「テスト」で疎通を確認してください', 'the model settings could not be resolved (main slot is empty). Save the main model in model settings and run "Test" to check the connection'],
+    ['harness enables web search but no search provider is configured, so the web_search tool is not offered', 'ハーネス設定でWeb検索が有効ですが検索プロバイダが未設定のため、web_search ツールはモデルへ提供されません。サーバーの環境変数で検索プロバイダを設定するか、ハーネス設定のWeb検索を無効にしてください', 'the harness enables web search, but no search provider is configured, so the web_search tool is not offered. Configure a search provider in the server environment, or turn off web search in the harness settings'],
+    ['harness enables file memory but the agent references no wiki, so memory tools have nothing to read', 'ハーネス設定でファイル記憶が有効ですがエージェントが参照するWikiが無いため、記憶ツールは何も読めません。エージェント画面で参照Wikiを追加するか、ハーネス設定のファイル記憶を無効にしてください', 'the harness enables file memory, but the agent references no wiki, so the memory tools have nothing to read. Add a wiki reference in Agent Builder, or turn off file memory in the harness settings'],
+    ['tool is archived, so it should not be attached to an agent', 'このツールはアーカイブ済みのため、エージェントに接続したままにしないでください。エージェント画面で外すか、後継バージョンへ付け替えてください', 'this tool is archived and should not stay attached to an agent. Detach it in Agent Builder, or point the reference at a successor version'],
+    ['tool is deprecated and may be archived later', 'このツールは非推奨で、今後アーカイブされる可能性があります。エージェント画面で後継バージョンへ付け替えることを検討してください', 'this tool is deprecated and may be archived later. Consider moving the reference to a successor version in Agent Builder'],
+    ["operator argument 'op' has no operator that every condition allows", '演算子を受け取る引数「op」に、すべての条件が共通して許可する演算子がありません。ツール画面のフィルタ条件で「AIに許可する演算子」を揃えてください', "no operator is allowed by every filter condition that binds argument 'op'. Align the allowed operator lists on those conditions in the Tool Builder"],
+    ["operator argument 'op' has conflicting default operators across conditions", '演算子を受け取る引数「op」の既定の演算子が条件間で一致していません。ツール画面のフィルタ条件で既定の演算子を同じ値に揃えてください', "the conditions that bind argument 'op' use different default operators. Set the same default operator on every condition in the Tool Builder"],
+    ["operator argument 'op' is not declared in the input schema, so the binding is inactive at run time", '演算子を受け取る引数「op」がツールの引数に宣言されていないため、実行時にこの束縛は無効になります。Agent Inputノードに string 型の引数「op」を追加してください', "the operator argument 'op' is not declared in the tool's arguments, so the binding is inactive at run time. Add a string argument 'op' on the Agent Input node"],
+    ["operator argument 'op' must be declared as a string argument, but it is 'number'", '演算子を受け取る引数「op」は string 型で宣言する必要がありますが、number 型になっています。Agent Inputノードで型を string に変更してください', "the operator argument 'op' must be declared as a string argument, but it is 'number'. Change its type to string on the Agent Input node"],
+  ])('%s を両言語で次の一手つきに変換する', (raw, japanese, english) => {
+    expect(localizeDiagnosticDetail(raw, 'ja')).toBe(japanese);
+    expect(localizeDiagnosticDetail(raw, 'en')).toBe(english);
+  });
+
+  it('`; ` で連結された複数 detail は1件ずつ変換して連結する', () => {
+    const raw = "operator argument 'op' has conflicting default operators across conditions; operator argument 'other' is not declared in the input schema, so the binding is inactive at run time";
+    const localized = localizeDiagnosticDetail(raw, 'ja');
+    expect(localized).toContain('引数「op」の既定の演算子が条件間で一致していません');
+    expect(localized).toContain('引数「other」がツールの引数に宣言されていない');
+  });
+
+  /**
+   * 検査内部の基盤側の失敗（検査全体を落とさず detail として報告される）。原文の接続エラー等は括弧で残し、
+   * 直す画面と「診断をもう一度実行する」までを両言語で出す。
+   */
+  it('mcp-servers 検査: MCP サーバー設定の解決失敗は原文を残して MCP 設定画面と再実行へ誘導する', () => {
+    const raw = "MCP server 'files' could not be resolved: connect ECONNREFUSED 127.0.0.1:3000";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('MCPサーバー「files」を解決できませんでした（connect ECONNREFUSED 127.0.0.1:3000）。MCP設定画面でサーバーの登録内容と接続を確認してから、診断をもう一度実行してください');
+    expect(localizeDiagnosticDetail(raw, 'en'))
+      .toBe("the MCP server 'files' could not be resolved (connect ECONNREFUSED 127.0.0.1:3000). Check the server registration and connection in MCP settings, then re-run the check");
+    // 原文に `: ` が含まれていても名前と原文を取り違えない。
+    expect(localizeDiagnosticDetail("MCP server 'crm.v2' could not be resolved: secret decrypt failed: key file missing", 'en'))
+      .toContain("the MCP server 'crm.v2' could not be resolved (secret decrypt failed: key file missing)");
+  });
+
+  it('harness 検査: Web検索プロバイダ設定の解決失敗は原文を残して環境変数の確認と再実行へ誘導する', () => {
+    const raw = 'search provider configuration could not be resolved: WEB_SEARCH_API_KEY is set but WEB_SEARCH_PROVIDER is empty';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('Web検索プロバイダの設定を解決できませんでした（WEB_SEARCH_API_KEY is set but WEB_SEARCH_PROVIDER is empty）。設定画面または .env の検索プロバイダの環境変数を確認してから、診断をもう一度実行してください');
+    expect(localizeDiagnosticDetail(raw, 'en'))
+      .toBe('the web search provider configuration could not be resolved (WEB_SEARCH_API_KEY is set but WEB_SEARCH_PROVIDER is empty). Check the search provider environment variables in Settings or .env, then re-run the check');
+  });
+
+  it('基盤側の失敗が `; ` 連結の detail 一覧に混ざっていても、それぞれを変換して連結する', () => {
+    const raw = "referenced MCP server not found: files; MCP server 'crm' could not be resolved: connect ECONNREFUSED; search provider configuration could not be resolved: provider 'x' is unknown";
+    const japanese = localizeDiagnosticDetail(raw, 'ja');
+    expect(japanese).toBe([
+      '参照しているMCPサーバー「files」が登録されていません。MCP設定画面でサーバーを登録するか、エージェント画面のMCPサーバー一覧から外してください',
+      'MCPサーバー「crm」を解決できませんでした（connect ECONNREFUSED）。MCP設定画面でサーバーの登録内容と接続を確認してから、診断をもう一度実行してください',
+      "Web検索プロバイダの設定を解決できませんでした（provider 'x' is unknown）。設定画面または .env の検索プロバイダの環境変数を確認してから、診断をもう一度実行してください",
+    ].join('、'));
+    const english = localizeDiagnosticDetail(raw, 'en');
+    expect(english).toContain("the MCP server 'crm' could not be resolved (connect ECONNREFUSED). Check the server registration and connection in MCP settings, then re-run the check, the web search provider configuration could not be resolved (provider 'x' is unknown)");
+  });
+
+  it('graph 検査の `<nodeId>: <issue>` 連結はノードIDを残して issue を変換する', () => {
+    expect(localizeDiagnosticDetail('filter-1: filter: column(s) not found: age; sort-1: sort: column(s) not found: age', 'ja'))
+      .toBe('filter-1: 列が見つかりません: age。filterノードで参照している列「age」を上流ノードの出力にある列名へ直すか、上流ノードの設定を見直してください、sort-1: 列が見つかりません: age。sortノードで参照している列「age」を上流ノードの出力にある列名へ直すか、上流ノードの設定を見直してください');
+  });
+
+  it('未知の detail は原文のまま返す（握りつぶさない）', () => {
+    expect(localizeDiagnosticDetail('Skill repository is not configured', 'ja')).toBe('Skill repository is not configured');
+    expect(localizeDiagnosticDetail('', 'ja')).toBe('');
+  });
+});
+
+describe('localizeRunTraceError（トレースの error イベント）', () => {
+  it('`(retrying n/m)` 接尾辞を剥がして本文を変換し、再試行の注記を付け直す', () => {
+    expect(localizeRunTraceError({ code: 'TOOL_ARGUMENTS', message: 'required argument missing: month (retrying 1/1)' }, 'ja'))
+      .toBe('モデルがツールの必須引数「month」を渡しませんでした。ツールの引数の説明を具体的にするか、指示の中でその値を明示してください（再試行 1/1）');
+    expect(localizeRunTraceError({ code: 'TOOL_ARGUMENTS', message: 'required argument missing: month (retrying 1/1)' }, 'en'))
+      .toBe("the model omitted the required tool argument 'month'. Describe that argument more concretely in the tool, or state its value in your request (retrying 1/1)");
+  });
+
+  it('接尾辞が無ければ本文だけを変換し、未知の本文は原文を残す', () => {
+    expect(localizeRunTraceError({ code: 'AGENT_RUN', message: 'model requested unknown tool: lookup' }, 'ja')).toContain('存在しないツール「lookup」');
+    expect(localizeRunTraceError({ code: 'E_X', message: 'bad' }, 'ja')).toBe('bad');
+  });
+});
+
+describe('localizeRunFailure（保存済み Run の failure）', () => {
+  it('code に見出しがあれば見出し（詳細）、モデル失敗はプロバイダ中立の案内にする', () => {
+    expect(localizeRunFailure({ code: 'AGENT_RUN', message: 'tool call limit exceeded: maximum 4' }, 'ja'))
+      .toBe('エージェントの実行に失敗しました（1回の実行で使えるツール呼び出しの上限（4回）に達しました。目的を分けて質問するか、エージェントのハーネス設定で上限を広げてください）');
+    expect(localizeRunFailure({ code: 'MODEL_PROVIDER', message: 'fetch failed' }, 'en')).toContain('Could not reach the model server');
+  });
+
+  it('見出しの無い code は汎用見出しを付けず、詳細（変換できれば変換後）だけを出す', () => {
+    expect(localizeRunFailure({ code: 'E_X', message: 'bad' }, 'ja')).toBe('bad');
+    expect(localizeRunFailure({ code: 'CUSTOM', message: 'model requested unknown tool: lookup' }, 'en')).toContain("the model called a tool named 'lookup'");
+  });
+
+  it('agent-output の上限超過は成果物削除の見出しを使わない', () => {
+    expect(localizeRunFailure({ code: 'SESSION_QUOTA_EXCEEDED', message: 'agent-output exceeds maxBytes (9 > 8); reduce rows or use workspace-output' }, 'ja')).not.toContain('成果物');
+  });
+});
+
+/**
+ * RunFailureNotice が「次の一手」を先頭に太字で出すための分割。この層の文言の3つの形
+ * （見出し（原因。次の一手）／原因。次の一手／分けられない1文）と、原文の括弧書き補足を確かめる。
+ */
+describe('splitFailureMessage（原因と次の一手の分割）', () => {
+  it('見出し（原因。次の一手）は見出しを原因側へ戻し、次の一手だけを取り出す', () => {
+    expect(splitFailureMessage('エージェントの実行に失敗しました（モデルが存在しないツール「x」を呼ぼうとしました。エージェントに必要なツールが接続されているか確認してください）', 'ja'))
+      .toEqual({ cause: 'エージェントの実行に失敗しました（モデルが存在しないツール「x」を呼ぼうとしました）', action: 'エージェントに必要なツールが接続されているか確認してください' });
+    expect(splitFailureMessage("The agent run failed (the model called a tool named 'x' that is not connected. Check the tools attached to this agent)", 'en'))
+      .toEqual({ cause: "The agent run failed (the model called a tool named 'x' that is not connected)", action: 'Check the tools attached to this agent' });
+  });
+
+  it('原因の中の括弧書きは分割の妨げにならず、最後の文境界で切る', () => {
+    expect(splitFailureMessage('ツール定義を確認してください（宣言した出力スキーマがグラフから推論した出力と一致しません（列「total」が不一致）。ツール画面で出力スキーマを更新して保存し直してください）', 'ja'))
+      .toEqual({ cause: 'ツール定義を確認してください（宣言した出力スキーマがグラフから推論した出力と一致しません（列「total」が不一致））', action: 'ツール画面で出力スキーマを更新して保存し直してください' });
+    expect(splitFailureMessage("the model passed the operator 'like' for argument 'op', which is not allowed (allowed: eq, neq). Describe the allowed operators in the tool argument", 'en'))
+      .toEqual({ cause: "the model passed the operator 'like' for argument 'op', which is not allowed (allowed: eq, neq)", action: 'Describe the allowed operators in the tool argument' });
+  });
+
+  it('末尾の括弧書き（原文の補足）は文として扱わず、その前の境界で切る（modelMessage の汎用形）', () => {
+    expect(splitFailureMessage('The model run failed. Check the model settings, then retry. (offline)', 'en'))
+      .toEqual({ cause: 'The model run failed', action: 'Check the model settings, then retry. (offline)' });
+    expect(splitFailureMessage('モデル実行に失敗しました。設定画面のモデル設定を確認して再試行してください。（offline）', 'ja'))
+      .toEqual({ cause: 'モデル実行に失敗しました', action: '設定画面のモデル設定を確認して再試行してください。（offline）' });
+    expect(splitFailureMessage('モデル実行がタイムアウトしました。モデルサーバーの応答とモデルのロード状況を確認して再試行してください（ローカルLM Studioを使う場合は起動しているか確認）。', 'ja'))
+      .toEqual({ cause: 'モデル実行がタイムアウトしました', action: 'モデルサーバーの応答とモデルのロード状況を確認して再試行してください（ローカルLM Studioを使う場合は起動しているか確認）' });
+  });
+
+  it('分けられない1文は全文を次の一手として返す（何も落とさない）', () => {
+    expect(splitFailureMessage('実行を中断しました', 'ja')).toEqual({ action: '実行を中断しました' });
+    expect(splitFailureMessage('エージェントの実行に失敗しました（some brand new agent failure）', 'ja')).toEqual({ action: 'エージェントの実行に失敗しました（some brand new agent failure）' });
+    expect(splitFailureMessage('The run was cancelled', 'en')).toEqual({ action: 'The run was cancelled' });
+  });
+});
+
+describe('describeMcpServerSkipped（mcp-server-skipped イベント）', () => {
+  it('理由別に登録・有効化・接続確認へ誘導する', () => {
+    expect(describeMcpServerSkipped({ server: 'files', reason: 'not-found' }, 'ja'))
+      .toBe('MCPサーバー「files」のツールを読み込めませんでした（未登録）。MCP設定画面でサーバーを登録・有効化し、接続をテストしてください');
+    expect(describeMcpServerSkipped({ server: 'files', reason: 'disabled' }, 'ja')).toContain('（無効化中）。MCP設定画面でサーバーを有効化し');
+    expect(describeMcpServerSkipped({ server: 'files', reason: 'unreachable', detail: 'ECONNREFUSED' }, 'ja'))
+      .toBe('MCPサーバー「files」のツールを読み込めませんでした（接続失敗）。MCP設定画面で接続をテストし、サーバーの起動状態・URL・コマンドを確認してください。詳細: ECONNREFUSED');
+  });
+
+  it('英語でも同じ導線を出し、detail は原文で残す', () => {
+    expect(describeMcpServerSkipped({ server: 'files', reason: 'not-found' }, 'en'))
+      .toBe("The tools of MCP server 'files' were not loaded (server not registered). Register and enable the server in MCP settings, then test the connection");
+    expect(describeMcpServerSkipped({ server: 'files', reason: 'unreachable', detail: 'ECONNREFUSED' }, 'en')).toContain('. Detail: ECONNREFUSED');
+  });
+});
+
+/**
+ * 監査で追加: 実行エラーの各定型文が **en / ja の両言語**で「次の一手」まで出ること。
+ * 既存テストは ja 中心で en は数件だったため、表で en 側の欠けを埋める
+ * （見出しは code 側の責務なので localizeRunFailure(AGENT_RUN) で本文の変換だけを見る）。
+ */
+describe('エージェント実行エラーの定型文（en / ja 両言語の網羅）', () => {
+  const run = (raw: string, language: 'en' | 'ja'): string => localizeRunFailure({ code: 'AGENT_RUN', message: raw }, language);
+
+  it.each([
+    ['unknown MCP tool: mcp__files__read', '存在しないツール「mcp__files__read」', "a tool named 'mcp__files__read' that is not connected"],
+    ['unknown runtime harness tool: todos_add', '存在しないツール「todos_add」', "a tool named 'todos_add' that is not connected"],
+    ["MCP tool 'mcp__files__read' is unavailable: its MCP server could not be resolved for this run", 'MCPツール「mcp__files__read」のMCPサーバーへ接続できませんでした', "the MCP server behind 'mcp__files__read' could not be reached. Test the connection in MCP settings"],
+    ['model reported tool_calls without a tool call', 'ツール呼び出しに対応したモデルを選び直してください', 'Pick a model with reliable tool-calling support'],
+    ['model requested a tool call but function invocation is disabled for this agent', 'ハーネス設定でツール実行を有効にするか', 'Enable tool execution in the harness settings'],
+    ['tool call limit exceeded: maximum 4', 'ツール呼び出しの上限（4回）', 'tool-call limit (4)'],
+    ['model round limit exceeded: maximum 5', 'モデルとの往復回数の上限（5回）', 'model round limit (5)'],
+    ['run budget exhausted: model rounds', 'モデル往復の予算を使い切りました', 'shared budget for model rounds'],
+    ['run budget exhausted: tool calls', 'ツール呼び出しの予算を使い切りました', 'shared budget for tool calls'],
+    ["structured response is missing required field 'answer'", '必要な項目「answer」がありませんでした', "missing the required field 'answer'"],
+    ["structured response contains unknown field 'extra'", '定義していない項目「extra」', "undeclared field 'extra'"],
+    ["structured response field 'score' must be integer", '項目「score」の型が違います（integer が必要）', "wrong type for 'score' (expected integer)"],
+    ['structured response is not valid JSON', 'JSONとして解釈できませんでした', 'could not be read as JSON'],
+    ['structured response must be a JSON object', 'JSONとして解釈できませんでした', 'could not be read as JSON'],
+    ['configured model provider does not support tool-calling', 'ツール呼び出しに対応したモデルへ切り替えてください', 'Switch to a tool-capable model in model settings'],
+    ['configured model provider does not support structured output', '構造化出力に対応していません', 'does not support structured output'],
+    ['configured model provider does not support image input', '画像入力に対応していません', 'does not accept images'],
+    ['required argument missing: month', '必須引数「month」を渡しませんでした', "omitted the required tool argument 'month'"],
+    ["invalid argument 'score': expected number", '引数「score」の型が違います（number が必要）', "argument 'score' had the wrong type (expected number)"],
+    ["invalid argument 'score': expected number, received \"x\" (string)", '受け取った値: "x" (string)', 'received "x" (string)'],
+    ['unknown argument(s): region', '存在しない引数「region」', 'arguments the tool does not accept: region'],
+    ["Agent preview refuses write effective side-effect for agent 'sales-agent'", 'エージェント「sales-agent」は副作用「write」', "agent 'sales-agent' has the 'write' side effect"],
+    ["Agent preview refuses external-action effective side-effect for additional sub-agent 'poster'", 'エージェント「poster」は副作用「external-action」', "agent 'poster' has the 'external-action' side effect"],
+    ["Agent preview refuses write tool 'crm-writer'", 'ツール「crm-writer」は副作用「write」', "tool 'crm-writer' has the 'write' side effect"],
+    ["run 'run-1' is not waiting for approval", '実行「run-1」は承認待ちではありません', "run 'run-1' is not waiting for approval. Reopen the screen"],
+    ['approval checkpoint expired at 2026-07-28T00:00:00.000Z', 'ツール承認の期限（2026-07-28T00:00:00.000Z）', 'approval expired at 2026-07-28T00:00:00.000Z. Send the same request again'],
+    ['agent session belongs to a different Agent version', '「新しいチャット」を開始してください', 'Start a new chat'],
+    ["memory page 'p1' is outside Agent wiki allowlist", '記憶ページ「p1」', "memory page 'p1' is outside the wikis this agent may read"],
+    ['workspace artifact not found: a-1', 'セッション内の成果物「a-1」', "session artifact 'a-1' no longer exists"],
+    ['web_search has no configured search provider', '検索プロバイダを登録してください', 'no search provider is configured for web search'],
+    ['saved Agent execution is not configured', 'サーバーの起動設定を確認してください', 'Check the server startup configuration'],
+    ['additional sub-agent not found: sub@1.0.0', 'サブエージェント「sub@1.0.0」が見つかりませんでした', "sub-agent 'sub@1.0.0' was not found"],
+    ["filter node 'f1' references an unavailable Agent input", 'フィルタ「f1」が受け取れない引数を参照しています', "filter node 'f1' references an argument the tool never receives"],
+    ["tool inputSchema does not match agent-input node 'in'", 'Agent Inputノード「in」の列が一致していません', "does not match the Agent Input node 'in'"],
+    ['tool declares inputSchema but has no agent-input node', '引数ノードを追加してください', 'Add the argument node in the tool screen'],
+    ['SaveTool: Agent input bindings require an inputSchema', 'Agent Inputノードを追加して引数を宣言してください', 'Add an Agent Input node and declare the arguments'],
+    ['createTool: agentTool.name must be a valid function name', '英数字・_・- のみ1〜64文字', 'set a name of 1-64 ASCII letters, digits, _ or -'],
+    ['sub-agent tool name is not a valid function name: ask_営業', '委譲ツール名「ask_営業」は関数名として使えません', "delegation tool name 'ask_営業' is not a valid function name"],
+    ['tool name is not a valid function name: 売上', 'ツール名「売上」は関数名として使えません', "the tool name '売上' is not a valid function name"],
+    ["invalid operator 'like' for argument 'op': expected one of eq, neq", '許可されていない演算子「like」を渡しました（許可: eq, neq）', "operator 'like' for argument 'op', which is not allowed (allowed: eq, neq)"],
+    ['agent-output exceeds maxBytes (9 > 8); reduce rows or use workspace-output', 'ツールの出力（9 バイト）がエージェント出力の上限（8 バイト）', 'the tool output (9 bytes) exceeds the agent-output limit (8 bytes)'],
+  ])('%s を両言語で次の一手つきに変換する', (raw, japanese, english) => {
+    expect(run(raw, 'ja')).toContain(japanese);
+    expect(run(raw, 'en')).toContain(english);
+  });
+
+  it('キャプチャ値に正規表現の特殊文字（. ( ) + >）や区切り文字があっても壊れない', () => {
+    expect(run('model requested unknown tool: sales.lookup (v2)+', 'en')).toContain("a tool named 'sales.lookup (v2)+' that is not connected");
+    expect(run("invalid argument 'a.b(c)+': expected number, received \"x\" (string)", 'ja')).toContain('引数「a.b(c)+」の型が違います（number が必要、受け取った値: "x" (string)）');
+    expect(run("invalid operator '>=' for argument 'op.x': expected one of eq, neq, gt", 'en')).toContain("the operator '>=' for argument 'op.x', which is not allowed (allowed: eq, neq, gt)");
+    expect(run("Agent preview refuses write tool 'crm (v2).writer'", 'ja')).toContain('ツール「crm (v2).writer」は副作用「write」');
+  });
+
+  it('ambiguous tool versions はドット入りの名前でも、両側の名前が一致するときだけ変換する', () => {
+    expect(localizeDiagnosticDetail('ambiguous tool versions: sales.lookup@1.0.0 and sales.lookup@1.1.0', 'en')).toContain("the tool 'sales.lookup' is referenced at two versions (1.0.0 and 1.1.0)");
+    expect(localizeDiagnosticDetail('ambiguous tool versions: a@1.0.0 and b@1.1.0', 'ja')).toBe('ambiguous tool versions: a@1.0.0 and b@1.1.0');
+  });
+
+  it('出力スキーマ不一致の要約は、列数（両言語）・列名（入れ子の括弧つき）・未知の要約をそれぞれ扱う', () => {
+    const shape = (detail: string): string => `SaveTool: declared output schema does not match the graph's inferred output (${detail})`;
+    expect(localizeDiagnosticDetail(shape('column count mismatch: expected 3, received 2'), 'en'))
+      .toBe('the declared output schema does not match the output inferred from the graph (column count mismatch: expected 3, received 2). Refresh the output schema in the Tool Builder and save again');
+    expect(localizeDiagnosticDetail(shape('column count mismatch: expected 3, received 2'), 'ja')).toContain('（列数の不一致: 宣言 3 列 / 推論 2 列）');
+    expect(localizeDiagnosticDetail(shape("mismatch at 'total (sum)'"), 'ja')).toContain('（列「total (sum)」が不一致）');
+    expect(localizeDiagnosticDetail(shape("mismatch at 'total'"), 'en')).toContain("(mismatch at 'total'). Refresh");
+    expect(localizeDiagnosticDetail(shape('something else'), 'ja')).toContain('（something else）');
+  });
+});
+
+describe('localizeRunTraceError の境界', () => {
+  it('接尾辞の番号が2桁でも、末尾に空白があっても剥がす', () => {
+    expect(localizeRunTraceError({ code: 'TOOL_ARGUMENTS', message: 'required argument missing: month (retrying 10/12)' }, 'en'))
+      .toBe("the model omitted the required tool argument 'month'. Describe that argument more concretely in the tool, or state its value in your request (retrying 10/12)");
+    // 末尾の空白で接尾辞を見失うと、引数名に「month (retrying 1/1)」が取り込まれる（修正前の実挙動）。
+    expect(localizeRunTraceError({ code: 'TOOL_ARGUMENTS', message: 'required argument missing: month (retrying 1/1)  ' }, 'ja'))
+      .toBe('モデルがツールの必須引数「month」を渡しませんでした。ツールの引数の説明を具体的にするか、指示の中でその値を明示してください（再試行 1/1）');
+  });
+
+  it('接尾辞だけのメッセージは再試行の注記だけを返す（先頭に区切りの空白を残さない）', () => {
+    expect(localizeRunTraceError({ code: 'X', message: '(retrying 1/1)' }, 'en')).toBe('(retrying 1/1)');
+    expect(localizeRunTraceError({ code: 'X', message: '(retrying 1/1)' }, 'ja')).toBe('（再試行 1/1）');
+  });
+
+  it('未知の本文は原文を残し、接尾辞は言語に合わせて付け直す', () => {
+    expect(localizeRunTraceError({ code: 'X', message: 'weird thing (retrying 2/3)' }, 'en')).toBe('weird thing (retrying 2/3)');
+    expect(localizeRunTraceError({ code: 'X', message: 'weird thing (retrying 2/3)' }, 'ja')).toBe('weird thing（再試行 2/3）');
+  });
+
+  it('code は文言に影響しない（本文だけで判定する）。空文字は空のまま', () => {
+    expect(localizeRunTraceError({ code: 'MODEL_PROVIDER', message: 'fetch failed' }, 'en')).toBe('fetch failed');
+    expect(localizeRunTraceError({ code: 'INTERNAL', message: 'required argument missing: x' }, 'en')).toContain("required tool argument 'x'");
+    expect(localizeRunTraceError({ code: 'X', message: '' }, 'ja')).toBe('');
+  });
+
+  it('構造化出力の修復再試行（AGENT_RUN の retrying）も本文を変換する', () => {
+    expect(localizeRunTraceError({ code: 'AGENT_RUN', message: "structured response is missing required field 'answer' (retrying 1/2)" }, 'en'))
+      .toBe("the model response was missing the required field 'answer'. Try another model, or reduce the structured output fields (retrying 1/2)");
+  });
+});
+
+describe('localizeDiagnosticDetail の境界', () => {
+  it('空白だけの detail は空扱い（意味のある文字を足さない）', () => {
+    expect(localizeDiagnosticDetail('   ', 'ja').trim()).toBe('');
+  });
+
+  it('graph 検査の `<nodeId>: <issue>` は en では原文のまま。未知の issue は nodeId ごと原文で残す（`-` をフィールドパスとして壊さない）', () => {
+    expect(localizeDiagnosticDetail('filter-1: filter: column(s) not found: age', 'en')).toBe('filter-1: filter: column(s) not found: age');
+    expect(localizeDiagnosticDetail('filter-1: totally new issue', 'ja')).toBe('filter-1: totally new issue');
+    expect(localizeDiagnosticDetail('filter-1: totally new issue', 'en')).toBe('filter-1: totally new issue');
+  });
+
+  it('`; ` 連結の複数 detail は en でも1件ずつ変換して「, 」で連結する', () => {
+    const raw = "operator argument 'op' has conflicting default operators across conditions; operator argument 'other' is not declared in the input schema, so the binding is inactive at run time";
+    const localized = localizeDiagnosticDetail(raw, 'en');
+    expect(localized).toContain("the conditions that bind argument 'op' use different default operators");
+    expect(localized).toContain(", the operator argument 'other' is not declared in the tool's arguments");
+  });
+
+  it("'internal error' は情報量が無いが、原文以外に出せるものが無いので原文を返す", () => {
+    expect(localizeDiagnosticDetail('internal error', 'ja')).toBe('internal error');
+  });
+});
+
+describe('splitFailureMessage の境界', () => {
+  it('ファイル名やURLのドットでは切らない（境界は「. 」だけ）', () => {
+    expect(splitFailureMessage('Could not read sample-products.csv. Upload the file again', 'en')).toEqual({ cause: 'Could not read sample-products.csv', action: 'Upload the file again' });
+    expect(splitFailureMessage('Could not reach https://example.com/v1. Check the endpoint', 'en')).toEqual({ cause: 'Could not reach https://example.com/v1', action: 'Check the endpoint' });
+    expect(splitFailureMessage('Upload sample-products.csv again', 'en')).toEqual({ action: 'Upload sample-products.csv again' });
+  });
+
+  it('末尾の句点は落として切り、3文以上は最後の境界で切る', () => {
+    expect(splitFailureMessage('Cause. Action.', 'en')).toEqual({ cause: 'Cause', action: 'Action' });
+    expect(splitFailureMessage('原因。対処。', 'ja')).toEqual({ cause: '原因', action: '対処' });
+    expect(splitFailureMessage('A。B。C', 'ja')).toEqual({ cause: 'A。B', action: 'C' });
+  });
+
+  it('ja は「。」、en は「. 」だけを境界にし、互いの区切りや「？」では切らない', () => {
+    expect(splitFailureMessage('原因です. 次の一手です', 'ja')).toEqual({ action: '原因です. 次の一手です' });
+    expect(splitFailureMessage('Cause。Action', 'en')).toEqual({ action: 'Cause。Action' });
+    expect(splitFailureMessage('本当ですか？確認してください', 'ja')).toEqual({ action: '本当ですか？確認してください' });
+  });
+
+  it('境界で始まる文では空の原因を返さない', () => {
+    expect(splitFailureMessage('。対処', 'ja')).toEqual({ action: '対処' });
+  });
+
+  it('空文字・空白だけは空の次の一手として返す', () => {
+    expect(splitFailureMessage('', 'en')).toEqual({ action: '' });
+    expect(splitFailureMessage('   ', 'ja')).toEqual({ action: '' });
+  });
+
+  it('見出し（本文）で本文に境界が無ければ、全文の最後の境界で切る', () => {
+    expect(splitFailureMessage('見出し。続き（詳細）', 'ja')).toEqual({ cause: '見出し', action: '続き（詳細）' });
+    expect(splitFailureMessage('Sign-in is required. Open Settings → Access and enter your access token (id: x)', 'en'))
+      .toEqual({ cause: 'Sign-in is required', action: 'Open Settings → Access and enter your access token (id: x)' });
+  });
+
+  it('途中の括弧書きの後にも文が続けば、通常どおり最後の境界で切る', () => {
+    expect(splitFailureMessage('A. (note) B. C', 'en')).toEqual({ cause: 'A. (note) B', action: 'C' });
+  });
+
+  it('長文でも最後の境界で切る', () => {
+    const cause = 'x'.repeat(5000);
+    const action = 'y'.repeat(5000);
+    expect(splitFailureMessage(`${cause}. ${action}`, 'en')).toEqual({ cause, action });
+    expect(splitFailureMessage(`${cause}。${action}`, 'ja')).toEqual({ cause, action });
+  });
+});
+
+describe('localizeApiErrorMessage / localizeRunFailure の境界', () => {
+  it('RUN_CANCELLED は en でも見出しと同文の詳細を重ねない（大小の違いだけの重複）', () => {
+    expect(en(499, 'RUN_CANCELLED', 'run cancelled by the user')).toBe('The run was cancelled');
+    expect(localizeRunFailure({ code: 'RUN_CANCELLED', message: 'run cancelled by the user' }, 'en')).toBe('The run was cancelled');
+    expect(localizeRunFailure({ code: 'RUN_CANCELLED', message: 'run cancelled by the user' }, 'ja')).toBe('実行を中断しました');
+  });
+
+  it('SESSION_QUOTA_EXCEEDED は agent-output の文のときだけ見出しを外し、他の文では見出しを保つ（en）', () => {
+    expect(en(413, 'SESSION_QUOTA_EXCEEDED', 'session quota exceeded: 10 artifacts'))
+      .toBe('The session storage limit was exceeded. Delete unused artifacts, then retry (session quota exceeded: 10 artifacts)');
+    expect(localizeRunFailure({ code: 'SESSION_QUOTA_EXCEEDED', message: 'agent-output exceeds maxBytes (9 > 8); reduce rows or use workspace-output' }, 'en'))
+      .toBe('the tool output (9 bytes) exceeds the agent-output limit (8 bytes). In the Tool Builder, reduce the rows (for example with a Limit node) or switch the output node to Workspace output');
+  });
+
+  it('agent-output の文は AGENT_RUN など別の code で届いても行数削減の案内になる（見出しは code のもの）', () => {
+    expect(localizeRunFailure({ code: 'AGENT_RUN', message: 'agent-output exceeds maxBytes (120000 > 65536); reduce rows or use workspace-output' }, 'ja'))
+      .toBe('エージェントの実行に失敗しました（ツールの出力（120000 バイト）がエージェント出力の上限（65536 バイト）を超えました。ツール画面で「行数制限」ノードなどで行数を減らすか、出力ノードを「ワークスペース出力」に切り替えてください）');
+  });
+
+  it('詳細が定型文の code（INTERNAL / INVALID_API_RESPONSE）は localizeRunFailure でも詳細を出さない。見出しの無い HTTP_ERROR は原文', () => {
+    expect(localizeRunFailure({ code: 'INTERNAL', message: 'stack trace here' }, 'en')).toBe('The server hit an internal error. Wait a moment, then retry');
+    expect(localizeRunFailure({ code: 'INVALID_API_RESPONSE', message: '<html>' }, 'ja')).toBe('APIサーバーからJSON以外の応答が返りました。APIサーバーの起動状態と開発プロキシ設定を確認してください');
+    expect(localizeRunFailure({ code: 'HTTP_ERROR', message: 'Not Found' }, 'ja')).toBe('Not Found');
+  });
+
+  it('SaveTool: 前置詞つきの未知メッセージは前置詞ごと原文を残す（`;` 区切りは分割して連結する）', () => {
+    expect(ja(400, 'TOOL_VALIDATION', 'SaveTool: something brand new')).toBe('ツール定義を確認してください（SaveTool: something brand new）');
+    expect(en(400, 'TOOL_VALIDATION', 'SaveTool: something brand new')).toBe('Please check the tool definition (SaveTool: something brand new)');
+    expect(en(400, 'TOOL_VALIDATION', 'SaveTool: alpha; beta')).toBe('Please check the tool definition (SaveTool: alpha, beta)');
+  });
+
+  it('見出しの無い code は空メッセージなら空、LM Studio を含めばモデル失敗の案内。見出しのある code は空メッセージなら見出しだけ', () => {
+    expect(localizeRunFailure({ code: 'E_X', message: '' }, 'ja')).toBe('');
+    expect(localizeRunFailure({ code: 'E_X', message: 'LM Studio request failed with HTTP 401' }, 'en'))
+      .toBe('The model server rejected the credentials (HTTP 401). Check the API key in model settings, then retry.');
+    expect(localizeRunFailure({ code: 'AGENT_RUN', message: '   ' }, 'ja')).toBe('エージェントの実行に失敗しました');
+  });
+});
+
+describe('describeMcpServerSkipped の境界', () => {
+  it.each([
+    ['not-found', 'ja', '（未登録）。MCP設定画面でサーバーを登録・有効化し、接続をテストしてください'],
+    ['not-found', 'en', '(server not registered). Register and enable the server in MCP settings, then test the connection'],
+    ['disabled', 'ja', '（無効化中）。MCP設定画面でサーバーを有効化し、接続をテストしてください'],
+    ['disabled', 'en', '(server disabled). Enable the server in MCP settings, then test the connection'],
+    ['unreachable', 'ja', '（接続失敗）。MCP設定画面で接続をテストし、サーバーの起動状態・URL・コマンドを確認してください'],
+    ['unreachable', 'en', '(unreachable). Test the connection in MCP settings and check that the server is running and its URL or command is correct'],
+  ] as const)('reason=%s（%s）は detail の有無で末尾だけが変わり、空文字の detail は無い扱い', (reason, language, guidance) => {
+    const plain = describeMcpServerSkipped({ server: 'files', reason }, language);
+    expect(plain).toContain(language === 'ja' ? 'MCPサーバー「files」' : "MCP server 'files'");
+    expect(plain.endsWith(guidance)).toBe(true);
+    const withDetail = describeMcpServerSkipped({ server: 'files', reason, detail: 'ECONNREFUSED 127.0.0.1:3000' }, language);
+    expect(withDetail).toBe(`${plain}${language === 'ja' ? '。詳細: ' : '. Detail: '}ECONNREFUSED 127.0.0.1:3000`);
+    expect(describeMcpServerSkipped({ server: 'files', reason, detail: '' }, language)).toBe(plain);
+  });
+
+  it('未知の reason（将来のサーバー）は「接続失敗」と言い切らず、理由をそのまま添えて設定確認へ誘導する', () => {
+    const event = { server: 'files', reason: 'auth-failed' as unknown as 'unreachable', detail: 'token rejected' };
+    expect(describeMcpServerSkipped(event, 'en'))
+      .toBe("The tools of MCP server 'files' were not loaded (auth-failed). Check the server settings and test the connection in MCP settings. Detail: token rejected");
+    expect(describeMcpServerSkipped(event, 'ja'))
+      .toBe('MCPサーバー「files」のツールを読み込めませんでした（auth-failed）。MCP設定画面でサーバーの設定と接続を確認してください。詳細: token rejected');
   });
 });

@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { ToolApiClient } from '../api/tool-api';
-import type { AgentKindDto, AgentPreviewRunDto, AgentSummaryDto, McpServerDto, RunTraceEventDto, SerializedAgentDto, SideEffectDto, SkillSummaryDto, StructuredOutputFieldDto, StructuredOutputTypeDto, ToolSummaryDto, WikiSpaceSummaryDto } from '../api/types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isAbortError, type ToolApiClient } from '../api/tool-api';
+import { localizeRunTraceError } from '../api/error-messages';
+import type { AgentDiagnosticsDto, AgentKindDto, AgentPreviewRunDto, AgentSummaryDto, McpServerDto, RunTraceEventDto, SaveAgentDto, SerializedAgentDto, SideEffectDto, SkillSummaryDto, StructuredOutputFieldDto, StructuredOutputTypeDto, ToolSummaryDto, WikiSpaceSummaryDto } from '../api/types';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { AGENT_SECTION, DiagnosticsPanel, diagnosticCheckLabel, topIssue, type LocalTarget } from '../components/DiagnosticsPanel';
+import { localizeDiagnosticDetail } from '../api/error-messages';
 import { DraftRestoreBanner } from '../components/DraftRestoreBanner';
 import { InlineFeedback } from '../components/InlineFeedback';
 import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
 import { useReportUnsavedChanges } from '../unsaved-changes';
-import { ScreenLink } from '../navigation';
-import { useI18n } from '../i18n';
+import { ScreenLink, usePendingOpen, type OpenTarget } from '../navigation';
+import { useI18n, type Language } from '../i18n';
 import { DEFAULT_HARNESS, HarnessSettingsDialog, countEnabledHarness, type AgentHarnessValue } from './HarnessSettingsDialog';
 import { scope } from '../scope';
 
@@ -36,6 +39,29 @@ interface AgentDraft {
 }
 /** サーバー側 createAgent と同じ上限（超えると保存が400になるためUIで止める）。 */
 const MAX_MCP_SERVERS = 8;
+/**
+ * モデルへ公開できる function 名の形。サブエージェント委譲は `ask_<publishName>` を function 名として
+ * 公開するため、publishName がこの形を外れると他のエージェントから委譲できない（保存自体は通る）。
+ */
+const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * 診断を起こした契機。manual = 「組み込みチェック」ボタン、auto = 選択変更に追従する自動実行、
+ * saved = 保存直後（保存版に対する diagnoseAgent）。要約の文言と、失敗時の目立たせ方が変わる。
+ */
+type DiagnosticsOrigin = 'manual' | 'auto' | 'saved';
+/** プリフライト診断の状態。failed は取得失敗であって診断結果そのものではない。 */
+type DiagnosticsState =
+  | { readonly status: 'loading'; readonly origin: DiagnosticsOrigin }
+  | { readonly status: 'failed'; readonly origin: DiagnosticsOrigin; readonly message: string }
+  | { readonly status: 'done'; readonly origin: DiagnosticsOrigin; readonly result: AgentDiagnosticsDto };
+/** 選択変更から自動診断までの待ち時間。連続クリックで要求を連発しないための余裕。 */
+const AUTO_DIAGNOSE_DELAY_MS = 600;
+
+/** 診断結果の問題数（エージェント検査 + 全ツール検査の error / warning）。 */
+function countDiagnosticIssues(result: AgentDiagnosticsDto): number {
+  return [...result.checks, ...result.tools.flatMap((tool) => tool.checks)].filter((check) => check.status !== 'ok').length;
+}
 
 export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   // Layer 1: 保存済みAgent一覧。'list'が既定viewで、new/openでLayer 2（editor）へ遷移する。
@@ -75,6 +101,15 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   const [saveNotice, setSaveNotice] = useState<string>();
   // 削除確認ダイアログの対象（対象名を文言へ入れるためsummaryごと保持する）。
   const [pendingDelete, setPendingDelete] = useState<AgentSummaryDto>();
+  // プリフライト診断（組み込みチェック / 選択変更への自動追従 / 保存直後）。パネルの開閉は別に持ち、
+  // 自動実行では勝手に開かない（ツール行のバッジと要約行で見せる）。
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsState>();
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  // 他画面の「エージェントを開く（区画つき）」の依頼。editor が描画されてから区画へ移るため effect で消費する。
+  const [focusSection, setFocusSection] = useState<string>();
+  // 対象エージェントを替えたら前の診断結果は無効。進行中の要求も中断する（遅れて届いた結果が復活しないように）。
+  const diagnoseAborter = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => diagnoseAborter.current?.abort(), []);
   const { text, language } = useI18n();
   const dismissSaveNotice = useCallback(() => setSaveNotice(undefined), []);
 
@@ -186,6 +221,21 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   }, [internalId, workingName, displayName, publishName, owner, systemPrompt, text]);
   const missingRequiredLabel = missingRequired.join(language === 'ja' ? '、' : ', ');
   const saveBlocked = missingRequired.length > 0 || !outputValid || !subAgentsValid;
+  // 委譲用 function 名 `ask_<publishName>` が無効になる publishName。保存は止めず注意だけ出す（未入力は必須項目側で伝える）。
+  // サーバーの sub-agents 検査と同じく、接頭辞 ask_ を含めた長さ（64文字）で判定する。
+  const publishNameInvalid = publishName.trim() !== '' && !FUNCTION_NAME_PATTERN.test(`ask_${publishName}`);
+  // 読み込んだエージェントが参照しているが、もう登録されていないMCPサーバー名。実行時は静かにスキップされるため、ここで見せて外せるようにする。
+  const unregisteredMcpServers = useMemo(() => [...selectedMcpServers].filter((name) => !mcpServers.some((server) => server.name === name)), [selectedMcpServers, mcpServers]);
+  // ツール選択行のバッジ用: 直近の診断結果をツールIDで引く（直付けを優先し、無ければスキル経由の結果）。
+  const toolDiagnosticsById = useMemo(() => {
+    const map = new Map<string, AgentDiagnosticsDto['tools'][number]>();
+    if (diagnostics?.status !== 'done') return map;
+    for (const tool of diagnostics.result.tools) {
+      const current = map.get(tool.internalId);
+      if (current === undefined || (current.source === 'skill' && tool.source === 'direct')) map.set(tool.internalId, tool);
+    }
+    return map;
+  }, [diagnostics]);
 
   function toggle(tool: ToolSummaryDto): void {
     const id = tool.internalId;
@@ -240,15 +290,92 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
     finally { setBusy(undefined); }
   }
 
+  /** 保存と組み込みチェックが同じ内容を送るための唯一の組み立て口。 */
+  function buildSaveDto(): SaveAgentDto {
+    return {
+      scope, internalId, workingName, displayName, publishName, owner, kind, systemPrompt,
+      skills: skillRefs, tools: refs, agents: subAgentRefs,
+      wikis: kind === 'pseudo-user' ? [] : [...selectedWikis].map((wikiId) => ({ wikiId })),
+      ...(selectedMcpServers.size > 0 ? { mcpServers: [...selectedMcpServers] } : {}),
+      ...(harness !== undefined ? { harness } : {}),
+      ...(output !== undefined ? { output } : {}),
+    };
+  }
+
+  function resetDiagnostics(): void {
+    diagnoseAborter.current?.abort(); diagnoseAborter.current = undefined;
+    setDiagnostics(undefined); setDiagnosticsOpen(false);
+  }
+
+  function beginDiagnose(): AbortController {
+    const controller = new AbortController();
+    diagnoseAborter.current?.abort();
+    diagnoseAborter.current = controller;
+    return controller;
+  }
+
+  // 保存せずに「組み込んだら呼び出せるか」を確かめる。保存と同じ DTO を送るので結果は保存後と一致する。
+  // manual（ボタン）は結果のパネルを開く。auto（選択変更への追従）はバッジと要約行だけを更新する。
+  async function checkIntegration(origin: 'manual' | 'auto'): Promise<void> {
+    const controller = beginDiagnose();
+    setDiagnostics({ status: 'loading', origin });
+    if (origin === 'manual') setError(undefined);
+    try {
+      const result = await client.diagnoseAgentDraft(buildSaveDto(), controller.signal);
+      if (controller.signal.aborted) return;
+      setDiagnostics({ status: 'done', origin, result });
+      if (origin === 'manual') setDiagnosticsOpen(true);
+    } catch (cause) {
+      // 中断は失敗ではない（エージェント切替時のリセットや次の要求を上書きしない）。
+      if (!controller.signal.aborted && !isAbortError(cause)) setDiagnostics({ status: 'failed', origin, message: message(cause, text) });
+    }
+  }
+
+  // ツール・スキル・サブエージェント・MCP・実行オプション・構造化出力の選択が変わったら、少し待って自動で診断する。
+  // 選択の同一性だけをキーにするので、プロンプトや名前の入力では再実行しない（サーバー負荷を抑える）。
+  const autoDiagnoseKey = useMemo(() => JSON.stringify({
+    tools: [...selectedTools].sort(), skills: [...selectedSkills].sort(), subAgents: [...subAgents.keys()].sort(),
+    mcp: [...selectedMcpServers].sort(), harness, output,
+  }), [selectedTools, selectedSkills, subAgents, selectedMcpServers, harness, output]);
+  useEffect(() => {
+    if (view !== 'editor' || saveBlocked || typeof (client as Partial<ToolApiClient>).diagnoseAgentDraft !== 'function') return;
+    const timer = window.setTimeout(() => { void checkIntegration('auto'); }, AUTO_DIAGNOSE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+    // checkIntegration は毎描画で作り直されるため依存に入れない（キーが変わったときだけ走らせる）。
+  }, [autoDiagnoseKey, view, saveBlocked, client]);
+
+  // 保存直後の自動診断（保存版に対して）。失敗しても保存は成功しているので、エラーではなく「取得できなかった」として出す。
+  async function runPostSaveDiagnostics(savedId: string, version: string): Promise<void> {
+    if (typeof (client as Partial<ToolApiClient>).diagnoseAgent !== 'function') return;
+    const controller = beginDiagnose();
+    setDiagnostics({ status: 'loading', origin: 'saved' });
+    try {
+      const result = await client.diagnoseAgent(savedId, scope, version, controller.signal);
+      if (!controller.signal.aborted) setDiagnostics({ status: 'done', origin: 'saved', result });
+    } catch (cause) {
+      if (!controller.signal.aborted && !isAbortError(cause)) setDiagnostics({ status: 'failed', origin: 'saved', message: message(cause, text) });
+    }
+  }
+
   async function save(): Promise<void> {
     setBusy('save'); setError(undefined); setSaveNotice(undefined);
     try {
-      const agent = await client.saveAgent({ scope, internalId, workingName, displayName, publishName, owner, kind, systemPrompt, skills: skillRefs, tools: refs, agents: subAgentRefs, wikis: kind === 'pseudo-user' ? [] : [...selectedWikis].map((wikiId) => ({ wikiId })), ...(selectedMcpServers.size > 0 ? { mcpServers: [...selectedMcpServers] } : {}), ...(harness !== undefined ? { harness } : {}), ...(output !== undefined ? { output } : {}) });
+      const agent = await client.saveAgent(buildSaveDto());
       setSavedVersion(agent.metadata.version);
       setSaveNotice(text(`Saved · version ${agent.metadata.version}`, `保存しました バージョン ${agent.metadata.version}`));
       draft.clear();
+      void runPostSaveDiagnostics(internalId, agent.metadata.version);
     } catch (cause) { setError(message(cause, text)); }
     finally { setBusy(undefined); }
+  }
+
+  /** 診断の修正ボタン・他画面からの依頼で、編集画面内の区画へ移る。harness はダイアログ、それ以外は見出しへスクロールしてフォーカス。 */
+  function focusAgentSection(target: LocalTarget): void {
+    if (target.section === AGENT_SECTION.harness) { setHarnessOpen(true); return; }
+    const heading = target.section === undefined ? null : document.getElementById(`agent-section-${target.section}`);
+    // jsdom には scrollIntoView が無いので任意呼び出しにする。
+    heading?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+    heading?.focus();
   }
 
   function updateOutputField(index: number, patch: Partial<StructuredOutputFieldDto>): void {
@@ -276,17 +403,20 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
     setStructuredOutput(false); setOutputFields([{ name: '', type: 'string', required: true }]);
     setHarness(undefined); setHarnessOpen(false);
     setSavedVersion(undefined); setChatMessage(''); setRun(undefined); setSaveNotice(undefined);
+    resetDiagnostics();
     setEditing(false);
   }
   function startNewAgent(): void { resetEditorState(); setError(undefined); setView('editor'); }
-  async function backToList(): Promise<void> { setView('list'); await refreshAgents(); }
-  async function openAgent(target: string): Promise<void> {
+  async function backToList(): Promise<void> { setView('list'); resetDiagnostics(); await refreshAgents(); }
+  /** 一覧・他画面からの依頼で保存済みAgentを開く。開けたら true（失敗は一覧にエラーを出して false）。 */
+  async function openAgent(target: string): Promise<boolean> {
     setBusy('load'); setError(undefined);
     try {
       const agent = await client.getAgent(target, scope);
       populateEditorFromAgent(agent);
       setView('editor');
-    } catch (cause) { setError(message(cause, text)); }
+      return true;
+    } catch (cause) { setError(message(cause, text)); return false; }
     finally { setBusy(undefined); }
   }
   // 削除はConfirmDialogの確認後だけ実行する（一覧行のDeleteはpendingDeleteを立てるだけ）。
@@ -317,8 +447,21 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
     else { setStructuredOutput(false); setOutputFields([{ name: '', type: 'string', required: true }]); }
     setSavedVersion(agent.metadata.version);
     setChatMessage(''); setRun(undefined); setSaveNotice(undefined);
+    resetDiagnostics();
     setEditing(true);
   }
+
+  // 診断結果や他画面の「エージェントを開く」からの依頼。mount 時と表示中の両方で受け、開いたら区画（tools / harness …）へ移る。
+  usePendingOpen('Agent', (target) => void openAgentAt(target));
+  async function openAgentAt(target: OpenTarget): Promise<void> {
+    // 開けなかった依頼の区画指定は残さない（残すと、次に開いた別のエージェントの編集画面でその区画へ飛んでしまう）。
+    if (await openAgent(target.internalId) && target.section !== undefined) setFocusSection(target.section);
+  }
+  useEffect(() => {
+    if (focusSection === undefined || view !== 'editor' || busy === 'load') return;
+    focusAgentSection({ section: focusSection });
+    setFocusSection(undefined);
+  }, [focusSection, view, busy]);
 
   if (view === 'list') {
     return <main className="agent-builder agent-list-page">
@@ -349,6 +492,10 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
         {savedVersion !== undefined && <span className="version-chip">{text('saved', '保存済み')} {savedVersion}</span>}
         <button type="button" className="secondary" onClick={() => setHarnessOpen(true)}>{text('Runtime options', '実行オプション')}{harness === undefined ? '' : ` (${countEnabledHarness(harness)})`}</button>
         <button type="button" className="secondary" disabled={busy !== undefined} onClick={() => void generate()}>{busy === 'generate' ? text('Generating…', '生成中…') : text('Generate draft', '草案を生成')}</button>
+        {/* 保存と同じ活性条件・同じ DTO で、保存せずにツール呼び出しの前提を検査する。 */}
+        {/* 自動診断（origin: auto）の進行中でも手動チェックは押せる（押すと自動側の要求を中断して置き換える）。
+            止まったサーバーを待ち続けてボタンが死ぬ状態を作らない。 */}
+        <button type="button" className="secondary" disabled={busy !== undefined || saveBlocked || (diagnostics?.status === 'loading' && diagnostics.origin !== 'auto')} title={missingRequired.length > 0 ? text(`Required fields are empty: ${missingRequiredLabel}.`, `${missingRequiredLabel}が未入力です。`) : text('Check whether the attached tools can be called, without saving.', '保存せずに、割り当てたツールを呼び出せるか検査します。')} onClick={() => void checkIntegration('manual')}>{diagnostics?.status === 'loading' && diagnostics.origin !== 'auto' ? text('Checking…', 'チェック中…') : text('Check integration', '組み込みチェック')}</button>
         <button type="button" className="primary" disabled={busy !== undefined || saveBlocked} title={missingRequired.length > 0 ? text(`Required fields are empty: ${missingRequiredLabel}.`, `${missingRequiredLabel}が未入力です。`) : undefined} onClick={() => void save()}>{busy === 'save' ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
       </div>
     </header>
@@ -361,8 +508,11 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
       {!subAgentsValid && <InlineFeedback kind="info">{text('Every selected sub-agent needs a delegation usage.', '選択したサブエージェントには委譲基準の入力が必要です。')}</InlineFeedback>}
       {refs.length === 0 && <InlineFeedback kind="info">{text('No Tool is selected. This Agent cannot answer questions that need data.', 'ツールが選択されていません。データに関する質問には答えられません。')}</InlineFeedback>}
       {saveNotice !== undefined && <InlineFeedback kind="success" autoHideMs={4000} onDismiss={dismissSaveNotice}>{saveNotice}</InlineFeedback>}
+      {/* 診断の一行要約（問題数）と詳細（DiagnosticsPanel）の開閉。保存直後は「保存しました。」から始める。 */}
+      {diagnostics !== undefined && <DiagnosticsSummary diagnostics={diagnostics} open={diagnosticsOpen} onToggle={() => setDiagnosticsOpen((open) => !open)} text={text} />}
     </div>
     {error !== undefined && <div className="api-error">{error}</div>}
+    {diagnostics?.status === 'done' && diagnosticsOpen && <DiagnosticsPanel diagnostics={diagnostics.result} context="agent-editor" agentId={internalId} onOpenHarness={() => setHarnessOpen(true)} onOpenLocal={focusAgentSection} onClose={() => setDiagnosticsOpen(false)} />}
     <div className="agent-builder-grid">
       <section className="agent-definition-card">
         <h2>{text('Definition', '定義')}</h2>
@@ -370,23 +520,30 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
           <label>{text('Internal ID', '内部ID')}<span className="required-mark">*</span><input aria-label={text('Agent internal ID', 'エージェント内部ID')} placeholder={text('e.g. support-agent', '例: support-agent')} value={internalId} readOnly={editing} title={editing ? text('Internal ID cannot change once saved (it would fork a new asset).', '保存済みの内部IDは変更できません（変更すると別資産になります）。') : undefined} onChange={(event) => { if (editing) return; setInternalId(event.target.value); }} /></label>
           <label>{text('Working name', '作業名')}<span className="required-mark">*</span><input aria-label={text('Working name', '作業名')} placeholder={text('e.g. Support agent draft', '例: サポートエージェントの下書き')} value={workingName} onChange={(event) => setWorkingName(event.target.value)} /></label>
           <label>{text('Display name', '表示名')}<span className="required-mark">*</span><input aria-label={text('Agent display name', 'エージェント表示名')} placeholder={text('e.g. Support Agent', '例: サポートエージェント')} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
-          <label>{text('Publish name', '公開名')}<span className="required-mark">*</span><input aria-label={text('Publish name', '公開名')} placeholder={text('e.g. support_agent', '例: support_agent')} value={publishName} onChange={(event) => setPublishName(event.target.value)} /></label>
+          <label>{text('Publish name', '公開名')}<span className="required-mark">*</span><input aria-label={text('Publish name', '公開名')} placeholder={text('e.g. support_agent', '例: support_agent')} value={publishName} onChange={(event) => setPublishName(event.target.value)} />
+            {publishNameInvalid && <small className="field-warning">{text(`Other agents cannot delegate to this agent: ask_${publishName} is not a valid function name (use 1–64 ASCII letters, digits, _ or -)`, `他のエージェントから委譲できません: ask_${publishName} は function 名として無効です（英数字・_・- の1〜64文字にしてください）`)}</small>}</label>
           <label>{text('Owner', '所有者')}<span className="required-mark">*</span><input aria-label={text('Owner', '所有者')} placeholder={text('e.g. team@example.com', '例: team@example.com')} value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
           <label>{text('Kind', '種別')}<select aria-label={text('Agent kind', 'エージェント種別')} value={kind} onChange={(event) => setKind(event.target.value as AgentKindDto)}><option value="normal">{text('Normal', '通常')}</option><option value="pseudo-user">{text('Pseudo user', '疑似ユーザー')}</option><option value="evaluator">{text('Evaluator', '評価者')}</option></select></label>
         </div>
-        <h2>{text('Skills', 'スキル')} <small>{skillRefs.length} {text('selected', '件選択')}</small></h2>
+        <h2 id="agent-section-skills" tabIndex={-1}>{text('Skills', 'スキル')} <small>{skillRefs.length} {text('selected', '件選択')}</small></h2>
         {/* 選択行の種別バッジ: Skill / Tool / サブエージェント / Wiki を取り違えないようにする。 */}
         <div className="agent-tool-list">
           {busy !== 'load' && skills.length === 0 && <p className="empty-state"><span>{text('No saved Skills yet.', '保存済みスキルがありません。')}</span> <ScreenLink to="Skill">{text('Open the Skill screen', 'スキル画面を開く')}</ScreenLink></p>}
           {skills.map((skill) => <label key={key(skill)} className="agent-tool-option"><input type="checkbox" checked={selectedSkills.has(skill.internalId)} onChange={() => toggleSkill(skill)} /><span><strong>{skill.displayName}</strong><code>{skill.publishName}@{skill.latestVersion}</code></span><small className="validation-status">{text('Skill', 'スキル')}</small><small>{skill.state}</small></label>)}
         </div>
-        <h2>{text('Tools', 'ツール')} <small>{refs.length} {text('selected', '件選択')}</small></h2>
+        <h2 id="agent-section-tools" tabIndex={-1}>{text('Tools', 'ツール')} <small>{refs.length} {text('selected', '件選択')}</small></h2>
         <div className="agent-tool-list">
           {busy === 'load' && <p className="empty-state">{text('Loading tools…', 'ツールを読み込み中…')}</p>}
           {busy !== 'load' && tools.length === 0 && <p className="empty-state"><span>{text('No saved Tools yet.', '保存済みツールがありません。')}</span> <ScreenLink to="Tool">{text('Open the Tool screen', 'ツール画面を開く')}</ScreenLink></p>}
-          {tools.map((tool) => <label key={key(tool)} className="agent-tool-option"><input type="checkbox" checked={selectedTools.has(tool.internalId)} onChange={() => toggle(tool)} /><span><strong>{tool.displayName}</strong><code>{tool.publishName}@{tool.latestVersion}</code></span><small className="validation-status">{text('Tool', 'ツール')}</small><small>{tool.state}</small></label>)}
+          {tools.map((tool) => {
+            // 選んだ瞬間に壊れたツールが分かるよう、直近の診断結果をバッジで添える（一番目の問題を title に）。
+            const diagnosed = selectedTools.has(tool.internalId) ? toolDiagnosticsById.get(tool.internalId) : undefined;
+            const issue = diagnosed === undefined ? undefined : topIssue(diagnosed.checks);
+            const issueText = issue === undefined ? undefined : `${diagnosticCheckLabel(issue.id, text)}${issue.detail === undefined ? '' : `: ${localizeDiagnosticDetail(issue.detail, language)}`}`;
+            return <label key={key(tool)} className="agent-tool-option"><input type="checkbox" checked={selectedTools.has(tool.internalId)} onChange={() => toggle(tool)} /><span><strong>{tool.displayName}{diagnosed !== undefined && <span className={`diag-badge ${diagnosed.status}`} role="img" aria-label={diagnosed.status === 'ok' ? text('Tool diagnostics: no blockers', 'ツール診断: 問題なし') : text(`Tool diagnostics: ${diagnosed.status}`, `ツール診断: ${diagnosed.status === 'error' ? 'エラー' : '警告'}`)} title={issueText ?? text('Tool diagnostics: no blockers', 'ツール診断: 問題なし')}>{diagnosed.status === 'ok' ? '✓' : diagnosed.status === 'warning' ? '!' : '✕'}</span>}</strong><code>{tool.publishName}@{tool.latestVersion}</code></span><small className="validation-status">{text('Tool', 'ツール')}</small><small>{tool.state}</small></label>;
+          })}
         </div>
-        <h2>{text('Sub-agents', 'サブエージェント')} <small>{subAgentRefs.length} {text('selected', '件選択')}</small></h2>
+        <h2 id="agent-section-sub-agents" tabIndex={-1}>{text('Sub-agents', 'サブエージェント')} <small>{subAgentRefs.length} {text('selected', '件選択')}</small></h2>
         <p className="agent-subagent-hint">{text('Delegated as an ask_<name> tool. The effective side-effect is validated on save.', 'ask_<名前> ツールとして委譲されます。実効副作用は保存時に検証されます。')}</p>
         {subAgentRefs.length > 0 && <p className="agent-effect">{text('Effective side-effect', '実効副作用')}: <span className={`validation-status ${effectiveSideEffect === 'read-only' ? 'good' : effectiveSideEffect === 'unknown' ? '' : 'bad'}`}>{effectiveSideEffect === 'unknown' ? text('estimating…', '推定中…') : effectiveSideEffect}</span> <small>{text('approx · preview requires read-only', '概算・previewはread-only必須')}</small></p>}
         <div className="agent-tool-list">
@@ -405,7 +562,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
           {wikis.length === 0 && <p className="empty-state"><span>{text('Create Wikis in Memory first.', '先に記憶画面でWikiを作成してください。')}</span> <ScreenLink to="Memory">{text('Open the Memory screen', '記憶画面を開く')}</ScreenLink></p>}
           {wikis.map((wiki) => <label key={wiki.id} className="agent-tool-option"><input aria-label={`${text('Use wiki', 'Wikiを使用')} ${wiki.name}`} type="checkbox" disabled={kind === 'pseudo-user'} checked={selectedWikis.has(wiki.id)} onChange={() => toggleWiki(wiki.id)} /><span><strong>{wiki.name}</strong><code>{wiki.id}</code></span><small className="validation-status">Wiki</small><small>{wiki.description}</small></label>)}
         </div>
-        <h2>{text('MCP servers', 'MCPサーバー')} <small>{selectedMcpServers.size} {text('selected', '件選択')}</small></h2>
+        <h2 id="agent-section-mcp" tabIndex={-1}>{text('MCP servers', 'MCPサーバー')} <small>{selectedMcpServers.size} {text('selected', '件選択')}</small></h2>
         <p className="agent-subagent-hint">{text('Tools from the selected servers are injected as mcp__<server>__<tool>.', '選択したサーバーのツールが mcp__<サーバー名>__<ツール名> として注入されます。')}</p>
         <div className="agent-tool-list">
           {mcpServers.length === 0 && <p className="empty-state"><span>{text('No MCP servers configured. Add them on the MCP page.', 'MCPサーバーが未設定です。MCP画面で追加してください。')}</span> <ScreenLink to="MCP">{text('Open the MCP screen', 'MCP画面を開く')}</ScreenLink></p>}
@@ -418,6 +575,12 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
               {server.disabled && <small>{text('skipped at run time', '実行時はスキップ')}</small>}
             </label>;
           })}
+          {/* 参照先が消えたサーバー。チェックを外して保存すれば参照を落とせる。 */}
+          {busy !== 'load' && unregisteredMcpServers.map((name) => <label key={`unregistered-${name}`} className="agent-tool-option unregistered">
+            <input aria-label={`${text('Use MCP server', 'MCPサーバーを使用')} ${name}`} type="checkbox" checked onChange={() => toggleMcpServer(name)} />
+            <span><strong>{name}</strong><code>{text('This server is no longer registered; its tools are skipped at run time.', 'このサーバーは登録されていないため、実行時にツールは注入されません。')}</code></span>
+            <small className="validation-status bad">{text('not registered', '未登録')}</small>
+          </label>)}
           {selectedMcpServers.size >= MAX_MCP_SERVERS && <p className="field-error">{text(`At most ${MAX_MCP_SERVERS} MCP servers can be selected.`, `MCPサーバーは最大${MAX_MCP_SERVERS}件まで選択できます。`)}</p>}
         </div>
         <h2>{text('Structured output', '構造化出力')}</h2>
@@ -442,7 +605,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
           <div className="chat-compose"><textarea aria-label={text('Agent chat message', 'エージェントへのメッセージ')} rows={2} placeholder={text('Ask the saved Agent…', '保存済みエージェントに質問…')} value={chatMessage} onChange={(event) => setChatMessage(event.target.value)} /><button type="button" className="primary" disabled={savedVersion === undefined || busy !== undefined || chatMessage.trim() === ''} onClick={() => void runSaved()}>{busy === 'run' ? text('Running…', '実行中…') : text('Run saved agent', '保存済みエージェントを実行')}</button></div>
           {run !== undefined && <><div className="chat-response"><span>{text('Assistant', 'アシスタント')}</span>{run.structuredResponse === undefined ? <p>{run.response}</p> : <pre>{JSON.stringify(run.structuredResponse, null, 2)}</pre>}</div><div className="trace-list"><strong>{text('Trace', 'トレース')} · {run.runId}</strong>{run.trace.map((event) => {
             // 種別だけでは原因が分からないため、error/tool/委譲イベントは実メッセージも併記する。
-            const detail = traceDetail(event, text);
+            const detail = traceDetail(event, text, language);
             return <div className={`trace-event ${event.kind === 'tool-call' || event.kind === 'tool-result' ? 'tool' : ''}`} key={event.sequence}><span>{event.sequence}</span><p>{event.kind}</p>{detail !== undefined && <small className={event.kind === 'error' ? 'field-error' : undefined}>{detail}</small>}</div>;
           })}</div></>}
         </div>
@@ -458,14 +621,41 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
 function key(item: ToolSummaryDto | SkillSummaryDto): string { return `${item.internalId}@${item.latestVersion}`; }
 function message(cause: unknown, text: Translate): string { return cause instanceof Error ? cause.message : text('Request failed', 'リクエストが失敗しました'); }
 // トレース行の詳細文言。model-request/model-responseは本文をチャット側で表示するため重複させない。
-function traceDetail(event: RunTraceEventDto, text: Translate): string | undefined {
+function traceDetail(event: RunTraceEventDto, text: Translate, language: Language): string | undefined {
   switch (event.kind) {
-    case 'error': return `${event.code}: ${event.message}`;
+    // 実行エラーの定型文は次の一手が分かる文言へ直す（変換できなければ原文のまま）。
+    case 'error': return `${event.code}: ${localizeRunTraceError(event, language)}`;
     case 'tool-call': return `${text('tool', 'ツール')}: ${event.name}`;
     case 'tool-result': return `${text('tool', 'ツール')}: ${event.name}`;
     case 'agent_call': return `${event.toolName}${event.summary === '' ? '' : ` · ${event.summary}`}`;
     default: return undefined;
   }
+}
+/**
+ * 診断の一行要約。保存直後は「保存しました。」から始め、それ以外は「組み込みチェック」として出す。
+ * 取得失敗は、保存直後なら保存成功を損なわない控えめな文言、自動実行なら静かな注記、手動ならアラート。
+ */
+function DiagnosticsSummary({ diagnostics, open, onToggle, text }: { readonly diagnostics: DiagnosticsState; readonly open: boolean; readonly onToggle: () => void; readonly text: Translate }) {
+  const saved = diagnostics.origin === 'saved';
+  if (diagnostics.status === 'loading') {
+    return saved ? <InlineFeedback kind="info">{text('Saved. Running tool diagnostics…', '保存しました。ツール診断を実行中…')}</InlineFeedback> : null;
+  }
+  if (diagnostics.status === 'failed') {
+    if (saved) return <InlineFeedback kind="info">{text('Diagnostics unavailable', '診断を取得できませんでした')}</InlineFeedback>;
+    if (diagnostics.origin === 'auto') return <p className="empty-state">{text('Integration check unavailable', '組み込みチェックを取得できませんでした')}</p>;
+    return <div className="api-error" role="alert">{text('Diagnostics failed: ', '診断に失敗しました: ')}{diagnostics.message}</div>;
+  }
+  const issues = countDiagnosticIssues(diagnostics.result);
+  const summary = saved
+    ? (issues === 0
+      ? text('Saved. Tool diagnostics: no blockers', '保存しました。ツール診断: 問題なし')
+      : text(`Saved. Tool diagnostics found ${issues} issue(s)`, `保存しました。ツール診断で ${issues} 件の問題があります`))
+    : (issues === 0
+      ? text('Integration check: no blockers', '組み込みチェック: 問題なし')
+      : text(`Integration check found ${issues} issue(s)`, `組み込みチェックで ${issues} 件の問題があります`));
+  return <InlineFeedback kind={issues === 0 ? 'success' : diagnostics.result.status === 'error' ? 'error' : 'info'}>
+    {summary} <button type="button" className="ghost diag-toggle-btn" onClick={onToggle}>{open ? text('Hide details', '詳細を隠す') : text('Show details', '詳細を表示')}</button>
+  </InlineFeedback>;
 }
 function responseFormatName(publishName: string): string {
   const normalized = `${publishName}_response`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);

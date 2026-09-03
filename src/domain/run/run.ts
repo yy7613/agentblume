@@ -16,6 +16,13 @@ export interface RunNodeOutput {
   readonly rowCount: number;
   readonly truncated: boolean;
 }
+/** 失敗したツール実行の識別。`publishName` はモデルへ公開した function 名（呼び出し名）。 */
+export interface RunFailureToolRef {
+  readonly internalId: ToolId;
+  readonly version?: string;
+  readonly publishName?: string;
+}
+
 export type RunTraceEvent =
   | { readonly sequence: number; readonly kind: 'model-request'; readonly step: number; readonly toolNames: readonly string[] }
   | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }
@@ -34,7 +41,13 @@ export type RunTraceEvent =
    * 新しく記録するイベントには必ず入る。
    */
   | { readonly sequence: number; readonly kind: 'approval-resolved'; readonly decision: 'approve' | 'reject'; readonly decidedBy?: string }
-  | { readonly sequence: number; readonly kind: 'error'; readonly code: string; readonly message: string };
+  /**
+   * Agentが参照するMCPサーバーを解決できず、そのサーバーのツールを注入しなかった（Runは続く）。
+   * 黙って落とすと「ツールが無い」理由が利用者に見えないため、Run開始時に1サーバー1件で残す。
+   */
+  | { readonly sequence: number; readonly kind: 'mcp-server-skipped'; readonly server: string; readonly reason: 'not-found' | 'disabled' | 'unreachable'; readonly detail?: string }
+  /** `tool` / `nodeId` はツール実行由来の失敗だけが持つ（どのToolのどのノードで落ちたか）。古いRunには無い。 */
+  | { readonly sequence: number; readonly kind: 'error'; readonly code: string; readonly message: string; readonly tool?: RunFailureToolRef; readonly nodeId?: string };
 
 // ---------------------------------------------------------------------------
 // 承認待ちcheckpoint
@@ -127,6 +140,9 @@ export interface RunEstimatedCost {
 export interface RunFailure {
   readonly code: string;
   readonly message: string;
+  /** ツール実行由来の失敗だけが持つ: どのToolのどのノードで落ちたか。古いRunには無い。 */
+  readonly tool?: RunFailureToolRef;
+  readonly nodeId?: string;
 }
 
 export interface RunArtifactRef {
@@ -226,7 +242,12 @@ export function failRun(record: RunRecord, result: {
   readonly completedAt: IsoDateTime;
 }): RunRecord {
   assertRunning(record);
-  return { ...record, status: 'failed', checkpoint: undefined, trace: structuredClone(result.trace), failure: { ...result.failure }, ...(result.latency !== undefined ? { latency: { ...result.latency } } : {}), completedAt: result.completedAt };
+  return { ...record, status: 'failed', checkpoint: undefined, trace: structuredClone(result.trace), failure: cloneFailure(result.failure), ...(result.latency !== undefined ? { latency: { ...result.latency } } : {}), completedAt: result.completedAt };
+}
+
+/** failure を複製する。`tool` は入れ子オブジェクトなので浅い spread だけでは呼び出し側と共有されてしまう。 */
+function cloneFailure(failure: RunFailure): RunFailure {
+  return { ...failure, ...(failure.tool !== undefined ? { tool: { ...failure.tool } } : {}) };
 }
 
 /**
@@ -265,7 +286,8 @@ export function redactRun(record: RunRecord, parts: { readonly payload: boolean;
       structuredResponse: undefined,
       // checkpointは会話履歴そのものなのでpayloadとして落とす（保持期限を過ぎたRunは再開しない）。
       checkpoint: undefined,
-      ...(record.failure !== undefined ? { failure: { code: record.failure.code, message: '[redacted]' } } : {}),
+      // tool / nodeId は「どこで落ちたか」の識別でペイロードではないので、message だけを落とす。
+      ...(record.failure !== undefined ? { failure: { ...cloneFailure(record.failure), message: '[redacted]' } } : {}),
     } : {}),
     ...(parts.trace ? { trace: [] } : {}),
   };

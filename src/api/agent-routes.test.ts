@@ -1,10 +1,17 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider';
+import { RoleMatrixAuthorization } from '../adapters/security/role-matrix-authorization';
 import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
+import type { ModelCapability } from '../application/model/model-provider';
+import { authenticated, rejected, type AuthenticationPort } from '../application/security/authentication';
 import { createApp, type App } from '../composition/root';
+import type { AuthorizationRole } from '../domain/security/authorization';
+import { explicitRouteAuthorization } from './authorization';
 import { buildServer } from './server';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
+const fullHarness = { fileMemory: false, todoProvider: false, compaction: false, webSearch: false, toolApproval: false, functionInvocation: true };
 
 describe('agent routes', () => {
   let app: App;
@@ -64,6 +71,58 @@ describe('agent routes', () => {
 
     const missing = await server.inject({ method: 'GET', url: '/agents/no-such-agent/diagnostics', query: scope });
     expect(missing.statusCode).toBe(404);
+  });
+
+  it('POST /agent-drafts/diagnose は未保存Agentを保存せずに診断し、版は 0.0.0 で報告する', async () => {
+    const res = await server.inject({ method: 'POST', url: '/agent-drafts/diagnose', payload: body({ mcpServers: ['ghost'], harness: { ...fullHarness, fileMemory: true } }) });
+    expect(res.statusCode).toBe(200);
+    const { diagnostics } = res.json();
+    expect(diagnostics.agent).toEqual({ internalId: 'assistant', version: '0.0.0' });
+    expect(diagnostics.status).toBe('error');
+    expect(diagnostics.checks).toEqual(expect.arrayContaining([
+      { id: 'model', status: 'ok' },
+      { id: 'mcp-servers', status: 'error', detail: 'referenced MCP server not found: ghost' },
+      { id: 'harness', status: 'warning', detail: 'harness enables file memory but the agent references no wiki, so memory tools have nothing to read' },
+    ]));
+    expect(diagnostics.tools).toMatchObject([{ internalId: 'scores', version: '1.0.0', source: 'direct', functionName: 'filter_scores', status: 'ok' }]);
+    expect(diagnostics.tools[0].checks).toEqual(expect.arrayContaining([{ id: 'resolved', status: 'ok' }, { id: 'state', status: 'ok' }]));
+    // 保存はされない。
+    expect((await server.inject({ method: 'GET', url: '/agents/assistant', query: scope })).statusCode).toBe(404);
+
+    // 登録済みの MCP サーバーは ok、disabled は warning（実行時は黙ってスキップされる）。
+    const registered = await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: { name: 'files', transport: { kind: 'stdio', command: 'npx', args: ['-y', 'server'], env: {} }, disabled: true } } });
+    expect(registered.statusCode).toBe(201);
+    const paused = await server.inject({ method: 'POST', url: '/agent-drafts/diagnose', payload: body({ mcpServers: ['files'] }) });
+    expect(paused.json().diagnostics.checks).toEqual(expect.arrayContaining([
+      { id: 'mcp-servers', status: 'warning', detail: "MCP server 'files' is disabled, so its tools are skipped at run time" },
+    ]));
+
+    const invalid = await server.inject({ method: 'POST', url: '/agent-drafts/diagnose', payload: body({ tools: [{ internalId: 'scores', version: 'bad' }] }) });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().error.code).toBe('BAD_REQUEST');
+    // 保存と同じ createAgent 検証を通す（pseudo-user に Tool は付けられない）。
+    const rejected = await server.inject({ method: 'POST', url: '/agent-drafts/diagnose', payload: body({ kind: 'pseudo-user' }) });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().error.code).toBe('AGENT_VALIDATION');
+  });
+
+  it('POST /agent-drafts/diagnose は設定中モデルの能力不足を実行前に報告する', async () => {
+    class ChatOnlyModel extends ScriptedModelProvider { override capabilities(): readonly ModelCapability[] { return ['chat']; } }
+    const chatOnlyApp = createApp({ profile: 'test', modelProvider: new ChatOnlyModel() });
+    const chatOnlyServer = buildServer(chatOnlyApp, { authentication: new SingleUserAuthentication(scope) });
+    try {
+      const res = await chatOnlyServer.inject({ method: 'POST', url: '/agent-drafts/diagnose', payload: body({ output: { name: 'assistant_response', fields: [{ name: 'answer', type: 'string', required: true }] } }) });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().diagnostics.checks).toEqual(expect.arrayContaining([
+        { id: 'model', status: 'error', detail: 'configured model provider does not support tool-calling; configured model provider does not support structured output' },
+      ]));
+      // functionInvocation:false かつ output 無しならこのモデルでも動く。
+      const plain = await chatOnlyServer.inject({ method: 'POST', url: '/agent-drafts/diagnose', payload: body({ harness: { ...fullHarness, functionInvocation: false } }) });
+      expect(plain.json().diagnostics.checks).toEqual(expect.arrayContaining([{ id: 'model', status: 'ok' }]));
+    } finally {
+      await chatOnlyServer.close();
+      chatOnlyApp.close();
+    }
   });
 
   it('未保存・保存済みAgentのprompt草案を生成する', async () => {
@@ -171,5 +230,91 @@ describe('agent routes', () => {
     const response = await server.inject({ method: 'DELETE', url: '/agents/missing-agent', query: scope });
     expect(response.statusCode).toBe(404);
     expect(response.json().error).toMatchObject({ code: 'AGENT_NOT_FOUND' });
+  });
+
+  describe('POST /agent-drafts/diagnose 境界・異常系', () => {
+    const TOKEN = 'r'.repeat(40);
+    /** 指定ロールだけを持つ主体として認証する最小の port（authorization.test.ts と同じ形）。 */
+    function rolesAuth(roles: readonly AuthorizationRole[]): AuthenticationPort {
+      return {
+        mode: 'token', required: true,
+        authenticate: async (request) => request.header('authorization') === `Bearer ${TOKEN}`
+          ? authenticated({ subject: 'rita', ...scope, roles })
+          : rejected('missing-credentials'),
+      };
+    }
+    const diagnoseDraft = (payload: Record<string, unknown>) => server.inject({ method: 'POST', url: '/agent-drafts/diagnose', payload });
+
+    it('不正 body は 400 BAD_REQUEST で、違反したフィールドのパスをメッセージに含める', async () => {
+      const emptyPrompt = await diagnoseDraft(body({ systemPrompt: '' }));
+      expect(emptyPrompt.statusCode).toBe(400);
+      expect(emptyPrompt.json().error).toMatchObject({ code: 'BAD_REQUEST' });
+      expect(emptyPrompt.json().error.message).toContain('systemPrompt');
+      const partialHarness = await diagnoseDraft(body({ harness: { fileMemory: true } }));
+      expect(partialHarness.statusCode).toBe(400);
+      expect(partialHarness.json().error.message).toContain('harness');
+    });
+
+    it('参照切れ（Tool / Skill / サブエージェント）は 404 ではなく 200 の error 検査として返す', async () => {
+      const res = await diagnoseDraft(body({
+        tools: [{ internalId: 'missing-tool', version: '1.0.0' }],
+        skills: [{ internalId: 'missing-skill', version: '1.0.0' }],
+        agents: [{ internalId: 'ghost', version: '1.0.0', usage: 'delegate' }],
+      }));
+      expect(res.statusCode).toBe(200);
+      const { diagnostics } = res.json();
+      expect(diagnostics.status).toBe('error');
+      expect(diagnostics.checks).toEqual(expect.arrayContaining([
+        { id: 'skills', status: 'error', detail: 'referenced skill not found: missing-skill@1.0.0' },
+        { id: 'sub-agents', status: 'error', detail: 'referenced sub-agent not found: ghost@1.0.0' },
+      ]));
+      expect(diagnostics.tools).toEqual([{
+        internalId: 'missing-tool', version: '1.0.0', source: 'direct', status: 'error',
+        checks: [{ id: 'resolved', status: 'error', detail: 'referenced tool not found: missing-tool@1.0.0' }],
+      }]);
+    });
+
+    it('bump / state は受け付けるが採番も保存もせず、版は 0.0.0 のまま報告する', async () => {
+      const res = await diagnoseDraft(body({ bump: 'major', state: 'published' }));
+      expect(res.statusCode).toBe(200);
+      expect(res.json().diagnostics.agent).toEqual({ internalId: 'assistant', version: '0.0.0' });
+      expect((await server.inject({ method: 'GET', url: '/agents/assistant', query: scope })).statusCode).toBe(404);
+    });
+
+    it('createAgent の不変条件違反（自己参照・重複 Tool 参照・重複 MCP 参照）は 400 AGENT_VALIDATION', async () => {
+      const selfReference = await diagnoseDraft(body({ agents: [{ internalId: 'assistant', version: '1.0.0', usage: 'delegate' }] }));
+      expect(selfReference.statusCode).toBe(400);
+      expect(selfReference.json().error).toMatchObject({ code: 'AGENT_VALIDATION' });
+      expect(selfReference.json().error.message).toContain('cannot reference itself');
+      const duplicateTool = await diagnoseDraft(body({ tools: [{ internalId: 'scores', version: '1.0.0' }, { internalId: 'scores', version: '1.0.0' }] }));
+      expect(duplicateTool.statusCode).toBe(400);
+      expect(duplicateTool.json().error.code).toBe('AGENT_VALIDATION');
+      const duplicateMcp = await diagnoseDraft(body({ mcpServers: ['files', 'files'] }));
+      expect(duplicateMcp.statusCode).toBe(400);
+      expect(duplicateMcp.json().error.code).toBe('AGENT_VALIDATION');
+    });
+
+    it('認証なしは 401、agent:execute を持たない viewer は 403、editor は 200', async () => {
+      const viewer = buildServer(app, { authentication: rolesAuth(['viewer']), authorization: new RoleMatrixAuthorization() });
+      const editor = buildServer(app, { authentication: rolesAuth(['editor']), authorization: new RoleMatrixAuthorization() });
+      try {
+        const unauthenticated = await viewer.inject({ method: 'POST', url: '/agent-drafts/diagnose', payload: body() });
+        expect(unauthenticated.statusCode).toBe(401);
+        expect(unauthenticated.json().error.code).toBe('UNAUTHENTICATED');
+        const forbidden = await viewer.inject({ method: 'POST', url: '/agent-drafts/diagnose', headers: { authorization: `Bearer ${TOKEN}` }, payload: body() });
+        expect(forbidden.statusCode).toBe(403);
+        expect(forbidden.json().error).toEqual({ code: 'FORBIDDEN', message: "this operation requires the 'agent:execute' permission" });
+        const allowed = await editor.inject({ method: 'POST', url: '/agent-drafts/diagnose', headers: { authorization: `Bearer ${TOKEN}` }, payload: body() });
+        expect(allowed.statusCode).toBe(200);
+        expect(allowed.json().diagnostics.status).toBe('ok');
+      } finally {
+        await viewer.close();
+        await editor.close();
+      }
+    });
+
+    it('認可表は POST /agent-drafts/diagnose に execute / agent を割り当てている', () => {
+      expect(explicitRouteAuthorization('POST', '/agent-drafts/diagnose')).toMatchObject({ action: 'execute', kind: 'agent' });
+    });
   });
 });

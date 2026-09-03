@@ -3,6 +3,8 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
+import { I18nProvider } from '../i18n';
+import { consumePendingOpen } from '../navigation';
 import { useToolBuilderStore } from '../tool-builder/store';
 import { backupFailureHint, formatBytes, StatusPage } from './StatusPage';
 
@@ -22,6 +24,28 @@ describe('StatusPage', () => {
     await waitFor(() => expect(client.getRunTrace).toHaveBeenCalledWith('run-1', { tenantId: 'local', workspaceId: 'default' }));
     expect(screen.getAllByText(/MODEL_PROVIDER/).length).toBeGreaterThan(0);
     expect(screen.getByText('run-1')).toBeTruthy();
+  });
+
+  it('失敗した Run は言語化した次の一手・失敗箇所・直す場所へのボタンを出し、error / mcp-server-skipped のトレース行も言語化する', async () => {
+    const summary = { runId: 'run-2', status: 'failed', mode: 'preview', agent: { internalId: 'sales-agent', version: '1.0.0', publishName: 'sales_agent' }, startedAt: '2026-07-03T00:00:00Z', failure: { code: 'ETL_SCHEMA', message: 'sort: column(s) not found: total', tool: { internalId: 'sales-lookup', version: '1.2.0', publishName: 'sales_lookup' }, nodeId: 'sort-1' }, traceEventCount: 3 };
+    const record = { ...summary, scope: { tenantId: 'local', workspaceId: 'default' }, trace: [
+      { sequence: 1, kind: 'mcp-server-skipped', server: 'files', reason: 'disabled' },
+      { sequence: 2, kind: 'tool-call', name: 'sales_lookup', arguments: { month: '2026-06' } },
+      { sequence: 3, kind: 'error', code: 'TOOL_ARGUMENTS', message: 'required argument missing: year (retrying 1/1)' },
+    ] };
+    const client = { listRuns: vi.fn().mockResolvedValue([summary]), getRunTrace: vi.fn().mockResolvedValue(record) } as unknown as ToolApiClient;
+    render(<StatusPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /sales_agent/ }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Failed in tool sales_lookup v1.2.0 · node sort-1');
+    expect(screen.getByRole('button', { name: 'Open node "sort-1" in tool "sales_lookup"' })).toBeTruthy();
+    // 保存済み failure の生メッセージは折りたたみの中に残る。
+    expect(screen.getByText('Technical details').closest('details')?.textContent).toContain('ETL_SCHEMA: sort: column(s) not found: total');
+    // トレース行: retrying 接尾辞を保ったまま本文を言語化し、MCP スキップは理由つきの案内にする
+    // （通知の「技術的な詳細」にも同じ行が出るので複数一致を許す）。
+    expect(screen.getAllByText(/the model omitted the required tool argument 'year'.*\(retrying 1\/1\)/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/MCP server 'files' were not loaded \(server disabled\)/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/required argument missing: year \(retrying 1\/1\)/)).toBeNull();
   });
 
   it('Agent runのstructured responseを整形表示する', async () => {
@@ -230,5 +254,59 @@ describe('バックアップ表示のヘルパー', () => {
     expect(backupFailureHint('EROFS: read-only file system', text)).toMatch(/writable path/);
     expect(backupFailureHint('the database is in-memory (:memory:)', text)).toMatch(/AGENTCONTEXT_DB_PATH/);
     expect(backupFailureHint('something else went wrong', text)).toBeUndefined();
+  });
+});
+
+describe('StatusPage の失敗通知（境界）', () => {
+  const scope = { tenantId: 'local', workspaceId: 'default' };
+  afterEach(() => { consumePendingOpen('Tool'); consumePendingOpen('Agent'); });
+
+  it('失敗の無い Run を選んでも失敗通知は出さない', async () => {
+    const summary = { runId: 'run-ok', status: 'succeeded', mode: 'preview', agent: { internalId: 'agent', version: '1.0.0' }, startedAt: '2026-07-03T00:00:00Z', response: 'all fine', traceEventCount: 1 };
+    const record = { ...summary, scope, trace: [{ sequence: 1, kind: 'model-request', step: 1, toolNames: [] }] };
+    const client = { listRuns: vi.fn().mockResolvedValue([summary]), getRunTrace: vi.fn().mockResolvedValue(record) } as unknown as ToolApiClient;
+    render(<StatusPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /agent/ }));
+    expect(await screen.findByText('all fine')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('Technical details')).toBeNull();
+  });
+
+  it('失敗にツールがあり Run にエージェントが無くても、ツールへのボタンだけを出して落ちない', async () => {
+    const summary = { runId: 'run-tool', status: 'failed', mode: 'preview', tool: { internalId: 'sales-lookup', version: '1.2.0', publishName: 'sales_lookup' }, startedAt: '2026-07-03T00:00:00Z', failure: { code: 'ETL_SCHEMA', message: 'sort: column(s) not found: total', tool: { internalId: 'sales-lookup', version: '1.2.0', publishName: 'sales_lookup' }, nodeId: 'sort-1' }, traceEventCount: 0 };
+    const record = { ...summary, scope, trace: [] };
+    const client = { listRuns: vi.fn().mockResolvedValue([summary]), getRunTrace: vi.fn().mockResolvedValue(record) } as unknown as ToolApiClient;
+    render(<StatusPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /sales_lookup/ }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Failed in tool sales_lookup v1.2.0 · node sort-1');
+    expect(screen.queryByRole('button', { name: 'Open agent settings' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Open node "sort-1" in tool "sales_lookup"' }));
+    expect(consumePendingOpen('Tool')).toEqual({ internalId: 'sales-lookup', version: '1.2.0', nodeId: 'sort-1' });
+  });
+
+  it('ツール由来だがツールが不明な失敗は、Run のエージェントを開く遷移を出す', async () => {
+    const summary = { runId: 'run-agent', status: 'failed', mode: 'preview', agent: { internalId: 'sales-agent', version: '1.0.0', publishName: 'sales_agent' }, startedAt: '2026-07-03T00:00:00Z', failure: { code: 'ETL_SCHEMA', message: 'sort: column(s) not found: total' }, traceEventCount: 0 };
+    const record = { ...summary, scope, trace: [] };
+    const client = { listRuns: vi.fn().mockResolvedValue([summary]), getRunTrace: vi.fn().mockResolvedValue(record) } as unknown as ToolApiClient;
+    render(<StatusPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /sales_agent/ }));
+    await screen.findByRole('alert');
+    expect(screen.queryByText(/Failed in/)).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Open agent settings' }));
+    expect(consumePendingOpen('Agent')).toEqual({ internalId: 'sales-agent' });
+  });
+
+  it('日本語UIでは保存済み failure の文言・失敗箇所・トレース行が日本語になる', async () => {
+    const summary = { runId: 'run-ja', status: 'failed', mode: 'preview', agent: { internalId: 'sales-agent', version: '1.0.0', publishName: 'sales_agent' }, startedAt: '2026-07-03T00:00:00Z', failure: { code: 'ETL_SCHEMA', message: 'sort: column(s) not found: total', tool: { internalId: 'sales-lookup', publishName: 'sales_lookup' }, nodeId: 'sort-1' }, traceEventCount: 1 };
+    const record = { ...summary, scope, trace: [{ sequence: 1, kind: 'mcp-server-skipped', server: 'files', reason: 'unreachable', detail: 'ECONNREFUSED' }] };
+    const client = { listRuns: vi.fn().mockResolvedValue([summary]), getRunTrace: vi.fn().mockResolvedValue(record) } as unknown as ToolApiClient;
+    render(<I18nProvider initialLanguage="ja"><StatusPage client={client} /></I18nProvider>);
+    await userEvent.click(await screen.findByRole('button', { name: /sales_agent/ }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.querySelector('strong')?.textContent).toBe('sortノードで参照している列「total」を上流ノードの出力にある列名へ直すか、上流ノードの設定を見直してください');
+    expect(alert.textContent).toContain('失敗箇所: ツール sales_lookup · ノード sort-1');
+    expect(screen.getByRole('button', { name: 'ツール「sales_lookup」のノード「sort-1」を開いて直す' })).toBeTruthy();
+    expect(screen.getAllByText(/MCPサーバー「files」のツールを読み込めませんでした（接続失敗）.*詳細: ECONNREFUSED/).length).toBeGreaterThan(0);
   });
 });

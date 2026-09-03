@@ -26,6 +26,7 @@ import { RunAgentPreviewUseCase } from '../application/agent/run-agent-preview';
 import { QueryRunsUseCase } from '../application/agent/query-runs';
 import { EtlEngine } from '../application/etl/engine';
 import type { ModelProviderPort } from '../application/model/model-provider';
+import { DiagnoseToolUseCase } from '../application/tool/diagnose-tool';
 import { DraftToolUseCase } from '../application/tool/draft-tool';
 import { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
 import { PreviewToolUseCase } from '../application/tool/preview-tool';
@@ -334,6 +335,7 @@ export interface App {
   readonly generateAgentPrompt: GenerateAgentPromptUseCase;
   readonly deleteAgent: DeleteAgentUseCase;
   readonly diagnoseAgentTools: DiagnoseAgentToolsUseCase;
+  readonly diagnoseTool: DiagnoseToolUseCase;
   readonly saveHarness: SaveHarnessUseCase;
   readonly queryHarnesses: QueryHarnessesUseCase;
   readonly validateHarness: ValidateHarnessUseCase;
@@ -704,6 +706,8 @@ export function createApp(options?: AppOptions): App {
   // Stage 5-6（検証資産の決定的マテリアライズ + 検証実行、M3）+ 改善ループ（Analystロール + 改訂適用 + 停止条件・
   // レポート、M4）。
   const saveTool = new SaveToolUseCase(repo, engine, resolveDataSources);
+  // Tool 単位のプリフライト診断。未保存 draft のルートと Agent 診断の両方が同じインスタンスを使う。
+  const diagnoseTool = new DiagnoseToolUseCase(engine, resolveDataSources);
   const saveAgent = new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo, wikiAdapter.repo);
   const generateAgentPrompt = new GenerateAgentPromptUseCase(repo, skillAdapter.repo, agentAdapter.repo);
   const profileDataSources = new ProfileDataSourcesUseCase(dataSourceAdapter.repo, resolveDataSources, engine);
@@ -819,7 +823,15 @@ export function createApp(options?: AppOptions): App {
     queryAgents,
     generateAgentPrompt,
     deleteAgent: new DeleteAgentUseCase(agentAdapter.repo),
-    diagnoseAgentTools: new DiagnoseAgentToolsUseCase(repo, engine, skillAdapter.repo, agentAdapter.repo, resolveDataSources),
+    diagnoseTool,
+    diagnoseAgentTools: new DiagnoseAgentToolsUseCase(repo, engine, skillAdapter.repo, agentAdapter.repo, resolveDataSources, {
+      diagnoseTool,
+      mcpServers: mcpServerAdapter.repo,
+      // 切替可能な配線では保存済み設定を解決してから能力を読む（capabilities() は「最後に解決した
+      // アダプタ」の能力を返す同期契約。run-agent-preview の prepareLoop 前と同じ手順）。
+      modelCapabilities: async () => { await mainSwitchable?.currentSnapshot(); return modelProvider.capabilities(); },
+      webSearchConfigured: () => webSearch.listProviders().length > 0,
+    }),
     saveHarness: new SaveHarnessUseCase(harnessAdapter.repo, agentAdapter.repo),
     queryHarnesses: new QueryHarnessesUseCase(harnessAdapter.repo),
     validateHarness: new ValidateHarnessUseCase(agentAdapter.repo),
