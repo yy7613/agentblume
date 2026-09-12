@@ -6,6 +6,7 @@ import { InMemorySkillRepository } from '../../adapters/storage/in-memory-skill-
 import { InMemoryToolRepository } from '../../adapters/storage/in-memory-tool-repository';
 import { createDefaultRegistry } from '../../domain/etl/nodes';
 import type { ToolGraph } from '../../domain/etl/graph';
+import { FactoryAbortedError } from '../../domain/factory/errors';
 import type { ImprovementProposal } from '../../domain/factory/improvement-proposal';
 import type { VersionRef } from '../../domain/factory/refs';
 import { SemVer } from '../../domain/tool/semver';
@@ -13,6 +14,7 @@ import { GenerateAgentPromptUseCase } from '../agent/generate-agent-prompt';
 import { SaveAgentUseCase } from '../agent/save-agent';
 import { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import { EtlEngine } from '../etl/engine';
+import { ModelProviderError, type ModelCompletion, type ModelCompletionRequest } from '../model/model-provider';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
 import { ApplyImprovementsUseCase } from './apply-improvements';
@@ -75,7 +77,7 @@ function makeSequentialId(prefix: string): () => string {
   return () => { next += 1; return `${prefix}-${next}`; };
 }
 
-async function setup(options?: { readonly withToolCreation?: boolean; readonly unitOfWork?: UnitOfWorkPort }) {
+async function setup(options?: { readonly withToolCreation?: boolean; readonly unitOfWork?: UnitOfWorkPort; readonly model?: ScriptedModelProvider }) {
   const dataSources = new InMemoryDataSourceRepository();
   await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Sales', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 30, createdAt: '', updatedAt: '' }, 'id,amount\n1,100\n2,200');
   const engine = new EtlEngine(createDefaultRegistry());
@@ -88,7 +90,7 @@ async function setup(options?: { readonly withToolCreation?: boolean; readonly u
   const saveSkill = new SaveSkillUseCase(skillRepo, toolRepo);
   const saveAgent = new SaveAgentUseCase(agentRepo, toolRepo, skillRepo);
   const generateAgentPrompt = new GenerateAgentPromptUseCase(toolRepo, skillRepo, agentRepo);
-  const model = new ScriptedModelProvider();
+  const model = options?.model ?? new ScriptedModelProvider();
   const toolCreation = options?.withToolCreation === true
     ? { toolSmith: new ToolSmithRole(model), resolveDataSources: resolver, profiler: new ProfileDataSourcesUseCase(dataSources, resolver, engine) }
     : undefined;
@@ -116,6 +118,46 @@ async function setup(options?: { readonly withToolCreation?: boolean; readonly u
 
   return { agentRepo, skillRepo, toolRepo, saveAgent, model, useCase, agentRef, toolId: tool.metadata.internalId, skillId: skill.metadata.internalId };
 }
+
+/** 1回目の呼び出しで「接続中に abort された」adapter を模す: signal を abort してから**独自の**例外で失敗する（FactoryAbortedError ではない）。 */
+class MidflightAbortingModel extends ScriptedModelProvider {
+  calls = 0;
+  constructor(private readonly controller: AbortController) { super(); }
+  override async complete(): Promise<ModelCompletion> {
+    this.calls += 1;
+    this.controller.abort(new FactoryAbortedError('Cancelled by user'));
+    throw new ModelProviderError('connection reset');
+  }
+}
+
+describe('ApplyImprovementsUseCase（中断）', () => {
+  it('abort 済みの signal では提案を1件も適用せず FactoryAbortedError で抜け、Skill / Agent の新版を作らない', async () => {
+    const { agentRepo, skillRepo, useCase, agentRef, skillId } = await setup();
+    const controller = new AbortController();
+    controller.abort(new FactoryAbortedError('Cancelled by user'));
+    const proposal: ImprovementProposal = { kind: 'skill-instructions-revision', skillId, instructions: 'revised', rationale: 'r' };
+
+    await expect(useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4, signal: controller.signal })).rejects.toBeInstanceOf(FactoryAbortedError);
+
+    expect(await skillRepo.findVersion(scope, skillId, SemVer.of(1, 0, 1))).toBeNull();
+    expect(await agentRepo.listVersions(scope, agentRef.internalId)).toHaveLength(1);
+  });
+
+  it('add-tool の ToolSmith 呼び出しが abort で失敗しても「却下」へ丸めず FactoryAbortedError で抜け、再提案も Agent 新版も無い（適用済みの Skill 新版は draft として残る）', async () => {
+    const controller = new AbortController();
+    const model = new MidflightAbortingModel(controller);
+    const { agentRepo, skillRepo, useCase, agentRef, skillId } = await setup({ withToolCreation: true, model });
+    const revision: ImprovementProposal = { kind: 'skill-instructions-revision', skillId, instructions: 'revised before the cancel', rationale: 'r' };
+    const addTool: ImprovementProposal = { kind: 'add-tool', plan: { key: 'summary', displayName: 'Summarize Sales', purpose: 'Summarize all sales rows.', dataSourceId: 'ds-1', sideEffect: 'read-only' }, rationale: 'r' };
+
+    await expect(useCase.execute({ scope, agentRef, proposals: [revision, addTool], maxProposals: 4, maxRepairAttempts: 2, signal: controller.signal }))
+      .rejects.toBeInstanceOf(FactoryAbortedError);
+
+    expect(model.calls).toBe(1); // 修復再試行（2回目）は無い。
+    expect(await skillRepo.findVersion(scope, skillId, SemVer.of(1, 0, 1))).not.toBeNull();
+    expect(await agentRepo.listVersions(scope, agentRef.internalId)).toHaveLength(1); // 新版は作られない。
+  });
+});
 
 describe('ApplyImprovementsUseCase', () => {
   it('skill-instructions-revision: 新しいSkill版と新しいAgent版を作る', async () => {

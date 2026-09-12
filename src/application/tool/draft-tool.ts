@@ -8,6 +8,7 @@ import type { EtlEngine, PreviewResult, PropagationResult } from '../etl/engine'
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 
 export interface DraftPreviewOptions {
+  /** 表示用スナップショットの行数（engine.preview の rowLimit）。計算は常に全行で行われる。 */
   readonly rowLimit?: number;
 }
 

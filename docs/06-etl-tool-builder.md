@@ -96,7 +96,7 @@ flowchart LR
 | `time-series-analysis` | 時刻列、値列、timezone、interval、集計、欠損bucket補完、window/lag | bucket/seriesごとのlong形式時系列表 |
 | `outlier-filter` | IQR/z-score/MAD、閾値、flag/exclude | 判定列付き、または除外済みの表 |
 
-外れ値は監査しやすい`flag`を推奨し、`exclude`時も除外前後の件数と規則を診断へ残す。時系列はIANA timezoneの暦境界（DSTを含む）を使用し、`zero`/`forward`で欠損bucketを補完できる。アルゴリズム、上限、欠損値、timezone、LLM設定補助の詳細は [ADR-0031](./adr/0031-analytical-nodes-chart-output-and-local-llm-assistance.md) と [v31実装計画](../implementation/v31-analytics-chart-output-llm-assistance.md) を参照。
+外れ値は監査しやすい`flag`を推奨し、`exclude`時も除外前後の件数と規則を診断へ残す。時系列はIANA timezoneの暦境界（DSTを含む）を使用し、`zero`/`forward`で欠損bucketを補完できる（補完はパーティションあたり100,000 bucketまで。超えると期間を狭めるか粗いintervalを選ぶよう促すエラーになる）。アルゴリズム、上限、欠損値、timezone、LLM設定補助の詳細は [ADR-0031](./adr/0031-analytical-nodes-chart-output-and-local-llm-assistance.md) と [v31実装計画](../implementation/v31-analytics-chart-output-llm-assistance.md) を参照。
 
 ### 2.4 出力 (sink)
 
@@ -292,7 +292,8 @@ flowchart TB
 | 規則 | 内容 |
 |---|---|
 | データソース | 固定サンプル or 明示取得キャッシュのみ |
-| 制限 | 行数・データサイズ・実行時間を制限 |
+| 制限（表示） | `rowLimit`（既定 100 行）は画面へ返すスナップショットの行数だけを絞る。計算は常に全行で行い、各ノードは全行数 `rowCount` と `truncated` を返す（UI は「全 1,250 行のうち 100 行を表示」と示す）。終端の全行（`fullOutput`）はブラウザへ送らない |
+| 制限（実行） | 1 ノードの生成行数の上限は 250,000 行（`DEFAULT_MAX_EXECUTION_ROWS`）。超過は切り捨てず `nodeId` 付きの `ETL_SCHEMA`（422）で止める。`join` は出力 100,000 行（`MAX_JOIN_ROWS`）、`time-series-analysis` の欠損 bucket 補完はパーティションあたり 100,000 bucket（`MAX_TIME_SERIES_FILL_BUCKETS`）で先に止まる。Agent 実行の Tool call も同じ規則で全行を計算する（[07 §3](./07-execution-model.md#3-agentチャット実行tool-calling)） |
 | 書き込み | プレビューでは実行しない。代わりに入力と予想操作内容を表示 |
 | 外部API | 保存済みレスポンスへ切替可能（課金・レート制限・外部状態に非依存） |
 | モード表示 | preview / test / production を明確に表示し、使用データと権限を分離 |

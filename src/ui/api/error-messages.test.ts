@@ -176,6 +176,35 @@ describe('code ベースの見出し', () => {
   });
 });
 
+/**
+ * 403 の原文（`src/api/authorization.ts`）は必要な権限名しか言わない。画面では
+ * 「何の操作に・どのロールが要るか・誰に頼むか」まで出す。
+ */
+describe('認可の拒否（403 FORBIDDEN）', () => {
+  const MCP_DENIED = "this operation requires the 'mcp-server:operate' permission";
+
+  it('mcp-server:operate は必要なロールと理由まで書き、見出しの「許可されていません」だけで終わらせない', () => {
+    expect(ja(403, 'FORBIDDEN', MCP_DENIED)).toBe('MCPサーバーの設定変更と接続テストには operate 権限（operator / workspace-admin）が必要です。この権限はサーバーホスト上でコマンドを実行できる権限に等しいため、必要な場合は管理者にロールの付与を依頼してください');
+    expect(en(403, 'FORBIDDEN', MCP_DENIED)).toBe("Changing MCP server settings and running connection tests requires the 'mcp-server:operate' permission (operator or workspace-admin role). This permission is equivalent to running commands on the server host, so ask an administrator to grant the role if you need it");
+  });
+
+  it('他の権限は権限名を言い換え、英語は原文を残す', () => {
+    expect(ja(403, 'FORBIDDEN', "this operation requires the 'tool:delete' permission")).toBe("この操作には 'tool:delete' 権限が必要です。必要な場合は管理者にロールの付与を依頼してください");
+    expect(en(403, 'FORBIDDEN', "this operation requires the 'tool:delete' permission")).toBe("This operation is not permitted (this operation requires the 'tool:delete' permission)");
+    // ハンドラ内の追加判定（`authorizeOf`）はリソース種別無しの権限名で来る。
+    expect(ja(403, 'FORBIDDEN', "this operation requires the 'approve' permission")).toBe("この操作には 'approve' 権限が必要です。必要な場合は管理者にロールの付与を依頼してください");
+  });
+
+  it('定型文でない 403 は見出し + 原文のまま（詳細を握りつぶさない）', () => {
+    expect(ja(403, 'FORBIDDEN', 'workspace is read-only')).toBe('この操作は許可されていません（workspace is read-only）');
+    expect(ja(403, 'FORBIDDEN', '')).toBe('この操作は許可されていません');
+  });
+
+  it('code が FORBIDDEN でなければ定型文でも見出しを付ける（別系統の 403 と混同しない）', () => {
+    expect(ja(403, 'UNSAFE_TOOL', MCP_DENIED)).toContain('このツールは現在のモードでは実行できません');
+  });
+});
+
 describe('status フォールバック（未知の code）', () => {
   it.each([
     [401, '認証が必要です'],
@@ -326,6 +355,26 @@ describe('ETL定型文の日本語化（GraphError / ConfigError / SchemaError�
     expect(ja(422, 'ETL_GRAPH', raw)).toBe(`ノードの接続を確認してください（${japaneseDetail}）`);
     // 英語UIでは詳細を変換せず原文のまま残す（詳細を握りつぶさない）。
     expect(en(422, 'ETL_GRAPH', raw)).toBe(`Please check the node connections (${raw})`);
+  });
+
+  it('実行上限・プレビュー引数・時系列補完上限の新メッセージを次の一手つきで和訳し、英語は原文を保つ', () => {
+    const cap = 'group-by: produced 300000 rows, exceeding the execution limit of 250000 rows';
+    expect(ja(422, 'ETL_SCHEMA', cap)).toContain('ノード（group-by）の出力が 300,000 行になり、実行上限の 250,000 行を超えました');
+    expect(ja(422, 'ETL_SCHEMA', cap)).toContain('行数を減らす');
+    expect(en(422, 'ETL_SCHEMA', cap)).toContain('produced 300000 rows, exceeding the execution limit of 250000 rows');
+    expect(ja(422, 'ETL_CONFIG', 'preview: rowLimit must be a non-negative integer, received -1')).toContain('0 以上の整数');
+    expect(ja(422, 'ETL_CONFIG', 'preview: rowLimit must be a non-negative integer, received -1')).toContain('受け取った値: -1');
+    expect(ja(422, 'ETL_CONFIG', 'preview: maxRows must be a positive integer, received 0')).toContain('1 以上の整数');
+    // セミコロンを含む1文が分割されずに丸ごと和訳される（"narrow the time range" が原文のまま残らない）。
+    const fill = ja(422, 'ETL_SCHEMA', 'time-series-analysis: fill would generate more than 100000 buckets; narrow the time range or choose a coarser interval');
+    expect(fill).toContain('100,000 バケットを超えます');
+    expect(fill).toContain('interval を粗く');
+    expect(fill).not.toContain('narrow the time range');
+    // 境界: 1 バケット・桁区切り入りの巨大値でも落ちない。
+    expect(ja(422, 'ETL_SCHEMA', 'time-series-analysis: fill would generate more than 1 buckets; narrow the time range or choose a coarser interval')).toContain('1 バケット');
+    expect(ja(422, 'ETL_SCHEMA', 'source: produced 1,000,000,000 rows, exceeding the execution limit of 250,000 rows')).toContain('1,000,000,000 行');
+    // ノードidつき（診断の detail 形）でも本文が和訳される。
+    expect(localizeDiagnosticDetail('aggregate-1: group-by: produced 300000 rows, exceeding the execution limit of 250000 rows', 'ja')).toContain('実行上限');
   });
 
   it('join: output exceeded 100000 rows 系（セミコロン無し）を10万行超過の案内へ変換する', () => {

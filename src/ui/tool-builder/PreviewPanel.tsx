@@ -33,12 +33,22 @@ export function PreviewPanel() {
       {unconnected.length > 0 && <div className="inline-issue warning unconnected-notice">{text(`Not connected: ${unconnected.join(', ')}. Connect every node into the flow that ends at the output node.`, `未接続のノード: ${unconnected.join('、')}。出力ノードへ至る流れにつなげてください`)}</div>}
       {inference !== undefined && <div className="schema-strip">{inference.schema.columns.map((column) => <div key={column.name}><strong>{column.name}</strong><span>{column.type}{column.nullable ? ' · nullable' : ''}</span></div>)}</div>}
       {inference?.issues.map((issue, index) => <div className={`inline-issue ${issue.severity}`} key={`${issue.message}-${index}`}>{localizeSchemaIssueMessage(issue.message, language)}</div>)}
-      {table === undefined ? <p className="empty-state">{text('Sample rows appear when the graph is valid.', 'グラフが有効になるとサンプル行が表示されます。')}</p> : <TablePreview table={table} truncated={nodePreview?.truncated ?? false} />}
+      {table === undefined ? <p className="empty-state">{text('Sample rows appear when the graph is valid.', 'グラフが有効になるとサンプル行が表示されます。')}</p> : <TablePreview table={table} truncated={nodePreview?.truncated ?? false} rowCount={nodePreview?.rowCount ?? table.rows.length} />}
     </section>
   );
 }
 
-function TablePreview({ table, truncated }: { readonly table: TableDto; readonly truncated: boolean }) {
+function formatCount(value: number): string {
+  return value.toLocaleString('en-US');
+}
+
+function TablePreview({ table, truncated, rowCount }: { readonly table: TableDto; readonly truncated: boolean; readonly rowCount: number }) {
   const { text } = useI18n();
-  return <div className="table-wrap"><table><thead><tr>{table.schema.columns.map((column) => <th key={column.name}>{column.name}</th>)}</tr></thead><tbody>{table.rows.map((row, index) => <tr key={index}>{table.schema.columns.map((column) => <td key={column.name}>{displayCell(row[column.name] ?? null)}</td>)}</tr>)}</tbody></table>{truncated && <small>{text('Truncated to 100 rows.', '100行で切り詰めました。')}</small>}</div>;
+  const shown = table.rows.length;
+  // 表は表示用スナップショットに過ぎない（計算は全行で行われている）。全行数を必ず添えて、
+  // 「このノードは 100 行しか出していない」と誤読させない。
+  const summary = truncated
+    ? text(`Showing ${formatCount(shown)} of ${formatCount(rowCount)} rows.`, `全 ${formatCount(rowCount)} 行のうち ${formatCount(shown)} 行を表示`)
+    : text(`${formatCount(rowCount)} row${rowCount === 1 ? '' : 's'}`, `${formatCount(rowCount)} 行`);
+  return <div className="table-wrap"><table><thead><tr>{table.schema.columns.map((column) => <th key={column.name}>{column.name}</th>)}</tr></thead><tbody>{table.rows.map((row, index) => <tr key={index}>{table.schema.columns.map((column) => <td key={column.name}>{displayCell(row[column.name] ?? null)}</td>)}</tr>)}</tbody></table><small className="row-count">{summary}</small></div>;
 }

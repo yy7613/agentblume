@@ -7,7 +7,7 @@
  * 生成するドキュメントはバックエンド（domain/mcp/mcp-servers-document.ts）と同じ規約に従う:
  * name昇順・既定値（空のargs/env/headers・cwd未設定・disabled:false）はキーごと省略。
  */
-import type { McpServerDto, McpTransportDto } from '../api/types';
+import type { AuthSessionDto, McpServerDto, McpTransportDto } from '../api/types';
 
 /** 標準ドキュメント上の1サーバー分。省略キーは既定値を意味する。 */
 export interface McpServersDocumentEntryDto {
@@ -20,6 +20,21 @@ export interface McpServersDocumentEntryDto {
   readonly disabled?: boolean;
 }
 export interface McpServersDocumentDto { readonly mcpServers: Readonly<Record<string, McpServersDocumentEntryDto>> }
+
+/** MCPサーバー設定の変更・接続テストに必要な権限（`src/api/authorization.ts` の表）を持つロール。 */
+const MCP_OPERATE_ROLES: ReadonlySet<string> = new Set(['operator', 'workspace-admin']);
+
+/**
+ * MCPサーバー設定の変更・接続テストを行える主体か（`mcp-server:operate` ＝ operator / workspace-admin）。
+ *
+ * 判定はサーバー側（`src/api/authorization.ts`）が必ず行う。ここは「押しても 403 になるボタン」を
+ * 先に無効化して理由を出すための**表示上の先読み**で、セッションが取れない（旧クライアント・
+ * 取得失敗）ときは無効化しない（サーバーの判定に委ねる）。単一ユーザーモードは全ロールを持つので通る。
+ */
+export function canOperateMcpServers(session: Pick<AuthSessionDto, 'principal'> | undefined): boolean {
+  if (session === undefined) return true;
+  return session.principal.roles.some((role) => MCP_OPERATE_ROLES.has(role));
+}
 
 /** 追加/編集フォームの生の入力値（複数行入力は文字列のまま保持する）。 */
 export interface McpServerFormValue {

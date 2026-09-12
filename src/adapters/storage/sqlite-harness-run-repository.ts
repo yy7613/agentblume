@@ -12,6 +12,13 @@ export class SqliteHarnessRunRepository extends SqliteRepositoryBase implements 
   async save(record: HarnessRunRecord): Promise<void> {
     this.db.prepare(`INSERT INTO harness_runs (tenant_id, workspace_id, run_id, status, started_at, record_json) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, workspace_id, run_id) DO UPDATE SET status = excluded.status, record_json = excluded.record_json`).run(record.scope.tenantId, record.scope.workspaceId, record.runId, record.status, record.startedAt, JSON.stringify(record));
   }
+  async saveIfStatus(record: HarnessRunRecord, expected: readonly HarnessRunStatus[]): Promise<boolean> {
+    if (expected.length === 0) return false;
+    // 判定と書き込みを1文にまとめる: 読んでから書く二段構えでは、その隙間に cancel() が入り込める。
+    const result = this.db.prepare(`UPDATE harness_runs SET status = ?, record_json = ? WHERE tenant_id = ? AND workspace_id = ? AND run_id = ? AND status IN (${expected.map(() => '?').join(', ')})`)
+      .run(record.status, JSON.stringify(record), record.scope.tenantId, record.scope.workspaceId, record.runId, ...expected);
+    return Number(result.changes) > 0;
+  }
   async find(scope: TenantScope, runId: string): Promise<HarnessRunRecord | null> { const row = this.db.prepare(`SELECT record_json FROM harness_runs WHERE tenant_id = ? AND workspace_id = ? AND run_id = ?`).get(scope.tenantId, scope.workspaceId, runId); return row === undefined ? null : fromJson(row['record_json']); }
   async list(scope: TenantScope, options?: { readonly limit?: number; readonly status?: HarnessRunRecord['status'] }): Promise<HarnessRunRecord[]> {
     const rows = options?.status === undefined

@@ -21,7 +21,7 @@ const valid: PropagationResultDto = {
 };
 const sample: PreviewResultDto = {
   terminalId: 'filter-1', output: { schema: { columns: [{ name: 'age', type: 'number', nullable: false }] }, rows: [{ age: 30 }] },
-  nodes: { 'filter-1': { nodeId: 'filter-1', truncated: false, table: { schema: { columns: [{ name: 'age', type: 'number', nullable: false }] }, rows: [{ age: 30 }] } } },
+  nodes: { 'filter-1': { nodeId: 'filter-1', truncated: false, rowCount: 1, table: { schema: { columns: [{ name: 'age', type: 'number', nullable: false }] }, rows: [{ age: 30 }] } } },
 };
 
 beforeEach(() => { localStorage.clear(); useToolBuilderStore.getState().reset(); vi.useFakeTimers(); });
@@ -150,7 +150,7 @@ describe('ToolBuilder preview integration', () => {
     const joinPreview: PreviewResultDto = {
       terminalId: 'join-1',
       output: { schema: { columns: [...joinColumns] }, rows: [{ id: 1, name: 'Alice', score: 90 }] },
-      nodes: { 'join-1': { nodeId: 'join-1', truncated: false, table: { schema: { columns: [...joinColumns] }, rows: [{ id: 1, name: 'Alice', score: 90 }] } } },
+      nodes: { 'join-1': { nodeId: 'join-1', truncated: false, rowCount: 1, table: { schema: { columns: [...joinColumns] }, rows: [{ id: 1, name: 'Alice', score: 90 }] } } },
     };
     const inferDraft = vi.fn().mockResolvedValue(joinPropagation);
     const previewDraft = vi.fn().mockResolvedValue(joinPreview);

@@ -55,15 +55,45 @@ describe('draft tool routes', () => {
     expect(response.json().propagation.nodes.adult.issues[0].column).toBe('missing');
   });
 
-  it('POST /tool-drafts/preview は rowLimit を適用する', async () => {
+  it('POST /tool-drafts/preview は全行で計算し、返す行数だけ rowLimit で絞る（各ノードに rowCount、fullOutput は返さない）', async () => {
     const response = await server.inject({
       method: 'POST',
       url: '/tool-drafts/preview',
       payload: { graph, rowLimit: 1 },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json().result.nodes.source.truncated).toBe(true);
-    expect(response.json().result.nodes.source.table.rows).toHaveLength(1);
+    const { result } = response.json();
+    expect(result.nodes.source).toMatchObject({ truncated: true, rowCount: 2 });
+    expect(result.nodes.source.table.rows).toHaveLength(1);
+    // filter は 2 行全部から計算するので 20 を残す（修正前は切り詰めた 1 行 [17] から計算し、空だった）。
+    expect(result.nodes.adult).toMatchObject({ truncated: false, rowCount: 1 });
+    expect(result.output.rows).toEqual([{ age: 20 }]);
+    // 終端の全行（最大 25 万行）はブラウザへ送らない。
+    expect(result).not.toHaveProperty('fullOutput');
+  });
+
+  describe('POST /tool-drafts/preview の rowLimit 境界', () => {
+    it.each([1, 10000])('rowLimit=%s は 200', async (rowLimit) => {
+      const response = await server.inject({ method: 'POST', url: '/tool-drafts/preview', payload: { graph, rowLimit } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().result.nodes.source.rowCount).toBe(2);
+    });
+
+    it.each([0, -1, 1.5, 10001])('rowLimit=%s は 400 BAD_REQUEST（API は 1〜10000 の整数だけ受ける）', async (rowLimit) => {
+      const response = await server.inject({ method: 'POST', url: '/tool-drafts/preview', payload: { graph, rowLimit } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toMatchObject({ code: 'BAD_REQUEST', message: expect.stringContaining('rowLimit') });
+    });
+  });
+
+  it('実行上限（250,000 行）を超えるノードは 422 ETL_SCHEMA で止まる（切り捨てて 200 にしない）', async () => {
+    const huge = { nodes: [{ id: 'source', type: 'json-source', config: { rows: Array.from({ length: 250_001 }, () => ({ v: 1 })) } }], edges: [] };
+    const response = await server.inject({ method: 'POST', url: '/tool-drafts/preview', payload: { graph: huge } });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().error).toMatchObject({
+      code: 'ETL_SCHEMA',
+      message: 'json-source: produced 250001 rows, exceeding the execution limit of 250000 rows',
+    });
   });
 
   it('POST /tool-drafts/diagnose は未保存Toolを保存せずに診断し、版は 0.0.0 で報告する', async () => {

@@ -167,8 +167,8 @@ describe('ロールごとの許可と拒否', () => {
     expect((await server.inject({ method: 'GET', url: '/operations/status', headers: auth })).statusCode).toBe(200);
     expect((await server.inject({ method: 'GET', url: '/operations/audit', headers: auth })).statusCode).toBe(200);
     expect((await server.inject({ method: 'DELETE', url: '/tools/anything', headers: auth })).statusCode).toBe(403);
-    // 公開（deployment）は Publisher / Admin だけ。MCP公開の入口で確かめる。
-    expect((await server.inject({ method: 'DELETE', url: '/mcp-servers/anything', headers: auth })).statusCode).toBe(403);
+    // MCPサーバー設定は運用権限（operate）なので、operator は認可を通って 404（未登録）まで到達する。
+    expect((await server.inject({ method: 'DELETE', url: '/mcp-servers/anything', headers: auth, query: SCOPE })).statusCode).toBe(404);
   });
 
   it('workspace-admin は削除できる', async () => {
@@ -233,6 +233,68 @@ describe('ロールごとの許可と拒否', () => {
     expect(JSON.stringify(body)).not.toContain('rita');
   });
 
+  /**
+   * MCPサーバー設定は**サーバーホスト上でのコード実行権限**に等しい（stdio は子プロセスの起動。
+   * `POST /mcp-servers/:name/test` は Agent 実行を伴わず即プロセスを起動する）。
+   * 以前は create / edit / delete / execute で、`roles` を書かないトークンの既定が editor なので、
+   * トークンを持つ全員がホストでコードを実行できた。いまは変更系すべてが `mcp-server:operate`。
+   */
+  describe('MCPサーバー設定（ホスト上のコード実行権限に等しい）', () => {
+    const mcpServer = { name: 'fs', transport: { kind: 'stdio', command: 'npx', args: ['-y', 'srv'] } };
+    const mutations = [
+      ['POST', '/mcp-servers', { scope: SCOPE, server: mcpServer }],
+      ['PUT', '/mcp-servers', { scope: SCOPE, mcpServers: { fs: { command: 'npx' } } }],
+      ['DELETE', '/mcp-servers/fs', undefined],
+      ['POST', '/mcp-servers/fs/test', { scope: SCOPE }],
+    ] as const;
+    const DENIED = "this operation requires the 'mcp-server:operate' permission";
+
+    it('表の割り当て: 参照は read、作成・置換・削除・接続テストは operate（監査つき）', () => {
+      expect(explicitRouteAuthorization('GET', '/mcp-servers')).toMatchObject({ action: 'read', kind: 'mcp-server' });
+      for (const [method, url] of mutations) {
+        expect(explicitRouteAuthorization(method, url.replace('/fs', '/:name')), `${method} ${url}`).toMatchObject({ action: 'operate', kind: 'mcp-server', audit: true });
+      }
+    });
+
+    it.each(['viewer', 'editor', 'publisher'] as const)('%s は一覧を読めるが、変更系と接続テストは 403（必要な権限だけを伝える）', async (role) => {
+      const server = serverFor([role]);
+      expect((await server.inject({ method: 'GET', url: '/mcp-servers', headers: auth, query: SCOPE })).statusCode).toBe(200);
+      for (const [method, url, payload] of mutations) {
+        const response = await server.inject({ method, url, headers: auth, ...(payload === undefined ? { query: SCOPE } : { payload }) });
+        expect(response.statusCode, `${role} ${method} ${url}`).toBe(403);
+        expect(response.json().error).toEqual({ code: 'FORBIDDEN', message: DENIED });
+      }
+      // 何も保存されていない。
+      expect((await server.inject({ method: 'GET', url: '/mcp-servers', headers: auth, query: SCOPE })).json()).toEqual({ servers: [] });
+    });
+
+    it.each(['operator', 'workspace-admin'] as const)('%s は作成・置換・削除・接続テストが認可を通る', async (role) => {
+      const server = serverFor([role]);
+      expect((await server.inject({ method: 'POST', url: '/mcp-servers', headers: auth, payload: { scope: SCOPE, server: mcpServer } })).statusCode).toBe(201);
+      expect((await server.inject({ method: 'PUT', url: '/mcp-servers', headers: auth, payload: { scope: SCOPE, mcpServers: { fs: { command: 'uvx', args: ['srv'] } } } })).statusCode).toBe(200);
+      // 接続テストは認可を通り、存在しないサーバーとして 404 まで到達する（登録済みを指すと実プロセスが起きるので指さない）。
+      expect((await server.inject({ method: 'POST', url: '/mcp-servers/missing/test', headers: auth, payload: { scope: SCOPE } })).statusCode).toBe(404);
+      expect((await server.inject({ method: 'DELETE', url: '/mcp-servers/fs', headers: auth, query: SCOPE })).statusCode).toBe(204);
+    });
+
+    it('editor の拒否は監査に残る（誰が・どの経路で・何が足りなかったか）', async () => {
+      const server = serverFor(['editor']);
+      await server.inject({ method: 'POST', url: '/mcp-servers/fs/test', headers: auth, payload: { scope: SCOPE } });
+      await settle();
+      const entries = await audit.list(SCOPE, { outcome: 'denied' });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ subject: 'rita', action: 'operate', resource: { kind: 'mcp-server', id: 'fs' }, outcome: 'denied' });
+      expect(entries[0]?.detail).toMatchObject({ method: 'POST', route: '/mcp-servers/:name/test', reason: DENIED });
+    });
+
+    it('operator の設定変更は運用操作として監査に残る', async () => {
+      const server = serverFor(['operator']);
+      await server.inject({ method: 'POST', url: '/mcp-servers', headers: auth, payload: { scope: SCOPE, server: mcpServer } });
+      await settle();
+      expect(await audit.list(SCOPE, { action: 'operate' })).toMatchObject([{ subject: 'rita', outcome: 'succeeded', resource: { kind: 'mcp-server' } }]);
+    });
+  });
+
   it('認可プロバイダーが落ちていたら拒否する（素通しにしない）', async () => {
     const server = buildServer(app, {
       authentication: rolesAuth(['workspace-admin']),
@@ -252,6 +314,21 @@ describe('単一ユーザーモード', () => {
     expect((await server.inject({ method: 'GET', url: '/operations/status' })).statusCode).toBe(200);
     expect((await server.inject({ method: 'DELETE', url: '/tools/local-tool' })).statusCode).toBe(204);
     expect((await server.inject({ method: 'GET', url: '/operations/audit' })).statusCode).toBe(200);
+  });
+
+  /**
+   * MCP 設定を `operate` に上げても、単一ユーザーモード（トークン未設定・ループバック限定）の
+   * ローカル利用者は全ロールを持つので従来どおり設定できる。ここを落とすと「更新したら MCP 画面が
+   * 使えなくなった」になるので、明示的に固定する。
+   */
+  it('MCP設定も通る（ローカル利用者は operator / workspace-admin を含む全ロールを持つ）', async () => {
+    const server = buildServer(app, { authentication: new SingleUserAuthentication() });
+    const session = await server.inject({ method: 'GET', url: '/auth/session' });
+    expect(session.json().session).toMatchObject({ mode: 'single-user', authenticationRequired: false });
+    expect(session.json().session.principal.roles).toEqual(expect.arrayContaining(['operator', 'workspace-admin']));
+    expect((await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope: SCOPE, server: { name: 'fs', transport: { kind: 'stdio', command: 'npx', args: ['-y', 'srv'] } } } })).statusCode).toBe(201);
+    expect((await server.inject({ method: 'PUT', url: '/mcp-servers', payload: { scope: SCOPE, mcpServers: { fs: { command: 'uvx' } } } })).statusCode).toBe(200);
+    expect((await server.inject({ method: 'DELETE', url: '/mcp-servers/fs', query: SCOPE })).statusCode).toBe(204);
   });
 
   it('authorization を渡さない配線でも判定は入る（素通しにならない）', async () => {
@@ -309,10 +386,11 @@ describe('監査ログ', () => {
 
   it('失敗した破壊的操作は failed として残る', async () => {
     const server = serverFor(['workspace-admin']);
-    await server.inject({ method: 'DELETE', url: '/mcp-servers/missing', headers: auth });
+    await server.inject({ method: 'DELETE', url: '/mcp-servers/missing', headers: auth, query: SCOPE });
     await settle();
     const entries = await audit.list(SCOPE, { resourceKind: 'mcp-server' });
-    expect(entries[0]).toMatchObject({ action: 'delete', outcome: 'failed' });
+    // MCP設定の削除は運用操作（operate）として記録される。
+    expect(entries[0]).toMatchObject({ action: 'operate', outcome: 'failed' });
   });
 
   it('認証に失敗した試行を残す（誰かは分からないが弾いた事実は残す）', async () => {

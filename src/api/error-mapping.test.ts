@@ -45,6 +45,18 @@ describe('toHttpError', () => {
     },
   );
 
+  it('ETLエラーは engine が付けた nodeId を本文へ載せ、無いときはキー自体を出さない', () => {
+    const withNode = new SchemaError('group-by: produced 300000 rows, exceeding the execution limit of 250000 rows');
+    withNode.nodeId = 'aggregate-1';
+    expect(toHttpError(withNode)).toEqual({ status: 422, body: { error: { code: 'ETL_SCHEMA', message: withNode.message, nodeId: 'aggregate-1' } } });
+    const config = new ConfigError('preview: maxRows must be a positive integer, received 0');
+    config.nodeId = 'source';
+    expect(toHttpError(config).body.error).toEqual({ code: 'ETL_CONFIG', message: config.message, nodeId: 'source' });
+    const bare = toHttpError(new GraphError('graph has a cycle'));
+    expect(bare).toEqual({ status: 422, body: { error: { code: 'ETL_GRAPH', message: 'graph has a cycle' } } });
+    expect(Object.hasOwn(bare.body.error, 'nodeId')).toBe(false);
+  });
+
   it('RunFailedErrorは元status/codeを維持してrunIdを付ける', () => {
     expect(toHttpError(new RunFailedError('run-1', new ModelProviderError('offline')))).toEqual({
       status: 502, body: { error: { code: 'MODEL_PROVIDER', message: 'offline', runId: 'run-1' } },

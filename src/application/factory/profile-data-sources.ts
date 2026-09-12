@@ -12,6 +12,7 @@ import type { DataSourceId } from '../../domain/data-source/ids';
 import type { DataSourceRepository } from '../../domain/data-source/data-source-repository';
 import { FactoryValidationError } from '../../domain/factory/errors';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
+import { throwIfAborted } from './abort';
 
 export interface ColumnProfile {
   readonly name: string;
@@ -69,9 +70,13 @@ export class ProfileDataSourcesUseCase {
     };
   }
 
-  async executeAll(scope: TenantScope, dataSourceIds: readonly DataSourceId[]): Promise<DataProfile[]> {
+  /** 複数 data source を順にプロファイルする。`signal` は data source の合間で確認する（1件のプロファイルは中断できない同期処理）。 */
+  async executeAll(scope: TenantScope, dataSourceIds: readonly DataSourceId[], signal?: AbortSignal): Promise<DataProfile[]> {
     const profiles: DataProfile[] = [];
-    for (const dataSourceId of dataSourceIds) profiles.push(await this.execute(scope, dataSourceId));
+    for (const dataSourceId of dataSourceIds) {
+      throwIfAborted(signal);
+      profiles.push(await this.execute(scope, dataSourceId));
+    }
     return profiles;
   }
 }

@@ -26,7 +26,7 @@ const preview: PreviewResultDto = {
   terminalId: 'filter-1',
   output: { schema: { columns: [{ name: 'age', type: 'number', nullable: false }] }, rows: [{ age: 30 }] },
   nodes: {
-    'filter-1': { nodeId: 'filter-1', truncated: false, table: { schema: { columns: [{ name: 'age', type: 'number', nullable: false }] }, rows: [{ age: 30 }] } },
+    'filter-1': { nodeId: 'filter-1', truncated: false, rowCount: 1, table: { schema: { columns: [{ name: 'age', type: 'number', nullable: false }] }, rows: [{ age: 30 }] } },
   },
 };
 
@@ -278,6 +278,35 @@ describe('PreviewPanel', () => {
     });
     render(<PreviewPanel />);
     expect(screen.getByText("chart-output: mapping 'timeColumn' is required")).toBeTruthy();
+  });
+
+  /** 1,250 行の計算結果のうち先頭 100 行だけがスナップショットとして届いた状態。 */
+  const truncatedPreview: PreviewResultDto = {
+    ...preview,
+    output: { ...preview.output, rows: Array.from({ length: 100 }, (_, index) => ({ age: index })) },
+    nodes: { 'filter-1': { nodeId: 'filter-1', truncated: true, rowCount: 1250, table: { ...preview.output, rows: Array.from({ length: 100 }, (_, index) => ({ age: index })) } } },
+  };
+
+  it('スナップショットが切り詰められていれば「全 M 行のうち N 行を表示」と全行数を示す（日本語）', () => {
+    useToolBuilderStore.getState().setPropagation(propagation);
+    useToolBuilderStore.getState().setPreview(truncatedPreview);
+    render(<I18nProvider initialLanguage="ja"><PreviewPanel /></I18nProvider>);
+    expect(screen.getByText('全 1,250 行のうち 100 行を表示')).toBeTruthy();
+  });
+
+  it('英語UIでは "Showing N of M rows." と全行数を示す', () => {
+    useToolBuilderStore.getState().setPropagation(propagation);
+    useToolBuilderStore.getState().setPreview(truncatedPreview);
+    render(<PreviewPanel />);
+    expect(screen.getByText('Showing 100 of 1,250 rows.')).toBeTruthy();
+  });
+
+  it('切り詰めが無ければ行数だけを示す', () => {
+    useToolBuilderStore.getState().setPropagation(propagation);
+    useToolBuilderStore.getState().setPreview(preview);
+    render(<PreviewPanel />);
+    expect(screen.getByText('1 row')).toBeTruthy();
+    expect(screen.queryByText(/Showing/)).toBeNull();
   });
 });
 

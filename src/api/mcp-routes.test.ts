@@ -1,7 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { McpClientError, type McpClientPort, type McpToolDescriptor } from '../application/mcp/mcp-client';
-import type { McpServerConfig } from '../domain/mcp/mcp-server';
+import { authenticated, rejected, type AuthenticationPort } from '../application/security/authentication';
+import { createMcpServerConfig, type McpServerConfig } from '../domain/mcp/mcp-server';
+import type { AuthorizationRole } from '../domain/security/authorization';
+import { SdkMcpClient } from '../adapters/mcp/sdk-mcp-client';
+import { RoleMatrixAuthorization } from '../adapters/security/role-matrix-authorization';
 import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { createApp, type App } from '../composition/root';
 import { buildServer } from './server';
@@ -69,8 +73,8 @@ describe('mcp routes', () => {
   });
 
   it('args / env / headers を省略すると既定値（空）になる', async () => {
-    const saved = await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: { name: 'minimal', transport: { kind: 'stdio', command: 'node' } } } });
-    expect(saved.json().server.transport).toEqual({ kind: 'stdio', command: 'node', args: [], env: {} });
+    const saved = await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: { name: 'minimal', transport: { kind: 'stdio', command: 'npx' } } } });
+    expect(saved.json().server.transport).toEqual({ kind: 'stdio', command: 'npx', args: [], env: {} });
   });
 
   it.each([
@@ -92,11 +96,11 @@ describe('mcp routes', () => {
 
   describe('PUT /mcp-servers（標準mcpServersドキュメントの一括適用）', () => {
     it('スコープ内の設定を丸ごと置き換える', async () => {
-      await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: { name: 'stale', transport: { kind: 'stdio', command: 'node' } } } });
+      await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: { name: 'stale', transport: { kind: 'stdio', command: 'npx' } } } });
 
       const applied = await server.inject({
         method: 'PUT', url: '/mcp-servers',
-        payload: { scope, mcpServers: { filesystem: { command: 'npx', args: ['-y', 'server'] }, remote: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer x' } }, paused: { command: 'node', disabled: true } } },
+        payload: { scope, mcpServers: { filesystem: { command: 'npx', args: ['-y', 'server'] }, remote: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer x' } }, paused: { command: 'uvx', disabled: true } } },
       });
       expect(applied.statusCode).toBe(200);
       expect(applied.json().servers.map((item: { name: string }) => item.name)).toEqual(['filesystem', 'paused', 'remote']);
@@ -114,10 +118,10 @@ describe('mcp routes', () => {
     });
 
     it.each([
-      ['command と url の両方', { both: { command: 'node', url: 'https://e.com' } }],
+      ['command と url の両方', { both: { command: 'npx', url: 'https://e.com' } }],
       ['command も url も無い', { neither: { args: ['x'] } }],
-      ['名前が識別子として不正', { 'bad name': { command: 'node' } }],
-      ['env の値が文字列でない', { a: { command: 'node', env: { K: 1 } } }],
+      ['名前が識別子として不正', { 'bad name': { command: 'npx' } }],
+      ['env の値が文字列でない', { a: { command: 'npx', env: { K: 1 } } }],
     ])('不正なドキュメント（%s）は400で、既存設定を壊さない', async (_label, mcpServers) => {
       await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: stdioServer } });
       const response = await server.inject({ method: 'PUT', url: '/mcp-servers', payload: { scope, mcpServers } });
@@ -245,13 +249,143 @@ describe('mcp routes', () => {
     });
 
     it('相対パスの cwd は400', async () => {
-      const response = await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: { name: 'rel', transport: { kind: 'stdio', command: 'node', cwd: '../..' } } } });
+      const response = await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: { name: 'rel', transport: { kind: 'stdio', command: 'npx', cwd: '../..' } } } });
       expect(response.statusCode).toBe(400);
     });
 
     it('JSONタブ経由でも許可リストは効く', async () => {
       const response = await server.inject({ method: 'PUT', url: '/mcp-servers', payload: { scope, mcpServers: { evil: { command: 'bash', args: ['-c', 'id'] } } } });
       expect(response.statusCode).toBe(400);
+    });
+
+    /**
+     * 既定の許可リストは MCP のランチャー（npx / uvx / bunx / cmd）だけ。`node` / `python` は
+     * `-e` / `-c` で任意コードを走らせるので既定から外した。拒否文は直し方まで書く。
+     */
+    it('node は既定では400で、拒否文がコマンド名と環境変数の設定値を案内する', async () => {
+      const response = await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: { name: 'local', transport: { kind: 'stdio', command: 'node', args: ['server.js'] } } } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toEqual({
+        code: 'MCP_VALIDATION',
+        message: 'transport.command is not allowed: node. Allowed commands: npx, uvx, bunx, cmd. To allow it, set AGENTCONTEXT_MCP_ALLOWED_COMMANDS=npx,uvx,bunx,cmd,node on the server and restart',
+      });
+      expect((await server.inject({ method: 'GET', url: '/mcp-servers', query: scope })).json()).toEqual({ servers: [] });
+    });
+
+    it('cmd /c node ... も既定では400（ラッパー越しでも同じ許可リスト）', async () => {
+      const response = await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: { name: 'winnode', transport: { kind: 'stdio', command: 'cmd', args: ['/c', 'node', 'server.js'] } } } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.message).toContain('not allowed: node');
+    });
+
+    it('PATH / NODE_OPTIONS / LD_PRELOAD を上書きする env は400（値は応答に載せない）', async () => {
+      const cases: readonly (readonly [string, string])[] = [['PATH', '/tmp/evil-bin'], ['node_options', '--require /tmp/evil.js'], ['LD_PRELOAD', '/tmp/evil.so']];
+      for (const [name, value] of cases) {
+        const response = await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: { name: 'fs', transport: { kind: 'stdio', command: 'npx', env: { [name]: value } } } } });
+        expect(response.statusCode, name).toBe(400);
+        expect(response.json().error).toEqual({ code: 'MCP_VALIDATION', message: `transport.env must not override ${name} (it changes how the child process executes)` });
+        expect(response.body).not.toContain('evil');
+      }
+      expect((await server.inject({ method: 'GET', url: '/mcp-servers', query: scope })).json()).toEqual({ servers: [] });
+    });
+  });
+
+  /**
+   * 既定の許可リストから `node` を外したので、更新前に保存された `node …` の行は接続時に止まる。
+   * 接続テストは HTTP エラーではなく `ok:false` で返す約束なので、そこに直し方が載っていること。
+   */
+  describe('以前の既定で保存された node の行（移行）', () => {
+    it('接続テストは ok:false で、コマンド名と環境変数の設定値を返す（プロセスは起こさない）', async () => {
+      let transportCreated = 0;
+      const sdk = new SdkMcpClient({ createTransport: () => { transportCreated += 1; throw new Error('must not be reached'); } });
+      const legacyApp = createApp({ profile: 'test', mcpClient: sdk });
+      const legacyServer = buildServer(legacyApp, { authentication: new SingleUserAuthentication(scope) });
+      try {
+        // use case（保存時の検査）を通さずリポジトリへ直接入れる ＝ ポリシー導入前・旧既定で保存された行。
+        await legacyApp.mcpServerRepo.save(createMcpServerConfig({ scope, name: 'legacy', transport: { kind: 'stdio', command: 'node', args: ['server.js'], env: {} }, updatedAt: '2026-07-26T00:00:00.000Z' }));
+        const response = await legacyServer.inject({ method: 'POST', url: '/mcp-servers/legacy/test', payload: { scope } });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+          ok: false,
+          error: 'MCP server "legacy" is not allowed to start: transport.command is not allowed: node. Allowed commands: npx, uvx, bunx, cmd. To allow it, set AGENTCONTEXT_MCP_ALLOWED_COMMANDS=npx,uvx,bunx,cmd,node on the server and restart',
+        });
+        expect(transportCreated).toBe(0);
+        // 設定そのものは消えない（一覧には残り、環境変数を直せばそのまま動く）。
+        expect((await legacyServer.inject({ method: 'GET', url: '/mcp-servers', query: scope })).json().servers.map((item: { name: string }) => item.name)).toEqual(['legacy']);
+      } finally {
+        await legacyServer.close();
+        legacyApp.close();
+        await sdk.close();
+      }
+    });
+  });
+
+  /**
+   * MCP サーバー設定は**サーバーホスト上でのコード実行権限**に等しい（stdio は子プロセスの起動）。
+   * 変更系と接続テストは `mcp-server:operate`（Operator / Workspace Admin）だけが通る。
+   * 認可表（`authorization.ts`）が HTTP の結果として現れることを、このルート群の fixture で確かめる。
+   */
+  describe('ロールごとの認可（変更系と接続テストは operate）', () => {
+    const TOKEN = 'r'.repeat(40);
+    const auth = { authorization: `Bearer ${TOKEN}` };
+    function rolesAuth(roles: readonly AuthorizationRole[]): AuthenticationPort {
+      return {
+        mode: 'token',
+        required: true,
+        authenticate: async (request) => request.header('authorization') === `Bearer ${TOKEN}`
+          ? authenticated({ subject: 'rita', ...scope, roles })
+          : rejected('missing-credentials'),
+      };
+    }
+    function serverFor(roles: readonly AuthorizationRole[]): FastifyInstance {
+      return buildServer(app, { authentication: rolesAuth(roles), authorization: new RoleMatrixAuthorization() });
+    }
+    const DENIED = { code: 'FORBIDDEN', message: "this operation requires the 'mcp-server:operate' permission" };
+
+    it.each(['viewer', 'editor', 'publisher'] as const)('%s: 一覧は読めるが、保存・置換・削除・接続テストは403', async (role) => {
+      const roleServer = serverFor([role]);
+      try {
+        expect((await roleServer.inject({ method: 'GET', url: '/mcp-servers', headers: auth, query: scope })).statusCode).toBe(200);
+        const responses = await Promise.all([
+          roleServer.inject({ method: 'POST', url: '/mcp-servers', headers: auth, payload: { scope, server: stdioServer } }),
+          roleServer.inject({ method: 'PUT', url: '/mcp-servers', headers: auth, payload: { scope, mcpServers: { filesystem: { command: 'npx' } } } }),
+          roleServer.inject({ method: 'DELETE', url: '/mcp-servers/filesystem', headers: auth, query: scope }),
+          roleServer.inject({ method: 'POST', url: '/mcp-servers/filesystem/test', headers: auth, payload: { scope } }),
+        ]);
+        for (const response of responses) {
+          expect(response.statusCode).toBe(403);
+          expect(response.json().error).toEqual(DENIED);
+        }
+        // 何も保存されず、接続もされていない。
+        expect((await roleServer.inject({ method: 'GET', url: '/mcp-servers', headers: auth, query: scope })).json()).toEqual({ servers: [] });
+        expect(client.received).toBeUndefined();
+      } finally { await roleServer.close(); }
+    });
+
+    it.each(['operator', 'workspace-admin'] as const)('%s: 保存・接続テスト・置換・削除がすべて通る', async (role) => {
+      const roleServer = serverFor([role]);
+      try {
+        expect((await roleServer.inject({ method: 'POST', url: '/mcp-servers', headers: auth, payload: { scope, server: stdioServer } })).statusCode).toBe(201);
+        const tested = await roleServer.inject({ method: 'POST', url: '/mcp-servers/filesystem/test', headers: auth, payload: { scope } });
+        expect(tested.statusCode).toBe(200);
+        expect(tested.json()).toEqual({ ok: true, tools: [] });
+        expect((await roleServer.inject({ method: 'PUT', url: '/mcp-servers', headers: auth, payload: { scope, mcpServers: { filesystem: { command: 'npx' } } } })).statusCode).toBe(200);
+        expect((await roleServer.inject({ method: 'DELETE', url: '/mcp-servers/filesystem', headers: auth, query: scope })).statusCode).toBe(204);
+      } finally { await roleServer.close(); }
+    });
+
+    /**
+     * 単一ユーザーモード（トークン未設定・ループバック限定）の Principal は全ロールを持つので、
+     * operate を要求するようになっても**ローカルの利用者は従来どおり MCP を設定できる**。
+     * このファイルの既定 fixture がそれで、ここでは前提（ロール）まで明示して固定する。
+     */
+    it('単一ユーザーモード: ローカル利用者は operator / workspace-admin を含む全ロールを持ち、保存・接続テスト・削除ができる', async () => {
+      const session = await server.inject({ method: 'GET', url: '/auth/session' });
+      expect(session.json().session).toMatchObject({ mode: 'single-user', authenticationRequired: false });
+      expect(session.json().session.principal.roles).toEqual(expect.arrayContaining(['operator', 'workspace-admin']));
+      expect((await server.inject({ method: 'POST', url: '/mcp-servers', payload: { scope, server: stdioServer } })).statusCode).toBe(201);
+      expect((await server.inject({ method: 'POST', url: '/mcp-servers/filesystem/test', payload: { scope } })).json()).toEqual({ ok: true, tools: [] });
+      expect((await server.inject({ method: 'DELETE', url: '/mcp-servers/filesystem', query: scope })).statusCode).toBe(204);
     });
   });
 

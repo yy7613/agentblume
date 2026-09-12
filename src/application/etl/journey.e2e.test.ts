@@ -234,28 +234,30 @@ describe('v1 ジャーニー E2E — preview', () => {
     expect(nodes['flt']?.truncated).toBe(false);
   });
 
-  it('rowLimit を超過した出力に truncated を立てる', () => {
+  it('rowLimit は表示用スナップショットにだけ効き、下流は全行で計算する', () => {
     const engine = new EtlEngine(createDefaultRegistry());
-    // source は 4 行なので rowLimit=1 で 1 行に切られ truncated。
-    // rowLimit は各ノード出力に独立適用されるため、truncation は下流にも波及する
-    // （src が 1 行になると select/filter/cast も高々 1 行 = 超過しないので truncated=false）。
-    const { nodes, output } = engine.preview(buildJourney(), { rowLimit: 1 });
-    expect(nodes['src']?.truncated).toBe(true);
+    // source は 4 行なので rowLimit=1 でスナップショットは 1 行に絞られ truncated。
+    // 下流は切り詰められていない 4 行を受け取るので、filter は従来どおり 2 行（Alice, Carol）を残す
+    // （修正前は src が 1 行に切られ、後段はその 1 行しか見ていなかった）。
+    const { nodes, output, fullOutput } = engine.preview(buildJourney(), { rowLimit: 1 });
+    expect(nodes['src']).toMatchObject({ truncated: true, rowCount: 4 });
     expect(nodes['src']?.table.rows).toHaveLength(1);
-    // 終端は src が既に 1 行なので出力は 1 行、上限内なので truncated=false。
+    expect(nodes['flt']).toMatchObject({ truncated: true, rowCount: 2 });
+    // 終端の表示は 1 行、計算結果（fullOutput）は 2 行。
     expect(output.rows).toHaveLength(1);
-    expect(nodes['cst']?.truncated).toBe(false);
+    expect(fullOutput.rows).toHaveLength(2);
+    expect(fullOutput.rows.map((row) => row['displayName'])).toEqual(['Alice', 'Carol']);
+    expect(nodes['cst']).toMatchObject({ truncated: true, rowCount: 2 });
   });
 
-  it('rowLimit=3 で source は 4→3 に切られ truncated、後段は上限内', () => {
+  it('rowLimit=3 で source のスナップショットは 3 行、後段は全 4 行から計算して上限内', () => {
     const engine = new EtlEngine(createDefaultRegistry());
     const { nodes } = engine.preview(buildJourney(), { rowLimit: 3 });
-    // source(4 行) は 3 行に切られ truncated。
-    expect(nodes['src']?.truncated).toBe(true);
+    expect(nodes['src']).toMatchObject({ truncated: true, rowCount: 4 });
     expect(nodes['src']?.table.rows).toHaveLength(3);
-    // filter は 3 行のうち age>=18 を残す（Alice/Bob/Carol → Alice, Carol の 2 行）。上限内。
+    // filter は 4 行全部から age>=18 を残す（Alice, Carol の 2 行）。上限内なので truncated=false。
+    expect(nodes['flt']).toMatchObject({ truncated: false, rowCount: 2 });
     expect(nodes['flt']?.table.rows).toHaveLength(2);
-    expect(nodes['flt']?.truncated).toBe(false);
   });
 });
 

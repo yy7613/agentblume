@@ -1,8 +1,25 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider';
+import { ModelProviderError, type ModelCompletion, type ModelCompletionRequest } from '../application/model/model-provider';
 import { createApp, type App } from '../composition/root';
 import { buildServer } from './server';
+
+/** N回目のモデル呼び出しで「abort されるまで返らない」台本モデル（cancel が届く瞬間を「実行中」に固定する）。 */
+class HangingModelProvider extends ScriptedModelProvider {
+  attempts = 0;
+  constructor(private readonly hangAt: number) { super(); }
+  override async complete(request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion> {
+    this.attempts += 1;
+    if (this.attempts === this.hangAt) {
+      await new Promise<never>((_, reject) => {
+        if (signal === undefined) { reject(new Error('model call received no AbortSignal')); return; }
+        signal.addEventListener('abort', () => { reject(new ModelProviderError('request aborted')); }, { once: true });
+      });
+    }
+    return super.complete(request, signal);
+  }
+}
 
 const scope = { tenantId: 't', workspaceId: 'w' };
 
@@ -132,6 +149,74 @@ describe('factory routes', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     const after = await server.inject({ method: 'GET', url: `/factory-runs/${runId}`, query: scope });
     expect(after.json().run.status).toBe('cancelled');
+  });
+
+  it('POST /factory-runs/:id/cancel: Tool生成中（実行中）のRunは200で cancelled を返し、生成は中断され、以降の GET も cancelled のまま（running へ戻らない）', async () => {
+    const hanging = new HangingModelProvider(2); // 2回目 = ToolSmith 呼び出しで止める。
+    const localApp = createApp({ profile: 'test', modelProvider: hanging });
+    const localServer = buildServer(localApp);
+    try {
+      const uploaded = await localServer.inject({ method: 'POST', url: '/data-sources/files', payload: { scope, name: 'sales.csv', format: 'csv', content: 'id,amount\n1,100\n2,200' } });
+      const sourceId = uploaded.json().source.id as string;
+      hanging.enqueue(
+        { message: { role: 'assistant', content: planJson(sourceId) }, finishReason: 'stop' },
+        { message: { role: 'assistant', content: toolProposalJson(sourceId) }, finishReason: 'stop' },
+        { message: { role: 'assistant', content: skillProposalJson() }, finishReason: 'stop' },
+        { message: { role: 'assistant', content: assemblerProposalJson() }, finishReason: 'stop' },
+      );
+      const created = await localServer.inject({ method: 'POST', url: '/factory-runs', payload: { scope, goal: { goal: 'Answer sales questions', language: 'ja' }, dataSourceIds: [sourceId], options: { maxIterations: 1 } } });
+      expect(created.statusCode).toBe(202);
+      const runId = created.json().run.id as string;
+
+      // ToolSmith 呼び出し中（= 実行中・generating-tools）まで進める。
+      for (let attempt = 0; attempt < 100 && hanging.attempts < 2; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(hanging.attempts).toBe(2);
+      const before = await localServer.inject({ method: 'GET', url: `/factory-runs/${runId}`, query: scope });
+      expect(before.json().run).toMatchObject({ status: 'running', stage: 'generating-tools' });
+
+      const cancelled = await localServer.inject({ method: 'POST', url: `/factory-runs/${runId}/cancel`, payload: { scope } });
+      expect(cancelled.statusCode).toBe(200);
+      expect(cancelled.json().run.status).toBe('cancelled');
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const after = await localServer.inject({ method: 'GET', url: `/factory-runs/${runId}`, query: scope });
+      const run = after.json().run as Record<string, unknown>;
+      expect(run['status']).toBe('cancelled');
+      expect(run['failure']).toBeUndefined();
+      const events = run['events'] as { kind: string; message?: string }[];
+      expect(events.filter((event) => event.kind === 'run_cancelled')).toHaveLength(1);
+      expect(events.at(-1)).toMatchObject({ kind: 'run_cancelled', message: 'Cancelled by user' });
+      expect(hanging.attempts).toBe(2); // skill-writer / assembler は呼ばれない。
+
+      // 2回目の cancel は冪等（200・同じ記録）。cancel 済みの Run への承認応答は 400。
+      const again = await localServer.inject({ method: 'POST', url: `/factory-runs/${runId}/cancel`, payload: { scope } });
+      expect(again.statusCode).toBe(200);
+      expect(again.json().run.events).toHaveLength(events.length);
+      const resumed = await localServer.inject({ method: 'POST', url: `/factory-runs/${runId}/responses`, payload: { scope, response: { kind: 'plan-approval', decision: 'approve' } } });
+      expect(resumed.statusCode).toBe(400);
+      expect(resumed.json().error.code).toBe('FACTORY_VALIDATION');
+    } finally {
+      await localServer.close();
+      localApp.close();
+    }
+  });
+
+  it('POST /factory-runs/:id/cancel: 終端（failed）のRunは200で記録をそのまま返し（イベントは増えない）、未存在は404', async () => {
+    const sourceId = await seedDataSource();
+    // 台本を積まないためStage 1（Planner）で失敗し、workerがfailedで確定させる。
+    const created = await server.inject({ method: 'POST', url: '/factory-runs', payload: { scope, goal: { goal: 'Answer sales questions', language: 'ja' }, dataSourceIds: [sourceId] } });
+    const runId = created.json().run.id as string;
+    const failed = await waitFor(server, runId, ['failed']);
+
+    const cancelled = await server.inject({ method: 'POST', url: `/factory-runs/${runId}/cancel`, payload: { scope } });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelled.json().run.status).toBe('failed');
+    expect(cancelled.json().run.events).toHaveLength((failed['events'] as unknown[]).length);
+    expect((cancelled.json().run.events as { kind: string }[]).map((event) => event.kind)).not.toContain('run_cancelled');
+
+    const missing = await server.inject({ method: 'POST', url: '/factory-runs/missing/cancel', payload: { scope } });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json().error.code).toBe('FACTORY_NOT_FOUND');
   });
 
   it('POST /factory-runs/:id/retryはfailed Runを同じ入力の新しいRunとして202で起票し、元Runはfailedのまま残る', async () => {

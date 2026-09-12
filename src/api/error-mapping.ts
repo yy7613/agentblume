@@ -184,10 +184,12 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof AgentRunError) return httpError(422, err.code, err.message);
   if (err instanceof ModelProviderError) return httpError(502, err.code, err.message);
 
-  // ETL ドメイン: いずれも 422。
-  if (err instanceof GraphError) return httpError(422, err.code, err.message);
-  if (err instanceof ConfigError) return httpError(422, err.code, err.message);
-  if (err instanceof SchemaError) return httpError(422, err.code, err.message);
+  // ETL ドメイン: いずれも 422。engine が付けた nodeId（どのノードで落ちたか）は、下書きプレビューの
+  // ように Run を経由しない経路でも UI が「そのノードを開いて直す」導線に使うので本文へ載せる。
+  if (err instanceof GraphError || err instanceof ConfigError || err instanceof SchemaError) {
+    const mapped = httpError(422, err.code, err.message);
+    return err.nodeId === undefined ? mapped : { ...mapped, body: { error: { ...mapped.body.error, nodeId: err.nodeId } } };
+  }
 
   // domain/shared の検証ヘルパー既定エラー（ADR-0035）。BC は通常 fail 注入で自 BC の
   // エラー型を投げるため本来ここへは来ないが、注入漏れで検証エラーが 500/'internal error'

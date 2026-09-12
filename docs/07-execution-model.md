@@ -55,6 +55,8 @@ sequenceDiagram
 
 - 書き込み・副作用API・通知はプレビューで実行しない。代わりに入力と予想操作内容を表示。
 - 実測スキーマが宣言と乖離したら `Mismatch` としてトレースへ（[03-domain-model.md](./03-domain-model.md#4-スキーマ状態の遷移)）。
+- **実行と表示は別物**: エンジン（`EtlEngine.preview`）は各ノードを常に**全行**で実行し、下流ノードには切り詰めていないテーブルを渡す。`rowLimit`（既定 100 行）は画面へ返すスナップショット（`nodes[id].table` / `output`）の行数にしか効かず、各ノードは全行数 `rowCount` と、スナップショットが計算結果より短いことを示す `truncated` を併せて返す。終端の全行は `fullOutput` として実行系（Agent 実行）だけが使い、HTTP API はブラウザへ返さない。UI は「全 1,250 行のうち 100 行を表示」のように全行数を必ず示す。
+- **実行行数の上限（安全弁）**: 1 ノードの生成行数が `maxRows`（既定 `DEFAULT_MAX_EXECUTION_ROWS` = 250,000 行）を超えたら、黙って切り捨てずに `SchemaError`（`nodeId` 付き。HTTP では 422 `ETL_SCHEMA`）で実行を止める。中間ノードにも適用する。個別ノードの上限はこれより先に効く: `join` の出力 100,000 行（`MAX_JOIN_ROWS`）、`time-series-analysis` の欠損 bucket 補完はパーティション（group × series）あたり 100,000 bucket（`MAX_TIME_SERIES_FILL_BUCKETS`。歩きながら数えて超えた瞬間に止まる。`fill:'none'` は対象外）。
 
 ---
 
@@ -114,6 +116,8 @@ v1のAgent preview/testは停止性を保証するため、1 RunあたりTool ca
 Structured Outputを持つAgentは最終contentをJSON parseし、required、primitive型、追加field禁止を検証してからRunへ保存する。
 
 Toolの終端は`agent-output`、`workspace-output`、または`graph-output`で明示する。後二者では同一Agent Session内の複数RunとサブAgentがArtifactを再利用できるが、payload全体はLLMへ自動注入しない。`graph-output`は入力行をedge、指定列をnodeとして保存する。Session、Artifact、quota、TTLの境界は [ADR-0027](./adr/0027-tool-output-and-session-workspace.md) を参照。
+
+AgentのTool callも同じエンジンで実行するが、**計算は常に全行**で行う（[§2](#2-toolプレビュー実行) の `rowLimit` はトレースの `outputPreview`（先頭10行）用スナップショットにしか使わない）。出力スキーマ検証とsinkへの配送には終端ノードの全行テーブル（`fullOutput`）を渡し、トレースの `tool-result.nodes[].rowCount` は全行数を記録する。`agent-output` が `maxRows` で行を落としたときは、ツール結果に全体件数・省略件数と注記（`Showing 100 of 500 rows; 400 rows omitted (agent-output maxRows=100).`）を含めてモデルへ伝える。実行上限（250,000 行）の超過は `ETL_SCHEMA` としてToolと `nodeId` を添えてRunを失敗させる。
 
 ---
 

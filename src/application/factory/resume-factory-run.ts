@@ -3,6 +3,9 @@
  *
  * `waiting-approval` checkpoint（`plan-approval`）への応答を処理する。Magentic計画承認と同じ応答型
  * （approve / revise / reject）。reject は再計画ではなく監査可能な `cancelled` として確定する。
+ *
+ * 保存は `waiting-approval` を期待する compare-and-set: 応答の処理中（revise の再計画はモデル呼び出しを含む）に
+ * 利用者が cancel していれば、cancelled を running / waiting-approval で上書きせず、承認待ちでない旨で拒否する。
  */
 import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { appendFactoryEvent, cancelFactoryRun, resumeFactoryRun, type FactoryRun } from '../../domain/factory/factory-run';
@@ -35,14 +38,14 @@ export class ResumeFactoryRunUseCase {
     if (input.decision === 'reject') {
       let cancelled = cancelFactoryRun(stored, this.now().toISOString());
       cancelled = appendFactoryEvent(cancelled, { kind: 'run_cancelled', at: this.now().toISOString(), stage: stored.stage, message: input.feedback?.trim() || 'Plan rejected by reviewer' });
-      await this.runs.save(cancelled);
+      await this.commitFromWaiting(cancelled);
       return cancelled;
     }
 
     if (input.decision === 'approve') {
       let resumed = resumeFactoryRun(stored);
       resumed = appendFactoryEvent(resumed, { kind: 'approval_resolved', at: this.now().toISOString(), stage: stored.stage, message: 'approved' });
-      await this.runs.save(resumed);
+      await this.commitFromWaiting(resumed);
       this.worker.enqueue(input.scope, input.runId);
       return resumed;
     }
@@ -51,7 +54,13 @@ export class ResumeFactoryRunUseCase {
     let resumed = resumeFactoryRun(stored);
     resumed = appendFactoryEvent(resumed, { kind: 'approval_resolved', at: this.now().toISOString(), stage: stored.stage, message: input.feedback?.trim() || 'revision requested' });
     const revised = await this.runFactory.replan(resumed, input.feedback, signal);
-    await this.runs.save(revised);
+    await this.commitFromWaiting(revised);
     return revised;
+  }
+
+  /** `waiting-approval` を期待して書く。その間に cancel 等で確定していれば上書きせず、承認待ちでない旨で拒否する。 */
+  private async commitFromWaiting(run: FactoryRun): Promise<void> {
+    if (await this.runs.saveIfStatus(run, ['waiting-approval'])) return;
+    throw new FactoryValidationError(`Factory run '${run.id}' is not waiting for approval`);
   }
 }

@@ -24,7 +24,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Agent, AgentSkillRef, AgentToolRef } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
-import { FactoryValidationError } from '../../domain/factory/errors';
+import { FactoryAbortedError, FactoryValidationError } from '../../domain/factory/errors';
 import type { FactoryAddSkillPlan } from '../../domain/factory/factory-plan';
 import type { AppliedProposal, ImprovementProposal, RejectedProposal } from '../../domain/factory/improvement-proposal';
 import type { VersionRef } from '../../domain/factory/refs';
@@ -39,6 +39,7 @@ import { GenerateAgentPromptUseCase } from '../agent/generate-agent-prompt';
 import { SaveAgentUseCase } from '../agent/save-agent';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
+import { throwIfAborted } from './abort';
 import {
   agentToolArgumentsOf,
   FACTORY_OWNER,
@@ -72,6 +73,11 @@ export interface ApplyImprovementsInput {
   readonly maxProposals: number;
   /** `add-tool` のToolSmith再提案回数。未指定は `DEFAULT_MAX_REPAIR_ATTEMPTS`。 */
   readonly maxRepairAttempts?: number;
+  /**
+   * Run の中断シグナル。提案の合間・`add-tool` の ToolSmith 呼び出し・Agent 新版を書く直前に確認し、
+   * 中断は「却下」へ丸めず `FactoryAbortedError` で抜ける（cancel 後に新版を作らない）。
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface ApplyImprovementsResult {
@@ -132,6 +138,7 @@ export class ApplyImprovementsUseCase {
     }
 
     for (const proposal of toApply) {
+      throwIfAborted(input.signal);
       switch (proposal.kind) {
         case 'skill-instructions-revision':
           await this.applySkillRevision(input.scope, proposal, currentAgent, newSkillVersions, applied, rejected);
@@ -163,6 +170,9 @@ export class ApplyImprovementsUseCase {
     const baseToolVersions = new Map(currentAgent.tools.map((ref) => [ref.internalId, ref.version] as const));
     const skillIds = uniqueIds([...currentAgent.skills.map((ref) => ref.internalId), ...addedSkillIds]);
     const toolIds = uniqueIds([...currentAgent.tools.map((ref) => ref.internalId), ...addedToolIds]);
+
+    // cancel 後に Agent の新版を作らない（ここまでの Skill/Tool の新版は draft として残るだけで、参照する Agent 版は作らない）。
+    throwIfAborted(input.signal);
 
     // ここから先は「Skillの引き上げ」と「Agent新版」が**セットで初めて意味を持つ**書き込みになる。
     // 途中で落ちると、どのAgentからも参照されない新Skill版だけがDBに残り（孤児）、Agentは旧Tool版を
@@ -395,6 +405,7 @@ export class ApplyImprovementsUseCase {
               owner: FACTORY_OWNER,
             };
           },
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
         },
       );
       const tool = outcome.tool;
@@ -406,6 +417,9 @@ export class ApplyImprovementsUseCase {
       addedToolKeys.set(plan.key, internalId);
       applied.push({ proposal, resultingVersion: { internalId, version: tool.metadata.version.toString() } });
     } catch (error) {
+      // 中断は「却下された提案」ではない: そのまま打ち切って Run 側の確定処理へ委ねる。
+      if (error instanceof FactoryAbortedError) throw error;
+      throwIfAborted(input.signal);
       rejected.push({ proposal, reason: describeError(error) });
     }
   }

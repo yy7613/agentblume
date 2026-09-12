@@ -594,7 +594,7 @@ describe('RunAgentPreviewUseCase', () => {
     expect(run.trace.filter((event) => event.kind === 'tool-result').map((event) => event.name)).toEqual(['workspace_tool', 'workspace_list', 'workspace_describe', 'workspace_query', 'workspace_read']);
   });
 
-  it('chart-output はworkspace/graph-outputと同列でrowLimitが10000になる（G21: preview truncationが5000点downsampleより先に効かない）', async () => {
+  it('chart-output など session sink の終端も全行で実行し、sink の rowCount は全行数になる（G21: preview 切り詰めが5000点downsampleより先に効かない）', async () => {
     const rows = Array.from({ length: 150 }, (_, index) => ({ id: index, value: index }));
     const chartTool = createTool({
       metadata: { internalId: 'chart-tool', workingName: 'chart-tool', displayName: 'Chart tool', publishName: 'chart_tool', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
@@ -614,11 +614,72 @@ describe('RunAgentPreviewUseCase', () => {
     const run = await runtime.execute({ ...input, toolId: 'chart-tool' });
     const toolResult = run.trace.find((event) => event.kind === 'tool-result');
     // 修正前は preview rowLimit が既定100に落ち、sinkノードが150行のうち100行へtruncateされていた。
+    // 現在は sink の種類によらず常に全行で実行する（rowLimit は表示用スナップショットにしか効かない）。
     expect(toolResult?.nodes).toContainEqual({ nodeId: 'sink', rowCount: 150, truncated: false });
     const stored = await artifacts.list(scope, run.sessionId as string);
     expect(stored).toHaveLength(1);
     const found = await artifacts.find(scope, run.sessionId as string, stored[0]!.id);
     expect(found?.payload).toMatchObject({ sourceRowCount: 150, sampled: false });
+  });
+
+  describe('ツール実行は全行で計算する（表示用の rowLimit を実行に使わない）', () => {
+    function sourceTool(internalId: string, publishName: string, rows: readonly Record<string, unknown>[], extraNodes: readonly { id: string; type: string; config: unknown }[] = []): Tool {
+      return createTool({
+        metadata: { internalId, workingName: internalId, displayName: internalId, publishName, version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+        sideEffect: 'read-only',
+        graph: {
+          nodes: [{ id: 'source', type: 'json-source', config: { rows } }, ...extraNodes],
+          edges: extraNodes.map((node, index) => ({ from: index === 0 ? 'source' : extraNodes[index - 1]!.id, to: node.id })),
+        },
+      });
+    }
+
+    it('500 行の group-by 合計が全行から計算されてモデルへ渡り、trace の rowCount は全行数になる', async () => {
+      const regions = ['north', 'south', 'east', 'west', 'central'];
+      const rows = Array.from({ length: 500 }, (_, index) => ({ region: regions[index % regions.length]!, amount: 25 }));
+      const tool = sourceTool('sales-tool', 'sales_by_region', rows, [
+        { id: 'totals', type: 'group-by', config: { groupBy: ['region'], aggregates: [{ op: 'sum', column: 'amount', as: 'total' }] } },
+      ]);
+      const model = new QueueModel([toolCall('call-1', 'sales_by_region', {}), stop('done')]);
+      const run = await new RunAgentPreviewUseCase(new StaticRepository(tool), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-1').execute({ ...input, toolId: 'sales-tool' });
+
+      // 修正前は各ノード出力が 100 行に切られ、group-by は先頭 100 行（各 region 20 行）から 500 を返していた。
+      const content = JSON.parse(model.requests[1]?.messages.at(-1)?.content as string) as { rows: { region: string; total: number }[] };
+      expect(content.rows).toHaveLength(5);
+      expect(content.rows.map((row) => row.total)).toEqual([2500, 2500, 2500, 2500, 2500]);
+      const toolResult = run.trace.find((event) => event.kind === 'tool-result');
+      expect(toolResult).toMatchObject({ nodes: [{ nodeId: 'source', rowCount: 500, truncated: false }, { nodeId: 'totals', rowCount: 5, truncated: false }] });
+    });
+
+    it('終端が 500 行でも outputPreview は 10 行、モデルへは既定 maxRows(100) 行と省略件数の注記を渡す', async () => {
+      const rows = Array.from({ length: 500 }, (_, index) => ({ id: index }));
+      const tool = sourceTool('wide-tool', 'all_rows', rows);
+      const model = new QueueModel([toolCall('call-1', 'all_rows', {}), stop('done')]);
+      const run = await new RunAgentPreviewUseCase(new StaticRepository(tool), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-1').execute({ ...input, toolId: 'wide-tool' });
+
+      const toolResult = run.trace.find((event) => event.kind === 'tool-result');
+      expect(toolResult).toMatchObject({ nodes: [{ nodeId: 'source', rowCount: 500, truncated: false }] });
+      expect(toolResult?.kind === 'tool-result' ? toolResult.outputPreview : []).toHaveLength(10);
+      const content = JSON.parse(model.requests[1]?.messages.at(-1)?.content as string) as { rows: unknown[]; rowCount: number; omittedRows: number; note: string };
+      expect(content.rows).toHaveLength(100);
+      expect(content).toMatchObject({ rowCount: 500, omittedRows: 400, note: 'Showing 100 of 500 rows; 400 rows omitted (agent-output maxRows=100).' });
+    });
+
+    it('実行上限（250,000 行）を超えた source は ETL_SCHEMA として tool と nodeId を添えて Run を失敗させる', async () => {
+      const tool = sourceTool('huge-tool', 'huge_rows', Array.from({ length: 250_001 }, () => ({ v: 1 })));
+      const runs = new MemoryRuns();
+      const toolRef = { internalId: 'huge-tool', version: '1.0.0', publishName: 'huge_rows' };
+      const message = 'json-source: produced 250001 rows, exceeding the execution limit of 250000 rows';
+      const rejection: unknown = await new RunAgentPreviewUseCase(new StaticRepository(tool), new EtlEngine(createDefaultRegistry()), new QueueModel([toolCall('c1', 'huge_rows', {})]), runs, () => 'run-1')
+        .execute({ ...input, toolId: 'huge-tool' }).then(() => undefined, (error: unknown) => error);
+
+      expect(rejection).toBeInstanceOf(RunFailedError);
+      const cause = (rejection as RunFailedError).cause;
+      expect(cause).toBeInstanceOf(ToolExecutionError);
+      expect(cause).toMatchObject({ code: 'ETL_SCHEMA', message, tool: toolRef, nodeId: 'source' });
+      expect((cause as ToolExecutionError).cause).toBeInstanceOf(SchemaError);
+      expect(runs.records.get('run-1')?.failure).toEqual({ code: 'ETL_SCHEMA', message, tool: toolRef, nodeId: 'source' });
+    });
   });
 
   it('Agentは自分が出力したchart-output Artifactをworkspace_*ツールで参照できる（G21: workspaceDefinitionsにchart-outputが含まれる）', async () => {

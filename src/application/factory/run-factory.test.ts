@@ -10,6 +10,8 @@ import { InMemoryToolRepository } from '../../adapters/storage/in-memory-tool-re
 import { createAgent, type AgentRuntimeHarness } from '../../domain/agent/agent';
 import { createDefaultRegistry } from '../../domain/etl/nodes';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
+import { FactoryAbortedError, FactoryValidationError } from '../../domain/factory/errors';
+import { appendFactoryEvent, cancelFactoryRun, type FactoryRun } from '../../domain/factory/factory-run';
 import { createSkill } from '../../domain/skill/skill';
 import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
@@ -19,13 +21,16 @@ import type { FactoryWorkerPort } from './factory-worker';
 import { GenerateAgentPromptUseCase } from '../agent/generate-agent-prompt';
 import { SaveAgentUseCase } from '../agent/save-agent';
 import { EtlEngine } from '../etl/engine';
+import { ModelProviderError, type ModelCompletion, type ModelCompletionRequest } from '../model/model-provider';
 import { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
 import { SavePersonaUseCase } from '../validation/save-persona';
 import { RegisterPseudoUserAgentUseCase } from '../validation/register-pseudo-user-agent';
 import { SaveScenarioUseCase } from '../validation/save-scenario';
+import { SHUTDOWN_ABORT_MESSAGE, USER_CANCEL_MESSAGE } from './abort';
 import { ApplyImprovementsUseCase, type ApplyImprovementsInput } from './apply-improvements';
+import { CancelFactoryRunUseCase } from './cancel-factory-run';
 import { CreateFactoryRunUseCase } from './create-factory-run';
 import { GenerateAgentAssetsUseCase } from './generate-agent-assets';
 import { ProfileDataSourcesUseCase } from './profile-data-sources';
@@ -40,12 +45,34 @@ import type { ScenarioRunnerInput, ScenarioRunnerPort } from './scenario-runner-
 
 const scope = { tenantId: 't', workspaceId: 'w' };
 
+/** 実adapterの中断挙動を模す: signal が abort されたら reject する（abort 済みなら即 reject）。signal 無しは配線漏れなので即失敗させる。 */
+function rejectOnAbort(signal: AbortSignal | undefined, label: string): Promise<never> {
+  return new Promise<never>((_, reject) => {
+    if (signal === undefined) { reject(new Error(`${label}: no AbortSignal was passed`)); return; }
+    const fail = (): void => { reject(new ModelProviderError(`${label} aborted`)); };
+    if (signal.aborted) { fail(); return; }
+    signal.addEventListener('abort', fail, { once: true });
+  });
+}
+
 /** テスト用のcanned `ScenarioRunnerPort`: 疑似ユーザー会話全体をscriptedで再現せず、固定のScenarioRunを返す。 */
 class FakeScenarioRunner implements ScenarioRunnerPort {
   readonly calls: ScenarioRunnerInput[] = [];
+  /** 呼び出しごとに受け取った signal（RunFactoryUseCase が検証実行へ中断を伝えていることの確認用）。 */
+  readonly signals: (AbortSignal | undefined)[] = [];
+  private hang: (() => void) | undefined;
   constructor(private readonly makeRun: (input: ScenarioRunnerInput) => ScenarioRun) {}
-  async execute(input: ScenarioRunnerInput): Promise<ScenarioRun> {
+  /** 次の1回の実行を「signal が abort されるまで返らない」にする（実 `RunScenarioUseCase` の中断挙動を模す）。 */
+  hangOnce(onHang?: () => void): void { this.hang = onHang ?? ((): void => {}); }
+  async execute(input: ScenarioRunnerInput, signal?: AbortSignal): Promise<ScenarioRun> {
     this.calls.push(input);
+    this.signals.push(signal);
+    const onHang = this.hang;
+    if (onHang !== undefined) {
+      this.hang = undefined;
+      onHang();
+      await rejectOnAbort(signal, 'scenario run');
+    }
     return this.makeRun(input);
   }
 }
@@ -167,7 +194,14 @@ function validAnalystProposalJson(): string {
 
 const noopWorker: FactoryWorkerPort = { enqueue: () => {}, cancel: () => {}, drainInFlight: async () => true, shutdown: () => {} };
 
-async function setup(options?: { readonly makeScenarioRun?: (input: ScenarioRunnerInput) => ScenarioRun }): Promise<{
+async function setup(options?: {
+  readonly makeScenarioRun?: (input: ScenarioRunnerInput) => ScenarioRun;
+  /** 台本モデルの差し替え（中断挙動を持つ `HangingModelProvider` など）。 */
+  readonly model?: ScriptedModelProvider;
+  /** Run リポジトリの差し替え（保存の直前に処理を差し込む `InterposingFactoryRunRepository` など）。 */
+  readonly repo?: InMemoryFactoryRunRepository;
+  readonly scenarioRunner?: FakeScenarioRunner;
+}): Promise<{
   repo: FactoryRunRepository; model: ScriptedModelProvider; runFactory: RunFactoryUseCase;
   createFactoryRun: CreateFactoryRunUseCase; resumeFactoryRun: ResumeFactoryRunUseCase;
   personaRepo: InMemoryPersonaRepository; scenarioRepo: InMemoryScenarioRepository; scenarioRunner: FakeScenarioRunner;
@@ -179,7 +213,7 @@ async function setup(options?: { readonly makeScenarioRun?: (input: ScenarioRunn
   const engine = new EtlEngine(createDefaultRegistry());
   const resolver = new ResolveDataSourceGraphUseCase(dataSources);
   const profiler = new ProfileDataSourcesUseCase(dataSources, resolver, engine);
-  const model = new ScriptedModelProvider();
+  const model = options?.model ?? new ScriptedModelProvider();
   const planner = new PlannerRole(model);
   const toolSmith = new ToolSmithRole(model);
   const skillWriter = new SkillWriterRole(model);
@@ -200,7 +234,7 @@ async function setup(options?: { readonly makeScenarioRun?: (input: ScenarioRunn
   const savePersona = new SavePersonaUseCase(personaRepo);
   const registerPseudoUser = new RegisterPseudoUserAgentUseCase(personaRepo, saveAgent);
   const saveScenario = new SaveScenarioUseCase(scenarioRepo, agentRepo, personaRepo);
-  const scenarioRunner = new FakeScenarioRunner(options?.makeScenarioRun ?? ((input) => cannedScenarioRun(scope, input.scenarioId, input.version ?? SemVer.of(1, 0, 0))));
+  const scenarioRunner = options?.scenarioRunner ?? new FakeScenarioRunner(options?.makeScenarioRun ?? ((input) => cannedScenarioRun(scope, input.scenarioId, input.version ?? SemVer.of(1, 0, 0))));
   const realApplyImprovements = new ApplyImprovementsUseCase(agentRepo, skillRepo, toolRepo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine);
   // `RunFactoryUseCase` が渡す引数（maxRepairAttempts 等）を検証できるよう、実物を薄く包んで記録する。
   const applyCalls: ApplyImprovementsInput[] = [];
@@ -208,7 +242,7 @@ async function setup(options?: { readonly makeScenarioRun?: (input: ScenarioRunn
     execute: async (input: ApplyImprovementsInput) => { applyCalls.push(input); return realApplyImprovements.execute(input); },
   } as unknown as ApplyImprovementsUseCase;
 
-  const repo = new InMemoryFactoryRunRepository();
+  const repo = options?.repo ?? new InMemoryFactoryRunRepository();
   const runFactory = new RunFactoryUseCase(repo, profiler, planner, generateAgentAssets, scenarioRunner, savePersona, registerPseudoUser, saveScenario, analyst, applyImprovements, agentRepo, skillRepo, toolRepo);
   const createFactoryRun = new CreateFactoryRunUseCase(repo, noopWorker);
   const resumeFactoryRun = new ResumeFactoryRunUseCase(repo, runFactory, noopWorker);
@@ -837,5 +871,301 @@ describe('RunFactoryUseCase（既存Agent強化モード: input.baseAgent）', (
     expect(enhancing.input.dataSourceIds).toEqual([]);
     await expect(createFactoryRun.execute({ scope, goal: { goal: 'x', language: 'ja' }, dataSourceIds: ['a', 'b', 'c', 'd', 'e', 'f'], baseAgent: { internalId: BASE_AGENT_ID } }))
       .rejects.toThrow('dataSourceIds must contain 0..5 entries');
+  });
+});
+
+// ─── cancel / abort ───────────────────────────────────────────────────────────────────
+
+/** N回目のモデル呼び出しで「abort されるまで返らない」台本モデル（利用者が cancel を押す瞬間を決定的に作る）。 */
+class HangingModelProvider extends ScriptedModelProvider {
+  /** 中断で失敗した呼び出しも含めた試行回数（`requests` は成功した呼び出しだけを記録する）。 */
+  attempts = 0;
+  private hangAt = Number.POSITIVE_INFINITY;
+  private onHang: (() => void) | undefined;
+  hangOn(call: number, onHang?: () => void): void { this.hangAt = call; this.onHang = onHang; }
+  override async complete(request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion> {
+    this.attempts += 1;
+    if (this.attempts === this.hangAt) {
+      this.onHang?.();
+      await rejectOnAbort(signal, `model call #${this.attempts}`);
+    }
+    return super.complete(request, signal);
+  }
+}
+
+/** `saveIfStatus` の直前へ1回だけ処理を差し込める InMemory リポジトリ（「保存の直前に cancel が割り込んだ」を決定的に再現する）。 */
+class InterposingFactoryRunRepository extends InMemoryFactoryRunRepository {
+  private readonly hooks: { when: (run: FactoryRun) => boolean; action: () => Promise<void> }[] = [];
+  interposeBeforeSave(when: (run: FactoryRun) => boolean, action: () => Promise<void>): void { this.hooks.push({ when, action }); }
+  override async saveIfStatus(run: FactoryRun, expected: readonly FactoryRun['status'][]): Promise<boolean> {
+    const index = this.hooks.findIndex((hook) => hook.when(run));
+    if (index >= 0) await this.hooks.splice(index, 1)[0]!.action();
+    return super.saveIfStatus(run, expected);
+  }
+}
+
+/** `CancelFactoryRunUseCase` → worker.cancel → AbortSignal の関係を1本の AbortController で模す（保存してから abort する順序も同じ）。 */
+class CancelHarness {
+  readonly controller = new AbortController();
+  workerCancels = 0;
+  readonly useCase: CancelFactoryRunUseCase;
+  constructor(repo: FactoryRunRepository) {
+    const worker: FactoryWorkerPort = { ...noopWorker, cancel: () => { this.workerCancels += 1; this.controller.abort(new FactoryAbortedError(USER_CANCEL_MESSAGE)); } };
+    this.useCase = new CancelFactoryRunUseCase(repo, worker);
+  }
+  get signal(): AbortSignal { return this.controller.signal; }
+}
+
+/** cancelled で確定し、`run_cancelled` がちょうど1件・最後のイベントであることを確かめる（以降のイベントが無い = running へ戻っていない）。 */
+function expectCancelledOnce(run: FactoryRun | null, message: string = USER_CANCEL_MESSAGE): void {
+  expect(run?.status).toBe('cancelled');
+  expect(run?.finishedAt).toBeDefined();
+  expect(run?.checkpoint).toBeUndefined();
+  expect(run?.failure).toBeUndefined();
+  expect(run?.events.filter((event) => event.kind === 'run_cancelled')).toHaveLength(1);
+  expect(run?.events.at(-1)).toMatchObject({ kind: 'run_cancelled', message });
+}
+
+/** 遅れて流れてくる保存（イベントチェーン）が流れ切るのを待つ。 */
+const settle = async (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 10); });
+
+const goalInput = { goal: 'Answer sales questions', language: 'ja' } as const;
+
+describe('RunFactoryUseCase（cancel / abort: 中断はモデル呼び出し1回分以内に効き、記録は必ず cancelled で確定する）', () => {
+  it('Tool生成中（ToolSmith呼び出し中）の cancel: ロールが中断を観測し、以降のLLM呼び出しは無く、run_cancelled が1件だけ最後に残る', async () => {
+    const model = new HangingModelProvider();
+    const { repo, runFactory, createFactoryRun } = await setup({ model });
+    enqueueGenerationScript(model);
+    const created = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'] });
+    const harness = new CancelHarness(repo);
+    let cancelRequest: Promise<FactoryRun> | undefined;
+    model.hangOn(2, () => { cancelRequest = harness.useCase.execute(scope, created.id); });
+
+    await runFactory.execute(scope, created.id, harness.signal);
+
+    expect(harness.signal.aborted).toBe(true);
+    expect(harness.workerCancels).toBe(1);
+    expect((await cancelRequest)?.status).toBe('cancelled');
+    // planner + 中断された tool-smith の2回だけ。skill-writer / assembler は呼ばれない。
+    expect(model.attempts).toBe(2);
+    const stored = await repo.find(scope, created.id);
+    expectCancelledOnce(stored);
+    expect(stored?.stage).toBe('generating-tools');
+    expect(stored?.artifacts.tools).toEqual([]);
+    // 遅れて流れてくる保存が running を蘇らせない。
+    await settle();
+    expect(await repo.find(scope, created.id)).toEqual(stored);
+    expect(model.attempts).toBe(2);
+  });
+
+  it('計画中（Planner呼び出し中）の cancel: 計画は保存されず、planning 段で cancelled に確定する', async () => {
+    const model = new HangingModelProvider();
+    const { repo, runFactory, createFactoryRun } = await setup({ model });
+    enqueueGenerationScript(model);
+    const created = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'] });
+    const harness = new CancelHarness(repo);
+    model.hangOn(1, () => { void harness.useCase.execute(scope, created.id); });
+
+    await runFactory.execute(scope, created.id, harness.signal);
+
+    expect(model.attempts).toBe(1);
+    const stored = await repo.find(scope, created.id);
+    expectCancelledOnce(stored);
+    expect(stored?.stage).toBe('planning');
+    expect(stored?.plan).toBeUndefined();
+    expect(stored?.budget.consumed.roleCalls).toBe(0);
+  });
+
+  it('検証中（ScenarioRunner実行中）の cancel: signal が ScenarioRunner まで届き、イテレーションは記録されず cancelled で確定する', async () => {
+    const model = new HangingModelProvider();
+    const scenarioRunner = new FakeScenarioRunner((input) => cannedScenarioRun(scope, input.scenarioId, input.version ?? SemVer.of(1, 0, 0)));
+    const { repo, runFactory, createFactoryRun } = await setup({ model, scenarioRunner });
+    enqueueGenerationScript(model);
+    const created = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'] });
+    const harness = new CancelHarness(repo);
+    scenarioRunner.hangOnce(() => { void harness.useCase.execute(scope, created.id); });
+
+    await runFactory.execute(scope, created.id, harness.signal);
+
+    expect(scenarioRunner.calls).toHaveLength(1);
+    expect(scenarioRunner.signals[0]).toBe(harness.signal);
+    expect(model.attempts).toBe(4); // Analyst は呼ばれない。
+    const stored = await repo.find(scope, created.id);
+    expectCancelledOnce(stored);
+    expect(stored?.stage).toBe('validating');
+    expect(stored?.iterations).toEqual([]);
+    expect(stored?.budget.consumed.scenarioRuns).toBe(0);
+  });
+
+  it('改善ループ中（Analyst呼び出し中）の cancel: 分析は記録されず、Agent の新版も作られず cancelled で確定する', async () => {
+    const model = new HangingModelProvider();
+    const { repo, runFactory, createFactoryRun, agentRepo } = await setup({
+      model,
+      makeScenarioRun: (input) => cannedScenarioRun(scope, input.scenarioId, input.target?.version ?? input.version ?? SemVer.of(1, 0, 0), { goalAchieved: false, satisfaction: 2 }),
+    });
+    enqueueGenerationScript(model);
+    model.enqueue({ message: { role: 'assistant', content: validAnalystProposalJson() }, finishReason: 'stop' });
+    const created = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'] });
+    const harness = new CancelHarness(repo);
+    model.hangOn(5, () => { void harness.useCase.execute(scope, created.id); });
+
+    await runFactory.execute(scope, created.id, harness.signal);
+
+    expect(model.attempts).toBe(5);
+    const stored = await repo.find(scope, created.id);
+    expectCancelledOnce(stored);
+    expect(stored?.stage).toBe('analyzing');
+    expect(stored?.iterations).toHaveLength(1);
+    expect(stored?.iterations[0]?.analysis).toBeUndefined();
+    expect(await agentRepo.listVersions(scope, 'asset-3')).toHaveLength(1);
+  });
+
+  it('改善適用（ApplyImprovements）へも Run の signal がそのまま渡る', async () => {
+    const { repo, model, runFactory, createFactoryRun, applyCalls } = await setup({
+      makeScenarioRun: (input) => {
+        const version = input.target?.version ?? input.version ?? SemVer.of(1, 0, 0);
+        return cannedScenarioRun(scope, input.scenarioId, version, version.toString() === '1.0.0' ? { goalAchieved: false, satisfaction: 2 } : { goalAchieved: true, satisfaction: 5 });
+      },
+    });
+    enqueueGenerationScript(model);
+    model.enqueue({ message: { role: 'assistant', content: validAnalystProposalJson() }, finishReason: 'stop' });
+    const created = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'] });
+    const controller = new AbortController();
+
+    await runFactory.execute(scope, created.id, controller.signal);
+
+    expect(applyCalls).toHaveLength(1);
+    expect(applyCalls[0]?.signal).toBe(controller.signal);
+    // abort されない signal は実行に影響しない（従来どおり succeeded で終わる）。
+    expect((await repo.find(scope, created.id))?.status).toBe('succeeded');
+  });
+
+  it('waiting-approval 中の cancel: 実行は走らず cancelled で確定し、checkpoint は消え、以降の execute は何もせず、承認応答は拒否される', async () => {
+    const model = new HangingModelProvider();
+    const { repo, runFactory, createFactoryRun, resumeFactoryRun } = await setup({ model });
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
+    const created = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { requirePlanApproval: true } });
+    await runFactory.execute(scope, created.id);
+    expect(await repo.find(scope, created.id)).toMatchObject({ status: 'waiting-approval' });
+    const harness = new CancelHarness(repo);
+
+    const cancelled = await harness.useCase.execute(scope, created.id);
+
+    expectCancelledOnce(cancelled);
+    expect(cancelled.plan).toBeDefined(); // 計画は監査のため残る（checkpoint だけ消える）。
+    expect(harness.workerCancels).toBe(1);
+    expectCancelledOnce(await repo.find(scope, created.id));
+
+    // 終端の Run は worker が拾っても何もしない（モデル呼び出しも保存も無い）。
+    await runFactory.execute(scope, created.id, new AbortController().signal);
+    expect(model.attempts).toBe(1);
+    expectCancelledOnce(await repo.find(scope, created.id));
+
+    // cancel 済みの Run への承認応答（approve / revise / reject）はいずれも拒否され、記録は変わらない。
+    await expect(resumeFactoryRun.execute({ scope, runId: created.id, decision: 'approve' })).rejects.toBeInstanceOf(FactoryValidationError);
+    await expect(resumeFactoryRun.execute({ scope, runId: created.id, decision: 'revise', feedback: 'x' })).rejects.toThrow(/not waiting for approval/);
+    await expect(resumeFactoryRun.execute({ scope, runId: created.id, decision: 'reject' })).rejects.toThrow(/not waiting for approval/);
+    expectCancelledOnce(await repo.find(scope, created.id));
+    expect(model.attempts).toBe(1);
+  });
+
+  it('承認応答の処理中（find と保存の間）に cancel が入っても、cancelled を running で上書きせず拒否する', async () => {
+    const repo = new InterposingFactoryRunRepository();
+    const model = new HangingModelProvider();
+    const { runFactory, createFactoryRun, resumeFactoryRun } = await setup({ model, repo });
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
+    const created = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { requirePlanApproval: true } });
+    await runFactory.execute(scope, created.id);
+    const harness = new CancelHarness(repo);
+    repo.interposeBeforeSave((run) => run.events.at(-1)?.kind === 'approval_resolved', async () => { await harness.useCase.execute(scope, created.id); });
+
+    await expect(resumeFactoryRun.execute({ scope, runId: created.id, decision: 'approve' })).rejects.toThrow(/not waiting for approval/);
+
+    expectCancelledOnce(await repo.find(scope, created.id));
+  });
+
+  it('cancel 後に遅れて流れてきた onEvent の保存は saveIfStatus が false になり、実行は中断して記録は cancelled のまま（running へ戻らない）', async () => {
+    const repo = new InterposingFactoryRunRepository();
+    const model = new HangingModelProvider();
+    const { runFactory, createFactoryRun } = await setup({ model, repo });
+    enqueueGenerationScript(model);
+    const created = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'] });
+    const cancelledAt = '2026-08-01T00:00:00.000Z';
+    // ToolSmith の結果イベント（tool_generated）が保存される直前に、別経路の cancel が cancelled を書き込んだ状況
+    // （signal は abort されていない = 通知がまだ届いていない）を作る。
+    repo.interposeBeforeSave((run) => run.events.at(-1)?.kind === 'tool_generated', async () => {
+      const stored = await repo.find(scope, created.id);
+      if (stored === null) throw new Error('run must exist');
+      let cancelled = cancelFactoryRun(stored, cancelledAt);
+      cancelled = appendFactoryEvent(cancelled, { kind: 'run_cancelled', at: cancelledAt, stage: stored.stage, message: USER_CANCEL_MESSAGE });
+      await repo.save(cancelled);
+    });
+
+    await runFactory.execute(scope, created.id);
+
+    const stored = await repo.find(scope, created.id);
+    expectCancelledOnce(stored);
+    expect(stored?.finishedAt).toBe(cancelledAt);
+    expect(stored?.events.map((event) => event.kind)).not.toContain('tool_generated');
+    expect(stored?.events.map((event) => event.kind)).not.toContain('artifact_saved');
+    expect(stored?.artifacts.tools).toEqual([]);
+    expect(stored?.artifacts.agentVersions).toEqual([]);
+    await settle();
+    expect(await repo.find(scope, created.id)).toEqual(stored);
+  });
+
+  it('worker の shutdown による abort（利用者の cancel ではない）: running を残さず、shutdown の理由付きで cancelled に確定する', async () => {
+    const model = new HangingModelProvider();
+    const { repo, runFactory, createFactoryRun } = await setup({ model });
+    enqueueGenerationScript(model);
+    const created = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'] });
+    const controller = new AbortController();
+    model.hangOn(2, () => { controller.abort(new FactoryAbortedError(SHUTDOWN_ABORT_MESSAGE)); });
+
+    await runFactory.execute(scope, created.id, controller.signal);
+
+    expect(model.attempts).toBe(2);
+    const stored = await repo.find(scope, created.id);
+    expectCancelledOnce(stored, SHUTDOWN_ABORT_MESSAGE);
+    expect(stored?.stage).toBe('generating-tools');
+  });
+
+  it('理由の無い abort も「利用者の cancel ではない中断」として shutdown 扱いで cancelled に確定する', async () => {
+    const model = new HangingModelProvider();
+    const { repo, runFactory, createFactoryRun } = await setup({ model });
+    enqueueGenerationScript(model);
+    const created = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'] });
+    const controller = new AbortController();
+    model.hangOn(1, () => { controller.abort(); });
+
+    await runFactory.execute(scope, created.id, controller.signal);
+
+    expectCancelledOnce(await repo.find(scope, created.id), SHUTDOWN_ABORT_MESSAGE);
+  });
+
+  it('境界: abort 確認を通過した直後・保存の直前に cancel が割り込んでも、その保存は通らず cancelled で終わる', async () => {
+    const repo = new InterposingFactoryRunRepository();
+    const model = new HangingModelProvider();
+    const { runFactory, createFactoryRun } = await setup({ model, repo });
+    enqueueGenerationScript(model);
+    const created = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'] });
+    const harness = new CancelHarness(repo);
+    // Stage 2 の完了イベント（generating-tools の stage_completed）は throwIfAborted(signal) を通過した直後に保存される。
+    // その保存の直前で cancel を完了させる（保存済み: cancelled、signal: abort 済み）。
+    repo.interposeBeforeSave(
+      (run) => run.events.at(-1)?.kind === 'stage_completed' && run.events.at(-1)?.stage === 'generating-tools',
+      async () => { await harness.useCase.execute(scope, created.id); },
+    );
+
+    await runFactory.execute(scope, created.id, harness.signal);
+
+    expect(harness.signal.aborted).toBe(true);
+    expect(model.attempts).toBe(4); // planner / tool-smith / skill-writer / assembler まで。以降は何も呼ばれない。
+    const stored = await repo.find(scope, created.id);
+    expectCancelledOnce(stored);
+    expect(stored?.stage).toBe('generating-tools');
+    expect(stored?.events.filter((event) => event.kind === 'stage_completed' && event.stage === 'generating-tools')).toHaveLength(0);
+    await settle();
+    expect(await repo.find(scope, created.id)).toEqual(stored);
   });
 });

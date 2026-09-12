@@ -382,6 +382,20 @@ function localizeEtlDetail(message: string, language: ErrorLanguage): string | u
 
   if (/^join: output exceeded 100,?000 rows(?:;\s*check join keys)?\.?$/.test(message)) return '結合結果が10万行を超えました。結合キーが正しいか確認してください';
 
+  // 実行上限（engine.preview の maxRows）。計算は全行で行うため、切り詰めではなくエラーで止まる。
+  matched = /^([A-Za-z][A-Za-z0-9_-]*): produced ([\d,]+) rows, exceeding the execution limit of ([\d,]+) rows$/.exec(message);
+  if (matched !== null) return `ノード（${matched[1]}）の出力が ${Number(matched[2]?.replace(/,/g, '')).toLocaleString('ja-JP')} 行になり、実行上限の ${Number(matched[3]?.replace(/,/g, '')).toLocaleString('ja-JP')} 行を超えました。上流でフィルタや集計を入れて行数を減らすか、データソースの範囲を絞ってください`;
+
+  matched = /^preview: rowLimit must be a non-negative integer, received (.+)$/.exec(message);
+  if (matched !== null) return `プレビューの表示行数（rowLimit）は 0 以上の整数で指定してください（受け取った値: ${matched[1]}）`;
+
+  matched = /^preview: maxRows must be a positive integer, received (.+)$/.exec(message);
+  if (matched !== null) return `実行上限（maxRows）は 1 以上の整数で指定してください（受け取った値: ${matched[1]}）`;
+
+  // 時系列の欠損補完の上限。セミコロンを含む1文なので localizeDetail の分割前（etlWhole）で拾う。
+  matched = /^time-series-analysis: fill would generate more than ([\d,]+) buckets; narrow the time range or choose a coarser interval$/.exec(message);
+  if (matched !== null) return `時系列分析の欠損補完が ${Number(matched[1]?.replace(/,/g, '')).toLocaleString('ja-JP')} バケットを超えます。期間（timeColumn の範囲）を狭めるか、interval を粗く（時間→日→週）してください`;
+
   matched = /^join: key type mismatch: (.+) \('(.+)'\) vs (.+) \('(.+)'\)$/.exec(message);
   if (matched !== null) {
     const leftType = DATA_TYPE_JA[matched[2] ?? ''] ?? matched[2];
@@ -979,10 +993,41 @@ function localizeSettingsValidationDetail(message: string, language: ErrorLangua
   return undefined;
 }
 
+/**
+ * 認可の拒否（403 `FORBIDDEN`。`src/api/authorization.ts`）の定型文
+ * `this operation requires the '<kind>:<action>' permission` に対する説明。
+ *
+ * 見出し「この操作は許可されていません」に原文を括弧で添えるだけでは、利用者は
+ * **どのロールが要るのか・誰に頼めばよいのか**が分からない。権限ごとに「何の操作に・どのロールが
+ * 要るか」を書く。ここに無い権限は権限名だけを言い換え、原文は捨てない。
+ */
+const PERMISSION_EXPLANATIONS: Record<string, Bilingual> = {
+  // MCPサーバー設定はサーバーホスト上の子プロセス起動＝ホストでのコード実行権限に等しい（docs/08 §3.2）。
+  'mcp-server:operate': [
+    "Changing MCP server settings and running connection tests requires the 'mcp-server:operate' permission (operator or workspace-admin role). This permission is equivalent to running commands on the server host, so ask an administrator to grant the role if you need it",
+    'MCPサーバーの設定変更と接続テストには operate 権限（operator / workspace-admin）が必要です。この権限はサーバーホスト上でコマンドを実行できる権限に等しいため、必要な場合は管理者にロールの付与を依頼してください',
+  ],
+};
+const PERMISSION_REQUIRED = /^this operation requires the '([A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?)' permission$/;
+
+/** 認可拒否の定型文なら説明文（en / ja）。定型文でなければ undefined。 */
+function localizePermissionDetail(message: string, language: ErrorLanguage): string | undefined {
+  const matched = PERMISSION_REQUIRED.exec(message);
+  if (matched === null) return undefined;
+  const permission = matched[1] ?? '';
+  const known = PERMISSION_EXPLANATIONS[permission];
+  if (known !== undefined) return pick(known, language);
+  // 英語は原文で十分に伝わる（権限名がそのまま出る）ので言い換えない。
+  return language === 'ja' ? `この操作には '${permission}' 権限が必要です。必要な場合は管理者にロールの付与を依頼してください` : undefined;
+}
+
 /** 変換できたら平易な文言、できなければ undefined（呼び出し側が原文を残す）。 */
 function localizeMessageText(message: string, language: ErrorLanguage): string | undefined {
   const etl = localizeEtlDetail(message, language);
   if (etl !== undefined) return etl;
+
+  const permission = localizePermissionDetail(message, language);
+  if (permission !== undefined) return permission;
 
   // 汎用の `... not found: id` / `already exists: id` より先に判定する（実行エラーの具体的な
   // 言い換えを、後段の「ID: x」だけの薄い変換に食われないようにする）。
@@ -1153,6 +1198,11 @@ export function localizeApiErrorMessage(payload: ApiErrorPayload, language: Erro
   // agent-output の上限超過は SessionQuotaExceededError（413・SESSION_QUOTA_EXCEEDED）として届くが、
   // 見出しの「不要な成果物を削除」では直らない（ツールの出力行数の問題）。詳細文だけを出す。
   if (payload.code === 'SESSION_QUOTA_EXCEEDED' && AGENT_OUTPUT_TOO_LARGE.test(raw)) return localizeDetail(raw, language);
+  // 認可の拒否は見出し（「許可されていません」）より、どの権限・ロールが要るかを1文で伝えるほうが役に立つ。
+  if (payload.code === 'FORBIDDEN') {
+    const permission = localizePermissionDetail(raw, language);
+    if (permission !== undefined) return permission;
+  }
   const heading = headingFor(payload, language);
   const detail = OPAQUE_DETAIL.has(payload.code) ? '' : localizeDetail(raw, language);
   // 詳細が見出しと同文なら重ねない。英語は詳細が括弧内の小文字始まり（'the run was cancelled'）、

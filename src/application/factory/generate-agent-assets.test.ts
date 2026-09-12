@@ -8,6 +8,7 @@ import type { Agent } from '../../domain/agent/agent';
 import { createAgent } from '../../domain/agent/agent';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { createDefaultRegistry } from '../../domain/etl/nodes';
+import { FactoryAbortedError } from '../../domain/factory/errors';
 import type { FactoryPlan } from '../../domain/factory/factory-plan';
 import type { FactoryGoalInput } from '../../domain/factory/factory-run';
 import { SemVer } from '../../domain/tool/semver';
@@ -16,6 +17,7 @@ import { GenerateAgentPromptUseCase } from '../agent/generate-agent-prompt';
 import { SaveAgentUseCase } from '../agent/save-agent';
 import { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import { EtlEngine } from '../etl/engine';
+import { ModelProviderError, type ModelCompletion, type ModelCompletionRequest } from '../model/model-provider';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
 import { agentToolArgumentsOf, GenerateAgentAssetsUseCase, makeArgumentsOptional, mergeAgentInputDeclarations, replaceGuideSections, resolveReuseTarget } from './generate-agent-assets';
@@ -161,7 +163,7 @@ function validAssemblerProposalJson(): string {
   });
 }
 
-async function setup() {
+async function setup(options?: { readonly model?: ScriptedModelProvider }) {
   const dataSources = new InMemoryDataSourceRepository();
   await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Sales', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 30, createdAt: '', updatedAt: '' }, 'id,amount\n1,100\n2,200');
   const engine = new EtlEngine(createDefaultRegistry());
@@ -169,7 +171,7 @@ async function setup() {
   const profiler = new ProfileDataSourcesUseCase(dataSources, resolver, engine);
   const profiles = await profiler.executeAll(scope, ['ds-1']);
 
-  const model = new ScriptedModelProvider();
+  const model = options?.model ?? new ScriptedModelProvider();
   const toolSmith = new ToolSmithRole(model);
   const skillWriter = new SkillWriterRole(model);
   const assembler = new AssemblerRole(model);
@@ -578,6 +580,109 @@ describe('GenerateAgentAssetsUseCase（強化モードの promptStrategy）', ()
     expect(result.roleCallsUsed).toBe(1); // Assemblerは呼ばれた（消費した）が…
     expect(result.agentChanged).toBe(false); // …結果が同じなので保存はしない。
     expect(await agentRepo.listVersions(scope, BASE_AGENT_ID)).toHaveLength(1);
+  });
+});
+
+/** N回目の呼び出しで「接続中に abort された」adapter を模す: signal を abort してから**独自の**例外で失敗する（FactoryAbortedError ではない）。 */
+class MidflightAbortingModel extends ScriptedModelProvider {
+  calls = 0;
+  constructor(private readonly controller: AbortController, private readonly abortAt: number) { super(); }
+  override async complete(request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion> {
+    this.calls += 1;
+    if (this.calls !== this.abortAt) return super.complete(request, signal);
+    this.controller.abort(new FactoryAbortedError('Cancelled by user'));
+    throw new ModelProviderError('connection reset');
+  }
+}
+
+describe('GenerateAgentAssetsUseCase（中断: signal は各ロールへ届き、修復ループの再試行や preserve フォールバックへ丸めない）', () => {
+  const userCancel = (): FactoryAbortedError => new FactoryAbortedError('Cancelled by user');
+
+  it('abort 済みの signal では ToolSmith を1回も呼ばず FactoryAbortedError で抜ける', async () => {
+    const { model, profiles, useCase } = await setup();
+    model.enqueue({ message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' });
+    const controller = new AbortController();
+    controller.abort(userCancel());
+
+    await expect(useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, signal: controller.signal }))
+      .rejects.toBeInstanceOf(FactoryAbortedError);
+    expect(model.requests).toHaveLength(0);
+  });
+
+  it('修復ループ: 1回目の提案が失敗した後に abort されると再提案せず（次のモデル呼び出しは無い）、Tool は保存されない', async () => {
+    const { model, profiles, useCase } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: invalidToolGraphProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+    );
+    const controller = new AbortController();
+    const kinds: string[] = [];
+
+    await expect(useCase.execute({
+      scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, signal: controller.signal,
+      onEvent: (event) => { kinds.push(event.kind); if (event.kind === 'tool_repair_attempted') controller.abort(userCancel()); },
+    })).rejects.toBeInstanceOf(FactoryAbortedError);
+
+    expect(model.requests).toHaveLength(1);
+    expect(kinds).toEqual(['tool_repair_attempted']); // tool_generated / artifact_saved は無い = 保存されていない。
+  });
+
+  it('adapter が中断を独自の例外で報告しても（FactoryAbortedError でなくても）signal を見て修復再試行へ回さない', async () => {
+    const controller = new AbortController();
+    const model = new MidflightAbortingModel(controller, 1);
+    const { profiles, useCase } = await setup({ model });
+    const kinds: string[] = [];
+
+    await expect(useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, signal: controller.signal, onEvent: (event) => { kinds.push(event.kind); } }))
+      .rejects.toBeInstanceOf(FactoryAbortedError);
+
+    expect(model.calls).toBe(1); // 再提案（2回目の呼び出し）は無い。
+    expect(kinds).toEqual([]);   // 中断は「失敗した試行」としても記録しない。
+  });
+
+  it('Tool 保存直後（tool_generated）に abort されると SkillWriter / Assembler は呼ばれず、Skill / Agent は保存されない', async () => {
+    const { model, profiles, useCase, agentRepo } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const controller = new AbortController();
+    const kinds: string[] = [];
+
+    await expect(useCase.execute({
+      scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, signal: controller.signal,
+      onEvent: (event) => { kinds.push(event.kind); if (event.kind === 'tool_generated') controller.abort(userCancel()); },
+    })).rejects.toBeInstanceOf(FactoryAbortedError);
+
+    expect(model.requests).toHaveLength(1);
+    expect(kinds).toEqual(['tool_generated', 'artifact_saved']); // Skill / Agent の artifact_saved は無い。
+    expect(await agentRepo.list(scope)).toHaveLength(0);
+  });
+
+  it('rewrite: Assembler が abort で失敗しても preserve へフォールバックせず、既存 Agent の新版を作らない', async () => {
+    const controller = new AbortController();
+    const model = new MidflightAbortingModel(controller, 3); // tool-smith / skill-writer は通し、assembler で中断する。
+    const { profiles, useCase, agentRepo } = await setup({ model });
+    const baseAgent = createAgent({
+      metadata: { internalId: 'base-agent', workingName: 'Base agent draft', displayName: 'Base Assistant', publishName: 'base_assistant', version: SemVer.of(1, 0, 0), owner: 'alice', state: 'draft', tenant: scope },
+      kind: 'normal', systemPrompt: '# 役割\n既存の役割文。', skills: [], tools: [], agents: [],
+    });
+    await agentRepo.save(baseAgent);
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+    );
+    const kinds: string[] = [];
+
+    await expect(useCase.execute({
+      scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, baseAgent, promptStrategy: 'rewrite', signal: controller.signal,
+      onEvent: (event) => { kinds.push(event.kind); },
+    })).rejects.toBeInstanceOf(FactoryAbortedError);
+
+    expect(model.calls).toBe(3);
+    expect(kinds).not.toContain('proposal_rejected'); // 「rewrite に失敗したので preserve」の記録は残さない。
+    expect(await agentRepo.listVersions(scope, 'base-agent')).toHaveLength(1);
   });
 });
 

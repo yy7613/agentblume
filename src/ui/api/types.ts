@@ -34,7 +34,8 @@ export interface PropagationResultDto {
   readonly nodes: Readonly<Record<string, NodeInferenceDto>>;
   readonly hasErrors: boolean;
 }
-export interface NodePreviewDto { readonly nodeId: string; readonly table: TableDto; readonly truncated: boolean }
+/** `table` は表示用スナップショット（先頭 rowLimit 行）。`rowCount` は計算結果の全行数、`truncated` は両者が異なること。 */
+export interface NodePreviewDto { readonly nodeId: string; readonly table: TableDto; readonly truncated: boolean; readonly rowCount: number }
 export interface PreviewResultDto {
   readonly terminalId: string;
   readonly output: TableDto;
@@ -56,7 +57,7 @@ export interface AuthSessionDto {
     readonly tenantId: string;
     readonly workspaceId: string;
     readonly displayName?: string;
-    /** 次Wave（RBAC）用。現時点では表示にしか使わない。 */
+    /** 保持ロール。表示のほか、MCP 画面が operate 権限の有無でボタンを無効化する判定に使う（最終判定はサーバー）。 */
     readonly roles: readonly string[];
   };
 }

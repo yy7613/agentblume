@@ -100,6 +100,11 @@ const rule = (method: string, url: string, action: AuthorizationAction, kind: Au
  *   ツール承認（`/runs/:runId/resume`）・昇格承認・記憶提案の採否がこれにあたる。
  * - **運用は `operate`（Operator以上）**。稼働状況・保持期限・バックアップ・サンプル投入。
  *   保持期間を0日にして適用すれば全実行履歴が消えるので、実行系とは別の権限にする。
+ * - **MCPサーバー設定の変更と接続テストも `operate`**。stdio の MCP サーバーは**サーバーホスト上で
+ *   子プロセスを起動する設定**であり、保存できる主体は（許可リストの有無に関わらず）ホスト上で
+ *   任意コードを実行できる（`domain/mcp/command-policy.ts` の冒頭）。以前は `create` / `edit` /
+ *   `execute`（Editor以上）で、`roles` を書かないトークンの既定が editor なので、実質トークンを
+ *   持つ全員がホストでコードを実行できた。参照（GET）は資格情報がマスク済みなので `read` のまま。
  * - **削除は `delete`（実質 Workspace Admin）**。§3.2 は Editor/Publisher に「自作のみ」を
  *   認めているが、作成者の subject を保存していないため所有者を判定できない。
  *   §3.1 のフェイルセーフに従い、判定できない場合は拒否する。
@@ -290,12 +295,20 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   rule('POST', '/web-searches', 'execute', 'data-source'),
 
   // --- MCP（別Waveが所有するルートだが、認可の割り当てはこの表が持つ） ---
+  // 一覧は env / headers をマスクして返すので参照権限で足りる。
   rule('GET', '/mcp-servers', 'read', 'mcp-server'),
-  rule('POST', '/mcp-servers', 'create', 'mcp-server', true),
-  rule('PUT', '/mcp-servers', 'edit', 'mcp-server', true),
-  rule('DELETE', '/mcp-servers/:name', 'delete', 'mcp-server', true),
+  /**
+   * 設定の作成・置換・削除・接続テストは**ホスト上でのコード実行権限**に等しい（stdio は子プロセスの起動、
+   * `cmd /c npx …` も許可リストの範囲で任意のパッケージを取ってきて走らせる）。
+   * モデル設定（APIキーを預かる）と同じく `operate`（Operator / Workspace Admin）を要求する。
+   * 削除も `delete`（実質 Workspace Admin のみ）ではなく `operate` に揃える — 運用担当が
+   * 危険な設定を取り除けないのは本末転倒で、削除はこの表の中で最も安全側の操作だからである。
+   */
+  rule('POST', '/mcp-servers', 'operate', 'mcp-server', true),
+  rule('PUT', '/mcp-servers', 'operate', 'mcp-server', true),
+  rule('DELETE', '/mcp-servers/:name', 'operate', 'mcp-server', true),
   // 接続テストは**子プロセスの起動と外部接続**そのもの。保存を伴わなくても「実行した」事実は残す。
-  rule('POST', '/mcp-servers/:name/test', 'execute', 'mcp-server', true),
+  rule('POST', '/mcp-servers/:name/test', 'operate', 'mcp-server', true),
 
   // --- モデル設定（APIキーを預かるので変更は運用権限） ---
   rule('GET', '/model-settings', 'read', 'model-settings'),

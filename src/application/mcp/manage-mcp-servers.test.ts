@@ -54,9 +54,54 @@ describe('SaveMcpServerUseCase', () => {
 
   it('不正な設定は保存せずMcpValidationError', async () => {
     const repo = new FakeRepository();
-    await expect(new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'bad name', transport: { kind: 'stdio', command: 'node', args: [], env: {} } } }))
+    await expect(new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'bad name', transport: { kind: 'stdio', command: 'npx', args: [], env: {} } } }))
       .rejects.toBeInstanceOf(McpValidationError);
     expect(repo.configs.size).toBe(0);
+  });
+});
+
+/**
+ * 既定の許可リストから `node` / `python` 等を外した（MCPのランチャーだけに絞った）。
+ * 保存時の拒否は「何を設定すれば通るか」まで書いていないと、利用者は行き止まりになる。
+ */
+describe('既定の許可リスト（保存時）', () => {
+  it('node は既定では保存できず、拒否文がコマンド名と環境変数の値を案内する', async () => {
+    const repo = new FakeRepository();
+    const error = await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'local', transport: { kind: 'stdio', command: 'node', args: ['server.js'], env: {} } } })
+      .catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(McpValidationError);
+    expect((error as Error).message).toBe(
+      'transport.command is not allowed: node. Allowed commands: npx, uvx, bunx, cmd.'
+      + ' To allow it, set AGENTCONTEXT_MCP_ALLOWED_COMMANDS=npx,uvx,bunx,cmd,node on the server and restart',
+    );
+    expect(repo.configs.size).toBe(0);
+  });
+
+  it('許可リストを明示したポリシーなら node も保存できる', async () => {
+    const repo = new FakeRepository();
+    const policy = { ...UNRESTRICTED_MCP_POLICY, command: { allowedCommands: ['npx', 'node'] } };
+    await expect(new SaveMcpServerUseCase(repo, now, policy).execute({ scope, server: { name: 'local', transport: { kind: 'stdio', command: 'node', args: ['server.js'], env: {} } } }))
+      .resolves.toMatchObject({ name: 'local' });
+  });
+
+  it('PATH / NODE_OPTIONS のような env は許可リストに関わらず保存できない', async () => {
+    const repo = new FakeRepository();
+    await expect(new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'fs', transport: { kind: 'stdio', command: 'npx', args: [], env: { NODE_OPTIONS: '--require /tmp/x.js' } } } }))
+      .rejects.toThrow(/transport\.env must not override NODE_OPTIONS/);
+    // 無制限ポリシー（`*`）でも外れない。
+    await expect(new SaveMcpServerUseCase(repo, now, UNRESTRICTED_MCP_POLICY).execute({ scope, server: { name: 'fs', transport: { kind: 'stdio', command: 'npx', args: [], env: { Path: 'C:\\evil' } } } }))
+      .rejects.toThrow(/transport\.env must not override Path/);
+    expect(repo.configs.size).toBe(0);
+  });
+
+  it('JSONタブ（ReplaceMcpServers）でも node は既定で拒否され、1件も置き換えない', async () => {
+    const repo = new FakeRepository();
+    await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'keep', transport: { kind: 'stdio', command: 'npx', args: [], env: {} } } });
+    const error = await new ReplaceMcpServersUseCase(repo, now).execute(scope, { mcpServers: { ok: { command: 'uvx' }, legacy: { command: 'node', args: ['server.js'] } } })
+      .catch((cause: unknown) => cause);
+    expect((error as Error).message).toContain('AGENTCONTEXT_MCP_ALLOWED_COMMANDS=npx,uvx,bunx,cmd,node');
+    expect(repo.replaceAllCalls).toBe(0);
+    expect([...repo.configs.keys()]).toEqual(['keep']);
   });
 });
 
@@ -100,7 +145,7 @@ describe('秘密値のマスクとポリシー', () => {
 
   it('ReplaceMcpServers はポリシー違反があれば1件も置き換えない', async () => {
     const repo = new FakeRepository();
-    await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'keep', transport: { kind: 'stdio', command: 'node', args: [], env: {} } } });
+    await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'keep', transport: { kind: 'stdio', command: 'npx', args: [], env: {} } } });
     await expect(new ReplaceMcpServersUseCase(repo, now).execute(scope, { mcpServers: { ok: { command: 'npx' }, bad: { command: 'whoami' } } }))
       .rejects.toBeInstanceOf(McpValidationError);
     expect(repo.replaceAllCalls).toBe(0);
@@ -118,7 +163,7 @@ describe('ListMcpServersUseCase / DeleteMcpServerUseCase', () => {
   it('一覧はname昇順、削除は未存在でMcpNotFoundError', async () => {
     const repo = new FakeRepository();
     const save = new SaveMcpServerUseCase(repo, now);
-    for (const name of ['zeta', 'alpha']) await save.execute({ scope, server: { name, transport: { kind: 'stdio', command: 'node', args: [], env: {} } } });
+    for (const name of ['zeta', 'alpha']) await save.execute({ scope, server: { name, transport: { kind: 'stdio', command: 'npx', args: [], env: {} } } });
     expect((await new ListMcpServersUseCase(repo).execute(scope)).map((config) => config.name)).toEqual(['alpha', 'zeta']);
 
     const remove = new DeleteMcpServerUseCase(repo);
@@ -130,7 +175,7 @@ describe('ListMcpServersUseCase / DeleteMcpServerUseCase', () => {
 describe('ReplaceMcpServersUseCase', () => {
   it('標準ドキュメントでスコープ内を丸ごと置き換える', async () => {
     const repo = new FakeRepository();
-    await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'stale', transport: { kind: 'stdio', command: 'node', args: [], env: {} } } });
+    await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'stale', transport: { kind: 'stdio', command: 'npx', args: [], env: {} } } });
     const configs = await new ReplaceMcpServersUseCase(repo, now).execute(scope, { mcpServers: { fs: { command: 'npx', args: ['-y', 'x'] }, remote: { url: 'https://e.com/mcp' } } });
     expect(configs.map((config) => config.name)).toEqual(['fs', 'remote']);
     expect([...repo.configs.keys()]).toEqual(['fs', 'remote']);
@@ -138,8 +183,8 @@ describe('ReplaceMcpServersUseCase', () => {
 
   it('検証に失敗したドキュメントは既存設定を壊さない（replaceAllを呼ばない）', async () => {
     const repo = new FakeRepository();
-    await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'keep', transport: { kind: 'stdio', command: 'node', args: [], env: {} } } });
-    await expect(new ReplaceMcpServersUseCase(repo, now).execute(scope, { mcpServers: { broken: { command: 'node', url: 'https://e.com' } } }))
+    await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'keep', transport: { kind: 'stdio', command: 'npx', args: [], env: {} } } });
+    await expect(new ReplaceMcpServersUseCase(repo, now).execute(scope, { mcpServers: { broken: { command: 'npx', url: 'https://e.com' } } }))
       .rejects.toBeInstanceOf(McpValidationError);
     expect(repo.replaceAllCalls).toBe(0);
     expect([...repo.configs.keys()]).toEqual(['keep']);
@@ -148,7 +193,7 @@ describe('ReplaceMcpServersUseCase', () => {
 
 describe('TestMcpServerUseCase', () => {
   async function seed(repo: FakeRepository, disabled = false) {
-    await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'fs', transport: { kind: 'stdio', command: 'node', args: [], env: {} }, disabled } });
+    await new SaveMcpServerUseCase(repo, now).execute({ scope, server: { name: 'fs', transport: { kind: 'stdio', command: 'npx', args: [], env: {} }, disabled } });
   }
 
   it('接続できたらツール一覧を返す', async () => {

@@ -13,6 +13,26 @@ function tool(type: string, config: unknown) {
 }
 
 describe('ToolOutputDispatcher', () => {
+  it('maxRows で行を落としたら、全体件数・省略件数と注記をモデル向けの値と content に含める', async () => {
+    const dispatcher = new ToolOutputDispatcher();
+    const wide = { ...table, rows: Array.from({ length: 7 }, (_, index) => ({ id: index + 1, name: `n${index + 1}` })) };
+    const note = 'Showing 2 of 7 rows; 5 rows omitted (agent-output maxRows=2).';
+    const cut = (format: 'json' | 'markdown-table' | 'chartjs', toolCallId: string) =>
+      dispatcher.dispatch({ tool: tool('agent-output', { shape: 'rows', format, columns: ['id'], maxRows: 2, maxBytes: 4096, overflow: 'error' }), table: wide, runId: 'run', toolCallId });
+
+    const json = await cut('json', 'json');
+    expect(json).toMatchObject({ delivery: 'agent', value: { rows: [{ id: 1 }, { id: 2 }], rowCount: 7, omittedRows: 5, note } });
+    expect(json.content).toContain(note);
+    const markdown = await cut('markdown-table', 'markdown');
+    expect(markdown.delivery === 'agent' ? markdown.value : undefined).toBe(`| id |\n| --- |\n| 1 |\n| 2 |\n\n${note}`);
+    const chart = await cut('chartjs', 'chart');
+    expect(chart).toMatchObject({ value: { labels: ['1', '2'], datasets: [{ label: 'id', data: [1, 2] }], rowCount: 7, omittedRows: 5, note } });
+
+    // 全行が収まっていれば注記も件数の欄も付けない（既存の形をそのまま保つ）。
+    const complete = await dispatcher.dispatch({ tool: tool('agent-output', { shape: 'rows', format: 'json', maxRows: 7, maxBytes: 4096, overflow: 'error' }), table: wide, runId: 'run', toolCallId: 'complete' });
+    expect(Object.keys((complete as { value: object }).value)).toEqual(['schema', 'rows']);
+  });
+
   it('returns a selected, bounded inline value for agent-output', async () => {
     const dispatcher = new ToolOutputDispatcher();
     const result = await dispatcher.dispatch({ tool: tool('agent-output', { shape: 'single-value', format: 'json', valueColumn: 'name', maxRows: 10, maxBytes: 1024, overflow: 'error' }), table, runId: 'run', toolCallId: 'call' });

@@ -30,7 +30,7 @@ import type { ToolGraph } from '../../domain/etl/graph';
 import { operatorBindingsOf, valueBindingsOf } from '../../domain/etl/nodes/filter';
 import type { FactoryAgentBrief, FactoryPlan, FactoryToolPlan } from '../../domain/factory/factory-plan';
 import type { FactoryEvent, FactoryGoalInput, FactoryPromptStrategy } from '../../domain/factory/factory-run';
-import { FactoryValidationError } from '../../domain/factory/errors';
+import { FactoryAbortedError, FactoryValidationError } from '../../domain/factory/errors';
 import type { FactoryRunId } from '../../domain/factory/ids';
 import type { VersionRef } from '../../domain/factory/refs';
 import type { SkillId } from '../../domain/skill/ids';
@@ -45,6 +45,7 @@ import { SaveAgentUseCase } from '../agent/save-agent';
 import { GenerateAgentPromptUseCase } from '../agent/generate-agent-prompt';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
+import { throwIfAborted } from './abort';
 import type { DataProfile } from './profile-data-sources';
 import { isReusableSideEffect, type ExistingToolCatalogEntry } from './tool-catalog';
 import { AssemblerRole } from './roles/assembler-role';
@@ -78,6 +79,12 @@ export interface GenerateAgentAssetsInput {
    */
   readonly promptStrategy?: FactoryPromptStrategy;
   readonly onEvent?: (event: Omit<FactoryEvent, 'sequence'>) => void;
+  /**
+   * Run の中断シグナル（利用者の cancel / worker の shutdown）。各ロール呼び出しへ渡し、Tool→Skill→Agent の
+   * 各ステップの合間でも確認する。中断は `FactoryAbortedError` で抜け、修復ループの再試行へは丸めない
+   * （cancel が「多くてもモデル呼び出し1回分」で効くようにする）。
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface GenerateAgentAssetsResult {
@@ -113,6 +120,7 @@ export class GenerateAgentAssetsUseCase {
 
   async execute(input: GenerateAgentAssetsInput): Promise<GenerateAgentAssetsResult> {
     let roleCallsUsed = 0;
+    const signal = input.signal;
     const emit = (event: Omit<FactoryEvent, 'sequence'>): void => { input.onEvent?.(event); };
     const profileByDataSourceId = new Map(input.profiles.map((profile) => [profile.dataSourceId, profile] as const));
 
@@ -124,6 +132,7 @@ export class GenerateAgentAssetsUseCase {
     const reusable = input.existingTools ?? [];
 
     for (const toolPlan of input.plan.tools) {
+      throwIfAborted(signal);
       // 再利用計画（Stage 1の「既存Toolで足りるか」の判断結果）は、ToolSmithを呼ばずに既存Toolを参照する。
       // 解決できない（削除済み・カタログ外・許可されない副作用）場合は理由を記録して新規生成へフォールバックする。
       const reuse = toolPlan.reuse;
@@ -165,6 +174,7 @@ export class GenerateAgentAssetsUseCase {
           }),
           onAttemptFailed: ({ attempt, attempts, message }) =>
             emit({ kind: 'tool_repair_attempted', at: this.now().toISOString(), stage: 'generating-tools', message: `${toolPlan.key} attempt ${attempt}/${attempts}: ${message}` }),
+          ...(signal === undefined ? {} : { signal }),
         },
       );
       roleCallsUsed += outcome.roleCallsUsed;
@@ -188,6 +198,7 @@ export class GenerateAgentAssetsUseCase {
     // Stage 3: Skill生成（SkillWriter）。依存Toolを全て失ったSkillはドロップし、一部生存なら縮退する。
     const skillRefs: VersionRef[] = [];
     for (const skillPlan of input.plan.skills) {
+      throwIfAborted(signal);
       const resolvedToolKeys = skillPlan.toolKeys.filter((key) => toolKeyToRef.has(key));
       if (skillPlan.toolKeys.length > 0 && resolvedToolKeys.length === 0) continue;
 
@@ -200,7 +211,8 @@ export class GenerateAgentAssetsUseCase {
         .map((ref) => ({ internalId: ref.internalId, version: SemVer.parse(ref.version) }));
 
       roleCallsUsed += 1;
-      const proposal = await this.skillWriter.propose({ skillPlan, toolContracts });
+      const proposal = await this.skillWriter.propose({ skillPlan, toolContracts }, signal);
+      throwIfAborted(signal);
       const savedSkill = await this.saveSkill.execute({
         scope: input.scope,
         internalId: this.makeId(),
@@ -221,6 +233,7 @@ export class GenerateAgentAssetsUseCase {
     }
 
     // Stage 4: Agent組み立て（決定的合成 + Assembler）。
+    throwIfAborted(signal);
     const skillPromptRefs = skillRefs.map((ref) => ({ internalId: ref.internalId, version: SemVer.parse(ref.version) }));
     const toolPromptRefs = toolRefs.map((ref) => ({ internalId: ref.internalId, version: SemVer.parse(ref.version) }));
 
@@ -241,6 +254,7 @@ export class GenerateAgentAssetsUseCase {
           // 強化モードのbriefは「既存Agentの名前」+「今回の目標に対するPlannerの役割記述」で組む
           // （displayNameは既存を維持し、Factoryが本番Agentの名前を勝手に変えないため）。
           rewriteContext: { goal: input.goal, agentBrief: { displayName: input.baseAgent.metadata.displayName, role: input.plan.agentBrief.role } },
+          ...(signal === undefined ? {} : { signal }),
         },
       );
       roleCallsUsed += integrated.roleCallsUsed;
@@ -268,7 +282,8 @@ export class GenerateAgentAssetsUseCase {
       agentBrief: input.plan.agentBrief,
       skillGuide: promptDraft.sections.skillGuide,
       toolUsageGuide: promptDraft.sections.toolUsageGuide,
-    });
+    }, signal);
+    throwIfAborted(signal);
 
     // Tool使用ガイド・Skillガイドはassemblerが上書き生成しない（出所を機械的に追跡できる部分を保つ）。
     const systemPrompt = [assembled.role, promptDraft.sections.skillGuide, promptDraft.sections.toolUsageGuide, assembled.rules].join('\n\n');
@@ -311,6 +326,8 @@ export interface IntegrateAgentAssetsRequest {
   readonly promptStrategy?: FactoryPromptStrategy;
   /** `'rewrite'` でAssemblerへ渡す材料。無ければ rewrite できないため `preserve` へ倒す。 */
   readonly rewriteContext?: { readonly goal: FactoryGoalInput; readonly agentBrief: FactoryAgentBrief };
+  /** Run の中断シグナル。Assembler へ渡し、中断は `preserve` フォールバックへ丸めず `FactoryAbortedError` で抜ける。 */
+  readonly signal?: AbortSignal;
 }
 
 export interface IntegrateAgentAssetsResult {
@@ -365,6 +382,7 @@ export async function integrateAssetsIntoAgent(deps: IntegrateAgentAssetsDeps, r
   const rewriteContext = request.rewriteContext;
   if (request.promptStrategy === 'rewrite' && assembler !== undefined && rewriteContext !== undefined) {
     roleCallsUsed += 1;
+    throwIfAborted(request.signal);
     try {
       const assembled = await assembler.propose({
         goal: rewriteContext.goal,
@@ -372,7 +390,7 @@ export async function integrateAssetsIntoAgent(deps: IntegrateAgentAssetsDeps, r
         skillGuide: promptDraft.sections.skillGuide,
         toolUsageGuide: promptDraft.sections.toolUsageGuide,
         currentPrompt: base.systemPrompt,
-      });
+      }, request.signal);
       rewritten = [
         assembled.role,
         promptDraft.sections.skillGuide,
@@ -381,6 +399,9 @@ export async function integrateAssetsIntoAgent(deps: IntegrateAgentAssetsDeps, r
         assembled.rules,
       ].join('\n\n');
     } catch (error) {
+      // 中断はフォールバック（preserve で保存を続ける）ではなく打ち切り: cancel 後に新版を作ってはならない。
+      if (error instanceof FactoryAbortedError) throw error;
+      throwIfAborted(request.signal);
       fallbackReason = error instanceof Error ? error.message : String(error);
     }
   }
@@ -540,6 +561,8 @@ export interface ToolRepairLoopRequest {
   /** グラフ検証を通過し保存直前になった時点でのみ呼ばれる（idの払い出しを無駄にしない）。 */
   readonly identity: () => ToolSaveIdentity;
   readonly onAttemptFailed?: (info: { readonly attempt: number; readonly attempts: number; readonly message: string }) => void;
+  /** Run の中断シグナル。ToolSmith へ渡し、中断は「失敗した試行」として再提案へ回さず `FactoryAbortedError` で抜ける。 */
+  readonly signal?: AbortSignal;
 }
 
 export interface ToolRepairLoopResult {
@@ -565,9 +588,11 @@ export async function generateToolWithRepair(deps: ToolRepairLoopDeps, request: 
   let roleCallsUsed = 0;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    throwIfAborted(request.signal);
     roleCallsUsed += 1;
     try {
-      const proposal = await deps.toolSmith.propose({ toolPlan: request.toolPlan, profile: request.profile, ...(priorError === undefined ? {} : { priorError }) });
+      const proposal = await deps.toolSmith.propose({ toolPlan: request.toolPlan, profile: request.profile, ...(priorError === undefined ? {} : { priorError }) }, request.signal);
+      throwIfAborted(request.signal);
       const graph = makeArgumentsOptional(mergeAgentInputDeclarations(proposal.graph));
       const resolvedGraph = await deps.resolveDataSources.execute(request.scope, graph);
       const propagation = deps.engine.propagateSchemas(resolvedGraph);
@@ -590,6 +615,10 @@ export async function generateToolWithRepair(deps: ToolRepairLoopDeps, request: 
       });
       return { tool, roleCallsUsed };
     } catch (error) {
+      // 中断は修復対象の失敗ではない: 次の試行（= 次のモデル呼び出し）へ進まず、そのまま打ち切る。
+      // モデルadapterが中断を自前の例外で報告してきた場合も signal を見て同じ扱いにする。
+      if (error instanceof FactoryAbortedError) throw error;
+      throwIfAborted(request.signal);
       const message = error instanceof Error ? error.message : String(error);
       priorError = message;
       request.onAttemptFailed?.({ attempt, attempts, message });

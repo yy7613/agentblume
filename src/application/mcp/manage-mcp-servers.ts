@@ -19,6 +19,14 @@
  * 起動してよいコマンド・到達してよい宛先の検査は**保存時にも**行う（入力した直後に
  * 400 で理由が分かるほうが親切）。ただしこれは第一の防壁ではない。ポリシー導入前に
  * 保存された行があるので、実際に守るのは接続直前の検査（adapters）である。
+ * 両方とも `domain/mcp/transport-policy.ts` の同じ `assertAllowedTransport` を呼ぶ
+ * （判定の写しを作らない。既定の許可リスト・env の名前検査・シェルラッパーの扱いはすべてそこにある）。
+ *
+ * ## 誰が呼べるか
+ *
+ * これらの use case に到達できるのは `mcp-server:operate`（Operator / Workspace Admin）だけ
+ * （`api/authorization.ts` の表）。stdio の設定は**サーバーホスト上の子プロセス起動**であり、
+ * 保存できる主体は許可リストの有無に関わらずホスト上で任意コードを実行できるからである。
  */
 import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { McpNotFoundError } from '../../domain/mcp/errors';

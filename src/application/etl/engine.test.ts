@@ -11,7 +11,7 @@ import { ConfigError, GraphError } from '../../domain/etl/errors';
 import { SchemaError } from '../../domain/etl/errors';
 import type { EtlNode, SchemaInference, SchemaIssue } from '../../domain/etl/node';
 import { NodeRegistry } from '../../domain/etl/registry';
-import { EtlEngine } from './engine';
+import { DEFAULT_MAX_EXECUTION_ROWS, DEFAULT_ROW_LIMIT, EtlEngine } from './engine';
 import type { ToolGraph } from '../../domain/etl/graph';
 
 // ---------------------------------------------------------------------------
@@ -630,7 +630,7 @@ describe('EtlEngine.preview', () => {
     expect(result.nodes['f']?.truncated).toBe(false);
   });
 
-  it('rowLimit を超える出力は各ノードで truncated=true になり切り捨てられる', () => {
+  it('rowLimit は表示用スナップショットにだけ効き、下流ノードは全行を受け取る', () => {
     const engine = makeEngine();
     const numSchema: Schema = { columns: [{ name: 'age', type: 'number', nullable: false }] };
     const many = Array.from({ length: 5 }, (_, i) => ({ age: i } as Row));
@@ -644,12 +644,200 @@ describe('EtlEngine.preview', () => {
 
     const result = engine.preview(graph, { rowLimit: 2 });
 
-    expect(result.nodes['s']?.truncated).toBe(true);
-    expect(result.nodes['s']?.table.rows.length).toBe(2);
-    // pass は既に 2 行に切り詰められた入力を受け取り、上限ちょうどなので truncated=false。
-    expect(result.nodes['p']?.truncated).toBe(false);
-    expect(result.output.rows.length).toBe(2);
+    expect(result.nodes['s']).toMatchObject({ truncated: true, rowCount: 5 });
+    expect(result.nodes['s']?.table.rows).toEqual([{ age: 0 }, { age: 1 }]);
+    // pass は切り詰められていない 5 行を受け取る（スナップショットは計算に使われない）ので、
+    // 自身の rowCount も 5 で、スナップショットは同じく 2 行に絞られる。
+    expect(result.nodes['p']).toMatchObject({ truncated: true, rowCount: 5 });
+    expect(result.nodes['p']?.table.rows).toHaveLength(2);
+    // output は表示用の 2 行、fullOutput は計算結果の全 5 行。
     expect(result.output.rows).toEqual([{ age: 0 }, { age: 1 }]);
+    expect(result.fullOutput.rows).toEqual(many);
+  });
+
+  it('rowLimit を超える位置の行も下流の計算に使われる（200 行から age>150 を絞ると 49 行）', () => {
+    // 修正前は source が 100 行に切られ、filter は 0..99 だけを見て 0 行を返していた
+    // （sort→limit 1 が「100 行目の最大値」を返すのと同じ欠陥）。
+    const engine = makeEngine();
+    const numSchema: Schema = { columns: [{ name: 'age', type: 'number', nullable: false }] };
+    const rows200 = Array.from({ length: 200 }, (_, i) => ({ age: i } as Row));
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', rows200) },
+        { id: 'f', type: 'stub-filter', config: { column: 'age', op: 'gt', value: 150 } satisfies FilterConfig },
+      ],
+      edges: [{ from: 's', to: 'f' }],
+    };
+
+    const result = engine.preview(graph, { rowLimit: 100 });
+
+    expect(result.nodes['s']).toMatchObject({ truncated: true, rowCount: 200 });
+    expect(result.nodes['f']).toMatchObject({ truncated: false, rowCount: 49 });
+    expect(result.fullOutput.rows[0]).toEqual({ age: 151 });
+    expect(result.fullOutput.rows.at(-1)).toEqual({ age: 199 });
+    expect(result.output.rows).toHaveLength(49);
+  });
+
+  it('rowLimit が計算結果の行数ちょうどなら truncated=false', () => {
+    const engine = makeEngine();
+    const numSchema: Schema = { columns: [{ name: 'age', type: 'number', nullable: false }] };
+    const five = Array.from({ length: 5 }, (_, i) => ({ age: i } as Row));
+    const graph: ToolGraph = {
+      nodes: [{ id: 's', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', five) }],
+      edges: [],
+    };
+
+    const result = engine.preview(graph, { rowLimit: 5 });
+
+    expect(result.nodes['s']).toMatchObject({ truncated: false, rowCount: 5 });
+    expect(result.output.rows).toHaveLength(5);
+  });
+
+  it('rowLimit 0 はスナップショットを空にするが、計算は全行で行い rowCount / fullOutput に残る', () => {
+    const engine = makeEngine();
+    const numSchema: Schema = { columns: [{ name: 'age', type: 'number', nullable: false }] };
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', rowsOf(10, 20, 30)) },
+        { id: 'f', type: 'stub-filter', config: { column: 'age', op: 'gt', value: 15 } satisfies FilterConfig },
+      ],
+      edges: [{ from: 's', to: 'f' }],
+    };
+
+    const result = engine.preview(graph, { rowLimit: 0 });
+
+    expect(result.nodes['s']).toMatchObject({ truncated: true, rowCount: 3 });
+    expect(result.nodes['s']?.table.rows).toEqual([]);
+    expect(result.nodes['f']).toMatchObject({ truncated: true, rowCount: 2 });
+    expect(result.output.rows).toEqual([]);
+    expect(result.fullOutput.rows).toEqual([{ age: 20 }, { age: 30 }]);
+  });
+
+  it.each([-1, 1.5, Number.NaN])('rowLimit %s は ConfigError（非負整数のみ）', (rowLimit) => {
+    const engine = makeEngine();
+    const graph: ToolGraph = {
+      nodes: [{ id: 's', type: 'stub-source', config: sourceConfig(schemaOf('id'), 'confirmed', [{ id: 'x' }]) }],
+      edges: [],
+    };
+
+    expect(() => engine.preview(graph, { rowLimit })).toThrow(ConfigError);
+    expect(() => engine.preview(graph, { rowLimit })).toThrow(
+      `preview: rowLimit must be a non-negative integer, received ${String(rowLimit)}`,
+    );
+  });
+
+  it('既定の表示行数は DEFAULT_ROW_LIMIT（100）として公開される', () => {
+    expect(DEFAULT_ROW_LIMIT).toBe(100);
+  });
+
+  describe('実行行数の上限（maxRows）', () => {
+    const numSchema: Schema = { columns: [{ name: 'age', type: 'number', nullable: false }] };
+    const rowsOfCount = (count: number): Row[] => Array.from({ length: count }, (_, i) => ({ age: i } as Row));
+
+    function caught(run: () => unknown): unknown {
+      try {
+        run();
+      } catch (error) {
+        return error;
+      }
+      return undefined;
+    }
+
+    it('生成行数が maxRows ちょうどなら実行できる', () => {
+      const engine = makeEngine();
+      const graph: ToolGraph = {
+        nodes: [
+          { id: 's', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', rowsOfCount(5)) },
+          { id: 'p', type: 'stub-pass', config: {} },
+        ],
+        edges: [{ from: 's', to: 'p' }],
+      };
+
+      const result = engine.preview(graph, { maxRows: 5 });
+
+      expect(result.nodes['p']?.rowCount).toBe(5);
+      expect(result.fullOutput.rows).toHaveLength(5);
+    });
+
+    it('maxRows+1 行を生成した source は、その id と行数を添えた SchemaError で止まり下流は実行しない', () => {
+      const engine = makeEngine();
+      const graph: ToolGraph = {
+        nodes: [
+          { id: 's', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', rowsOfCount(5)) },
+          { id: 'p', type: 'stub-pass', config: {} },
+        ],
+        edges: [{ from: 's', to: 'p' }],
+      };
+
+      const error = caught(() => engine.preview(graph, { maxRows: 4 }));
+
+      expect(error).toBeInstanceOf(SchemaError);
+      expect(error).toMatchObject({
+        code: 'ETL_SCHEMA',
+        nodeId: 's',
+        message: 'stub-source: produced 5 rows, exceeding the execution limit of 4 rows',
+      });
+    });
+
+    it('上限は終端だけでなく中間ノードにも適用する（join で膨らんだ行を下流へ渡さない）', () => {
+      const engine = makeEngine();
+      // 各 source は 3 行（上限 5 の範囲内）だが、join が 6 行に膨らむ。
+      const graph: ToolGraph = {
+        nodes: [
+          { id: 'l', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', rowsOfCount(3)) },
+          { id: 'r', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', rowsOfCount(3)) },
+          { id: 'j', type: 'stub-join', config: {} },
+          { id: 'p', type: 'stub-pass', config: {} },
+        ],
+        edges: [
+          { from: 'l', to: 'j', toInput: 0 },
+          { from: 'r', to: 'j', toInput: 1 },
+          { from: 'j', to: 'p' },
+        ],
+      };
+
+      const error = caught(() => engine.preview(graph, { maxRows: 5 }));
+
+      expect(error).toBeInstanceOf(SchemaError);
+      expect(error).toMatchObject({
+        nodeId: 'j',
+        message: 'stub-join: produced 6 rows, exceeding the execution limit of 5 rows',
+      });
+    });
+
+    it('既定の上限は DEFAULT_MAX_EXECUTION_ROWS（250,000 行）で、maxRows 省略時に適用される', () => {
+      expect(DEFAULT_MAX_EXECUTION_ROWS).toBe(250_000);
+      const engine = makeEngine();
+      const graphOf = (rows: Row[]): ToolGraph => ({
+        nodes: [{ id: 's', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', rows) }],
+        edges: [],
+      });
+
+      const atCap = engine.preview(graphOf(rowsOfCount(250_000)));
+      expect(atCap.nodes['s']).toMatchObject({ truncated: true, rowCount: 250_000 });
+      expect(atCap.output.rows).toHaveLength(100);
+      expect(atCap.fullOutput.rows).toHaveLength(250_000);
+
+      const error = caught(() => engine.preview(graphOf(rowsOfCount(250_001))));
+      expect(error).toBeInstanceOf(SchemaError);
+      expect(error).toMatchObject({
+        nodeId: 's',
+        message: 'stub-source: produced 250001 rows, exceeding the execution limit of 250000 rows',
+      });
+    });
+
+    it.each([0, -1, 1.5, Number.NaN])('maxRows %s は ConfigError（正の整数のみ）', (maxRows) => {
+      const engine = makeEngine();
+      const graph: ToolGraph = {
+        nodes: [{ id: 's', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', rowsOfCount(1)) }],
+        edges: [],
+      };
+
+      expect(() => engine.preview(graph, { maxRows })).toThrow(ConfigError);
+      expect(() => engine.preview(graph, { maxRows })).toThrow(
+        `preview: maxRows must be a positive integer, received ${String(maxRows)}`,
+      );
+    });
   });
 
   it('既定 rowLimit は 100（100 行ちょうどは切り捨てない）', () => {

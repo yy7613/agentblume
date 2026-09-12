@@ -7,6 +7,7 @@ import {
   appendHarnessEvent,
   cancelHarnessRun,
   failHarnessRun,
+  isTerminalHarnessRunStatus,
   resumeHarnessRun,
   startHarnessRun,
   succeedHarnessRun,
@@ -18,13 +19,14 @@ import {
   type HarnessRunCheckpoint,
   type HarnessRunMode,
   type HarnessRunRecord,
+  type HarnessRunStatus,
   type MagenticApprovalCheckpoint,
 } from '../../domain/harness/harness-run';
 import type { HarnessRunRepository } from '../../domain/harness/harness-run-repository';
-import { HarnessNotFoundError, HarnessRunError, HarnessRunNotFoundError } from '../../domain/harness/errors';
+import { HarnessNotFoundError, HarnessRunCancelledError, HarnessRunError, HarnessRunNotFoundError } from '../../domain/harness/errors';
 import type { HarnessId, HarnessRunId, SlotId } from '../../domain/harness/ids';
 import type { RunId } from '../../domain/run/ids';
-import type { TenantScope } from '../../domain/shared/tenant-scope';
+import { tenantKey, type TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer, type SemVer as SemVerType } from '../../domain/tool/semver';
 import { RunFailedError } from '../agent/errors';
 
@@ -73,8 +75,38 @@ class HarnessPause extends Error {
     super(`Harness waiting for ${status === 'waiting-input' ? 'input' : 'approval'}`);
   }
 }
+/**
+ * Internal control-flow signal. 保存済み行がこの worker を置き去りに先へ進んだ（cancel() が
+ * compare-and-set に勝った）。メモリ上のコピーは古いので、二度と書き戻してはならない。
+ */
+class HarnessSuperseded extends Error {
+  constructor(readonly record: HarnessRunRecord) { super(`Harness run '${record.runId}' is already ${record.status}`); }
+}
+
+const WAITING_STATUSES: readonly HarnessRunStatus[] = ['waiting-input', 'waiting-approval'];
+const CANCELLABLE_STATUSES: readonly HarnessRunStatus[] = ['running', ...WAITING_STATUSES];
+const CANCELLED_BY_USER = 'Cancelled by user';
+
+interface ExecutionState {
+  record: HarnessRunRecord;
+  /** イベント保存の直列化キュー。常に settle 済みに保ち、失敗は各 append の戻りで1回だけ伝える。 */
+  queue: Promise<void>;
+  /** compare-and-set に負けた時点の保存済みレコード。以後の保存は試みずにこれを結果にする。 */
+  superseded?: HarnessRunRecord;
+}
+
+function runKey(scope: TenantScope, runId: HarnessRunId): string { return `${tenantKey(scope)} ${runId}`; }
+function notWaiting(runId: HarnessRunId, status: HarnessRunStatus): HarnessRunError {
+  return new HarnessRunError(`Harness run '${runId}' is not waiting for interaction (status: ${status})`);
+}
 
 export class RunHarnessUseCase {
+  /**
+   * このプロセスで参加者を走らせている Run の AbortController。cancel() はここから引いて実行を止める。
+   * プロセス内に限る: 別プロセスの worker は次の保存（compare-and-set）で cancelled を検知して止まる。
+   */
+  private readonly inFlight = new Map<string, AbortController>();
+
   constructor(
     private readonly harnesses: AgentHarnessRepository,
     private readonly runs: HarnessRunRepository,
@@ -82,6 +114,9 @@ export class RunHarnessUseCase {
     private readonly makeId: () => string = randomUUID,
     private readonly now: () => Date = () => new Date(),
   ) {}
+
+  /** このプロセスで参加者を実行中の Harness Run 数（停止時の監視とテストの観測用）。 */
+  inFlightRunCount(): number { return this.inFlight.size; }
 
   async execute(input: StartHarnessRunInput, signal?: AbortSignal): Promise<HarnessRunRecord> {
     const harness = await this.findHarness(input.scope, input.harnessId, input.version);
@@ -93,6 +128,8 @@ export class RunHarnessUseCase {
       message: input.message,
       startedAt: this.now().toISOString(),
     });
+    // running 行を先に挿入する。以降の更新はすべて「保存済みが running のときだけ」の条件付き書き込みになる。
+    await this.runs.save(record);
     return this.executeRecord(harness, record, input, undefined, signal);
   }
 
@@ -104,19 +141,25 @@ export class RunHarnessUseCase {
     const stored = await this.runs.find(input.scope, input.runId);
     if (stored === null) throw new HarnessRunNotFoundError(`Harness run not found: ${input.runId}`);
     const checkpoint = stored.checkpoint;
-    if (checkpoint === undefined || (stored.status !== 'waiting-input' && stored.status !== 'waiting-approval')) throw new HarnessRunError(`Harness run '${input.runId}' is not waiting for interaction`);
+    if (checkpoint === undefined || !WAITING_STATUSES.includes(stored.status)) throw notWaiting(input.runId, stored.status);
     if (Date.parse(checkpoint.expiresAt) <= this.now().getTime()) throw new HarnessRunError(`Harness run '${input.runId}' checkpoint expired at ${checkpoint.expiresAt}`);
     if (checkpoint.kind === 'handoff-input' && input.response.kind !== 'input') throw new HarnessRunError(`Harness run '${input.runId}' is waiting for conversation input`);
     if (checkpoint.kind === 'magentic-approval' && input.response.kind !== 'approval') throw new HarnessRunError(`Harness run '${input.runId}' is waiting for plan approval`);
 
     if (checkpoint.kind === 'magentic-approval' && input.response.kind === 'approval' && input.response.decision === 'reject') {
-      let cancelled = cancelHarnessRun(stored, this.now().toISOString());
-      cancelled = await this.event(cancelled, { kind: 'harness_cancelled', at: this.now().toISOString(), slotId: checkpoint.managerSlotId, message: input.response.feedback?.trim() || 'Magentic plan rejected by reviewer' });
-      return cancelled;
+      const at = this.now().toISOString();
+      const cancelled = appendHarnessEvent(cancelHarnessRun(stored, at), { kind: 'harness_cancelled', at, slotId: checkpoint.managerSlotId, message: input.response.feedback?.trim() || 'Magentic plan rejected by reviewer' });
+      if (await this.runs.saveIfStatus(cancelled, ['waiting-approval'])) return cancelled;
+      // 読み取りと確定の間に他者が状態を進めた。cancel 済みなら却下の意図は既に満たされている。
+      const latest = await this.reload(input.scope, input.runId);
+      if (latest.status === 'cancelled') return latest;
+      throw notWaiting(input.runId, latest.status);
     }
 
     const harness = await this.findHarness(stored.scope, stored.harness.internalId, SemVer.parse(stored.harness.version));
     const record = resumeHarnessRun(stored);
+    // waiting-* → running も条件付き書き込み: 読み取りと再開の間に cancel() が確定していれば参加者を走らせない。
+    if (!await this.runs.saveIfStatus(record, WAITING_STATUSES)) throw notWaiting(input.runId, (await this.reload(input.scope, input.runId)).status);
     const original: StartHarnessRunInput = { scope: stored.scope, harnessId: stored.harness.internalId, version: harness.metadata.version, message: stored.message, mode: stored.mode };
     if (checkpoint.kind === 'handoff-input' && input.response.kind === 'input') {
       return this.executeRecord(harness, record, original, { checkpoint, response: input.response, lastResponse: stored.response ?? '' }, signal);
@@ -124,11 +167,23 @@ export class RunHarnessUseCase {
     return this.executeRecord(harness, record, original, { checkpoint: checkpoint as MagenticApprovalCheckpoint, response: input.response as Extract<HarnessInteractionResponse, { readonly kind: 'approval' }> }, signal);
   }
 
+  /**
+   * 実行中・待機中の Run を止める。
+   * 1. 保存済み行を compare-and-set で cancelled にする。以後 worker はどの保存にも失敗し、巻き戻せない。
+   * 2. このプロセスで走っている参加者を abort する。理由を HarnessRunCancelledError にして、
+   *    時間予算超過・クライアント切断（どちらも failed）と区別する。
+   * 既に終端（succeeded / failed / cancelled）の Run への cancel は冪等: イベントを足さず、
+   * 保存済みレコードをそのまま返す（HTTP は 200）。二重 cancel も同じ扱い。
+   */
   async cancel(scope: TenantScope, runId: HarnessRunId): Promise<HarnessRunRecord> {
     const stored = await this.runs.find(scope, runId);
     if (stored === null) throw new HarnessRunNotFoundError(`Harness run not found: ${runId}`);
-    let cancelled = cancelHarnessRun(stored, this.now().toISOString());
-    cancelled = await this.event(cancelled, { kind: 'harness_cancelled', at: this.now().toISOString(), message: 'Cancelled by user' });
+    if (isTerminalHarnessRunStatus(stored.status)) return stored;
+    const at = this.now().toISOString();
+    const cancelled = appendHarnessEvent(cancelHarnessRun(stored, at), { kind: 'harness_cancelled', at, message: CANCELLED_BY_USER });
+    // 負けるのは、読み取りと確定の間に worker が終端へ進めたときだけ。終端は上書きしない（冪等と同じ扱い）。
+    if (!await this.runs.saveIfStatus(cancelled, CANCELLABLE_STATUSES)) return this.reload(scope, runId);
+    this.inFlight.get(runKey(scope, runId))?.abort(new HarnessRunCancelledError());
     return cancelled;
   }
 
@@ -140,45 +195,89 @@ export class RunHarnessUseCase {
     signal?: AbortSignal,
   ): Promise<HarnessRunRecord> {
     const controller = new AbortController();
+    const key = runKey(initialRecord.scope, initialRecord.runId);
+    this.inFlight.set(key, controller);
     const abort = () => controller.abort(signal?.reason);
     if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
     const timeout = setTimeout(() => controller.abort(new HarnessRunError(`Harness duration budget exceeded: ${harness.policies.budget.maxDurationMs}ms`)), harness.policies.budget.maxDurationMs);
+    const state: ExecutionState = { record: initialRecord, queue: Promise.resolve() };
+    const append: AppendEvent = async (event) => {
+      const next = state.queue.then(async () => { state.record = await this.progress(state, event, controller); });
+      state.queue = next.catch(() => undefined);
+      await next;
+    };
     try {
-      const state: { record: HarnessRunRecord; queue: Promise<void> } = { record: initialRecord, queue: Promise.resolve() };
-      const append: AppendEvent = async (event) => {
-        state.queue = state.queue.then(async () => { state.record = await this.event(state.record, event); });
-        await state.queue;
-      };
       await append({ kind: resume === undefined ? 'harness_started' : 'harness_resumed', at: this.now().toISOString(), ...(resume === undefined ? {} : { message: 'Interactive checkpoint resumed' }) });
       const budget = resume === undefined ? this.initialBudget(harness) : this.budgetFromCheckpoint(resume.checkpoint.budget);
-      try {
-        this.throwIfAborted(controller.signal);
-        const response = await this.run(harness, input, controller.signal, append, budget, resume);
-        await state.queue;
-        state.record = succeedHarnessRun(state.record, response, this.now().toISOString());
-        await append({ kind: 'harness_completed', at: this.now().toISOString() });
-        return state.record;
-      } catch (error) {
-        if (error instanceof HarnessPause) {
-          await state.queue;
-          state.record = error.status === 'waiting-input'
-            ? waitForHarnessInput(state.record, error.response, error.checkpoint as Extract<HarnessRunCheckpoint, { readonly kind: 'handoff-input' }>)
-            : waitForHarnessApproval(state.record, error.response, error.checkpoint as MagenticApprovalCheckpoint);
-          const checkpointSlotId = error.checkpoint.kind === 'handoff-input' ? error.checkpoint.activeSlotId : error.checkpoint.managerSlotId;
-          await append({ kind: 'checkpoint_saved', at: this.now().toISOString(), slotId: checkpointSlotId, message: `expires ${error.checkpoint.expiresAt}` });
-          return state.record;
-        }
-        const message = error instanceof Error ? error.message : 'Harness run failed';
-        const code = error instanceof HarnessRunError ? error.code : 'HARNESS_RUN';
-        await state.queue;
-        state.record = failHarnessRun(state.record, { code, message }, this.now().toISOString());
-        await append({ kind: 'harness_failed', at: this.now().toISOString(), message });
-        return state.record;
-      }
+      this.throwIfAborted(controller.signal);
+      const response = await this.run(harness, input, controller.signal, append, budget, resume);
+      await state.queue;
+      state.record = succeedHarnessRun(state.record, response, this.now().toISOString());
+      await append({ kind: 'harness_completed', at: this.now().toISOString() });
+      return state.record;
+    } catch (error) {
+      return this.settle(state, controller, error, append);
     } finally {
       clearTimeout(timeout);
       signal?.removeEventListener('abort', abort);
+      if (this.inFlight.get(key) === controller) this.inFlight.delete(key);
     }
+  }
+
+  /**
+   * 実行の結末を保存済み行へ確定する。利用者の cancel（abort 理由が HarnessRunCancelledError）は
+   * cancelled、それ以外の abort（時間予算超過・クライアント切断）と例外は failed。
+   * cancel() に先を越されていれば（compare-and-set が拒む）、その保存済みレコードを結果にする。
+   */
+  private async settle(state: ExecutionState, controller: AbortController, error: unknown, append: AppendEvent): Promise<HarnessRunRecord> {
+    try {
+      await state.queue;
+      if (error instanceof HarnessSuperseded) return error.record;
+      const at = this.now().toISOString();
+      if (error instanceof HarnessPause) {
+        state.record = error.status === 'waiting-input'
+          ? waitForHarnessInput(state.record, error.response, error.checkpoint as Extract<HarnessRunCheckpoint, { readonly kind: 'handoff-input' }>)
+          : waitForHarnessApproval(state.record, error.response, error.checkpoint as MagenticApprovalCheckpoint);
+        const checkpointSlotId = error.checkpoint.kind === 'handoff-input' ? error.checkpoint.activeSlotId : error.checkpoint.managerSlotId;
+        await append({ kind: 'checkpoint_saved', at, slotId: checkpointSlotId, message: `expires ${error.checkpoint.expiresAt}` });
+        return state.record;
+      }
+      if (controller.signal.aborted && controller.signal.reason instanceof HarnessRunCancelledError) {
+        // 通常は cancel() が先に確定していて superseded になる。ここへ来るのは abort だけ先に届いた場合の保険。
+        state.record = cancelHarnessRun(state.record, at);
+        await append({ kind: 'harness_cancelled', at, message: CANCELLED_BY_USER });
+        return state.record;
+      }
+      const message = error instanceof Error ? error.message : 'Harness run failed';
+      const code = error instanceof HarnessRunError ? error.code : 'HARNESS_RUN';
+      state.record = failHarnessRun(state.record, { code, message }, at);
+      await append({ kind: 'harness_failed', at, message });
+      return state.record;
+    } catch (settling) {
+      if (settling instanceof HarnessSuperseded) return settling.record;
+      throw settling;
+    }
+  }
+
+  /**
+   * worker の進捗保存。保存済みが running のときだけ書ける。拒まれたら（ほぼ cancel() が先に確定した）
+   * 実行中の参加者を止め、保存済みレコードを結果として引き渡す。メモリ上のコピーで終端を蘇らせてはならない。
+   */
+  private async progress(state: ExecutionState, event: Omit<HarnessEvent, 'sequence'>, controller: AbortController): Promise<HarnessRunRecord> {
+    if (state.superseded !== undefined) throw new HarnessSuperseded(state.superseded);
+    const next = appendHarnessEvent(state.record, event);
+    if (await this.runs.saveIfStatus(next, ['running'])) return next;
+    const stored = await this.reload(state.record.scope, state.record.runId);
+    state.superseded = stored;
+    if (!controller.signal.aborted) controller.abort(stored.status === 'cancelled' ? new HarnessRunCancelledError() : new HarnessRunError(`Harness run '${stored.runId}' is already ${stored.status}`));
+    throw new HarnessSuperseded(stored);
+  }
+
+  /** 条件付き書き込みに負けた後の再読込。保存済み行が正であり、消えていれば NotFound。 */
+  private async reload(scope: TenantScope, runId: HarnessRunId): Promise<HarnessRunRecord> {
+    const latest = await this.runs.find(scope, runId);
+    if (latest === null) throw new HarnessRunNotFoundError(`Harness run not found: ${runId}`);
+    return latest;
   }
 
   private async findHarness(scope: TenantScope, harnessId: HarnessId, version: SemVerType | undefined): Promise<AgentHarness> {
@@ -463,7 +562,6 @@ export class RunHarnessUseCase {
     return { remainingModelRounds: budget.remainingModelRounds, remainingToolCalls: budget.remainingToolCalls, remainingParticipantRuns: budget.remainingParticipantRuns };
   }
   private checkpointExpiry(): string { return new Date(this.now().getTime() + INTERACTIVE_CHECKPOINT_TTL_MS).toISOString(); }
-  private async event(record: HarnessRunRecord, event: Parameters<typeof appendHarnessEvent>[1]): Promise<HarnessRunRecord> { const next = appendHarnessEvent(record, event); await this.runs.save(next); return next; }
   private assertParticipantBudget(harness: AgentHarness, count: number): void { if (count > harness.policies.budget.maxParticipantRuns) throw new HarnessRunError(`Harness participant budget exceeded: requires ${count}, maximum ${harness.policies.budget.maxParticipantRuns}`); }
   private reserveParticipant(shared: SharedHarnessBudget): void {
     if (shared.remainingParticipantRuns < 1) throw new HarnessRunError('Harness participant budget exhausted before participant start');

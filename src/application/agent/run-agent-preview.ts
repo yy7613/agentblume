@@ -368,7 +368,7 @@ function fromCheckpointToolCall(call: RunCheckpointToolCall): ModelToolCall {
 /**
  * ツールのグラフが、セッションへ成果物を書き込む終端（workspace-output / graph-output /
  * chart-output、または agent-output の overflow=store-and-reference）を持つかどうか。
- * Agent実行時の preview rowLimit 拡張と workspace_* ツール公開可否の判定で共用する。
+ * workspace_* ツールを公開してよいかの判定に使う（ツール実行は sink の種類によらず常に全行で行う）。
  */
 function hasSessionStorageSink(tool: Tool): boolean {
   return tool.graph.nodes.some((node) =>
@@ -1195,15 +1195,20 @@ export class RunAgentPreviewUseCase {
     const args = validateToolArguments(tool.inputSchema, call.arguments);
     const graph = graphWithArguments(tool, args);
     const executableGraph = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(ctx.scope, graph);
-    const preview = this.engine.preview(executableGraph, { rowLimit: hasSessionStorageSink(tool) ? 10_000 : 100 });
-    assertOutputMatchesSchema(preview.output, tool.outputSchema);
-    const delivery = await this.output.dispatch({ tool, table: preview.output, session: ctx.session, runId: ctx.runId, toolCallId: call.id, ...(agent?.internalId === undefined ? {} : { agentId: agent.internalId }) });
+    // 実行は常に全行。rowLimit は trace の outputPreview に使う表示用スナップショットにしか効かない。
+    // かつては rowLimit で切った表をそのまま検証・配送しており、モデルが「先頭100行の合計」を
+    // 全体の合計として自信を持って報告していた。
+    const preview = this.engine.preview(executableGraph, { rowLimit: 100 });
+    assertOutputMatchesSchema(preview.fullOutput, tool.outputSchema);
+    const delivery = await this.output.dispatch({ tool, table: preview.fullOutput, session: ctx.session, runId: ctx.runId, toolCallId: call.id, ...(agent?.internalId === undefined ? {} : { agentId: agent.internalId }) });
     trace.push({
       sequence: trace.length + 1,
       kind: 'tool-result',
       name: call.name,
       terminalId: preview.terminalId,
-      nodes: Object.values(preview.nodes).map((node) => ({ nodeId: node.nodeId, rowCount: node.table.rows.length, truncated: node.truncated })),
+      // rowCount は計算結果の全行数。実行を切り詰めることはもう無い（上限超過は SchemaError で落ちる）ので
+      // truncated は常に false。表示用スナップショットの切り出し（node.truncated）は実行結果と無関係なので写さない。
+      nodes: Object.values(preview.nodes).map((node) => ({ nodeId: node.nodeId, rowCount: node.rowCount, truncated: false })),
       outputPreview: delivery.delivery === 'session-workspace'
         ? [{ artifactId: delivery.artifact.id, name: delivery.artifact.name, kind: delivery.artifact.kind, revision: delivery.artifact.revision }]
         : preview.output.rows.slice(0, 10).map((row) => ({ ...row })),

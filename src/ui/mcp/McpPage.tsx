@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { McpServerDto, McpServerTestResultDto, ToolSummaryDto } from '../api/types';
+import type { AuthSessionDto, McpServerDto, McpServerTestResultDto, ToolSummaryDto } from '../api/types';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { InlineFeedback } from '../components/InlineFeedback';
 import { useI18n } from '../i18n';
 import { ScreenLink } from '../navigation';
 import {
-  EMPTY_MCP_SERVER_FORM, formatMcpServersDocument, parseMcpServersDocumentText, toMcpServerForm, toMcpTransport, transportSummary,
+  canOperateMcpServers, EMPTY_MCP_SERVER_FORM, formatMcpServersDocument, parseMcpServersDocumentText, toMcpServerForm, toMcpTransport, transportSummary,
   type McpServerFormValue, type McpServersDocumentParseResult,
 } from './mcp-config';
 import { scope } from '../scope';
@@ -55,6 +55,26 @@ export function McpPage({ client }: { readonly client: ToolApiClient }) {
   const [clientError, setClientError] = useState<string>();
   const [clientNotice, setClientNotice] = useState<string>();
   const dismissNotice = useCallback(() => setClientNotice(undefined), []);
+
+  /**
+   * 呼び出し主体のロール。MCP設定の変更・接続テストは `mcp-server:operate`（operator / workspace-admin）
+   * だけが通る（stdio の設定はサーバーホスト上の子プロセス起動＝ホストでのコード実行権限に等しい）。
+   * 通らないボタンは先に無効化して理由を title に出す（押して 403 を見るより早い）。
+   * 判定そのものはサーバーが行う。セッションが取れない・旧クライアントのときは無効化しない。
+   */
+  const [session, setSession] = useState<AuthSessionDto>();
+  useEffect(() => {
+    let active = true;
+    if (typeof client.getSession === 'function') {
+      client.getSession().then((next) => { if (active) setSession(next); }).catch(() => { /* 判定はサーバーに委ねる */ });
+    }
+    return () => { active = false; };
+  }, [client]);
+  const canOperate = canOperateMcpServers(session);
+  const operateHint = text(
+    "Changing MCP server settings and running connection tests requires the 'mcp-server:operate' permission (operator or workspace-admin role).",
+    'MCPサーバーの設定変更と接続テストには operate 権限（operator / workspace-admin）が必要です。',
+  );
 
   // --- MCP公開（既存・fail-closed） ---
   const [tools, setTools] = useState<readonly ToolSummaryDto[]>([]);
@@ -153,6 +173,7 @@ export function McpPage({ client }: { readonly client: ToolApiClient }) {
         <button type="button" role="tab" aria-selected={tab === 'form'} className={tab === 'form' ? 'active' : ''} onClick={() => setTab('form')}>{text('Form', 'フォーム')}</button>
         <button type="button" role="tab" aria-selected={tab === 'json'} className={tab === 'json' ? 'active' : ''} onClick={openJsonTab}>JSON</button>
       </div>
+      {!canOperate && <div className="notice-card"><strong>{text('Read-only', '閲覧のみ')}</strong><p>{operateHint}</p></div>}
       {clientError !== undefined && <div className="api-error">{clientError}</div>}
       {clientNotice !== undefined && <InlineFeedback kind="success" autoHideMs={4000} onDismiss={dismissNotice}>{clientNotice}</InlineFeedback>}
       {tab === 'form' ? <div className="mcp-client-grid">
@@ -172,9 +193,9 @@ export function McpPage({ client }: { readonly client: ToolApiClient }) {
                   : <small className="field-error">{result.error ?? text('Connection failed', '接続に失敗しました')}</small>)}
               </div>
               <div className="data-source-actions">
-                <button type="button" className="secondary" disabled={clientBusy || testing !== undefined} onClick={() => void testServer(server.name)}>{testing === server.name ? text('Testing…', 'テスト中…') : text('Test', 'テスト')}</button>
+                <button type="button" className="secondary" disabled={!canOperate || clientBusy || testing !== undefined} title={canOperate ? undefined : operateHint} onClick={() => void testServer(server.name)}>{testing === server.name ? text('Testing…', 'テスト中…') : text('Test', 'テスト')}</button>
                 <button type="button" className="secondary" disabled={clientBusy} onClick={() => editServer(server)}>{text('Edit', '編集')}</button>
-                <button type="button" className="secondary danger" disabled={clientBusy} onClick={() => setPendingDelete(server)}>{text('Delete', '削除')}</button>
+                <button type="button" className="secondary danger" disabled={!canOperate || clientBusy} title={canOperate ? undefined : operateHint} onClick={() => setPendingDelete(server)}>{text('Delete', '削除')}</button>
               </div>
             </article>;
           })}</div>}
@@ -201,7 +222,7 @@ export function McpPage({ client }: { readonly client: ToolApiClient }) {
           </>}
           <label className="structured-output-toggle"><input type="checkbox" aria-label={text('Disable this server', 'このサーバーを無効化')} checked={form.disabled} onChange={(event) => update({ disabled: event.target.checked })} /> {text('Disabled (skipped at run time)', '無効（実行時はスキップ）')}</label>
           <div className="save-actions">
-            <button type="button" className="primary" disabled={clientBusy || saveBlocked} onClick={() => void saveServer()}>{clientBusy ? text('Saving…', '保存中…') : text('Save server', 'サーバーを保存')}</button>
+            <button type="button" className="primary" disabled={!canOperate || clientBusy || saveBlocked} title={canOperate ? undefined : operateHint} onClick={() => void saveServer()}>{clientBusy ? text('Saving…', '保存中…') : text('Save server', 'サーバーを保存')}</button>
             {editingName !== undefined && <button type="button" className="secondary" disabled={clientBusy} onClick={resetForm}>{text('Cancel edit', '編集をやめる')}</button>}
           </div>
         </div>
@@ -213,7 +234,7 @@ export function McpPage({ client }: { readonly client: ToolApiClient }) {
         </div>
         <textarea aria-label={text('mcpServers document', 'mcpServers ドキュメント')} className="mcp-json-editor" rows={18} value={jsonText} onChange={(event) => { setJsonText(event.target.value); setJsonError(undefined); }} />
         {jsonError !== undefined && <p className="field-error">{jsonError}</p>}
-        <button type="button" className="primary" disabled={clientBusy} onClick={() => void applyJson()}>{text('Apply', '適用')}</button>
+        <button type="button" className="primary" disabled={!canOperate || clientBusy} title={canOperate ? undefined : operateHint} onClick={() => void applyJson()}>{text('Apply', '適用')}</button>
       </div>}
     </section>
     <ConfirmDialog open={pendingDelete !== undefined} title={text('Delete MCP server', 'MCPサーバーを削除')}

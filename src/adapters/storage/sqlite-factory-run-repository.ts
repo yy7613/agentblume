@@ -21,4 +21,17 @@ export class SqliteFactoryRunRepository extends SqliteRepositoryBase implements 
   async listAllByStatus(status: FactoryRunStatus): Promise<FactoryRun[]> {
     return this.db.prepare(`SELECT record_json FROM factory_runs WHERE status = ? ORDER BY started_at ASC`).all(status).map((row) => deserializeFactoryRun(String(row['record_json'])));
   }
+  /**
+   * compare-and-set を1文の `UPDATE … WHERE status IN (…)` で行い、`changes` で書けたかを判定する
+   * （読んでから書く2段階にすると、その隙に cancel が入っても検出できない）。`expected` が空なら
+   * `IN ()` は SQLite で構文エラーになるため、問い合わせずに false を返す。
+   */
+  async saveIfStatus(run: FactoryRun, expected: readonly FactoryRunStatus[]): Promise<boolean> {
+    if (expected.length === 0) return false;
+    const placeholders = expected.map(() => '?').join(', ');
+    const result = this.db
+      .prepare(`UPDATE factory_runs SET status = ?, record_json = ? WHERE tenant_id = ? AND workspace_id = ? AND run_id = ? AND status IN (${placeholders})`)
+      .run(run.status, serializeFactoryRun(run), run.scope.tenantId, run.scope.workspaceId, run.id, ...expected);
+    return Number(result.changes) > 0;
+  }
 }

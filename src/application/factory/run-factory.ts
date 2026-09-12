@@ -27,6 +27,7 @@ import {
   appendFactoryEvent,
   attachAnalysisToLastIteration,
   beginFactoryRun,
+  cancelFactoryRun,
   failFactoryRun,
   recordIteration,
   setArtifacts,
@@ -40,13 +41,15 @@ import {
   type FactoryPlanCheckpoint,
   type FactoryReport,
   type FactoryRun,
+  type FactoryRunStatus,
 } from '../../domain/factory/factory-run';
 import type { FactoryPlan } from '../../domain/factory/factory-plan';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
 import type { FactoryRunId } from '../../domain/factory/ids';
 import type { VersionRef } from '../../domain/factory/refs';
-import { FactoryValidationError } from '../../domain/factory/errors';
+import { FactoryAbortedError, FactoryValidationError } from '../../domain/factory/errors';
 import type { ScenarioRun } from '../../domain/validation/scenario-run';
+import { describeAbort, throwIfAborted } from './abort';
 import { ApplyImprovementsUseCase } from './apply-improvements';
 import { FACTORY_OWNER, GenerateAgentAssetsUseCase, makePublishName, type GenerateAgentAssetsResult } from './generate-agent-assets';
 import { aggregateIterationMetrics } from './metrics';
@@ -99,10 +102,12 @@ export class RunFactoryUseCase {
 
     let run = loaded;
     try {
+      throwIfAborted(signal);
       if (run.status === 'queued') {
         run = beginFactoryRun(run);
         run = advanceStage(run, 'profiling');
-        await this.runs.save(run);
+        // queued → running だけは queued を期待して書く（この間に cancel されていれば通らず、そのまま中断する）。
+        await this.transition(run, ['queued']);
 
         // Stage 0: 強化モードなら起点Agentを先に解決する（存在しなければRunを失敗させる）。
         // 解決できて初めて「何を強化するRunなのか」をイベントへ残せるため、stage_started より前に行う。
@@ -111,12 +116,12 @@ export class RunFactoryUseCase {
           kind: 'stage_started', at: this.now().toISOString(), stage: 'profiling',
           ...(baseAgent === undefined ? {} : { message: `enhancing agent ${describeAgent(baseAgent)}` }),
         });
-        const profiles = await this.profiler.executeAll(scope, run.input.dataSourceIds);
-        this.assertNotAborted(signal);
+        const profiles = await this.profiler.executeAll(scope, run.input.dataSourceIds, signal);
+        throwIfAborted(signal);
         run = await this.event(run, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'profiling' });
 
         run = advanceStage(run, 'planning');
-        await this.runs.save(run);
+        await this.persist(run);
         run = await this.event(run, { kind: 'stage_started', at: this.now().toISOString(), stage: 'planning' });
         // 「作成済みのToolで足りるか」をPlannerに考えさせるための再利用候補（docs/16 §4 Stage 1）。
         const existingTools = await buildExistingToolCatalog(this.tools, scope);
@@ -126,19 +131,20 @@ export class RunFactoryUseCase {
           goal: run.input.goal, profiles, dataSourceIds: run.input.dataSourceIds, options: run.input.options, existingTools,
           ...(currentAgent === undefined ? {} : { currentAgent }),
         }, signal);
-        this.assertNotAborted(signal);
+        throwIfAborted(signal);
 
         run = setPlan(run, plan);
         run = updateBudget(run, { ...run.budget.consumed, roleCalls: run.budget.consumed.roleCalls + 1 });
-        await this.runs.save(run);
+        await this.persist(run);
         run = await this.event(run, { kind: 'plan_proposed', at: this.now().toISOString(), stage: 'planning' });
         run = await this.event(run, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'planning' });
 
         if (run.input.options.requirePlanApproval) {
           const checkpoint = this.buildCheckpoint(plan, run.input.goal, baseAgent);
           run = waitForPlanApproval(run, checkpoint);
-          await this.runs.save(run);
-          run = await this.event(run, { kind: 'approval_requested', at: this.now().toISOString(), stage: 'planning', message: checkpoint.prompt });
+          run = appendFactoryEvent(run, { kind: 'approval_requested', at: this.now().toISOString(), stage: 'planning', message: checkpoint.prompt });
+          // running → waiting-approval はイベントごと1回で書く（この時点で cancel 済みなら上書きせず中断する）。
+          await this.transition(run, ['running']);
           return;
         }
       }
@@ -146,14 +152,40 @@ export class RunFactoryUseCase {
       // running（`requirePlanApproval:false` での続行、または approve 後の再開）: 生成継続。
       await this.runGeneration(run, signal);
     } catch (error) {
-      if (signal?.aborted === true) return; // cancel は CancelFactoryRunUseCase が別途、状態を確定する。
-      const current = await this.runs.find(scope, runId);
-      if (current === null || current.status !== 'running') return; // 既に終端/waiting-approvalへ確定済み。
-      const reason = error instanceof Error ? error.message : 'Factory run failed';
-      let failed = failFactoryRun(current, { stage: current.stage, reason }, this.now().toISOString());
-      failed = appendFactoryEvent(failed, { kind: 'run_failed', at: this.now().toISOString(), stage: current.stage, message: reason });
-      await this.runs.save(failed);
+      await this.conclude(scope, runId, error, signal);
     }
+  }
+
+  /**
+   * 実行が例外で抜けた後の確定処理。running のまま次回起動（`recoverInterruptedRuns`）まで放置しない:
+   * 止まったことを知っているのはこのプロセスだけなので、ここで必ず終端へ寄せる。
+   *
+   * - 中断（signal の abort / `FactoryAbortedError`）: 利用者の cancel なら `CancelFactoryRunUseCase` が既に cancelled を
+   *   書いているので触らない。まだ running / queued のまま（worker の shutdown 猶予切れなど）なら cancelled で確定し、
+   *   理由（`Cancelled by user` / `Aborted by worker shutdown`）を `run_cancelled` イベントに残す。
+   * - それ以外の例外: running のままなら failed で確定する。別経路で確定済みなら触らない。
+   *
+   * どちらも compare-and-set で書くため、終端同士が上書きし合うことはない。
+   */
+  private async conclude(scope: TenantScope, runId: FactoryRunId, error: unknown, signal: AbortSignal | undefined): Promise<void> {
+    const current = await this.runs.find(scope, runId);
+    if (current === null) return;
+    const at = this.now().toISOString();
+
+    if (signal?.aborted === true || error instanceof FactoryAbortedError) {
+      if (current.status !== 'running' && current.status !== 'queued') return; // cancel 等で確定済み。
+      const message = signal?.aborted === true ? describeAbort(signal) : (error instanceof Error ? error.message : 'Factory run aborted');
+      let cancelled = cancelFactoryRun(current, at);
+      cancelled = appendFactoryEvent(cancelled, { kind: 'run_cancelled', at, stage: current.stage, message });
+      await this.runs.saveIfStatus(cancelled, ['queued', 'running']);
+      return;
+    }
+
+    if (current.status !== 'running') return; // 既に終端/waiting-approvalへ確定済み。
+    const reason = error instanceof Error ? error.message : 'Factory run failed';
+    let failed = failFactoryRun(current, { stage: current.stage, reason }, at);
+    failed = appendFactoryEvent(failed, { kind: 'run_failed', at, stage: current.stage, message: reason });
+    await this.runs.saveIfStatus(failed, ['running']);
   }
 
   /**
@@ -163,7 +195,7 @@ export class RunFactoryUseCase {
    */
   async replan(run: FactoryRun, feedback: string | undefined, signal?: AbortSignal): Promise<FactoryRun> {
     let next = run;
-    const profiles = await this.profiler.executeAll(next.scope, next.input.dataSourceIds);
+    const profiles = await this.profiler.executeAll(next.scope, next.input.dataSourceIds, signal);
     const existingTools = await buildExistingToolCatalog(this.tools, next.scope);
     const baseAgent = await this.loadBaseAgent(next.scope, next.input.baseAgent);
     const currentAgent = baseAgent === undefined ? undefined : await this.describeCurrentAgent(next.scope, baseAgent);
@@ -194,25 +226,27 @@ export class RunFactoryUseCase {
     if (plan === undefined) throw new FactoryValidationError('runGeneration: run has no plan');
 
     let current = advanceStage(run, 'generating-tools');
-    await this.runs.save(current);
+    await this.persist(current);
     current = await this.event(current, { kind: 'stage_started', at: this.now().toISOString(), stage: 'generating-tools' });
 
-    const profiles = await this.profiler.executeAll(current.scope, current.input.dataSourceIds);
+    const profiles = await this.profiler.executeAll(current.scope, current.input.dataSourceIds, signal);
     // 計画の `reuse` を解決する集合。Stage 1でPlannerへ提示したのと同じ規則で組み立て直す
     // （承認待ちを挟んだ再開でも、その時点で有効な既存Toolだけを参照する）。
     const existingTools = await buildExistingToolCatalog(this.tools, current.scope);
     // 承認を挟んだ再開でも起点Agentを解決し直す（承認待ちの間に版が進んでいれば、指定が無い限り最新版を使う）。
     const baseAgent = await this.loadBaseAgent(current.scope, current.input.baseAgent);
     const context: FactoryRunContext = { profiles, ...(baseAgent === undefined ? {} : { baseAgent }) };
-    this.assertNotAborted(signal);
+    throwIfAborted(signal);
 
     // `onEvent` は generateAgentAssets 内の逐次awaitの合間に同期的に呼ばれる。永続化(save)は非同期のため、
     // 発生順を保証する直列プロミスチェーンへ積み、execute() 完了後にまとめてflushする。
+    // 保存は compare-and-set（running 期待）: cancel 済みなら失敗してチェーンごと止まり、遅れて流れてきた
+    // イベントが cancelled を running へ戻すことはない。
     let chain: Promise<void> = Promise.resolve();
     const onEvent = (event: Omit<FactoryEvent, 'sequence'>): void => {
       chain = chain.then(async () => {
         current = appendFactoryEvent(current, event);
-        await this.runs.save(current);
+        await this.persist(current);
       });
     };
 
@@ -228,19 +262,21 @@ export class RunFactoryUseCase {
       // 強化モードでのsystemPromptの扱い（生成モードでは無視される）。
       promptStrategy: current.input.options.promptStrategy,
       onEvent,
-    });
-    await chain;
-    this.assertNotAborted(signal);
+      ...(signal === undefined ? {} : { signal }),
+      // execute() が例外で抜けても積んだ保存を必ず待ち切る（保存順序を崩さない・未処理の rejection を残さない）。
+      // チェーン側が cancel を検出して失敗していれば、その中断が優先して伝わる。
+    }).finally(() => chain);
+    throwIfAborted(signal);
 
     current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'generating-tools' });
 
     current = advanceStage(current, 'generating-skills');
-    await this.runs.save(current);
+    await this.persist(current);
     current = await this.event(current, { kind: 'stage_started', at: this.now().toISOString(), stage: 'generating-skills' });
     current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'generating-skills' });
 
     current = advanceStage(current, 'assembling-agent');
-    await this.runs.save(current);
+    await this.persist(current);
     current = await this.event(current, {
       kind: 'stage_started', at: this.now().toISOString(), stage: 'assembling-agent',
       // 強化モードは「新規Agentを作らない」ことがイベントから読み取れるようにする（新しいkindは足さない）。
@@ -258,7 +294,7 @@ export class RunFactoryUseCase {
       scenarios: current.artifacts.scenarios,
     });
     current = updateBudget(current, { ...current.budget.consumed, roleCalls: current.budget.consumed.roleCalls + assets.roleCallsUsed });
-    await this.runs.save(current);
+    await this.persist(current);
     current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'assembling-agent' });
 
     await this.runValidationAndImprove(current, assets, context, signal);
@@ -275,7 +311,7 @@ export class RunFactoryUseCase {
     if (plan === undefined) throw new FactoryValidationError('runValidationAndImprove: run has no plan');
 
     let current = advanceStage(run, 'generating-validation');
-    await this.runs.save(current);
+    await this.persist(current);
     current = await this.event(current, { kind: 'stage_started', at: this.now().toISOString(), stage: 'generating-validation' });
 
     // Persona → 疑似ユーザーAgent化（docs/16 §4 Stage 5）。personaKey → {agentId, version} を後段のScenario保存で使う。
@@ -284,7 +320,7 @@ export class RunFactoryUseCase {
     const personaKeyToPseudoUser = new Map<string, { agentId: string; version: SemVer }>();
 
     for (const personaPlan of plan.personas) {
-      this.assertNotAborted(signal);
+      throwIfAborted(signal);
       const persona = await this.savePersona.execute({
         scope: current.scope,
         internalId: this.makeId(),
@@ -318,7 +354,7 @@ export class RunFactoryUseCase {
     // Scenario保存。target は生成Agent版、pseudoUser は対応する疑似ユーザーAgent版へSemVer固定（docs/16 §4 Stage 5）。
     const scenarioRefs: VersionRef[] = [];
     for (const scenarioPlan of plan.scenarios) {
-      this.assertNotAborted(signal);
+      throwIfAborted(signal);
       const pseudoUser = personaKeyToPseudoUser.get(scenarioPlan.personaKey);
       if (pseudoUser === undefined) continue; // personaKeyが解決できないScenarioは欠落として除外して続行する。
 
@@ -355,7 +391,7 @@ export class RunFactoryUseCase {
       pseudoUsers: pseudoUserRefs,
       scenarios: scenarioRefs,
     });
-    await this.runs.save(current);
+    await this.persist(current);
     current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'generating-validation' });
 
     const { run: afterIteration1, scenarioRuns } = await this.runValidationIteration(current, assets.agentRef, signal);
@@ -369,12 +405,12 @@ export class RunFactoryUseCase {
    */
   private async runValidationIteration(run: FactoryRun, agentRef: VersionRef, signal?: AbortSignal): Promise<{ run: FactoryRun; scenarioRuns: readonly ScenarioRun[] }> {
     let current = advanceStage(run, 'validating');
-    await this.runs.save(current);
+    await this.persist(current);
     current = await this.event(current, { kind: 'stage_started', at: this.now().toISOString(), stage: 'validating' });
 
     const scenarioRuns: ScenarioRun[] = [];
     for (const scenarioRef of current.artifacts.scenarios) {
-      this.assertNotAborted(signal);
+      throwIfAborted(signal);
       const scenarioRun = await this.scenarioRunner.execute({
         scope: current.scope,
         scenarioId: scenarioRef.internalId,
@@ -397,7 +433,7 @@ export class RunFactoryUseCase {
     };
     current = recordIteration(current, iteration);
     current = updateBudget(current, { ...current.budget.consumed, scenarioRuns: current.budget.consumed.scenarioRuns + scenarioRuns.length });
-    await this.runs.save(current);
+    await this.persist(current);
     current = await this.event(current, { kind: 'iteration_completed', at: this.now().toISOString(), stage: 'validating', iteration: iteration.index });
     current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'validating' });
 
@@ -447,7 +483,7 @@ export class RunFactoryUseCase {
 
       // Analyze（Analystロール）。
       current = advanceStage(current, 'analyzing');
-      await this.runs.save(current);
+      await this.persist(current);
       current = await this.event(current, { kind: 'stage_started', at: this.now().toISOString(), stage: 'analyzing' });
 
       const agent = await this.agents.findVersion(current.scope, agentRef.internalId, SemVer.parse(agentRef.version));
@@ -464,18 +500,18 @@ export class RunFactoryUseCase {
         currentTools,
         ...(availableDataSources.length === 0 ? {} : { availableDataSources }),
       }, signal);
-      this.assertNotAborted(signal);
+      throwIfAborted(signal);
       lastSummary = analystResult.summary;
 
       current = updateBudget(current, { ...current.budget.consumed, roleCalls: current.budget.consumed.roleCalls + 1 });
       current = attachAnalysisToLastIteration(current, { findings: analystResult.findings, applied: [], rejected: [] });
-      await this.runs.save(current);
+      await this.persist(current);
       current = await this.event(current, { kind: 'analysis_completed', at: this.now().toISOString(), stage: 'analyzing', iteration: latest.index });
       current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'analyzing' });
 
       // Improve（改訂提案の検証・適用）。
       current = advanceStage(current, 'improving');
-      await this.runs.save(current);
+      await this.persist(current);
       current = await this.event(current, { kind: 'stage_started', at: this.now().toISOString(), stage: 'improving' });
 
       const applyResult = await this.applyImprovements.execute({
@@ -485,7 +521,9 @@ export class RunFactoryUseCase {
         maxProposals: budget.maxProposalsPerIteration,
         // `add-tool` のToolSmith再提案回数はRunの予算に従わせる（適用側の既定値へ落とさない）。
         maxRepairAttempts: budget.maxRepairAttempts,
+        ...(signal === undefined ? {} : { signal }),
       });
+      throwIfAborted(signal);
 
       current = attachAnalysisToLastIteration(current, { findings: analystResult.findings, applied: applyResult.applied, rejected: applyResult.rejected });
       for (const item of applyResult.applied) {
@@ -497,13 +535,13 @@ export class RunFactoryUseCase {
 
       const noChange = applyResult.newAgentRef.internalId === agentRef.internalId && applyResult.newAgentRef.version === agentRef.version;
       if (noChange) {
-        await this.runs.save(current);
+        await this.persist(current);
         current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'improving' });
         break; // 適用できる提案がなかった（全て却下）→ これ以上変化しないため打ち切る。
       }
 
       current = setArtifacts(current, { ...current.artifacts, agentVersions: [...current.artifacts.agentVersions, applyResult.newAgentRef] });
-      await this.runs.save(current);
+      await this.persist(current);
       current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'improving' });
 
       const iterationResult = await this.runValidationIteration(current, applyResult.newAgentRef, signal);
@@ -513,7 +551,7 @@ export class RunFactoryUseCase {
 
     // Report（docs/16 §6）: 最良イテレーション（goalAchievedRate最大、同点はavgSatisfaction最大）を候補にする。
     current = advanceStage(current, 'reporting');
-    await this.runs.save(current);
+    await this.persist(current);
     current = await this.event(current, { kind: 'stage_started', at: this.now().toISOString(), stage: 'reporting' });
 
     const bestIteration = selectBestIteration(current.iterations);
@@ -532,8 +570,9 @@ export class RunFactoryUseCase {
 
     current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'reporting' });
     current = succeedFactoryRun(current, report, this.now().toISOString());
-    await this.runs.save(current);
-    current = await this.event(current, { kind: 'run_completed', at: this.now().toISOString(), stage: current.stage });
+    current = appendFactoryEvent(current, { kind: 'run_completed', at: this.now().toISOString(), stage: current.stage });
+    // running → succeeded は完了イベントごと1回で書く（この時点で cancel 済みなら終端を上書きしない）。
+    await this.transition(current, ['running']);
   }
 
   private resolveAgentInternalId(run: FactoryRun): string {
@@ -611,12 +650,23 @@ export class RunFactoryUseCase {
 
   private async event(run: FactoryRun, event: Omit<FactoryEvent, 'sequence'>): Promise<FactoryRun> {
     const next = appendFactoryEvent(run, event);
-    await this.runs.save(next);
+    await this.persist(next);
     return next;
   }
 
-  private assertNotAborted(signal?: AbortSignal): void {
-    if (signal?.aborted === true) throw new FactoryValidationError('Factory run aborted');
+  /** running 中の進捗保存（イベント追記・stage 更新）。保存済みが running でなくなっていれば中断する。 */
+  private persist(run: FactoryRun): Promise<void> {
+    return this.transition(run, ['running']);
+  }
+
+  /**
+   * compare-and-set で保存する。保存済みの status が `expected` に無ければ、その間に別経路（利用者の cancel）が
+   * 記録を確定させているので、上書きせず `FactoryAbortedError` で実行を打ち切る（`conclude` が何も書かずに終える）。
+   */
+  private async transition(run: FactoryRun, expected: readonly FactoryRunStatus[]): Promise<void> {
+    if (await this.runs.saveIfStatus(run, expected)) return;
+    const stored = await this.runs.find(run.scope, run.id);
+    throw new FactoryAbortedError(`Factory run '${run.id}' is ${stored === null ? 'gone' : stored.status}; execution stopped without overwriting it`);
   }
 }
 

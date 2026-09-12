@@ -16,6 +16,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
+import type { PreviewResult } from '../application/etl/engine';
 import type { PreviewToolUseCase, PreviewToolOptions } from '../application/tool/preview-tool';
 import type { DeleteToolUseCase, GetToolUseCase, ListToolVersionsUseCase, ListToolsUseCase } from '../application/tool/query-tool';
 import type { SaveToolUseCase } from '../application/tool/save-tool';
@@ -68,6 +69,15 @@ function previewOptions(version: SemVer | undefined, rowLimit?: number): Preview
     ...(version !== undefined ? { version } : {}),
     ...(rowLimit !== undefined ? { rowLimit } : {}),
   };
+}
+
+/**
+ * プレビュー結果の wire 表現。`fullOutput`（終端の全行、最大 25 万行）はブラウザへ送らない:
+ * UI が使うのは表示用スナップショット `output` と各ノードの `rowCount` / `truncated` だけ。
+ * /tool-drafts/preview も同じ表現を返す。
+ */
+export function previewResponse(result: PreviewResult): Omit<PreviewResult, 'fullOutput'> {
+  return { terminalId: result.terminalId, output: result.output, nodes: result.nodes };
 }
 
 /** /tools 配下のルートを登録する（§4 の表に準拠）。 */
@@ -138,7 +148,7 @@ export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): v
     return { tool: serializeTool(tool), propagation };
   });
 
-  // POST /tools/:internalId/preview — プレビュー実行（行数制限つき）。
+  // POST /tools/:internalId/preview — プレビュー実行（全行で計算し、返す行数だけ rowLimit で絞る）。
   app.post<{ Params: ToolParams }>('/tools/:internalId/preview', async (request) => {
     const body = parseWith(previewBodySchema, request.body, 'invalid body');
     const version = parseVersion(body.version);
@@ -147,6 +157,6 @@ export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): v
       request.params.internalId,
       previewOptions(version, body.rowLimit),
     );
-    return { tool: serializeTool(tool), result };
+    return { tool: serializeTool(tool), result: previewResponse(result) };
   });
 }

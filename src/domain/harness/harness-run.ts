@@ -1,10 +1,12 @@
 import type { RunId } from '../run/ids';
 import type { IsoDateTime } from '../shared/time';
 import type { TenantScope } from '../shared/tenant-scope';
+import { HarnessRunError } from './errors';
 import type { HarnessId, HarnessRunId, SlotId } from './ids';
 
 export type HarnessRunMode = 'preview' | 'test';
 export type HarnessRunStatus = 'running' | 'succeeded' | 'failed' | 'waiting-input' | 'waiting-approval' | 'cancelled';
+export type HarnessRunTerminalStatus = Extract<HarnessRunStatus, 'succeeded' | 'failed' | 'cancelled'>;
 export const HARNESS_EVENT_KINDS = ['harness_started', 'harness_resumed', 'harness_completed', 'harness_failed', 'harness_cancelled', 'participant_started', 'participant_completed', 'participant_failed', 'intermediate_output', 'handoff_requested', 'speaker_selected', 'plan_created', 'plan_revised', 'approval_requested', 'progress_updated', 'stall_detected', 'input_requested', 'checkpoint_saved'] as const;
 export type HarnessEventKind = (typeof HARNESS_EVENT_KINDS)[number];
 export interface HarnessEvent {
@@ -73,7 +75,20 @@ export interface HarnessRunRecord {
 export function startHarnessRun(input: Omit<HarnessRunRecord, 'status' | 'events'>): HarnessRunRecord {
   return { ...input, scope: { ...input.scope }, harness: { ...input.harness }, status: 'running', events: [] };
 }
+/** 終端状態と、その確定を記録する唯一のイベント種。 */
+const TERMINAL_MARKERS: Readonly<Record<HarnessRunTerminalStatus, HarnessEventKind>> = { succeeded: 'harness_completed', failed: 'harness_failed', cancelled: 'harness_cancelled' };
+export function isTerminalHarnessRunStatus(status: HarnessRunStatus): status is HarnessRunTerminalStatus {
+  return Object.hasOwn(TERMINAL_MARKERS, status);
+}
+/**
+ * イベントを追記する。終端（succeeded / failed / cancelled）のレコードには、その終端を示す
+ * マーカーイベント以外を足せない。cancel 後に遅れて届いた worker の進捗イベントが終端レコードへ
+ * 紛れ込み、保存時に状態まで巻き戻す事故を、永続化より手前で止める。
+ */
 export function appendHarnessEvent(record: HarnessRunRecord, event: Omit<HarnessEvent, 'sequence'>): HarnessRunRecord {
+  if (isTerminalHarnessRunStatus(record.status) && event.kind !== TERMINAL_MARKERS[record.status]) {
+    throw new HarnessRunError(`Harness run '${record.runId}' is already ${record.status}; cannot append '${event.kind}' event`);
+  }
   return { ...record, events: [...record.events, { ...event, sequence: record.events.length + 1 }] };
 }
 export function succeedHarnessRun(record: HarnessRunRecord, response: string, completedAt: IsoDateTime): HarnessRunRecord {

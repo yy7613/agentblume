@@ -9,7 +9,8 @@ import { UNRESTRICTED_MCP_POLICY } from '../../domain/mcp/transport-policy';
 import { SdkMcpClient } from './sdk-mcp-client';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
-const stdio: McpTransportConfig = { kind: 'stdio', command: 'node', args: ['server.js'], env: {} };
+// 既定の許可リストは MCP のランチャーだけ（`node` は含まない）なので、fixture も既定で通る `npx` にする。
+const stdio: McpTransportConfig = { kind: 'stdio', command: 'npx', args: ['-y', 'fixture-server'], env: {} };
 
 function config(overrides: { name?: string; transport?: McpTransportConfig } = {}) {
   return createMcpServerConfig({ scope, name: overrides.name ?? 'fixture', transport: overrides.transport ?? stdio, updatedAt: '2026-07-26T00:00:00.000Z' });
@@ -112,7 +113,7 @@ describe('SdkMcpClient', () => {
   it('設定が変わったら（ハッシュ不一致）旧接続を捨てて張り直す', async () => {
     const { client, factory } = make();
     await client.listTools(config());
-    await client.listTools(config({ transport: { kind: 'stdio', command: 'node', args: ['other.js'], env: {} } }));
+    await client.listTools(config({ transport: { kind: 'stdio', command: 'npx', args: ['-y', 'other-server'], env: {} } }));
     expect(factory.created).toBe(2);
     // 同じ name なのでプールは1本のまま（旧接続は閉じられている）。
     expect(client.pooledConnections).toBe(1);
@@ -120,7 +121,7 @@ describe('SdkMcpClient', () => {
 
   it('env の値だけが違う設定でも再接続する（資格情報の差し替えを見落とさない）', async () => {
     const { client, factory } = make();
-    const base = { kind: 'stdio' as const, command: 'node', args: [], env: { TOKEN: 'old-token-value' } };
+    const base = { kind: 'stdio' as const, command: 'npx', args: [], env: { TOKEN: 'old-token-value' } };
     await client.listTools(config({ transport: base }));
     await client.listTools(config({ transport: { ...base, env: { TOKEN: 'new-token-value' } } }));
     expect(factory.created).toBe(2);
@@ -183,7 +184,7 @@ describe('SdkMcpClient', () => {
     const secretEnv = 'super-secret-token';
     const client = new SdkMcpClient({ createTransport: () => { throw new Error(`failed with TOKEN=${secretEnv}`); } });
     clients.push(client);
-    await expect(client.listTools(config({ transport: { kind: 'stdio', command: 'node', args: [], env: { TOKEN: secretEnv } } })))
+    await expect(client.listTools(config({ transport: { kind: 'stdio', command: 'npx', args: [], env: { TOKEN: secretEnv } } })))
       .rejects.toThrow(/failed with TOKEN=\*\*\*/);
 
     const secretHeader = 'Bearer very-secret-header';
@@ -202,7 +203,7 @@ describe('SdkMcpClient', () => {
   it('短い秘密値も伏せる（長さで対象を選ばない）', async () => {
     const client = new SdkMcpClient({ createTransport: () => { throw new Error('rejected token=abc key=z'); } });
     clients.push(client);
-    const error = await client.listTools(config({ transport: { kind: 'stdio', command: 'node', args: [], env: { A: 'abc', B: 'z' } } }))
+    const error = await client.listTools(config({ transport: { kind: 'stdio', command: 'npx', args: [], env: { A: 'abc', B: 'z' } } }))
       .catch((cause: unknown) => cause);
     expect(String(error)).not.toContain('abc');
     expect(String(error)).toContain('token=***');
@@ -212,7 +213,7 @@ describe('SdkMcpClient', () => {
   it('長い値から先に伏せる（短い値が長い値を先に潰さない）', async () => {
     const client = new SdkMcpClient({ createTransport: () => { throw new Error('rejected: secret-value-long'); } });
     clients.push(client);
-    const error = await client.listTools(config({ transport: { kind: 'stdio', command: 'node', args: [], env: { SHORT: 'secret', LONG: 'secret-value-long' } } }))
+    const error = await client.listTools(config({ transport: { kind: 'stdio', command: 'npx', args: [], env: { SHORT: 'secret', LONG: 'secret-value-long' } } }))
       .catch((cause: unknown) => cause);
     expect(String(error)).toContain('rejected: ***');
     expect(String(error)).not.toContain('secret-value-long');
@@ -249,6 +250,54 @@ describe('SdkMcpClient', () => {
     it('cmd /c の中身が許可外でも拒否する', async () => {
       const { client, factory, config: stored } = forbidden({ kind: 'stdio', command: 'cmd', args: ['/c', 'calc.exe'], env: {} });
       await expect(client.listTools(stored)).rejects.toThrow(/is not allowed to start/);
+      expect(factory.created).toBe(0);
+    });
+
+    /**
+     * 既定の許可リストから `node` を外したので、以前の既定で保存された行は更新後にここで止まる。
+     * 「起動できない」だけでは利用者が行き止まりになるため、拒否文はコマンド名と
+     * 設定すべき環境変数の値（そのまま貼れる形）を含む。
+     */
+    it('以前の既定で保存された node の行は接続時に止まり、直し方（環境変数の値）を案内する', async () => {
+      const { client, factory, config: stored } = forbidden({ kind: 'stdio', command: 'node', args: ['server.js'], env: {} });
+      const error = await client.listTools(stored).catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(McpClientError);
+      expect((error as Error).message).toBe(
+        'MCP server "legacy" is not allowed to start: transport.command is not allowed: node. Allowed commands: npx, uvx, bunx, cmd.'
+        + ' To allow it, set AGENTCONTEXT_MCP_ALLOWED_COMMANDS=npx,uvx,bunx,cmd,node on the server and restart',
+      );
+      // プロセスは起きていない（トランスポート生成の手前で止まる）。
+      expect(factory.created).toBe(0);
+      expect(client.pooledConnections).toBe(0);
+    });
+
+    it('絶対パスの node（/usr/bin/node・C:\\...\\node.exe）も同じく止まる', async () => {
+      for (const command of ['/usr/bin/node', 'C:\\Program Files\\nodejs\\node.exe']) {
+        const { client, factory, config: stored } = forbidden({ kind: 'stdio', command, args: [], env: {} });
+        await expect(client.listTools(stored)).rejects.toThrow(/not allowed: node\. Allowed commands: npx, uvx, bunx, cmd\./);
+        expect(factory.created).toBe(0);
+      }
+    });
+
+    it('許可リストを明示したポリシーなら node の行は起動できる', async () => {
+      const factory = transportFactory();
+      factories.push(factory);
+      const client = new SdkMcpClient({ createTransport: factory.create, policy: { ...UNRESTRICTED_MCP_POLICY, command: { allowedCommands: ['npx', 'node'] } } });
+      clients.push(client);
+      await expect(client.listTools(config({ name: 'legacy', transport: { kind: 'stdio', command: 'node', args: ['server.js'], env: {} } }))).resolves.toBeDefined();
+      expect(factory.created).toBe(1);
+    });
+
+    /** env の名前検査は保存時と同じ述語で、接続時にも当たる（ポリシーを `*` にしても外れない）。 */
+    it('PATH / LD_PRELOAD を上書きする保存済みの行は、無制限ポリシーでも起動しない', async () => {
+      const factory = transportFactory();
+      factories.push(factory);
+      const client = new SdkMcpClient({ createTransport: factory.create, policy: UNRESTRICTED_MCP_POLICY });
+      clients.push(client);
+      await expect(client.listTools(config({ name: 'legacy', transport: { kind: 'stdio', command: 'npx', args: [], env: { LD_PRELOAD: '/tmp/x.so' } } })))
+        .rejects.toThrow(/is not allowed to start: transport\.env must not override LD_PRELOAD/);
+      await expect(client.listTools(config({ name: 'legacy', transport: { kind: 'stdio', command: 'npx', args: [], env: { path: 'C:\\evil' } } })))
+        .rejects.toThrow(/must not override path/);
       expect(factory.created).toBe(0);
     });
 

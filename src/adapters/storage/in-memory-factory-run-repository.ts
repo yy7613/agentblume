@@ -13,4 +13,11 @@ export class InMemoryFactoryRunRepository implements FactoryRunRepository {
   async listAllByStatus(status: FactoryRunStatus): Promise<FactoryRun[]> {
     return [...this.store.values()].filter((run) => run.status === status).sort((a, b) => a.startedAt.localeCompare(b.startedAt)).map((run) => structuredClone(run));
   }
+  async saveIfStatus(run: FactoryRun, expected: readonly FactoryRunStatus[]): Promise<boolean> {
+    const stored = this.store.get(key(run.scope, run.id));
+    // 存在しない・期待と違う状態・期待が空: どれも「書かない」（SQLite の `UPDATE … WHERE status IN ()` と同じ結果）。
+    if (stored === undefined || !expected.includes(stored.status)) return false;
+    this.store.set(key(run.scope, run.id), structuredClone(run));
+    return true;
+  }
 }

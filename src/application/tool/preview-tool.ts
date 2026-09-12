@@ -3,7 +3,7 @@
  *
  * 保存済み Tool を取得して EtlEngine に委譲する。
  * - `inspect`: スキーマ点検（実行なし）= `engine.propagateSchemas(tool.graph)`。
- * - `preview`: プレビュー実行（行数制限つき）= `engine.preview(tool.graph, { rowLimit })`。
+ * - `preview`: プレビュー実行 = `engine.preview(tool.graph, { rowLimit })`。rowLimit は表示用スナップショットの行数で、計算は常に全行（実行上限は engine の maxRows）。
  *
  * 取得は `options.version` 指定時 `repo.findVersion`、無指定時 `repo.findLatest`。
  * `null` → ToolNotFoundError。
@@ -57,7 +57,7 @@ export class PreviewToolUseCase {
     return { tool, propagation: this.engine.propagateSchemas(graph) };
   }
 
-  /** 保存済み Tool のプレビュー実行（行数制限つき）。未存在→ToolNotFoundError。 */
+  /** 保存済み Tool のプレビュー実行（rowLimit は表示行数、計算は全行）。未存在→ToolNotFoundError。 */
   async preview(
     scope: TenantScope,
     internalId: ToolId,

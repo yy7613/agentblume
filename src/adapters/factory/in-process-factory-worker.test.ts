@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SHUTDOWN_ABORT_MESSAGE, USER_CANCEL_MESSAGE } from '../../application/factory/abort';
 import type { RunFactoryUseCase } from '../../application/factory/run-factory';
+import { FactoryAbortedError } from '../../domain/factory/errors';
 import { InProcessFactoryWorker } from './in-process-factory-worker';
 
 const tick = async (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
@@ -48,6 +50,25 @@ describe('InProcessFactoryWorker', () => {
     worker.shutdown();
   });
 
+  it('abort の理由: cancel は「Cancelled by user」、shutdown / 猶予切れは「Aborted by worker shutdown」（Run 側が run_cancelled の文言に使う）', async () => {
+    const reasons: unknown[] = [];
+    const execute = vi.fn(async (_scope: unknown, _id: string, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => { signal.addEventListener('abort', () => { reasons.push(signal.reason); resolve(); }, { once: true }); });
+    });
+
+    const byUser = new InProcessFactoryWorker(runner(execute));
+    byUser.enqueue(scope, 'run'); await tick(); byUser.cancel(scope, 'run'); await tick();
+    const byShutdown = new InProcessFactoryWorker(runner(execute));
+    byShutdown.enqueue(scope, 'run'); await tick(); byShutdown.shutdown(); await tick();
+    const byDrain = new InProcessFactoryWorker(runner(execute));
+    byDrain.enqueue(scope, 'run'); await tick(); await byDrain.drainInFlight(5);
+
+    expect(reasons).toHaveLength(3);
+    expect(reasons.every((reason) => reason instanceof FactoryAbortedError)).toBe(true);
+    expect(reasons.map((reason) => (reason as Error).message)).toEqual([USER_CANCEL_MESSAGE, SHUTDOWN_ABORT_MESSAGE, SHUTDOWN_ABORT_MESSAGE]);
+    byUser.shutdown();
+  });
+
   describe('drainInFlight（shutdown猶予）', () => {
     it('実行中が無ければ即trueで返る', async () => {
       const worker = new InProcessFactoryWorker(runner(vi.fn()));
@@ -76,6 +97,21 @@ describe('InProcessFactoryWorker', () => {
       worker.enqueue(scope, 'run'); await tick();
       await expect(worker.drainInFlight(5)).resolves.toBe(false);
       expect(signal?.aborted).toBe(true);
+    });
+
+    it('猶予切れで abort した後は、Run が確定処理（cancelled の書き込み）を終えて戻るまで待ってから返る（直後に DB が閉じられるため）', async () => {
+      let persisted = false;
+      const execute = vi.fn(async (_scope: unknown, _id: string, signal: AbortSignal) => {
+        await new Promise<void>((resolve) => { signal.addEventListener('abort', () => { resolve(); }, { once: true }); });
+        await new Promise((resolve) => { setTimeout(resolve, 20); }); // abort 後の確定処理を模す。
+        persisted = true;
+      });
+      const worker = new InProcessFactoryWorker(runner(execute));
+      worker.enqueue(scope, 'run'); await tick();
+
+      await expect(worker.drainInFlight(5)).resolves.toBe(false);
+
+      expect(persisted).toBe(true);
     });
 
     it('待機中は新規enqueueを受け付けず、未実行のキューも実行しない', async () => {

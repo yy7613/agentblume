@@ -24,3 +24,11 @@ export class HarnessRunNotFoundError extends HarnessError {
 export class HarnessRunError extends HarnessError {
   constructor(message: string) { super('HARNESS_RUN', message); this.name = 'HarnessRunError'; }
 }
+
+/**
+ * 利用者による cancel を表す abort 理由。時間予算超過とクライアント切断も同じ AbortController を
+ * 止めるため、「誰が止めたか」を型で区別しないと worker は cancelled と failed を正しく分けられない。
+ */
+export class HarnessRunCancelledError extends HarnessRunError {
+  constructor(message = 'Harness run cancelled by user') { super(message); this.name = 'HarnessRunCancelledError'; }
+}

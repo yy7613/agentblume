@@ -6,13 +6,21 @@
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createMcpServerConfig } from '../../domain/mcp/mcp-server';
+import { DEFAULT_MCP_POLICY } from '../../domain/mcp/transport-policy';
 import { SdkMcpClient } from './sdk-mcp-client';
 
 const fixture = fileURLToPath(new URL('./stdio-server.fixture.mjs', import.meta.url));
 
+/**
+ * 既定の許可リストは MCP のランチャー（npx / uvx / bunx / cmd）だけで `node` を含まない。
+ * このテストは「ローカルのスクリプトを node で直接起動する」＝運用者が
+ * `AGENTCONTEXT_MCP_ALLOWED_COMMANDS` で明示的に足す必要があるケースそのものなので、同じ形で足す。
+ */
+const NODE_ALLOWED_POLICY = { ...DEFAULT_MCP_POLICY, command: { allowedCommands: ['npx', 'node'] } };
+
 describe('SdkMcpClient（stdio実プロセス）', () => {
   it('子プロセスのMCPサーバーへ接続してツール一覧・呼び出しができる', async () => {
-    const client = new SdkMcpClient();
+    const client = new SdkMcpClient({ policy: NODE_ALLOWED_POLICY });
     const config = createMcpServerConfig({
       scope: { tenantId: 'tenant', workspaceId: 'workspace' },
       name: 'stdio-fixture',

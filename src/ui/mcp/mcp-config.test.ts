@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { McpServerDto } from '../api/types';
 import {
-  EMPTY_MCP_SERVER_FORM, formatArgLines, formatEnvLines, formatHeaderLines, formatMcpServersDocument,
+  canOperateMcpServers, EMPTY_MCP_SERVER_FORM, formatArgLines, formatEnvLines, formatHeaderLines, formatMcpServersDocument,
   parseArgLines, parseEnvLines, parseHeaderLines, parseMcpServersDocumentText, toMcpServerForm, toMcpServersDocument, toMcpTransport, transportSummary,
 } from './mcp-config';
 
@@ -95,5 +95,31 @@ describe('mcp-config 標準ドキュメント', () => {
     expect(parseMcpServersDocumentText('{ nope')).toMatchObject({ reason: 'invalid-json' });
     expect(parseMcpServersDocumentText('[]')).toMatchObject({ ok: false, reason: 'not-an-object' });
     expect(parseMcpServersDocumentText('{"servers":{}}')).toMatchObject({ ok: false, reason: 'missing-mcp-servers' });
+  });
+});
+
+/**
+ * 変更系と接続テストは `mcp-server:operate`（operator / workspace-admin）だけが通る。
+ * 判定はサーバーが行い、ここは「押しても 403 になるボタン」を先に無効化するための先読み。
+ * 取れないときに無効化すると、旧クライアントや一時的な失敗で画面が使えなくなるので許可側へ倒す。
+ */
+describe('canOperateMcpServers', () => {
+  const session = (roles: readonly string[]) => ({ principal: { subject: 'eve', tenantId: 'local', workspaceId: 'default', roles } });
+
+  it.each([['operator'], ['workspace-admin'], ['viewer', 'operator'], ['viewer', 'editor', 'publisher', 'operator', 'workspace-admin']])(
+    'operator / workspace-admin を含めば操作できる: %j',
+    (...roles) => { expect(canOperateMcpServers(session(roles))).toBe(true); },
+  );
+
+  it.each([['viewer'], ['editor'], ['publisher'], ['editor', 'publisher'], []])('含まなければ操作できない: %j', (...roles) => {
+    expect(canOperateMcpServers(session(roles))).toBe(false);
+  });
+
+  it('未知のロール名や大文字違いは権限として数えない（サーバー側の判定と同じ）', () => {
+    expect(canOperateMcpServers(session(['Operator', 'admin', 'OPERATOR']))).toBe(false);
+  });
+
+  it('セッションが取れないときは無効化しない（判定はサーバーに委ねる）', () => {
+    expect(canOperateMcpServers(undefined)).toBe(true);
   });
 });

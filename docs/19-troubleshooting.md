@@ -370,6 +370,29 @@ Tavily / TinyFish / Google Custom Search のいずれかに必要な環境変数
 2. テストは通るのに実行で読み込めないなら、**エージェント画面の「組み込みチェック」**（`mcp-servers`）で、参照している名前が登録名と一致しているか・有効かを見る。
 3. モデルが「存在しないツール `mcp__<server>__<tool>` を呼ぼうとしました」と出る場合は、そのサーバーが今回の実行で読み込めなかった（上の3つのどれか）か、サーバー側でツールが無くなっている。
 
+### 10.1 更新後に「transport.command is not allowed: node …」で起動しなくなった
+
+2026-09-03 の更新で、起動を許すコマンドの**既定**を MCP サーバーのランチャーだけ（`npx` / `uvx` / `bunx` / `cmd`）に絞った。以前の既定に入っていた `node` / `python` / `python3` / `uv` / `bun` / `deno` / `docker` は外れている。この検査は保存時だけでなく**接続直前にも**当たるので、更新前に保存した `node server.js` のような設定は、接続テストが次のように `ok:false` になり、エージェント実行ではそのサーバーのツールがスキップされる（トレースの `mcp-server-skipped`）。
+
+```text
+MCP server "legacy" is not allowed to start: transport.command is not allowed: node. Allowed commands: npx, uvx, bunx, cmd. To allow it, set AGENTCONTEXT_MCP_ALLOWED_COMMANDS=npx,uvx,bunx,cmd,node on the server and restart
+```
+
+| 直し方 | いつ |
+|---|---|
+| メッセージの `AGENTCONTEXT_MCP_ALLOWED_COMMANDS=…` を**そのままサーバーの環境変数に設定して再起動**する | ローカルのスクリプトを `node` / `python` で直接起動するサーバーを使い続ける |
+| 設定を `npx` / `uvx` 経由に書き換える（例: `node node_modules/.bin/server` → `npx server`） | 公開パッケージのサーバーなら、許可リストを広げずに済む |
+
+設定そのものは消えていない（一覧に残る）。`node` を足すと `node -e "…"` も通るようになるので、許可リストは**設定を保存できる主体を信頼したうえでの安全策**である（次項）。
+
+### 10.2 MCP 画面で「operate 権限が必要です」（403）と出る
+
+MCP サーバー設定の保存・置換・削除・接続テストは `mcp-server:operate`（**operator / workspace-admin**）が必要になった。stdio の設定はサーバーホスト上で子プロセスを起動する設定で、保存できる主体はホスト上で任意コードを実行できるため（`docs/08-security-auth.md` §3.2）。`AGENTCONTEXT_AUTH_TOKENS` で `roles` を書いていないトークンは `editor` なので設定できない。設定を担当する人のトークンに `"roles": ["operator"]` を付ける。一覧（参照）は従来どおり全ロールで見える。単一ユーザーモード（トークン未設定）は全ロールを持つので影響しない。権限の無いセッションでは画面のボタンが無効になり、同じ理由が表示される。
+
+### 10.3 「transport.env must not override PATH」（400）
+
+`PATH` / `PATHEXT` / `COMSPEC` / `NODE_OPTIONS` / `NODE_PATH` / `NODE_EXTRA_CA_CERTS` / `LD_PRELOAD` / `LD_LIBRARY_PATH` / `LD_AUDIT` / `DYLD_INSERT_LIBRARIES` / `DYLD_LIBRARY_PATH` / `PYTHONPATH` / `PYTHONSTARTUP` / `PYTHONHOME` / `PYTHONWARNINGS` / `RUBYOPT` / `PERL5OPT` / `BASH_ENV` / `ENV` / `PROMPT_COMMAND` / `JAVA_TOOL_OPTIONS` / `_JAVA_OPTIONS` / `SSLKEYLOGFILE` は、許可されたコマンド名のまま**実行される中身を差し替える**変数なので、`transport.env` では上書きできない（大文字小文字を問わず完全一致。`AGENTCONTEXT_MCP_ALLOWED_COMMANDS=*` でも拒否）。`MY_PATH` のような別名は普通の変数として通る。子プロセスは agentblume サーバーの `PATH` を引き継ぐので、必要ならサーバープロセス側の環境変数として設定する。
+
 > MCP サーバーの設定（コマンド・URL・ヘッダー）は現状 SQLite に平文で保存される。認証トークンを含む場合はサーバー側の環境変数で渡すことを検討する。
 
 ---

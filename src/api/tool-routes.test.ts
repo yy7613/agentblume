@@ -317,7 +317,7 @@ describe('tool routes', () => {
       ]);
     });
 
-    it('rowLimit=1 で行が切り詰められ truncated=true', async () => {
+    it('rowLimit=1 で返す行は絞られ truncated=true、rowCount は全行数（fullOutput は返さない）', async () => {
       const res = await server.inject({
         method: 'POST',
         url: '/tools/users-tool/preview',
@@ -326,9 +326,20 @@ describe('tool routes', () => {
       expect(res.statusCode).toBe(200);
       const { result } = res.json();
       expect(result.output.rows).toEqual([{ id: 1, name: 'Alice' }]);
-      // 3行のソースが rowLimit=1 で切り詰められる（下流は切詰め済み入力を処理）。
-      expect(result.nodes['src'].truncated).toBe(true);
+      // 3行のソースはスナップショットだけが 1 行に絞られ、下流は 3 行全部を処理する。
+      expect(result.nodes['src']).toMatchObject({ truncated: true, rowCount: 3 });
       expect(result.nodes['src'].table.rows).toHaveLength(1);
+      expect(result.nodes[result.terminalId]).toMatchObject({ truncated: true, rowCount: 3 });
+      expect(result).not.toHaveProperty('fullOutput');
+    });
+
+    it('rowLimit=10000（上限ちょうど）は 200、負数は 400 BAD_REQUEST', async () => {
+      const max = await server.inject({ method: 'POST', url: '/tools/users-tool/preview', payload: { scope: SCOPE, rowLimit: 10000 } });
+      expect(max.statusCode).toBe(200);
+      expect(max.json().result.nodes['src']).toMatchObject({ truncated: false, rowCount: 3 });
+      const negative = await server.inject({ method: 'POST', url: '/tools/users-tool/preview', payload: { scope: SCOPE, rowLimit: -1 } });
+      expect(negative.statusCode).toBe(400);
+      expect(negative.json().error.code).toBe('BAD_REQUEST');
     });
 
     it('version=1.0.0 固定で旧グラフ（3列）の結果を返す', async () => {

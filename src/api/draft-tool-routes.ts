@@ -9,6 +9,7 @@ import { createTool } from '../domain/tool/tool';
 import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { analysisSuggestionBodySchema, draftInspectBodySchema, draftPreviewBodySchema, saveToolBodySchema } from './schemas';
+import { previewResponse } from './tool-routes';
 
 export interface DraftToolRouteDeps {
   readonly draftTool: DraftToolUseCase;
@@ -36,6 +37,7 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
     return { propagation: await deps.draftTool.inspect(body.graph, scopeOf(request)) };
   });
 
+  // 全行で計算し、返す行数だけ rowLimit で絞る（各ノードの rowCount は全行数）。
   app.post('/tool-drafts/preview', async (request) => {
     const body = parseWith(draftPreviewBodySchema, request.body);
     const result = await deps.draftTool.preview(
@@ -43,7 +45,7 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
       body.rowLimit === undefined ? undefined : { rowLimit: body.rowLimit },
       scopeOf(request),
     );
-    return { result };
+    return { result: previewResponse(result) };
   });
   // 未保存 Tool のプリフライト診断。POST /tools と同じ body を受け、保存と同じ createTool 検証を
   // 通した Tool を検査する（保存も採番もしない）。

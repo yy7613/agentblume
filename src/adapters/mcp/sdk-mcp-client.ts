@@ -40,6 +40,9 @@ export interface SdkMcpClientOptions {
    * 保存時（use case）にも同じ検査をしているが、そちらは入力の即時フィードバックが目的で、
    * ポリシー導入前に保存された行やポリシーを緩めてから戻した環境では素通りする。
    * 実際にプロセスを起こす・ソケットを開くのはここなので、ここが最後の防壁になる。
+   * 判定は保存時と同じ `assertAllowedTransport`（`domain/mcp/transport-policy.ts`）で、
+   * 既定の許可リストを `npx` / `uvx` / `bunx` / `cmd` に絞ったため、以前の既定で保存された
+   * `node …` の行はここで止まる。拒否文は設定すべき環境変数の値まで案内する。
    */
   readonly policy?: McpPolicy;
   /**

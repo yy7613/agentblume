@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ToolApiClient } from '../api/tool-api';
+import { ApiError, type ToolApiClient } from '../api/tool-api';
 import type { McpServerDto } from '../api/types';
 import { McpPage } from './McpPage';
 afterEach(cleanup);
@@ -154,6 +154,88 @@ describe('McpPage', () => {
       await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
       expect(client.deleteMcpServer).toHaveBeenCalledWith('filesystem', scope);
       expect(await screen.findByText('No MCP servers yet.')).toBeTruthy();
+    });
+
+    /**
+     * 変更系と接続テストは `mcp-server:operate`（operator / workspace-admin）だけが通る。
+     * 403 の原文は権限名しか言わないので、画面では「何に・どのロールが要るか」まで出す。
+     */
+    it('保存の 403（operate 権限なし）は権限名とロールを含む理由をエラー欄に表示する', async () => {
+      const client = mcpClient();
+      (client.saveMcpServer as ReturnType<typeof vi.fn>).mockRejectedValue(new ApiError(403, 'FORBIDDEN', "this operation requires the 'mcp-server:operate' permission"));
+      render(<McpPage client={client} />);
+      await screen.findByText('No MCP servers yet.');
+      await userEvent.type(screen.getByLabelText('MCP server name'), 'filesystem');
+      await userEvent.type(screen.getByLabelText('MCP command'), 'npx');
+      await userEvent.click(screen.getByRole('button', { name: 'Save server' }));
+      const shown = await screen.findByText(/requires the 'mcp-server:operate' permission \(operator or workspace-admin role\)/);
+      expect(shown.className).toBe('api-error');
+      // 保存されていないのでフォームは残る（入力をやり直させない）。
+      expect((screen.getByLabelText('MCP server name') as HTMLInputElement).value).toBe('filesystem');
+    });
+
+    it('接続テストの 403 も同じ理由を表示する', async () => {
+      const client = mcpClient([stdioServer]);
+      (client.testMcpServer as ReturnType<typeof vi.fn>).mockRejectedValue(new ApiError(403, 'FORBIDDEN', "this operation requires the 'mcp-server:operate' permission"));
+      render(<McpPage client={client} />);
+      await userEvent.click(await screen.findByRole('button', { name: 'Test' }));
+      expect(await screen.findByText(/requires the 'mcp-server:operate' permission/)).toBeTruthy();
+    });
+
+    describe('ロールに応じたボタンの無効化（判定はサーバーが行う。ここは先読み）', () => {
+      function sessionOf(roles: readonly string[], mode: 'token' | 'single-user' = 'token') {
+        return { mode, authenticationRequired: mode === 'token', principal: { subject: 'eve', tenantId: 'local', workspaceId: 'default', roles } };
+      }
+      function withSession(client: ToolApiClient, getSession: ReturnType<typeof vi.fn>): ToolApiClient {
+        (client as unknown as { getSession: unknown }).getSession = getSession;
+        return client;
+      }
+
+      it('editor のセッションでは保存・テスト・削除・適用を無効化し、理由を title と画面に出す', async () => {
+        const client = withSession(mcpClient([stdioServer]), vi.fn().mockResolvedValue(sessionOf(['editor'])));
+        render(<McpPage client={client} />);
+        await screen.findByText('filesystem');
+        await waitFor(() => expect((screen.getByRole('button', { name: 'Test' }) as HTMLButtonElement).disabled).toBe(true));
+        expect((screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByRole('button', { name: 'Save server' }) as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByRole('button', { name: 'Test' }).getAttribute('title')).toContain("'mcp-server:operate'");
+        expect(screen.getByText('Read-only')).toBeTruthy();
+        // 編集（フォームへの読み込み）は閲覧なので残す。
+        expect((screen.getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(false);
+        await userEvent.click(screen.getByRole('tab', { name: 'JSON' }));
+        expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(true);
+        expect(client.testMcpServer).not.toHaveBeenCalled();
+      });
+
+      it.each<[string, readonly string[], 'token' | 'single-user']>([
+        ['operator', ['operator'], 'token'],
+        ['workspace-admin', ['workspace-admin'], 'token'],
+        ['単一ユーザー（全ロール）', ['viewer', 'editor', 'publisher', 'operator', 'workspace-admin'], 'single-user'],
+      ])('%s のセッションでは従来どおり操作できる', async (_label, roles, mode) => {
+        const getSession = vi.fn().mockResolvedValue(sessionOf(roles, mode));
+        const client = withSession(mcpClient([stdioServer]), getSession);
+        render(<McpPage client={client} />);
+        await screen.findByText('filesystem');
+        await waitFor(() => expect(getSession).toHaveBeenCalled());
+        await userEvent.click(screen.getByRole('button', { name: 'Test' }));
+        await waitFor(() => expect(client.testMcpServer).toHaveBeenCalledWith('filesystem', scope));
+        expect(screen.getByRole('button', { name: 'Test' }).getAttribute('title')).toBeNull();
+        expect(screen.queryByText('Read-only')).toBeNull();
+      });
+
+      it('セッションが取れない（旧クライアント・取得失敗）ときは無効化しない', async () => {
+        render(<McpPage client={mcpClient([stdioServer])} />);
+        await screen.findByText('filesystem');
+        expect((screen.getByRole('button', { name: 'Test' }) as HTMLButtonElement).disabled).toBe(false);
+        cleanup();
+
+        const getSession = vi.fn().mockRejectedValue(new Error('offline'));
+        render(<McpPage client={withSession(mcpClient([stdioServer]), getSession)} />);
+        await screen.findByText('filesystem');
+        await waitFor(() => expect(getSession).toHaveBeenCalled());
+        expect((screen.getByRole('button', { name: 'Test' }) as HTMLButtonElement).disabled).toBe(false);
+        expect(screen.queryByText('Read-only')).toBeNull();
+      });
     });
   });
 

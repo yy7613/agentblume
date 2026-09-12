@@ -106,9 +106,19 @@ function inlineValue(table: Table, config: AgentOutputConfig): unknown {
   if (config.shape === 'first-row') return rows[0] ?? null;
   if (config.shape === 'single-value') return rows[0]?.[config.valueColumn as string] ?? null;
   if (config.shape === 'summary') return { rowCount: table.rows.length, columns: table.schema.columns.map((column) => ({ name: column.name, type: column.type, nullable: column.nullable })), preview: rows.slice(0, 10) };
-  if (config.format === 'markdown-table') return markdown(rows, columns);
-  if (config.format === 'chartjs') return { labels: rows.map((_, index) => String(index + 1)), datasets: columns.map((column) => ({ label: column, data: rows.map((row) => row[column]) })) };
-  return { schema: table.schema, rows };
+  // maxRows で行を落としたら、その事実と件数をモデルへ伝える。ツールは全行で計算しているので、
+  // 黙って先頭だけ渡すと「見えている行がすべて」と誤解して集計を報告しかねない。
+  const omission = omissionNote(table.rows.length, rows.length, config.maxRows);
+  if (config.format === 'markdown-table') return omission === undefined ? markdown(rows, columns) : `${markdown(rows, columns)}\n\n${omission.note}`;
+  if (config.format === 'chartjs') return { labels: rows.map((_, index) => String(index + 1)), datasets: columns.map((column) => ({ label: column, data: rows.map((row) => row[column]) })), ...omission };
+  return { schema: table.schema, rows, ...omission };
+}
+
+/** rows が maxRows で切られたときだけ、全体件数・省略件数と人間可読な注記を返す。 */
+function omissionNote(rowCount: number, shown: number, maxRows: number): { readonly rowCount: number; readonly omittedRows: number; readonly note: string } | undefined {
+  if (rowCount <= shown) return undefined;
+  const omittedRows = rowCount - shown;
+  return { rowCount, omittedRows, note: `Showing ${shown} of ${rowCount} rows; ${omittedRows} rows omitted (agent-output maxRows=${maxRows}).` };
 }
 
 function tablePayload(table: Table): TableArtifactPayload {

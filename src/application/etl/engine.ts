@@ -3,7 +3,8 @@
  *
  * `ToolGraph` を受け取り、
  * - `propagateSchemas`: 各ノードのスキーマと（上流合成後の）最終 state を算出。
- * - `preview`: 各ノードを実行し、行数上限を適用したテーブルを算出。
+ * - `preview`: 各ノードを**全行**で実行し、表示用に行数を絞ったスナップショットと
+ *   全行の終端テーブルを算出。1ノードの生成行数が実行上限を超えたら SchemaError。
  *
  * 共通のグラフ検証（id一意 / edge端点実在 / 閉路なし / 入次数=inputArity /
  * 入力ポート妥当性 / sinkは終端 / 終端ちょうど1つ）を両メソッドの冒頭で行い、
@@ -16,7 +17,7 @@
  * 入力（graph / config / 上流テーブル）は破壊的変更しない。
  */
 import type { Schema, SchemaState, Table } from '../../domain/data/types';
-import { EtlError, GraphError } from '../../domain/etl/errors';
+import { ConfigError, EtlError, GraphError, SchemaError } from '../../domain/etl/errors';
 import type { NodeId } from '../../domain/etl/ids';
 import type { EtlNode, SchemaIssue } from '../../domain/etl/node';
 import type { NodeRegistry } from '../../domain/etl/registry';
@@ -51,17 +52,29 @@ export interface PropagationResult {
 
 /** プレビュー実行のオプション。 */
 export interface PreviewOptions {
-  /** 各ノード出力の最大行数（既定 100）。 */
+  /**
+   * 表示用スナップショット（`nodes[id].table` / `output`）の最大行数（既定 100、0 以上の整数）。
+   * 実行そのものには効かない: 各ノードは常に上流の**全行**を受け取って計算する。
+   * かつてはここで各ノード出力を切り捨てて下流へ渡していたため、group-by の合計や
+   * sort→limit の最大値、join の照合が「先頭 rowLimit 行だけ」の誤った値になっていた。
+   */
   readonly rowLimit?: number;
+  /**
+   * 1ノードが生成してよい最大行数（既定 DEFAULT_MAX_EXECUTION_ROWS、1 以上の整数）。
+   * 超過は黙って切り捨てず SchemaError（nodeId 付き）で実行を止める。
+   */
+  readonly maxRows?: number;
 }
 
 /** 1ノードのプレビュー結果。 */
 export interface NodePreview {
   readonly nodeId: NodeId;
-  /** 行数上限を適用した後のテーブル。 */
+  /** 表示用スナップショット（計算結果の先頭 rowLimit 行）。下流の計算には使われない。 */
   readonly table: Table;
-  /** 上限超過で行を切り捨てたら true。 */
+  /** スナップショットが計算結果より短い（`rowCount > table.rows.length`）なら true。 */
   readonly truncated: boolean;
+  /** 計算結果の全行数。 */
+  readonly rowCount: number;
 }
 
 /** プレビュー実行の全体結果。 */
@@ -72,14 +85,23 @@ export interface PreviewResult {
    * ここでは素の string のままにする（M1 の残課題として報告済み）。
    */
   readonly terminalId: string;
-  /** 終端ノードの（上限適用後）テーブル。 */
+  /** 終端ノードの表示用スナップショット（先頭 rowLimit 行）。HTTP API / UI はこちらを返す・使う。 */
   readonly output: Table;
+  /** 終端ノードの全行テーブル。Agent 実行など計算結果そのものを消費する側はこちらを使う。 */
+  readonly fullOutput: Table;
   /** nodeId → プレビュー結果。 */
   readonly nodes: Record<string, NodePreview>;
 }
 
-/** 既定の行数上限。 */
-const DEFAULT_ROW_LIMIT = 100;
+/** 表示用スナップショットの既定行数。 */
+export const DEFAULT_ROW_LIMIT = 100;
+
+/**
+ * 1ノードが生成してよい行数の既定上限。join の MAX_JOIN_ROWS（10万）や
+ * time-series の fill 上限（10万/パーティション）を越えた「全行実行」の総量を
+ * 単一プロセスのサーバが抱えられる範囲に留めるための安全弁。
+ */
+export const DEFAULT_MAX_EXECUTION_ROWS = 250_000;
 
 /** 推論を打ち切ったノードの出力スキーマ（列なし）。 */
 const EMPTY_SCHEMA: Schema = { columns: [] };
@@ -196,15 +218,19 @@ export class EtlEngine {
   }
 
   /**
-   * トポロジカル順に各ノードを実行し、行数上限を適用したテーブルを算出する。
+   * トポロジカル順に各ノードを**全行**で実行する。
    *
-   * `output` は終端ノードの（上限適用後）テーブル。実行時に列欠損等があれば
-   * 各ノードが SchemaError を投げてよく、Engine はそのまま伝播する。
+   * 実行と表示を分離する: 下流へ渡すテーブル（`tableById`）は常に計算結果の全行で、
+   * `rowLimit` は `nodes[id].table` / `output` のスナップショットにだけ効く。
+   * `fullOutput` は終端ノードの全行。実行時に列欠損等があれば各ノードが
+   * SchemaError を投げてよく、Engine は nodeId を付けてそのまま伝播する。
+   * 1ノードの生成行数が `maxRows` を超えたら、そのノードの id を付けた SchemaError。
    */
   preview(graph: ToolGraph, options?: PreviewOptions): PreviewResult {
     const v = this.validate(graph);
 
-    const rowLimit = options?.rowLimit ?? DEFAULT_ROW_LIMIT;
+    const rowLimit = resolveRowLimit(options?.rowLimit);
+    const maxRows = resolveMaxRows(options?.maxRows);
 
     const tableById = new Map<string, Table>();
     const nodes: Record<string, NodePreview> = {};
@@ -226,21 +252,30 @@ export class EtlEngine {
       try {
         const config = node.validateConfig(graphNode.config);
         produced = node.execute(inputTables, config);
+        // 黙った切り捨ては下流の集計・整列・結合を誤らせるので、上限超過は実行失敗として扱う。
+        // 中間ノードにも適用する（終端だけ見ても、途中で膨れた行は既にメモリを食っている）。
+        if (produced.rows.length > maxRows) {
+          throw new SchemaError(
+            `${graphNode.type}: produced ${produced.rows.length} rows, exceeding the execution limit of ${maxRows} rows`,
+          );
+        }
       } catch (error) {
         // どのノードで落ちたかを付けて伝播する（ノード実装は自分の id を知らない）。
         // message は変えない: 利用者向けのローカライズが message の正規表現一致に依存している。
         if (error instanceof EtlError && error.nodeId === undefined) error.nodeId = id;
         throw error;
       }
-      const { table, truncated } = limitRows(produced, rowLimit);
 
-      tableById.set(id, table);
-      nodes[id] = { nodeId: id, table, truncated };
+      // 下流には全行を渡す。スナップショットは表示専用で、計算には一切使わない。
+      tableById.set(id, produced);
+      const { table, truncated } = limitRows(produced, rowLimit);
+      nodes[id] = { nodeId: id, table, truncated, rowCount: produced.rows.length };
     }
 
-    const output = tableById.get(v.terminalId) as Table;
+    const fullOutput = tableById.get(v.terminalId) as Table;
+    const output = (nodes[v.terminalId] as NodePreview).table;
 
-    return { terminalId: v.terminalId, output, nodes };
+    return { terminalId: v.terminalId, output, fullOutput, nodes };
   }
 
   /**
@@ -403,8 +438,32 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * テーブルの行を上限まで切り詰める。超過時のみ `truncated:true`。
- * スキーマは保持。入力テーブルは破壊的変更しない。
+ * `rowLimit` の検証。省略は既定値。0 は「行は返さず件数だけ」として許す
+ * （UI が件数だけ欲しい場合に 250k 行を転送しないため）。
+ */
+function resolveRowLimit(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_ROW_LIMIT;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new ConfigError(`preview: rowLimit must be a non-negative integer, received ${String(value)}`);
+  }
+  return value;
+}
+
+/**
+ * `maxRows` の検証。省略は既定値。0 は空でないソースを一切実行できなくなる
+ * 設定ミスとしか考えられないので、1 以上を要求する。
+ */
+function resolveMaxRows(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_MAX_EXECUTION_ROWS;
+  if (!Number.isInteger(value) || value < 1) {
+    throw new ConfigError(`preview: maxRows must be a positive integer, received ${String(value)}`);
+  }
+  return value;
+}
+
+/**
+ * 表示用スナップショットを切り出す。超過時のみ `truncated:true`。
+ * スキーマは保持。入力テーブルは破壊的変更しない（下流は元のテーブルを受け取る）。
  */
 function limitRows(table: Table, rowLimit: number): { table: Table; truncated: boolean } {
   if (table.rows.length <= rowLimit) {
