@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import { useI18n } from '../i18n';
+import { usePendingOpen, type OpenTarget } from '../navigation';
 import { PersonasTab } from './PersonasTab';
 import { RunsTab } from './RunsTab';
 import { ScenariosTab } from './ScenariosTab';
@@ -14,7 +15,14 @@ type Tab = 'personas' | 'scenarios' | 'datasets' | 'experiments' | 'quality' | '
 
 export function ValidationPage({ client }: { readonly client: ToolApiClient }) {
   const [tab, setTab] = useState<Tab>('personas');
+  /** 他画面からの「このルーブリックを開いて直す」依頼。ルーブリック編集はデータセットタブにあるので、そこへ切り替えて渡す。 */
+  const [rubricTarget, setRubricTarget] = useState<OpenTarget>();
   const { text } = useI18n();
+  usePendingOpen('Validation', (target) => {
+    if (target.section !== 'rubric') return;
+    setTab('datasets');
+    setRubricTarget(target);
+  });
   const tabs: readonly { readonly id: Tab; readonly label: string }[] = [
     { id: 'personas', label: text('Personas', 'ペルソナ') },
     { id: 'scenarios', label: text('Scenarios', 'シナリオ') },
@@ -30,7 +38,7 @@ export function ValidationPage({ client }: { readonly client: ToolApiClient }) {
     </div>
     {tab === 'personas' ? <PersonasTab client={client} scope={scope} />
       : tab === 'scenarios' ? <ScenariosTab client={client} scope={scope} onRunCompleted={() => setTab('runs')} />
-      : tab === 'datasets' ? <Suspense fallback={<p className="empty-state">{text('Loading datasets…', 'データセットを読み込み中…')}</p>}><DatasetsTab client={client} scope={scope} /></Suspense>
+      : tab === 'datasets' ? <Suspense fallback={<p className="empty-state">{text('Loading datasets…', 'データセットを読み込み中…')}</p>}><DatasetsTab client={client} scope={scope} openRubric={rubricTarget} /></Suspense>
       : tab === 'experiments' ? <Suspense fallback={<p className="empty-state">{text('Loading experiments…', '実験を読み込み中…')}</p>}><ExperimentsTab client={client} scope={scope} /></Suspense>
       : tab === 'quality' ? <Suspense fallback={<p className="empty-state">{text('Loading quality gates…', '品質ゲートを読み込み中…')}</p>}><QualityTab client={client} scope={scope} /></Suspense>
       : <RunsTab client={client} scope={scope} />}

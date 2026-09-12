@@ -116,6 +116,8 @@ const HELP: Readonly<Record<ScreenName, ScreenHelp>> = {
     steps: [
       { en: 'Personas → Scenarios → Runs is the usual order.', ja: 'ペルソナ → シナリオ → 実行 の順で進めます。' },
       { en: 'Datasets, Experiments, and Quality gates are for repeatable comparison.', ja: 'データセット・実験・品質ゲートは、繰り返し比較するためのものです。' },
+      { en: 'LLM judging is scored per criterion (binary 0 / 1 levels recommended; "cannot assess" is excluded from the composite). In the rubric, choose what trace the judge may see (optional / required / forbidden); in the experiment, set judge samples to 2 or more to take the median and flag high dispersion.', ja: 'LLM採点は基準ごとに判定します（0 / 1 の二値を推奨。「判定不能」は合成スコアから除外）。ルーブリックで判定者に見せる実行履歴（任意 / 必須 / 禁止）を選び、実験の「判定サンプル数」を 2 以上にすると中央値を採用してばらつきを警告します。' },
+      { en: 'Experiments with a judge rubric need a model in the judge slot (Settings → Model provider); the Experiments tab warns before you start and offers a button to the slot. A rubric whose trace policy is "required" works with turn cases only: scenario cases never produce a tool trace, so such an experiment is rejected. Set the policy to optional or use a dataset of turn cases.', ja: '審査ルーブリックを使う実験には judge スロットのモデルが必要です（設定 → モデルプロバイダ）。未設定なら実験タブが開始前に警告し、設定画面へのボタンを出します。軌跡ポリシーが「必須」のルーブリックはターン事例だけで使えます。シナリオ事例では軌跡が得られないため実験は拒否されるので、ポリシーを「任意」にするか、ターン事例だけのデータセットを使ってください。' },
     ],
     doc: 'docs/11-scenario-validation.md',
   },

@@ -69,5 +69,24 @@ export class JudgeRubricNotFoundError extends Error {
 
 export class JudgeEvaluationError extends Error {
   readonly code: string;
-  constructor(code: 'JUDGE_INPUT' | 'JUDGE_PROVIDER' | 'JUDGE_SCHEMA', message: string, override readonly cause?: unknown) { super(message); this.name = 'JudgeEvaluationError'; this.code = code; }
+  constructor(code: 'JUDGE_INPUT' | 'JUDGE_PROVIDER' | 'JUDGE_SCHEMA' | 'JUDGE_UNASSESSABLE', message: string, override readonly cause?: unknown) { super(message); this.name = 'JudgeEvaluationError'; this.code = code; }
+}
+
+/**
+ * judge 指標を持つ評価プロファイルで実験を起票したが、judge スロットにモデルが設定されていない。
+ * 起票を通すと全事例が判定失敗で終わり、利用者は原因（judge 未設定）にも直し方（設定画面）にも辿り着けない。
+ */
+export class JudgeModelNotConfiguredError extends Error {
+  readonly code = 'JUDGE_MODEL_NOT_CONFIGURED';
+  constructor(message: string) { super(message); this.name = 'JudgeModelNotConfiguredError'; }
+}
+
+/**
+ * `tracePolicy: 'required'` のルーブリックを scenario 事例に使おうとした。scenario 事例は
+ * ツール呼び出しの軌跡を持たないので、この組み合わせは実行しても必ず JUDGE_INPUT で欠損になる。
+ * `rubric` はどのルーブリックを直せばよいかを UI が示すための参照。
+ */
+export class JudgeTraceUnavailableError extends Error {
+  readonly code = 'JUDGE_TRACE_UNAVAILABLE';
+  constructor(message: string, readonly rubric: { readonly id: string; readonly version: string }) { super(message); this.name = 'JudgeTraceUnavailableError'; }
 }

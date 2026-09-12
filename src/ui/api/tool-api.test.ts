@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ToolApiClient } from './tool-api';
+import { ApiError, ToolApiClient } from './tool-api';
 import type { ToolGraphDto } from './types';
 
 const graph: ToolGraphDto = { nodes: [{ id: 'source', type: 'json-source', config: { rows: [] } }], edges: [] };
@@ -440,5 +440,45 @@ describe('ToolApiClient の認証ヘッダ', () => {
 
     const denied = vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'UNAUTHENTICATED', message: 'nope' } }, 401));
     await expect(new ToolApiClient('', denied as typeof fetch).getSession()).rejects.toMatchObject({ status: 401, code: 'UNAUTHENTICATED' });
+  });
+});
+
+describe('ToolApiClient の実行環境機能と判定エラーの rubric', () => {
+  it('runtimeCapabilities は /runtime/capabilities の応答をそのまま返し、既存の 2 つの機能判定も同じ経路を使う', async () => {
+    const capabilities = { analysisAssistant: { enabled: true }, toolCheckSuggestions: { enabled: false }, judge: { configured: true, provider: 'openai', model: 'gpt-4o' } };
+    // Response の本文は 1 回しか読めないので、呼び出しごとに作る。
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(capabilities)));
+    const client = new ToolApiClient('/api', fetcher as typeof fetch);
+    await expect(client.runtimeCapabilities()).resolves.toEqual(capabilities);
+    await expect(client.analysisAssistantCapability()).resolves.toBe(true);
+    await expect(client.toolCheckSuggestionCapability()).resolves.toBe(false);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/api/runtime/capabilities');
+  });
+
+  it('境界: judge を返さない旧サーバーでも runtimeCapabilities は落ちず、judge は undefined', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ analysisAssistant: { enabled: false } }));
+    const capabilities = await new ToolApiClient('', fetcher as typeof fetch).runtimeCapabilities();
+    expect(capabilities.judge).toBeUndefined();
+  });
+
+  it('JUDGE_TRACE_UNAVAILABLE の本文 rubric を ApiError.rubric へ載せ、文言にも ID を埋める。無いときはキー自体を持たない', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'JUDGE_TRACE_UNAVAILABLE', message: 'rubric requires a trace', rubric: { id: 'quality-rubric', version: '1.2.0' } } }, 409))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'JUDGE_MODEL_NOT_CONFIGURED', message: 'judge model is not configured' } }, 409))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'JUDGE_TRACE_UNAVAILABLE', message: 'broken', rubric: { id: 42 } } }, 409));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    const input = { scope, target: { agentId: 'agent', version: '1.0.0' }, dataset: { id: 'set', version: '1.0.0' }, evaluatorProfile: { id: 'profile', version: '1.0.0' } };
+    const withRubric = await client.createExperiment(input).catch((cause: unknown) => cause) as ApiError;
+    expect(withRubric).toBeInstanceOf(ApiError);
+    expect(withRubric.rubric).toEqual({ id: 'quality-rubric', version: '1.2.0' });
+    expect(withRubric.message).toContain("Rubric 'quality-rubric' requires a tool trace");
+    const without = await client.createExperiment(input).catch((cause: unknown) => cause) as ApiError;
+    expect(Object.prototype.hasOwnProperty.call(without, 'rubric')).toBe(false);
+    expect(without.message).toContain('judge model is not configured');
+    // 形が崩れた rubric（id が数値）は載せない（例外）。
+    const malformed = await client.createExperiment(input).catch((cause: unknown) => cause) as ApiError;
+    expect(Object.prototype.hasOwnProperty.call(malformed, 'rubric')).toBe(false);
+    expect(malformed.code).toBe('JUDGE_TRACE_UNAVAILABLE');
   });
 });

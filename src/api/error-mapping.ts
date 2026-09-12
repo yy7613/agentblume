@@ -22,7 +22,7 @@ import { RunNotFoundError } from '../domain/run/errors';
 import { AgentNotFoundError, AgentValidationError, AgentVersionConflictError } from '../domain/agent/errors';
 import { SkillNotFoundError, SkillValidationError, SkillVersionConflictError } from '../domain/skill/errors';
 import { PersonaNotFoundError, ScenarioNotFoundError, ScenarioRunNotFoundError, ValidationDomainError } from '../domain/validation/errors';
-import { EvaluationAssetVersionConflictError, EvaluationDatasetNotFoundError, EvaluationDomainError, EvaluatorProfileNotFoundError, ExperimentConflictError, ExperimentNotFoundError, JudgeEvaluationError, JudgeRubricNotFoundError, QualityGateConflictError, QualityGateNotFoundError } from '../domain/evaluation/errors';
+import { EvaluationAssetVersionConflictError, EvaluationDatasetNotFoundError, EvaluationDomainError, EvaluatorProfileNotFoundError, ExperimentConflictError, ExperimentNotFoundError, JudgeEvaluationError, JudgeModelNotConfiguredError, JudgeRubricNotFoundError, JudgeTraceUnavailableError, QualityGateConflictError, QualityGateNotFoundError } from '../domain/evaluation/errors';
 import { MemoryDomainError, MemoryProposalNotFoundError, WikiPageNotFoundError, WikiSpaceNotFoundError } from '../domain/memory/errors';
 import { BackupNotFoundError, BackupValidationError, FeedbackValidationError } from '../domain/operations/errors';
 import { AgentSessionClosedError, AgentSessionExpiredError, AgentSessionNotFoundError, SessionArtifactNotFoundError, SessionDomainError, SessionQuotaExceededError } from '../domain/session/errors';
@@ -43,10 +43,12 @@ import { ToolCheckNotFoundError, ToolCheckValidationError } from '../domain/tool
  * HTTP エラーレスポンス表現。
  * `tool` / `nodeId` はツール実行由来の失敗（ToolExecutionError）だけが持ち、
  * 利用者がどのToolのどのノードを直せばよいかをUIが示すために使う。
+ * `rubric` は judge の tracePolicy と事例種別の矛盾（JudgeTraceUnavailableError）だけが持ち、
+ * どのルーブリックを直せばよいかを UI が示すために使う。
  */
 export interface HttpError {
   readonly status: number;
-  readonly body: { error: { code: string; message: string; runId?: string; tool?: RunFailureToolRef; nodeId?: string } };
+  readonly body: { error: { code: string; message: string; runId?: string; tool?: RunFailureToolRef; nodeId?: string; rubric?: { id: string; version: string } } };
 }
 
 /**
@@ -84,6 +86,8 @@ function httpError(status: number, code: string, message: string): HttpError {
  * | ToolArgumentsError / AgentRunError | 422 | TOOL_ARGUMENTS / AGENT_RUN |
  * | ModelProviderError | 502 | MODEL_PROVIDER |
  * | RunNotFoundError | 404 | RUN_NOT_FOUND |
+ * | JudgeModelNotConfiguredError | 409 | JUDGE_MODEL_NOT_CONFIGURED |
+ * | JudgeTraceUnavailableError | 409 | JUDGE_TRACE_UNAVAILABLE + rubric |
  * | RunFailedError | 元例外のstatus/code + runId |
  * | ToolExecutionError | 元例外のstatus/code + tool（+ nodeId） |
  * | その他 | 500 | INTERNAL（message 'internal error' 固定） |
@@ -153,6 +157,9 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof QualityGateConflictError) return httpError(409, err.code, err.message);
   if (err instanceof JudgeRubricNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof JudgeEvaluationError) return httpError(422, err.code, err.message);
+  // 起票時の judge ガード: どちらも利用者の設定変更で直せるので 409。trace の方はどのルーブリックを直すかを本文へ載せる。
+  if (err instanceof JudgeModelNotConfiguredError) return httpError(409, err.code, err.message);
+  if (err instanceof JudgeTraceUnavailableError) return { status: 409, body: { error: { code: err.code, message: err.message, rubric: { ...err.rubric } } } };
   if (err instanceof EvaluationDomainError) return httpError(400, err.code, err.message);
 
   // 記憶ドメイン: NotFound系は404、不変条件違反（入力不正・不正な状態遷移）は400。

@@ -217,6 +217,30 @@ describe('createApp', () => {
         expect(app.judgeEvaluator.snapshot()).toMatchObject({ provider: 'lm-studio-judge' });
       } finally { app.close(); }
     });
+
+    describe('judgeReadiness（judge の設定状態）', () => {
+      it('切替可能な配線で設定未保存・env JUDGE_LM_STUDIO_MODEL 未設定なら configured=false', async () => {
+        vi.stubEnv('JUDGE_LM_STUDIO_MODEL', '');
+        const app = switchableApp(new RecordingFactory());
+        try { expect(await app.judgeReadiness()).toEqual({ configured: false }); } finally { app.close(); }
+      });
+
+      it('切替可能な配線で env JUDGE_LM_STUDIO_MODEL が入っていれば configured=true でモデル名を返す', async () => {
+        vi.stubEnv('JUDGE_LM_STUDIO_MODEL', 'env-judge-model');
+        const app = switchableApp(new RecordingFactory());
+        try { expect(await app.judgeReadiness()).toEqual({ configured: true, provider: 'openai-compatible', model: 'env-judge-model' }); } finally { app.close(); }
+      });
+
+      it('明示 judgeModelSnapshot 注入時はその指紋で判定する（model 空なら未設定）', async () => {
+        const app = createApp({ profile: 'test', judgeModelSnapshot: { provider: 'lm-studio-judge', model: '', modelConfigHash: 'env' } });
+        try { expect(await app.judgeReadiness()).toEqual({ configured: false }); } finally { app.close(); }
+      });
+
+      it('test プロファイルは scripted-judge で常に設定済み', async () => {
+        const app = createApp({ profile: 'test' });
+        try { expect(await app.judgeReadiness()).toEqual({ configured: true, provider: 'scripted-judge', model: 'scripted-judge' }); } finally { app.close(); }
+      });
+    });
   });
 
   describe('env との優先順位', () => {

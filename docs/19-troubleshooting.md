@@ -202,6 +202,14 @@ Azure / Bedrock / Vertex を選ぶとベースURLに雛形が入る。`<resource
 | このセッションは別バージョンのエージェントのものです | 「**新しいチャット**」を押して開始し直す |
 | ツール承認の期限が切れました | 同じ指示をもう一度送る |
 
+### 実験（LLM 判定）が起票できない / 判定だけ全部失敗する
+
+| メッセージ・コード | 原因と対処 |
+|---|---|
+| `JUDGE_MODEL_NOT_CONFIGURED`（409: evaluator profile '…' has judge metrics but no judge model is configured） | 評価プロファイルに judge 指標があるのに、judge スロットにモデルが無い（設定を保存していない、かつ `JUDGE_LM_STUDIO_MODEL` も未設定）。**設定画面で judge スロットのモデルを選んで保存する**。code 指標だけのプロファイルならこのチェックは掛からない |
+| `JUDGE_TRACE_UNAVAILABLE`（409: judge rubric '…' requires a tool trace, but dataset '…' contains scenario cases …） | ルーブリックの `tracePolicy` が `required` なのに、データセットに scenario 事例がある。scenario 事例はツール呼び出しの軌跡を持たないので、この組み合わせは走らせても必ず判定失敗になる。**応答本文の `rubric` が示すルーブリックの実行履歴ポリシーを「任意」にする**か、データセットを turn 事例だけにする |
+| 実験は `completed` なのに判定レコードが全部 `JUDGE_PROVIDER`「Judge model is not configured; set the judge slot in Settings」 | 起票後に judge の設定が消えた（設定の削除・鍵ファイルの差し替えなど）。設定画面で judge スロットを保存し直して再実行する |
+
 ### 実行前に見つける: 組み込みチェック / 呼び出し診断
 
 上の表の多く（参照切れ・関数名・スキーマ不整合・データソース欠落）は**実行しなくても分かる**。実行時には最初に踏んだ1つしか返らないが、診断は各段階を個別に検査して一覧で返す。入口は3つ。

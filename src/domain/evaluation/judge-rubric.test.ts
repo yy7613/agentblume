@@ -13,6 +13,14 @@ describe('JudgeRubric', () => {
     expect(rubric.criteria[0]?.levels.map((level) => level.score)).toEqual([0, 0.5, 1]);
     expect(deserializeJudgeRubric(serializeJudgeRubric(rubric))).toEqual(rubric);
   });
+  it('tracePolicy は省略時 optional、三値を受け付け、古い JSON も optional として読む', () => {
+    const make = (tracePolicy?: 'optional' | 'required' | 'forbidden') => createJudgeRubric({ metadata, instructions: 'x', criteria: [criterion], referencePolicy: 'optional', ...(tracePolicy !== undefined ? { tracePolicy } : {}), reasonRequired: true });
+    expect(make().tracePolicy).toBe('optional');
+    for (const policy of ['optional', 'required', 'forbidden'] as const) { const rubric = make(policy); expect(rubric.tracePolicy).toBe(policy); expect(serializeJudgeRubric(rubric).tracePolicy).toBe(policy); expect(deserializeJudgeRubric(serializeJudgeRubric(rubric))).toEqual(rubric); }
+    const { tracePolicy: _omitted, ...legacy } = serializeJudgeRubric(make('required')); expect(deserializeJudgeRubric(legacy).tracePolicy).toBe('optional');
+    expect(() => make('always' as 'optional')).toThrow(/tracePolicy/);
+    expect(() => deserializeJudgeRubric({ ...serializeJudgeRubric(make()), tracePolicy: 'always' })).toThrow(/tracePolicy/);
+  });
   it('不正な基準、重複、理由任意化を拒否する', () => {
     expect(() => createJudgeRubric({ metadata, instructions: 'x', criteria: [{ ...criterion, levels: criterion.levels.slice(1) }], referencePolicy: 'required', reasonRequired: true })).toThrow(/score 0 and 1/);
     expect(() => createJudgeRubric({ metadata, instructions: 'x', criteria: [criterion, criterion], referencePolicy: 'optional', reasonRequired: true })).toThrow(/duplicate criterion/);

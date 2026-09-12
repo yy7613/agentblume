@@ -3,6 +3,12 @@ import { EvaluationDomainError } from './errors';
 
 export const JUDGE_REFERENCE_POLICIES = ['optional', 'required', 'forbidden'] as const;
 export type JudgeReferencePolicy = (typeof JUDGE_REFERENCE_POLICIES)[number];
+/**
+ * 判定者へツール呼び出し列・会話履歴（trace / history）を渡すか。referencePolicy と同じ三値。
+ * `required` は「軌跡が無ければ判定不能」を意味し、軌跡の無い評価は JUDGE_INPUT で失敗レコードになる。
+ */
+export const JUDGE_TRACE_POLICIES = ['optional', 'required', 'forbidden'] as const;
+export type JudgeTracePolicy = (typeof JUDGE_TRACE_POLICIES)[number];
 
 export interface JudgeScoreLevel {
   readonly score: number;
@@ -23,13 +29,19 @@ export interface JudgeRubric {
   readonly instructions: string;
   readonly criteria: readonly JudgeCriterion[];
   readonly referencePolicy: JudgeReferencePolicy;
+  readonly tracePolicy: JudgeTracePolicy;
   readonly reasonRequired: true;
 }
 
-export function createJudgeRubric(props: JudgeRubric): JudgeRubric {
+/** tracePolicy は後付けの項目なので省略可（既存の呼び出し元・永続 JSON は 'optional' として読む）。 */
+export type JudgeRubricProps = Omit<JudgeRubric, 'tracePolicy'> & { readonly tracePolicy?: JudgeTracePolicy };
+
+export function createJudgeRubric(props: JudgeRubricProps): JudgeRubric {
   const metadata = validateEvaluationMetadata(props.metadata, 'createJudgeRubric');
   evaluationNonEmpty(props.instructions, 'createJudgeRubric: instructions');
   if (!(JUDGE_REFERENCE_POLICIES as readonly unknown[]).includes(props.referencePolicy)) throw new EvaluationDomainError(`createJudgeRubric: invalid referencePolicy: ${String(props.referencePolicy)}`);
+  const tracePolicy = props.tracePolicy ?? 'optional';
+  if (!(JUDGE_TRACE_POLICIES as readonly unknown[]).includes(tracePolicy)) throw new EvaluationDomainError(`createJudgeRubric: invalid tracePolicy: ${String(tracePolicy)}`);
   if (props.reasonRequired !== true) throw new EvaluationDomainError('createJudgeRubric: reasonRequired must be true');
   if (!Array.isArray(props.criteria) || props.criteria.length === 0) throw new EvaluationDomainError('createJudgeRubric: criteria must contain at least one criterion');
   const criterionIds = new Set<string>();
@@ -48,5 +60,5 @@ export function createJudgeRubric(props: JudgeRubric): JudgeRubric {
     if (!scores.has(0) || !scores.has(1)) throw new EvaluationDomainError(`createJudgeRubric: criteria.${index}.levels must define score 0 and 1`);
     return { id: criterion.id, label: criterion.label, description: criterion.description, weight: criterion.weight, levels };
   });
-  return { metadata, instructions: props.instructions, criteria, referencePolicy: props.referencePolicy, reasonRequired: true };
+  return { metadata, instructions: props.instructions, criteria, referencePolicy: props.referencePolicy, tracePolicy, reasonRequired: true };
 }

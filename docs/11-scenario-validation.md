@@ -200,7 +200,57 @@ interface ScenarioRun {
 
 ## 8. 非目標
 
-- LLM-as-Judge / Evaluator agent による第三者採点（Phase 4）
+- ~~LLM-as-Judge / Evaluator agent による第三者採点（Phase 4）~~ → 実験の judge 指標として実装（§9）。残る非目標: 判定者の較正（AutoCalibrate 系）
 - 複数Persona一括実行・統計集計（次段。まず1実行を確実に）
 - ~~疑似ユーザーの完全なAgent化~~ → **v18で統合**（[ADR-0019](./adr/0019-persona-pseudo-user-agent-integration.md)）。残る非目標: 疑似ユーザーAgentへの Tools / Skills / サブエージェント付与（将来解除）
 - write/external-action Tool を含むAgentへのシナリオ実行
+
+---
+
+## 9. LLM 判定（基準別採点・判定契約・自己一貫性）
+
+実験（Experiment）の judge 指標は、ルーブリック（Judge Rubric）を渡した LLM に応答を採点させる。単一の「0〜1 の点」を返させる方式は、根拠が後付けになり、長い・自信ありげな応答を高く付けやすく、なぜその点かを後から検証できない。以下の設計に置き換えた（[ADR-0037](./adr/0037-criterion-level-judging.md)）。
+
+### 9.1 基準別に採点し、重みで合成する
+
+- 判定者はルーブリックの**基準ごと**に `{ id, reason, score }` を返す。`score` はその基準に定義した段階（levels）の値のいずれか、`null` は「与えられた情報では判定できない」（理由は必須）。
+- 合成スコア = Σ(weight × score) / Σ(weight)。**null の基準は分母からも外す**（判定できた基準だけで平均する）。全基準が null なら合成できないので `JUDGE_UNASSESSABLE` として失敗レコードにする。
+- 基準別スコアは事例の `scores[]` に `"<metric>:<criterion>"` で並ぶ。実験比較・品質ゲートはこの名前で「どの基準が退行したか」を見られる。
+
+### 9.2 根拠先出しと長さ・体裁への中立
+
+システムプロンプトと応答スキーマは、各基準で **理由（reason）を先に書いてから段階を選ぶ** 順にしてある（結論を先に出すと理由が後付けになる）。プロンプトは「長さ・冗長さ・体裁・断定口調・専門用語それ自体に報酬を与えない。ルーブリックだけで判定する」「基準は互いに独立に判定する」「情報不足なら null」を明示する。出力が契約（スキーマ・基準 id の過不足・段階に無い値・空の理由）に合わなければ、違反を列挙して **1 回だけ** 修正を求め、それでも合わなければ `JUDGE_SCHEMA`。
+
+### 9.3 判定契約（contract）とコスト（usage）
+
+判定レコードは `contract = { promptHash, rubricId, rubricVersion }` を持つ。`promptHash` はプロンプト文面の版・ルーブリック JSON・応答スキーマから作る指紋で、判定者側の更新（プロンプト改訂・ルーブリック改版）が結果に痕跡として残る。スコアが動いたとき「エージェントが変わった」のか「判定者が変わった」のかを切り分ける土台になる。`usage` は判定に使ったトークン（修復・全サンプル分の合計）。
+
+### 9.4 判定者に軌跡と履歴を渡す（tracePolicy）
+
+最終応答だけでは「正しいツールを正しい引数で呼んだか」「会話の流れに沿っているか」を判定できない。ルーブリックの `tracePolicy`（`optional` / `required` / `forbidden`、既定 `optional`）に従って次を渡す。
+
+| 事例 | 渡すもの |
+|---|---|
+| turn | Run の `tool-call` / `tool-result` を対応付けた `trace.toolCalls[{ name, arguments, resultSummary }]`（結果は出力プレビュー先頭 10 行の JSON。結果が無い呼び出しは `no tool result recorded`） |
+| scenario | 最終応答（判定対象）を除く会話 `history[{ role: user \| assistant, content }]`。軌跡は ScenarioRun が保持しないため渡さない |
+
+上限は tool 呼び出し 20 件・履歴 20 件（古い側を落とす）・本文各 2,000 文字（超過は印を付けて切る）。`required` で軌跡が無ければ `JUDGE_INPUT`（scenario 事例では常にそうなる）。`forbidden` なら何も渡さない（応答だけを見せたいとき）。軌跡も履歴も **untrusted data ブロックの内側** に入れ、命令としては扱わない。
+
+**起票時に止める矛盾（`POST /experiments` の 409）** — 「走らせれば必ず全事例が判定失敗になる」組み合わせは実験を作らずに返す。どちらも利用者の設定変更で直せる。
+
+| code | 原因 | 直し方 |
+|---|---|---|
+| `JUDGE_MODEL_NOT_CONFIGURED` | 評価プロファイルに judge 指標があるのに judge スロットにモデルが無い（設定未保存かつ `JUDGE_LM_STUDIO_MODEL` 未設定） | 設定画面で judge スロットのモデルを選んで保存する（`GET /runtime/capabilities` の `judge.configured` で起票前に分かる） |
+| `JUDGE_TRACE_UNAVAILABLE` | `tracePolicy: required` のルーブリックを、scenario 事例を含むデータセットに使った（scenario 事例は軌跡を持たない）。本文の `rubric: { id, version }` が対象 | そのルーブリックの `tracePolicy` を `optional` にするか、データセットを turn 事例だけにする |
+
+実行中に judge が未設定だと分かった場合（起票後に設定を消したなど）は、判定レコードを `JUDGE_PROVIDER`（`Judge model is not configured; set the judge slot in Settings`）の失敗にして事例は完了させる。事例そのものは落とさない。
+
+### 9.5 自己一貫性（judgeSamples）
+
+実験の `judgeSamples`（1〜5、既定 1）を 2 以上にすると、同じ入力で判定を独立に複数回行い（温度 0.5。1 回判定は温度 0）:
+
+- 合成スコアは各サンプルの合成の**中央値**、基準別スコアは判定できたサンプルの中央値（どのサンプルでも null なら null）、理由は中央値に最も近いサンプルのもの。
+- `dispersion = { min, max, stddev }`（母標準偏差）を記録し、`max − min ≥ 0.25` なら `uncertain: true`（判定が割れている。ルーブリックの曖昧さ・事例の難しさの信号）。
+- サンプルの一部が失敗しても残りで集約し、`samples` に実際の数を残す。全滅なら最後の失敗コードで失敗レコード。
+
+コストはサンプル数に比例する（`usage` に合計が残る）。まずは `uncertain` が出る事例を絞り込む目的で 3 程度から使う。

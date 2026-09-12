@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { describeMcpServerSkipped, detectErrorLanguage, localizeApiErrorMessage, localizeDiagnosticDetail, localizeRunFailure, localizeRunTraceError, localizeSchemaIssueMessage, localizeToolCheckAssertion, splitFailureMessage } from './error-messages';
+import { describeMcpServerSkipped, detectErrorLanguage, isJudgeModelNotConfigured, localizeApiErrorMessage, localizeDiagnosticDetail, localizeJudgeFailure, localizeRunFailure, localizeRunTraceError, localizeSchemaIssueMessage, localizeToolCheckAssertion, splitFailureMessage } from './error-messages';
 
 function ja(status: number, code: string, serverMessage: string): string {
   return localizeApiErrorMessage({ status, code, serverMessage }, 'ja');
@@ -1187,5 +1187,104 @@ describe('localizeToolCheckAssertion（ツール検証の期待・実測の定�
   it('異常: 似ているが形が違う文（演算子が != など）は変換しない', () => {
     expect(localizeToolCheckAssertion('row count != 3', 'ja')).toBe('row count != 3');
     expect(localizeToolCheckAssertion('duration >= 500ms', 'ja')).toBe('duration >= 500ms');
+  });
+});
+
+/**
+ * 判定（LLM-as-judge）1 件の失敗文言。code ごとに「原因（原文）。次の一手」の固定文にし、
+ * 未知の code とプロバイダ失敗は既存の localizeRunFailure に委ねる。
+ */
+describe('localizeJudgeFailure（判定 1 件の失敗）', () => {
+  it('JUDGE_INPUT: 実行履歴の欠落は「ポリシーを任意にするか、ツールを使う事例で実行」（ja / en）', () => {
+    expect(localizeJudgeFailure({ code: 'JUDGE_INPUT', message: 'rubric requires a trace' }, 'ja'))
+      .toBe('ルーブリックが必須にしている実行履歴がこの事例にありません（rubric requires a trace）。ルーブリックの実行履歴ポリシーを「任意」にするか、ツールを使う事例で実行してください');
+    expect(localizeJudgeFailure({ code: 'JUDGE_INPUT', message: 'rubric requires a trace' }, 'en'))
+      .toBe("The rubric requires a tool trace but this case has none (rubric requires a trace). Set the rubric's trace policy to optional, or run cases that use tools");
+  });
+
+  it('JUDGE_INPUT: 原文が参照回答の欠落なら参照ポリシー側の案内にする', () => {
+    expect(localizeJudgeFailure({ code: 'JUDGE_INPUT', message: 'rubric requires a reference answer' }, 'ja')).toContain('参照ポリシーを「任意」にするか、参照回答つきの事例で実行');
+    expect(localizeJudgeFailure({ code: 'JUDGE_INPUT', message: 'rubric requires a reference answer' }, 'en')).toContain('reference policy to optional, or run cases that carry a reference answer');
+    // 参照と履歴の両方に触れる原文は履歴側（より一般的な原因）へ寄せる。
+    expect(localizeJudgeFailure({ code: 'JUDGE_INPUT', message: 'missing reference and trace' }, 'en')).toContain('trace policy to optional');
+  });
+
+  it('JUDGE_UNASSESSABLE: 基準の説明を具体的にする / 参照や履歴を渡す（ja / en）', () => {
+    expect(localizeJudgeFailure({ code: 'JUDGE_UNASSESSABLE', message: 'no criterion assessed' }, 'ja'))
+      .toBe('審査者はどの基準も判定できませんでした（no criterion assessed）。基準の説明を具体的にするか、必要な参照回答や実行履歴を判定者に渡してください');
+    expect(localizeJudgeFailure({ code: 'JUDGE_UNASSESSABLE', message: 'no criterion assessed' }, 'en'))
+      .toBe('The judge could not assess any criterion (no criterion assessed). Make the criterion descriptions more concrete, or give the judge the reference answer or trace it needs');
+  });
+
+  it('JUDGE_SCHEMA: 判定モデルを構造化出力に強いものへ（ja / en）', () => {
+    expect(localizeJudgeFailure({ code: 'JUDGE_SCHEMA', message: 'invalid after repair' }, 'ja'))
+      .toBe('判定結果が期待した形式ではありませんでした（修復を 1 回試みても不正）（invalid after repair）。設定画面の judge スロットで、構造化出力に強い判定モデルへ切り替えてください');
+    expect(localizeJudgeFailure({ code: 'JUDGE_SCHEMA', message: 'invalid after repair' }, 'en'))
+      .toBe('The judge output did not match the expected shape even after one repair (invalid after repair). In Settings, switch the judge slot to a model that is strong at structured output');
+  });
+
+  it('境界: 原文が空（空白のみ）なら括弧の補足を付けない', () => {
+    expect(localizeJudgeFailure({ code: 'JUDGE_UNASSESSABLE', message: '   ' }, 'en')).toBe('The judge could not assess any criterion. Make the criterion descriptions more concrete, or give the judge the reference answer or trace it needs');
+    expect(localizeJudgeFailure({ code: 'JUDGE_INPUT', message: '' }, 'ja')).toBe('ルーブリックが必須にしている実行履歴がこの事例にありません。ルーブリックの実行履歴ポリシーを「任意」にするか、ツールを使う事例で実行してください');
+  });
+
+  it('JUDGE_PROVIDER はプロバイダ中立のモデル実行文言、未知の code は原文のまま（localizeRunFailure に委ねる）', () => {
+    expect(localizeJudgeFailure({ code: 'JUDGE_PROVIDER', message: 'fetch failed' }, 'en')).toContain('Could not reach the model server');
+    expect(localizeJudgeFailure({ code: 'JUDGE_PROVIDER', message: 'HTTP 401' }, 'ja')).toContain('APIキーを確認');
+    expect(localizeJudgeFailure({ code: 'SOMETHING_ELSE', message: 'raw detail' }, 'ja')).toBe('raw detail');
+  });
+
+  it('language 省略時は localStorage の言語で判定する（例外: localStorage が使えなければ en）', () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn().mockReturnValue('ja') });
+    expect(localizeJudgeFailure({ code: 'JUDGE_SCHEMA', message: '' })).toContain('構造化出力に強い判定モデル');
+    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('denied'); } });
+    expect(localizeJudgeFailure({ code: 'JUDGE_SCHEMA', message: '' })).toContain('strong at structured output');
+  });
+
+  it('API エラーとしての JUDGE_UNASSESSABLE にも見出しがある', () => {
+    expect(localizeApiErrorMessage({ status: 422, code: 'JUDGE_UNASSESSABLE', serverMessage: 'x' }, 'ja')).toBe('審査者はどの基準も判定できませんでした（x）');
+  });
+});
+
+/**
+ * 実験の起票時（POST /experiments・409）の判定まわりのコードと、判定 1 件の「判定モデル未設定」。
+ * どちらも次の一手（設定画面の judge スロット / ルーブリックの軌跡ポリシー）まで言う。
+ */
+describe('判定モデル未設定・軌跡必須（JUDGE_MODEL_NOT_CONFIGURED / JUDGE_TRACE_UNAVAILABLE）', () => {
+  it('JUDGE_MODEL_NOT_CONFIGURED は設定画面の judge スロットへ導く固定文（ja / en）で、原文は括弧で残さない', () => {
+    expect(ja(409, 'JUDGE_MODEL_NOT_CONFIGURED', 'judge model is not configured')).toBe('判定モデルが設定されていません。審査ルーブリックを使う実験の前に、設定画面の judge スロットでモデルを設定してください');
+    expect(en(409, 'JUDGE_MODEL_NOT_CONFIGURED', 'judge model is not configured')).toBe('The judge model is not configured. Set the judge slot in Settings before running experiments that use a judge rubric');
+  });
+
+  it('JUDGE_TRACE_UNAVAILABLE は本文の rubric.id を文中に埋める（ja / en）', () => {
+    const payload = { status: 409, code: 'JUDGE_TRACE_UNAVAILABLE', serverMessage: 'rubric requires a trace but the dataset contains scenario cases', rubric: { id: 'quality-rubric', version: '1.2.0' } };
+    expect(localizeApiErrorMessage(payload, 'ja')).toBe("ルーブリック 'quality-rubric' はツール呼び出しの軌跡を必須にしていますが、シナリオ事例では軌跡が得られません。軌跡ポリシーを「任意」にするか、ターン事例だけのデータセットを使ってください");
+    expect(localizeApiErrorMessage(payload, 'en')).toBe("Rubric 'quality-rubric' requires a tool trace, but scenario cases never produce one. Set its trace policy to optional, or use a dataset with turn cases only");
+  });
+
+  it('境界: 本文に rubric が無ければ原文の `rubric \'<id>\'` から ID を拾い、それも無ければ一般形にする', () => {
+    expect(en(409, 'JUDGE_TRACE_UNAVAILABLE', "rubric 'legacy-rubric' requires a trace")).toContain("Rubric 'legacy-rubric' requires a tool trace");
+    expect(ja(409, 'JUDGE_TRACE_UNAVAILABLE', 'no id here')).toBe('ルーブリックがツール呼び出しの軌跡を必須にしていますが、シナリオ事例では軌跡が得られません。軌跡ポリシーを「任意」にするか、ターン事例だけのデータセットを使ってください');
+    expect(en(409, 'JUDGE_TRACE_UNAVAILABLE', '')).toBe('The rubric requires a tool trace, but scenario cases never produce one. Set its trace policy to optional, or use a dataset with turn cases only');
+  });
+
+  it('localizeJudgeFailure: JUDGE_PROVIDER で原文が "is not configured" なら判定モデル未設定の文言に寄せる（ja / en）', () => {
+    const failure = { code: 'JUDGE_PROVIDER', message: 'Judge model is not configured; set the judge slot in Settings' };
+    expect(localizeJudgeFailure(failure, 'ja')).toBe('判定モデルが設定されていません。審査ルーブリックを使う実験の前に、設定画面の judge スロットでモデルを設定してください');
+    expect(localizeJudgeFailure(failure, 'en')).toBe('The judge model is not configured. Set the judge slot in Settings before running experiments that use a judge rubric');
+    // main スロット向けの LM_STUDIO_MODEL 案内には落ちない。
+    expect(localizeJudgeFailure(failure, 'ja')).not.toContain('LM_STUDIO_MODEL');
+  });
+
+  it('[回帰固定] JUDGE_PROVIDER でも "not configured" を含まない原文は従来のプロバイダ中立文言のまま', () => {
+    expect(localizeJudgeFailure({ code: 'JUDGE_PROVIDER', message: 'fetch failed' }, 'ja')).toContain('モデルサーバーに接続できませんでした');
+    expect(localizeJudgeFailure({ code: 'JUDGE_INPUT', message: 'trace not configured' }, 'en')).toContain('trace policy to optional');
+  });
+
+  it('isJudgeModelNotConfigured: 起票の 409 と JUDGE_PROVIDER + not configured だけ true（大文字小文字は無視）', () => {
+    expect(isJudgeModelNotConfigured({ code: 'JUDGE_MODEL_NOT_CONFIGURED', message: '' })).toBe(true);
+    expect(isJudgeModelNotConfigured({ code: 'JUDGE_PROVIDER', message: 'Judge model is NOT CONFIGURED' })).toBe(true);
+    expect(isJudgeModelNotConfigured({ code: 'JUDGE_PROVIDER', message: 'HTTP 401' })).toBe(false);
+    expect(isJudgeModelNotConfigured({ code: 'MODEL_PROVIDER', message: 'model is not configured' })).toBe(false);
   });
 });

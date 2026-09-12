@@ -20,6 +20,7 @@ import { SkillNotFoundError, SkillValidationError, SkillVersionConflictError } f
 import { InvalidFileContentError } from '../domain/data-source/errors';
 import { SessionQuotaExceededError } from '../domain/session/errors';
 import { ToolCheckNotFoundError, ToolCheckValidationError } from '../domain/tool-check/errors';
+import { JudgeModelNotConfiguredError, JudgeTraceUnavailableError } from '../domain/evaluation/errors';
 
 describe('toHttpError', () => {
   it.each([
@@ -41,12 +42,22 @@ describe('toHttpError', () => {
     [new InvalidFileContentError('bad content'), 400, 'INVALID_FILE_CONTENT', 'bad content'],
     [new ToolCheckNotFoundError('missing case'), 404, 'TOOL_CHECK_NOT_FOUND', 'missing case'],
     [new ToolCheckValidationError('bad case'), 400, 'TOOL_CHECK_VALIDATION', 'bad case'],
+    [new JudgeModelNotConfiguredError('judge missing'), 409, 'JUDGE_MODEL_NOT_CONFIGURED', 'judge missing'],
   ] as const)(
     '%s → status=%i code=%s',
     (err, status, code, message) => {
       expect(toHttpError(err)).toEqual({ status, body: { error: { code, message } } });
     },
   );
+
+  it('JudgeTraceUnavailableError は 409 で、直すべきルーブリックの参照を本文の rubric に載せる', () => {
+    const err = new JudgeTraceUnavailableError('needs trace', { id: 'quality', version: '1.2.0' });
+    expect(toHttpError(err)).toEqual({ status: 409, body: { error: { code: 'JUDGE_TRACE_UNAVAILABLE', message: 'needs trace', rubric: { id: 'quality', version: '1.2.0' } } } });
+    // 本文の rubric は例外のフィールドと別オブジェクト（レスポンス側で書き換えても例外へ漏れない）。
+    expect(toHttpError(err).body.error.rubric).not.toBe(err.rubric);
+    // 他の例外には rubric キーを生やさない。
+    expect(Object.hasOwn(toHttpError(new JudgeModelNotConfiguredError('x')).body.error, 'rubric')).toBe(false);
+  });
 
   it('ETLエラーは engine が付けた nodeId を本文へ載せ、無いときはキー自体を出さない', () => {
     const withNode = new SchemaError('group-by: produced 300000 rows, exceeding the execution limit of 250000 rows');

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { ApiError, type ToolApiClient } from '../api/tool-api';
 import { SettingsPage } from './SettingsPage';
 import { I18nProvider } from '../i18n';
+import { consumePendingOpen, requestOpenInScreen } from '../navigation';
 
 afterEach(() => { cleanup(); localStorage.clear(); });
 
@@ -413,5 +414,53 @@ describe('SettingsPage モデル設定', () => {
     expect(failure.getAttribute('role')).toBe('alert');
     // 読み込めなくても既存セクションは表示され続ける。
     expect(screen.getByText(/MCP publication locked/)).toBeTruthy();
+  });
+});
+
+/**
+ * 他画面（実験の「判定モデルが未設定」）からの依頼で、該当スロットのカードへスクロールして最初の入力へフォーカスする。
+ * jsdom には scrollIntoView が無いので、要素にモックを生やして呼ばれたことを確かめる。
+ */
+describe('SettingsPage のモデルスロットへの深いリンク', () => {
+  afterEach(() => { consumePendingOpen('Settings'); });
+
+  function mockScroll(): Mock {
+    const scrollIntoView = vi.fn();
+    (HTMLElement.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView;
+    return scrollIntoView;
+  }
+
+  it('画面の表示前に judge スロットの依頼があれば、mount 時にカードへスクロールして最初の select にフォーカスする', async () => {
+    const scrollIntoView = mockScroll();
+    try {
+      requestOpenInScreen('Settings', { internalId: 'judge', section: 'model-slot' });
+      renderPage(createApi());
+      const card = document.getElementById('model-slot-judge') as HTMLElement;
+      expect(card.getAttribute('data-slot')).toBe('judge');
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+      expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Judge model · Provider' }));
+      // 依頼は 1 回限りで消費される。
+      expect(consumePendingOpen('Settings')).toBeUndefined();
+    } finally { delete (HTMLElement.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView; }
+  });
+
+  it('表示中に main スロットの依頼が来たらそのカードへ移る（window イベント経由）', async () => {
+    const scrollIntoView = mockScroll();
+    try {
+      renderPage(createApi());
+      await screen.findByRole('combobox', { name: 'Main model · Provider' });
+      requestOpenInScreen('Settings', { internalId: 'main' });
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Main model · Provider' })));
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    } finally { delete (HTMLElement.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView; }
+  });
+
+  it('境界: 未知の internalId の依頼は無視して落ちない。例外: scrollIntoView が無い環境でも落ちない', async () => {
+    requestOpenInScreen('Settings', { internalId: 'unknown-slot' });
+    renderPage(createApi());
+    expect(await screen.findByRole('combobox', { name: 'Judge model · Provider' })).toBeTruthy();
+    expect(document.activeElement).toBe(document.body);
+    requestOpenInScreen('Settings', { internalId: 'judge' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Judge model · Provider' })));
   });
 });

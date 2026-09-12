@@ -8,7 +8,7 @@ import {
 import { SemVer } from '../tool/semver';
 import { EVALUATION_CASE_SOURCES, createEvaluationDataset, type EvaluationCase, type EvaluationCaseSource, type EvaluationDataset } from './evaluation-dataset';
 import { CODE_SCORERS, createEvaluatorProfile, type CodeScorer, type EvaluatorProfile } from './evaluator-profile';
-import { JUDGE_REFERENCE_POLICIES, createJudgeRubric, type JudgeRubric } from './judge-rubric';
+import { JUDGE_REFERENCE_POLICIES, JUDGE_TRACE_POLICIES, createJudgeRubric, type JudgeRubric } from './judge-rubric';
 import { EvaluationDomainError } from './errors';
 
 export type SerializedEvaluationCase =
@@ -33,6 +33,8 @@ export interface SerializedJudgeRubric {
   readonly instructions: string;
   readonly criteria: readonly { readonly id: string; readonly label: string; readonly description: string; readonly weight: number; readonly levels: readonly { readonly score: number; readonly label: string; readonly description: string }[] }[];
   readonly referencePolicy: JudgeRubric['referencePolicy'];
+  /** 後付け項目。古い JSON には無く、読み込み時は 'optional' として扱う。 */
+  readonly tracePolicy?: JudgeRubric['tracePolicy'];
   readonly reasonRequired: true;
 }
 
@@ -49,7 +51,7 @@ const profileSchema = z.object({
   ])),
 });
 const rubricSchema = z.object({
-  metadata: serializedPublishableMetadataSchema, instructions: z.string(), referencePolicy: z.enum(JUDGE_REFERENCE_POLICIES), reasonRequired: z.literal(true),
+  metadata: serializedPublishableMetadataSchema, instructions: z.string(), referencePolicy: z.enum(JUDGE_REFERENCE_POLICIES), tracePolicy: z.enum(JUDGE_TRACE_POLICIES).optional(), reasonRequired: z.literal(true),
   criteria: z.array(z.object({ id: z.string(), label: z.string(), description: z.string(), weight: z.number(), levels: z.array(z.object({ score: z.number(), label: z.string(), description: z.string() })) })),
 });
 
@@ -92,11 +94,11 @@ export function deserializeEvaluatorProfile(value: unknown): EvaluatorProfile {
 }
 
 export function serializeJudgeRubric(rubric: JudgeRubric): SerializedJudgeRubric {
-  return { metadata: serializePublishableMetadata(rubric.metadata), instructions: rubric.instructions, criteria: rubric.criteria.map((criterion) => ({ ...criterion, levels: criterion.levels.map((level) => ({ ...level })) })), referencePolicy: rubric.referencePolicy, reasonRequired: true };
+  return { metadata: serializePublishableMetadata(rubric.metadata), instructions: rubric.instructions, criteria: rubric.criteria.map((criterion) => ({ ...criterion, levels: criterion.levels.map((level) => ({ ...level })) })), referencePolicy: rubric.referencePolicy, tracePolicy: rubric.tracePolicy, reasonRequired: true };
 }
 
 export function deserializeJudgeRubric(value: unknown): JudgeRubric {
   const parsed = rubricSchema.safeParse(value);
   if (!parsed.success) throw new EvaluationDomainError(`deserializeJudgeRubric: ${issues(parsed.error)}`);
-  return createJudgeRubric({ metadata: deserializePublishableMetadata(parsed.data.metadata, (text) => SemVer.parse(text)), instructions: parsed.data.instructions, criteria: parsed.data.criteria, referencePolicy: parsed.data.referencePolicy, reasonRequired: true });
+  return createJudgeRubric({ metadata: deserializePublishableMetadata(parsed.data.metadata, (text) => SemVer.parse(text)), instructions: parsed.data.instructions, criteria: parsed.data.criteria, referencePolicy: parsed.data.referencePolicy, ...(parsed.data.tracePolicy !== undefined ? { tracePolicy: parsed.data.tracePolicy } : {}), reasonRequired: true });
 }

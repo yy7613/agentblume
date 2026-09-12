@@ -3,6 +3,7 @@ import type { ToolApiClient } from '../api/tool-api';
 import type { AuthSessionDto, ModelCatalogProviderDto, ModelSettingsDto, ModelSlotNameDto, ModelSlotSettingsDto } from '../api/types';
 import { clearAuthToken, writeAuthToken } from '../api/auth-token';
 import { useI18n } from '../i18n';
+import { usePendingOpen } from '../navigation';
 import {
   EMPTY_MODEL_SLOT_FORM, apiKeyPlaceholder, applyFetchedModels, baseUrlPlaceholderNote, modelDocLinkLabel,
   modelFieldNote, modelSettingsErrorText, modelSlotSaveBlocked, modelSlotSummary, modelTestMode,
@@ -79,6 +80,16 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
     finally { inFlight.current.delete(controller); }
   }, [client, formFrom]);
   useEffect(() => { void load(); }, [load]);
+
+  // 他画面（実験の「判定モデルが未設定」等）からの依頼でスロットのカードへ移る。カードはフォーム既定値で
+  // 初回描画から存在するので、設定の読み込みを待たずにスクロールとフォーカスができる。
+  usePendingOpen('Settings', (target) => {
+    if (target.internalId !== 'main' && target.internalId !== 'judge') return;
+    const card = document.getElementById(`model-slot-${target.internalId}`);
+    // jsdom には scrollIntoView が無いので任意呼び出しにする。
+    card?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+    card?.querySelector<HTMLElement>('select, input')?.focus();
+  });
 
   function updateForm(slot: ModelSlotNameDto, patch: Partial<ModelSlotFormValue>): void {
     setForms((current) => ({ ...current, [slot]: { ...current[slot], ...patch } }));
@@ -179,7 +190,7 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
     const baseUrlNote = baseUrlPlaceholderNote(form, text);
     const label = (field: string): string => `${title} · ${field}`;
     const modelListId = `model-options-${slot}`;
-    return <article className="model-slot" key={slot}>
+    return <article className="model-slot" id={`model-slot-${slot}`} data-slot={slot} key={slot}>
       <header><h3>{title}</h3><code>{slot}</code></header>
       <p className="model-slot-summary">{modelSlotSummary(saved, text)}</p>
       <label>{text('Provider', 'プロバイダ')}

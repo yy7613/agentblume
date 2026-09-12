@@ -10,6 +10,17 @@ agentblume の主要な変更履歴。**利用者にとって意味のある単�
 
 ## [未リリース]
 
+### 追加 — LLM 判定を基準別に（根拠先出し・判定契約・軌跡・自己一貫性）（2026-09-13）
+
+- **judge 指標の判定が基準別になった。** 判定者はルーブリックの基準ごとに「理由 → 段階スコア」を返し、サーバーが重み付きで合成する（判定できない基準は `null` で分母から外れる。全基準が判定不能なら `JUDGE_UNASSESSABLE` として欠損）。実験結果には合成スコアに加えて基準別スコアが `<指標>:<基準>` の名前で並ぶので、実験比較や品質ゲートで「どの基準が退行したか」を追える。判定レコードには基準ごとの理由が残る。
+- **判定の偏りを抑える。** プロンプトは各基準で理由を先に書かせ、「長さ・体裁・断定口調・専門用語それ自体に点を付けない」「基準は独立に判定する」を明示する。出力が契約（スキーマ・基準の過不足・段階に無い値）に合わなければ違反を示して 1 回だけ修正を求め、それでも合わなければ `JUDGE_SCHEMA`。
+- **判定契約とコストを記録する。** 各判定レコードに `contract`（プロンプト版・ルーブリック版の指紋）と `usage`（使ったトークン）が付く。判定者側の更新でスコアが動いたときに切り分けられる。
+- **判定者にツール呼び出し列と会話履歴を渡せる。** ルーブリックに `tracePolicy`（optional / required / forbidden、既定 optional）を追加。turn 事例では Run のツール呼び出しと結果（先頭 10 行）、scenario 事例では最終応答より前の会話を、命令として扱わない隔離ブロックの中で判定者に見せる（上限 20 件・各 2,000 文字）。`required` で軌跡が無い事例は `JUDGE_INPUT` として欠損になる。
+- **自己一貫性（`judgeSamples`）。** 実験の起票で `judgeSamples`（1〜5、既定 1）を指定すると判定を独立に複数回行い、中央値を採用してばらつき（`dispersion`）を記録する。範囲が 0.25 以上なら `uncertain` として「判定が割れている」と示す。一部のサンプルが失敗しても残りで集約する。
+- **judge が未設定のまま judge 指標つきの実験を起票できなくなった。** これまでは起票が通って全事例が `EVALUATION_DOMAIN: … model.model must be a non-empty string` で失敗し、原因（judge スロットにモデルが無い）に辿り着けなかった。起票は `409 JUDGE_MODEL_NOT_CONFIGURED` で止まり、`GET /runtime/capabilities` の `judge: { configured, provider?, model? }` で実験画面が起票前に未設定を示せる。起票後に設定が消えた場合も、事例を落とさず判定レコードを `JUDGE_PROVIDER`（直し方つき）の失敗にする。
+- **`tracePolicy: required` のルーブリックを scenario 事例に使う矛盾を起票時に止める。** scenario 事例は軌跡を持たないので全事例が `JUDGE_INPUT` になっていた。`409 JUDGE_TRACE_UNAVAILABLE` として、直すべきルーブリックを本文の `rubric: { id, version }` で返す（`docs/19-troubleshooting.md` §5）。
+- API: `POST /judge-rubrics` の `tracePolicy`、`POST /experiments` の `judgeSamples`、判定レコードの `criteria` / `samples` / `dispersion` / `uncertain` / `usage` / `contract`（`docs/04-api-spec.md` §3.3、[ADR-0037](docs/adr/0037-criterion-level-judging.md)）。保存済みのルーブリック・実験・結果はそのまま読める。
+
 ### 修正 — 壊れたリクエスト本文が 500 になっていた（2026-09-12）
 
 - **不正な JSON・空の本文・上限（10 MiB）超えの本文は、Fastify が返す本来の 400 / 413 で返るようになった。** これまではカスタムのエラー処理がこれらを 500「サーバー内部でエラー」に変えていて、送った内容が壊れていることに気づけなかった。あわせて 500 はサーバーログにスタック付きで記録する（原因追跡ができるように）。

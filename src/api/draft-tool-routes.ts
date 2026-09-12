@@ -1,6 +1,7 @@
 /** 未保存 Tool draft の検査・プレビュー HTTP routes。 */
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
+import type { JudgeReadiness } from '../application/evaluation/judge-readiness';
 import type { DiagnoseToolUseCase } from '../application/tool/diagnose-tool';
 import type { DraftToolUseCase } from '../application/tool/draft-tool';
 import type { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
@@ -17,6 +18,8 @@ export interface DraftToolRouteDeps {
   readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
   readonly suggestToolCheckCases: SuggestToolCheckCasesUseCase;
   readonly diagnoseTool: DiagnoseToolUseCase;
+  /** judge スロットの設定状態（実験画面が「judge 未設定」を起票前に示すため）。毎回現在の設定を見る。 */
+  readonly judgeReadiness: () => Promise<JudgeReadiness>;
 }
 
 /** 未保存 draft を表す版。採番は保存時に決まるので、診断結果にはこの値が「未保存」の印として載る。 */
@@ -68,10 +71,12 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
     });
     return { diagnostics: await deps.diagnoseTool.execute(scope, tool) };
   });
-  // UI が「AI 補助」のボタンを出すかどうかを決めるための機能フラグ。どちらも現在のモデル設定を毎回見る。
+  // UI が「AI 補助」のボタンを出すかどうかを決めるための機能フラグ。いずれも現在のモデル設定を毎回見る。
+  // judge は「設定済みか」に加えて provider / model を返し、実験画面が起票前に judge 未設定を示せるようにする。
   app.get('/runtime/capabilities', async () => ({
     analysisAssistant: { enabled: await deps.suggestAnalysisConfig.available() },
     toolCheckSuggestions: { enabled: await deps.suggestToolCheckCases.available() },
+    judge: await deps.judgeReadiness(),
   }));
   app.post('/tool-drafts/suggest-analysis-config', async (request) => {
     const body = parseWith(analysisSuggestionBodySchema, request.body);

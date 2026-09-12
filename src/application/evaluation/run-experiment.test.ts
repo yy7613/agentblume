@@ -97,6 +97,76 @@ describe('RunExperimentUseCase', () => {
     expect(experiments.results[0]).toMatchObject({ scores: [{ metric: 'judge-required', score: 0.9, reason: 'correct' }], judgeEvaluations: [{ metricId: 'judge-required', required: true, status: 'succeeded', model: snapshot, score: 0.9, reason: 'correct' }, { metricId: 'judge-optional', required: false, status: 'failed', error: { code: 'JUDGE_SCHEMA', message: 'broken schema' } }] });
   });
 
+  describe('基準別判定・軌跡・自己一貫性（P1〜P4）', () => {
+    const judgeResult = { score: 0.75, reason: 'composite', model: { provider: 'scripted-judge', model: 'judge', modelConfigHash: 'judge-hash' }, criteria: [{ id: 'accuracy', score: 1, reason: 'right' }, { id: 'clarity', score: null, reason: 'cannot assess' }, { id: 'tone', score: 0.5, reason: 'so-so' }], samples: 3, dispersion: { min: 0.5, max: 1, stddev: 0.2 }, uncertain: true, usage: { promptTokens: 30, completionTokens: 9, totalTokens: 39 }, contract: { promptHash: '0123456789abcdef', rubricId: 'rubric', rubricVersion: '1.0.0' } };
+    const rubric = createJudgeRubric({ metadata: { internalId: 'rubric', workingName: 's', displayName: 's', publishName: 's', version: v, owner: 'o', state: 'draft', tenant: scope }, instructions: 'Judge.', referencePolicy: 'optional', reasonRequired: true, criteria: [{ id: 'q', label: 'Q', description: 'Quality', weight: 1, levels: [{ score: 0, label: 'Bad', description: 'Bad' }, { score: 1, label: 'Good', description: 'Good' }] }] });
+    const profile = createEvaluatorProfile({ metadata: { ...rubric.metadata, internalId: 'profile' }, metrics: [{ id: 'judge', kind: 'judge', rubric: { id: 'rubric', version: v }, weight: 1, required: true }] });
+    function build(judge: JudgeEvaluatorPort, cases: Parameters<typeof createEvaluationDataset>[0]['cases'], runAgent: RunAgentPreviewUseCase, runScenario: RunScenarioUseCase = {} as RunScenarioUseCase, judgeSamples = 1) {
+      const experiments = new Experiments(); experiments.experiment = createExperiment({ ...experiments.experiment, judgeSamples });
+      const dataset = createEvaluationDataset({ metadata: { ...rubric.metadata, internalId: 'set' }, cases });
+      const scenarios = { findVersion: async () => ({ goal: 'reach the goal', survey: [] }) } as unknown as ScenarioRepository;
+      const runner = new RunExperimentUseCase(experiments, { findVersion: async () => dataset } as unknown as EvaluationDatasetRepository, { findVersion: async () => profile } as unknown as EvaluatorProfileRepository, { findVersion: async () => ({ kind: 'normal' }) } as unknown as AgentRepository, scenarios, runAgent, runScenario, { evaluate: vi.fn().mockResolvedValue([]) }, () => new Date(), vi.fn(), { rubrics: { findVersion: async () => rubric } as unknown as JudgeRubricRepository, evaluator: judge });
+      return { runner, experiments };
+    }
+    const turnCase = [{ id: 'case', kind: 'turn' as const, input: 'question', tags: [], source: 'manual' as const }];
+
+    it('基準別スコアを `metric:criterion` として並べ、null の基準は出さず、レコードに判定の詳細を残す', async () => {
+      const evaluate = vi.fn().mockResolvedValue(judgeResult); const judge = { snapshot: () => judgeResult.model, evaluate, compare: vi.fn() } as JudgeEvaluatorPort;
+      const { runner, experiments } = build(judge, turnCase, { executeSaved: vi.fn().mockResolvedValue({ runId: 'run', response: 'answer', trace: [], usage: {} }) } as unknown as RunAgentPreviewUseCase);
+      expect((await runner.execute(scope, 'exp')).status).toBe('completed');
+      expect(experiments.results[0]?.scores).toEqual([{ metric: 'judge', score: 0.75, reason: 'composite' }, { metric: 'judge:accuracy', score: 1, reason: 'right' }, { metric: 'judge:tone', score: 0.5, reason: 'so-so' }]);
+      expect(experiments.results[0]?.judgeEvaluations?.[0]).toEqual({ scorer: 'llm-as-judge', metricId: 'judge', rubric: { id: 'rubric', version: v }, required: true, model: judgeResult.model, status: 'succeeded', score: 0.75, reason: 'composite', criteria: judgeResult.criteria, samples: 3, dispersion: judgeResult.dispersion, uncertain: true, usage: judgeResult.usage, contract: judgeResult.contract });
+    });
+    it('judgeSamples を判定者へ渡し、turn 事例では tool-call/tool-result から軌跡を組む（履歴は渡さない）', async () => {
+      const evaluate = vi.fn().mockResolvedValue(judgeResult); const judge = { snapshot: () => judgeResult.model, evaluate, compare: vi.fn() } as JudgeEvaluatorPort;
+      const trace = [
+        { sequence: 1, kind: 'tool-call', name: 'search', arguments: { q: 'x' } },
+        { sequence: 2, kind: 'tool-result', name: 'search', terminalId: 'out', nodes: [{ nodeId: 'out', rowCount: 12, truncated: false }], outputPreview: Array.from({ length: 12 }, (_, index) => ({ row: index })) },
+        { sequence: 3, kind: 'tool-call', name: 'write', arguments: {} },
+        { sequence: 4, kind: 'tool-result', name: 'write', terminalId: 'sink', nodes: [{ nodeId: 'sink', rowCount: 3, truncated: false }], outputPreview: [] },
+        { sequence: 5, kind: 'tool-call', name: 'pending', arguments: { id: 1 } },
+      ];
+      const { runner } = build(judge, turnCase, { executeSaved: vi.fn().mockResolvedValue({ runId: 'run', response: 'answer', trace, usage: {} }) } as unknown as RunAgentPreviewUseCase, undefined, 4);
+      await runner.execute(scope, 'exp');
+      const input = evaluate.mock.calls[0]?.[0] as { samples: number; history?: unknown; trace: { toolCalls: { name: string; arguments: unknown; resultSummary: string }[] } };
+      expect(input.samples).toBe(4); expect(input.history).toBeUndefined();
+      expect(input.trace.toolCalls).toEqual([
+        { name: 'search', arguments: { q: 'x' }, resultSummary: JSON.stringify(Array.from({ length: 10 }, (_, index) => ({ row: index }))) },
+        { name: 'write', arguments: {}, resultSummary: JSON.stringify({ nodes: [{ nodeId: 'sink', rowCount: 3 }] }) },
+        { name: 'pending', arguments: { id: 1 }, resultSummary: 'no tool result recorded' },
+      ]);
+    });
+    it('scenario 事例では最終応答を除いた会話を履歴として渡し、軌跡は渡さない', async () => {
+      const evaluate = vi.fn().mockResolvedValue(judgeResult); const judge = { snapshot: () => judgeResult.model, evaluate, compare: vi.fn() } as JudgeEvaluatorPort;
+      const runScenario = { execute: vi.fn().mockResolvedValue({ id: 'srun', scope, scenario: { id: 'scenario', version: v }, status: 'completed', goalAchieved: true, transcript: [{ speaker: 'user', message: 'hi' }, { speaker: 'agent', message: 'hello', runId: 'r1' }, { speaker: 'user', message: 'more' }, { speaker: 'agent', message: 'final', runId: 'r2' }], survey: [], impressions: 'ok', metrics: { userTurns: 2, agentRuns: 2, totalToolCalls: 0, durationMs: 10, usage: {} }, startedAt: 'a', finishedAt: 'b' }) } as unknown as RunScenarioUseCase;
+      const { runner } = build(judge, [{ id: 'sc', kind: 'scenario', scenario: { id: 'scenario', version: v }, tags: [], source: 'manual' }], {} as RunAgentPreviewUseCase, runScenario);
+      await runner.execute(scope, 'exp');
+      expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({ input: 'reach the goal', output: 'final', samples: 1, history: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }, { role: 'user', content: 'more' }] }), undefined);
+      expect((evaluate.mock.calls[0]?.[0] as { trace?: unknown }).trace).toBeUndefined();
+    });
+    it('境界: judgeSamples 上限 5 を渡し、出力プレビューはちょうど 10 行なら切らない', async () => {
+      const evaluate = vi.fn().mockResolvedValue(judgeResult); const judge = { snapshot: () => judgeResult.model, evaluate, compare: vi.fn() } as JudgeEvaluatorPort;
+      const rows = Array.from({ length: 10 }, (_, index) => ({ row: index }));
+      const trace = [{ sequence: 1, kind: 'tool-call', name: 'search', arguments: {} }, { sequence: 2, kind: 'tool-result', name: 'search', terminalId: 'out', nodes: [], outputPreview: rows }];
+      const { runner } = build(judge, turnCase, { executeSaved: vi.fn().mockResolvedValue({ runId: 'run', response: 'answer', trace, usage: {} }) } as unknown as RunAgentPreviewUseCase, undefined, 5);
+      await runner.execute(scope, 'exp');
+      expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({ samples: 5, trace: { toolCalls: [{ name: 'search', arguments: {}, resultSummary: JSON.stringify(rows) }] } }), undefined);
+    });
+    it('[回帰固定] 例外: 判定者が JudgeEvaluationError 以外を投げても事例は完了し、EXPERIMENT_CASE_FAILED として記録する', async () => {
+      const judge = { snapshot: () => judgeResult.model, evaluate: vi.fn().mockRejectedValue(new Error('unexpected judge crash')), compare: vi.fn() } as JudgeEvaluatorPort;
+      const { runner, experiments } = build(judge, turnCase, { executeSaved: vi.fn().mockResolvedValue({ runId: 'run', response: 'answer', trace: [], usage: {} }) } as unknown as RunAgentPreviewUseCase);
+      expect((await runner.execute(scope, 'exp')).status).toBe('completed');
+      expect(experiments.results[0]).toMatchObject({ status: 'succeeded', judgeEvaluations: [{ status: 'failed', error: { code: 'EXPERIMENT_CASE_FAILED', message: 'unexpected judge crash' } }] });
+    });
+    it('[回帰固定] JUDGE_INPUT で失敗した判定はスコア無しで記録し、事例は succeeded のまま完了する', async () => {
+      const judge = { snapshot: () => judgeResult.model, evaluate: vi.fn().mockRejectedValue(new JudgeEvaluationError('JUDGE_INPUT', 'Judge rubric requires a tool trace')), compare: vi.fn() } as JudgeEvaluatorPort;
+      const { runner, experiments } = build(judge, turnCase, { executeSaved: vi.fn().mockResolvedValue({ runId: 'run', response: 'answer', trace: [], usage: {} }) } as unknown as RunAgentPreviewUseCase);
+      expect((await runner.execute(scope, 'exp')).status).toBe('completed');
+      expect(experiments.results[0]).toMatchObject({ status: 'succeeded', scores: [], judgeEvaluations: [{ status: 'failed', error: { code: 'JUDGE_INPUT', message: 'Judge rubric requires a tool trace' } }] });
+      expect(experiments.results[0]?.judgeEvaluations?.[0]?.score).toBeUndefined();
+    });
+  });
+
   describe('judge指紋の事前解決', () => {
     /** judge メトリクス1件だけのプロファイルで RunExperimentUseCase を組む。 */
     function judgeRunner(judge: JudgeEvaluatorPort, resolveSnapshot?: () => Promise<{ provider: string; model: string; modelConfigHash: string }>, logger?: LoggerPort) {
@@ -155,6 +225,58 @@ describe('RunExperimentUseCase', () => {
       await runner.execute(scope, 'exp');
 
       expect(experiments.results[0]?.judgeEvaluations?.[0]).toMatchObject({ status: 'failed', model: snapshot });
+    });
+  });
+
+  describe('judge 未設定の防御（実機で観測した失敗の再現）', () => {
+    /** judge スロット未設定のとき composition が解決する指紋（env JUDGE_LM_STUDIO_MODEL 未設定）。 */
+    const unconfigured = { provider: 'lm-studio-judge', model: '', modelConfigHash: 'env-hash' };
+    function judgeRunner(judge: JudgeEvaluatorPort, resolveSnapshot?: () => Promise<{ provider: string; model: string; modelConfigHash: string }>) {
+      const experiments = new Experiments();
+      const dataset = createEvaluationDataset({ metadata: { internalId: 'set', workingName: 's', displayName: 's', publishName: 's', version: v, owner: 'o', state: 'draft', tenant: scope }, cases: [{ id: 'case', kind: 'turn', input: 'question', tags: [], source: 'manual' }] });
+      const profile = createEvaluatorProfile({ metadata: { ...dataset.metadata, internalId: 'profile' }, metrics: [{ id: 'quality', kind: 'judge', rubric: { id: 'rubric', version: v }, weight: 1, required: true }] });
+      const rubric = createJudgeRubric({ metadata: { ...dataset.metadata, internalId: 'rubric' }, instructions: 'Judge.', referencePolicy: 'optional', reasonRequired: true, criteria: [{ id: 'q', label: 'Q', description: 'Quality', weight: 1, levels: [{ score: 0, label: 'Bad', description: 'Bad' }, { score: 1, label: 'Good', description: 'Good' }] }] });
+      const runAgent = { executeSaved: vi.fn().mockResolvedValue({ runId: 'run', response: 'answer', trace: [], usage: {} }) } as unknown as RunAgentPreviewUseCase;
+      const runner = new RunExperimentUseCase(experiments, { findVersion: async () => dataset } as unknown as EvaluationDatasetRepository, { findVersion: async () => profile } as unknown as EvaluatorProfileRepository, { findVersion: async () => ({ kind: 'normal' }) } as unknown as AgentRepository, {} as ScenarioRepository, runAgent, {} as RunScenarioUseCase, { evaluate: vi.fn().mockResolvedValue([]) }, () => new Date(), vi.fn(), { rubrics: { findVersion: async () => rubric } as unknown as JudgeRubricRepository, evaluator: judge, ...(resolveSnapshot === undefined ? {} : { resolveSnapshot }) });
+      return { runner, experiments };
+    }
+
+    it('異常: 指紋の model が空（judge 未設定）でも事例は succeeded で完了し、判定は JUDGE_PROVIDER の失敗レコードになる（EVALUATION_DOMAIN で事例ごと落とさない）', async () => {
+      // 実機: judge 未設定のまま judge 指標つきの実験を走らせると、adapter の失敗レコードが model '' を持ち、
+      // ExperimentCaseResult の不変条件（judgeEvaluations.0.model.model must be a non-empty string）で事例が failed になっていた。
+      const evaluate = vi.fn().mockRejectedValue(new JudgeEvaluationError('JUDGE_PROVIDER', 'model id is empty'));
+      const judge = { snapshot: () => unconfigured, evaluate, compare: vi.fn() } as JudgeEvaluatorPort;
+      const { runner, experiments } = judgeRunner(judge, async () => unconfigured);
+
+      expect((await runner.execute(scope, 'exp')).status).toBe('completed');
+
+      expect(experiments.results[0]).toMatchObject({ status: 'succeeded', scores: [] });
+      expect(experiments.results[0]?.error).toBeUndefined();
+      expect(experiments.results[0]?.judgeEvaluations?.[0]).toMatchObject({ status: 'failed', model: { provider: 'unconfigured-judge', model: 'unconfigured-judge', modelConfigHash: 'unconfigured-judge' }, error: { code: 'JUDGE_PROVIDER', message: 'Judge model is not configured; set the judge slot in Settings' } });
+      // 未設定と分かっているので判定器は呼ばない（呼んでも意味の取りにくい失敗になるだけ）。
+      expect(evaluate).not.toHaveBeenCalled();
+    });
+
+    it('境界: 事前解決が無く同期の指紋が空 model でも同じ防御が効く', async () => {
+      const judge = { snapshot: () => unconfigured, evaluate: vi.fn(), compare: vi.fn() } as JudgeEvaluatorPort;
+      const { runner, experiments } = judgeRunner(judge);
+
+      expect((await runner.execute(scope, 'exp')).status).toBe('completed');
+
+      expect(experiments.results[0]?.status).toBe('succeeded');
+      expect(experiments.results[0]?.judgeEvaluations?.[0]).toMatchObject({ status: 'failed', model: { provider: 'unconfigured-judge' }, error: { code: 'JUDGE_PROVIDER' } });
+    });
+
+    it('正常: 設定済みの指紋なら防御は発火せず、判定器の失敗レコードには実際の指紋がそのまま残る', async () => {
+      const configured = { provider: 'openai-compatible', model: 'judge-model', modelConfigHash: 'hash' };
+      const evaluate = vi.fn().mockRejectedValue(new JudgeEvaluationError('JUDGE_SCHEMA', 'broken schema'));
+      const judge = { snapshot: () => configured, evaluate, compare: vi.fn() } as JudgeEvaluatorPort;
+      const { runner, experiments } = judgeRunner(judge, async () => configured);
+
+      await runner.execute(scope, 'exp');
+
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(experiments.results[0]?.judgeEvaluations?.[0]).toMatchObject({ status: 'failed', model: configured, error: { code: 'JUDGE_SCHEMA' } });
     });
   });
 });

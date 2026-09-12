@@ -16,7 +16,7 @@ import { PERSONA_ARCHETYPES, PERSONA_LANGUAGES, PERSONA_LEVELS, PERSONA_VERBOSIT
 import { SURVEY_QUESTION_KINDS } from '../domain/validation/survey';
 import { CODE_SCORERS } from '../domain/evaluation/evaluator-profile';
 import { EVALUATION_CASE_SOURCES } from '../domain/evaluation/evaluation-dataset';
-import { JUDGE_REFERENCE_POLICIES } from '../domain/evaluation/judge-rubric';
+import { JUDGE_REFERENCE_POLICIES, JUDGE_TRACE_POLICIES } from '../domain/evaluation/judge-rubric';
 import { MODEL_BASE_URL_MAX_LENGTH, MODEL_ID_MAX_LENGTH, MODEL_SLOT_NAMES, isHttpBaseUrl } from '../domain/model-settings/model-settings';
 
 /**
@@ -516,7 +516,7 @@ export const saveJudgeRubricBodySchema = z.object({
   scope: tenantScopeSchema,
   internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: z.string().min(1), instructions: z.string().min(1),
   criteria: z.array(z.object({ id: z.string().min(1), label: z.string().min(1), description: z.string().min(1), weight: z.number().positive(), levels: z.array(z.object({ score: z.number().min(0).max(1), label: z.string().min(1), description: z.string().min(1) })).min(2) })).min(1),
-  referencePolicy: z.enum(JUDGE_REFERENCE_POLICIES), bump: z.enum(['major', 'minor', 'patch']).optional(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
+  referencePolicy: z.enum(JUDGE_REFERENCE_POLICIES), tracePolicy: z.enum(JUDGE_TRACE_POLICIES).optional(), bump: z.enum(['major', 'minor', 'patch']).optional(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
 });
 
 export const createExperimentBodySchema = z.object({
@@ -525,6 +525,7 @@ export const createExperimentBodySchema = z.object({
   dataset: z.object({ id: z.string().min(1), version: z.string().min(1) }),
   evaluatorProfile: z.object({ id: z.string().min(1), version: z.string().min(1) }),
   repetitions: z.number().int().min(1).max(10).optional(),
+  judgeSamples: z.number().int().min(1).max(5).optional(),
 });
 
 export const experimentListQuerySchema = scopeQuerySchema.extend({ status: z.enum(['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted']).optional() });

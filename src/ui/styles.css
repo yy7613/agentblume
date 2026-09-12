@@ -363,6 +363,25 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .promotion-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-bottom: 1px solid #e5e9f1; }
 .judge-record { display: block; margin-top: 5px; color: #526078; }
 .judge-record.failed { color: #b43a46; }
+/* 判定記録の付加情報（基準別チップ・ばらつき・サンプル/トークン/契約）。旧記録はチップ行が無く 1 行のまま。 */
+.judge-record { display: grid; gap: 4px; }
+.judge-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.judge-chip { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 99px; border: 1px solid #dce1eb; background: #f4f6fb; color: #3e4a63; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.judge-chip.composite { background: #e8ecff; border-color: #d5dbff; color: #3545b7; }
+.judge-chip.unassessable { background: #f1f3f8; border-style: dashed; color: #7a869c; cursor: help; }
+.judge-chip.uncertain { background: #fff1d7; border-color: #f4dfb0; color: #97640c; }
+.judge-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10px; color: #7a869c; }
+.judge-contract { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; cursor: help; }
+.judge-failure { padding: 6px 8px; border-radius: 7px; background: #fdecee; color: #8f2935; font-size: 11px; line-height: 1.45; }
+.judge-failure .judge-fix { margin-left: 8px; padding: 2px 8px; font-size: 11px; }
+.judge-notice p { margin: 4px 0; }
+.judge-notice .save-actions { margin-top: 6px; }
+.judge-hint { display: grid; gap: 2px; margin: 4px 0 8px; font-size: 11px; line-height: 1.5; color: #5b6785; }
+.judge-criterion-head { grid-template-columns: 1fr 1fr 110px auto 34px; }
+/* 品質比較: `metric:criterion` の基準行は親の直後に字下げして群として読ませる。 */
+.metric-row-criterion td:first-child { padding-left: 22px; }
+.metric-criterion { color: #526078; }
+.metric-criterion .metric-parent { color: #97a1b5; }
 .run-link { display: inline; padding: 2px 5px; margin: 1px; border: 0; background: #eef1ff; color: #4657d7; font-size: 10px; }
 .transcript { display: grid; gap: 8px; margin: 10px 0 16px; }
 .transcript-turn { max-width: 88%; border-radius: 10px; padding: 10px 12px; font-size: 12px; line-height: 1.5; }

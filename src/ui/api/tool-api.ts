@@ -112,6 +112,7 @@ import type {
   SaveModelSettingsDto,
   SampleDataSummaryDto,
   AuthSessionDto,
+  RuntimeCapabilitiesDto,
 } from './types';
 import { localizeApiErrorMessage } from './error-messages';
 
@@ -126,18 +127,21 @@ export class ApiError extends Error {
   declare readonly tool?: RunFailureToolRefDto;
   /** 失敗がツール内の特定ノード由来のとき、そのノードID。 */
   declare readonly nodeId?: string;
+  /** JUDGE_TRACE_UNAVAILABLE など、審査ルーブリックが原因の失敗が指すルーブリック（version は "1.0.0" 形式）。 */
+  declare readonly rubric?: { readonly id: string; readonly version: string };
 
   constructor(
     readonly status: number,
     readonly code: string,
     readonly serverMessage: string,
     readonly runId?: string,
-    context?: { readonly tool?: RunFailureToolRefDto; readonly nodeId?: string },
+    context?: { readonly tool?: RunFailureToolRefDto; readonly nodeId?: string; readonly rubric?: { readonly id: string; readonly version: string } },
   ) {
-    super(localizeApiErrorMessage({ status, code, serverMessage }));
+    super(localizeApiErrorMessage({ status, code, serverMessage, ...(context?.rubric === undefined ? {} : { rubric: context.rubric }) }));
     this.name = 'ApiError';
     if (context?.tool !== undefined) this.tool = context.tool;
     if (context?.nodeId !== undefined) this.nodeId = context.nodeId;
+    if (context?.rubric !== undefined) this.rubric = context.rubric;
   }
 }
 
@@ -205,8 +209,16 @@ export class ToolApiClient {
     return body.result;
   }
 
+  /**
+   * 実行環境の機能一覧（分析アシスタント・ケース提案・判定モデルの準備状況）。
+   * `judge` は新しいサーバーだけが返す（旧サーバーでは undefined）ので、呼び出し側は「無い = 不明」として扱う。
+   */
+  async runtimeCapabilities(): Promise<RuntimeCapabilitiesDto> {
+    return this.request<RuntimeCapabilitiesDto>('/runtime/capabilities');
+  }
+
   async analysisAssistantCapability(): Promise<boolean> {
-    return (await this.request<{ analysisAssistant: { enabled: boolean } }>('/runtime/capabilities')).analysisAssistant.enabled;
+    return (await this.runtimeCapabilities()).analysisAssistant.enabled;
   }
 
   async suggestAnalysisConfig(input: { readonly graph: ToolGraphDto; readonly nodeId: string; readonly intent: string; readonly scope?: TenantScopeDto }): Promise<AnalysisConfigProposalDto> {
@@ -289,7 +301,7 @@ export class ToolApiClient {
   }
   /** 設定済みモデルが構造化出力に対応していれば true（提案ボタンの表示判定。失敗時は false 扱いにする）。 */
   async toolCheckSuggestionCapability(): Promise<boolean> {
-    return (await this.request<{ toolCheckSuggestions?: { enabled: boolean } }>('/runtime/capabilities')).toolCheckSuggestions?.enabled === true;
+    return (await this.runtimeCapabilities()).toolCheckSuggestions?.enabled === true;
   }
   /** LLM に 正常 / 境界 / 異常 のケース案を作らせる（保存はしない）。 */
   async suggestToolCheckCases(input: SuggestToolCheckCasesDto, signal?: AbortSignal): Promise<ToolCheckSuggestionsDto> {
@@ -975,13 +987,16 @@ export class ToolApiClient {
       }
     }
     if (!response.ok) {
-      const error = body as { error?: { code?: string; message?: string; runId?: string; tool?: RunFailureToolRefDto; nodeId?: string } };
+      const error = body as { error?: { code?: string; message?: string; runId?: string; tool?: RunFailureToolRefDto; nodeId?: string; rubric?: { id?: unknown; version?: unknown } } };
+      const rubric = error.error?.rubric;
+      // rubric は JUDGE_TRACE_UNAVAILABLE だけが載せる。形が崩れていれば（id が文字列でない等）載せない。
+      const rubricRef = rubric !== undefined && typeof rubric.id === 'string' && typeof rubric.version === 'string' ? { id: rubric.id, version: rubric.version } : undefined;
       throw new ApiError(
         response.status,
         error.error?.code ?? 'HTTP_ERROR',
         error.error?.message ?? response.statusText,
         error.error?.runId,
-        { ...(error.error?.tool === undefined ? {} : { tool: error.error.tool }), ...(error.error?.nodeId === undefined ? {} : { nodeId: error.error.nodeId }) },
+        { ...(error.error?.tool === undefined ? {} : { tool: error.error.tool }), ...(error.error?.nodeId === undefined ? {} : { nodeId: error.error.nodeId }), ...(rubricRef === undefined ? {} : { rubric: rubricRef }) },
       );
     }
     return body as T;

@@ -97,6 +97,7 @@ import type { ExperimentRepository } from '../domain/evaluation/experiment-repos
 import type { ExperimentModelSnapshot } from '../domain/evaluation/experiment';
 import { RunExperimentUseCase } from '../application/evaluation/run-experiment';
 import { CreateExperimentUseCase } from '../application/evaluation/create-experiment';
+import { judgeReadinessFromSnapshot, type JudgeReadiness } from '../application/evaluation/judge-readiness';
 import { QueryExperimentsUseCase } from '../application/evaluation/query-experiments';
 import { CancelExperimentUseCase } from '../application/evaluation/cancel-experiment';
 import { ResumeExperimentUseCase } from '../application/evaluation/resume-experiment';
@@ -442,6 +443,8 @@ export interface App {
   readonly deleteWikiSpace: DeleteWikiSpaceUseCase;
   readonly draftTool: DraftToolUseCase;
   readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
+  /** judge スロットの設定状態（`GET /runtime/capabilities` と実験起票のガードが同じ判定を使う）。 */
+  readonly judgeReadiness: () => Promise<JudgeReadiness>;
   readonly saveTool: SaveToolUseCase;
   readonly getTool: GetToolUseCase;
   readonly listToolVersions: ListToolVersionsUseCase;
@@ -688,6 +691,11 @@ export function createApp(options?: AppOptions): App {
   const resolveJudgeSnapshot = options?.judgeModelSnapshot === undefined && judgeSwitchable !== undefined
     ? (): Promise<ExperimentModelSnapshot> => judgeSwitchable.currentSnapshot()
     : undefined;
+  /**
+   * judge が「判定に使える状態か」。起票ガード（CreateExperiment）と UI の機能フラグ（/runtime/capabilities）が
+   * 同じ解決器を見る。切替可能な配線では保存済み設定を、それ以外は明示注入か静的な指紋を判定する。
+   */
+  const judgeReadiness = async (): Promise<JudgeReadiness> => judgeReadinessFromSnapshot(await (resolveJudgeSnapshot?.() ?? options?.judgeModelSnapshot ?? staticJudgeSnapshot));
   const staticSnapshot: ExperimentModelSnapshot = profile === 'test'
     ? { provider: 'scripted', model: 'scripted', modelConfigHash: hashConfig({ profile: 'test' }) }
     : { provider: 'lm-studio', model: process.env['LM_STUDIO_MODEL'] ?? '', modelConfigHash: hashConfig({ baseUrl: process.env['LM_STUDIO_BASE_URL'] ?? 'http://127.0.0.1:1234/v1', model: process.env['LM_STUDIO_MODEL'] ?? '' }), ...(sourceRevision !== undefined ? { sourceRevision } : {}) };
@@ -909,7 +917,7 @@ export function createApp(options?: AppOptions): App {
     queryJudgeRubrics: new QueryJudgeRubricsUseCase(judgeRubricAdapter.repo),
     deleteJudgeRubric: new DeleteJudgeRubricUseCase(judgeRubricAdapter.repo),
     runExperiment,
-    createExperiment: new CreateExperimentUseCase(experimentAdapter.repo, evaluationDatasetAdapter.repo, evaluatorProfileAdapter.repo, agentAdapter.repo, experimentWorker, () => resolveModelSnapshot?.() ?? snapshot),
+    createExperiment: new CreateExperimentUseCase(experimentAdapter.repo, evaluationDatasetAdapter.repo, evaluatorProfileAdapter.repo, agentAdapter.repo, experimentWorker, () => resolveModelSnapshot?.() ?? snapshot, undefined, undefined, { judgeReadiness, rubrics: judgeRubricAdapter.repo, logger: errorLogger }),
     queryExperiments: new QueryExperimentsUseCase(experimentAdapter.repo),
     cancelExperiment: new CancelExperimentUseCase(experimentAdapter.repo, experimentWorker),
     resumeExperiment: new ResumeExperimentUseCase(experimentAdapter.repo, experimentWorker),
@@ -950,6 +958,7 @@ export function createApp(options?: AppOptions): App {
     deleteWikiSpace: new DeleteWikiSpaceUseCase(wikiAdapter.repo),
     draftTool: new DraftToolUseCase(engine, resolveDataSources),
     suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, assistantEnabled),
+    judgeReadiness,
     // ツール検証のケース提案は分析アシスタントと同じ有効判定・同じモデルを使う（別スロットを増やさない）。
     suggestToolCheckCases: new SuggestToolCheckCasesUseCase(repo, engine, modelProvider, assistantEnabled, resolveDataSources, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot()),
     saveTool,

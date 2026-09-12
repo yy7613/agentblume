@@ -661,8 +661,8 @@ export interface EvaluatorProfileSummaryDto {
 }
 export interface JudgeScoreLevelDto { readonly score: number; readonly label: string; readonly description: string }
 export interface JudgeCriterionDto { readonly id: string; readonly label: string; readonly description: string; readonly weight: number; readonly levels: readonly JudgeScoreLevelDto[] }
-export interface SerializedJudgeRubricDto { readonly metadata: SerializedAgentDto['metadata']; readonly instructions: string; readonly criteria: readonly JudgeCriterionDto[]; readonly referencePolicy: 'optional' | 'required' | 'forbidden'; readonly reasonRequired: true }
-export interface SaveJudgeRubricDto { readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner: string; readonly instructions: string; readonly criteria: readonly JudgeCriterionDto[]; readonly referencePolicy: SerializedJudgeRubricDto['referencePolicy']; readonly bump?: 'major' | 'minor' | 'patch' }
+export interface SerializedJudgeRubricDto { readonly metadata: SerializedAgentDto['metadata']; readonly instructions: string; readonly criteria: readonly JudgeCriterionDto[]; readonly referencePolicy: 'optional' | 'required' | 'forbidden'; /** 判定者へツール呼び出し列・会話履歴を渡すか（既定 optional）。 */ readonly tracePolicy?: 'optional' | 'required' | 'forbidden'; readonly reasonRequired: true }
+export interface SaveJudgeRubricDto { readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner: string; readonly instructions: string; readonly criteria: readonly JudgeCriterionDto[]; readonly referencePolicy: SerializedJudgeRubricDto['referencePolicy']; readonly tracePolicy?: SerializedJudgeRubricDto['tracePolicy']; readonly bump?: 'major' | 'minor' | 'patch' }
 export interface JudgeRubricSummaryDto { readonly internalId: string; readonly displayName: string; readonly publishName: string; readonly latestVersion: string; readonly state: SerializedAgentDto['metadata']['state']; readonly criterionCount: number }
 export type ExperimentStatusDto = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export interface ExperimentDto {
@@ -670,7 +670,7 @@ export interface ExperimentDto {
   readonly target: { readonly agentId: string; readonly version: string };
   readonly dataset: { readonly id: string; readonly version: string };
   readonly evaluatorProfile: { readonly id: string; readonly version: string };
-  readonly repetitions: number; readonly status: ExperimentStatusDto;
+  readonly repetitions: number; /** 事例ごとの判定サンプル数（1〜5。2 以上で中央値とばらつきを記録）。 */ readonly judgeSamples?: number; readonly status: ExperimentStatusDto;
   readonly snapshot: { readonly provider: string; readonly model: string; readonly modelConfigHash: string; readonly sourceRevision?: string };
   readonly progress: { readonly completed: number; readonly total: number };
   readonly createdAt: string; readonly startedAt?: string; readonly finishedAt?: string;
@@ -681,7 +681,44 @@ export interface ExperimentCaseResultDto {
   readonly status: 'succeeded' | 'failed' | 'cancelled'; readonly runIds: readonly string[]; readonly output?: string;
   readonly scores: readonly EvaluationScoreDto[]; readonly latencyMs: number; readonly usage: AgentPreviewRunDto['usage'];
   readonly error?: { readonly code: string; readonly message: string; readonly retryable: boolean };
-  readonly judgeEvaluations?: readonly { readonly scorer: 'llm-as-judge'; readonly metricId: string; readonly rubric: { readonly id: string; readonly version: string }; readonly required: boolean; readonly model: ExperimentDto['snapshot']; readonly status: 'succeeded' | 'failed'; readonly score?: number; readonly reason?: string; readonly error?: { readonly code: string; readonly message: string } }[];
+  readonly judgeEvaluations?: readonly JudgeEvaluationRecordDto[];
+}
+/** 判定 1 件の記録。criteria は基準別（score null = 判定不能 CANNOT_ASSESS）、samples>1 なら中央値が score でばらつきを dispersion に持つ。 */
+export interface JudgeEvaluationRecordDto {
+  readonly scorer: 'llm-as-judge';
+  readonly metricId: string;
+  readonly rubric: { readonly id: string; readonly version: string };
+  readonly required: boolean;
+  readonly model: ExperimentDto['snapshot'];
+  readonly status: 'succeeded' | 'failed';
+  readonly score?: number;
+  readonly reason?: string;
+  readonly error?: { readonly code: string; readonly message: string };
+  /** 基準別の判定（P1）。score は基準の levels のいずれか、null は判定不能。 */
+  readonly criteria?: readonly { readonly id: string; readonly score: number | null; readonly reason: string }[];
+  /** 自己一貫性（P4）。samples は実際に得られた判定数、dispersion は合成スコアの範囲、uncertain は範囲が広いとき。 */
+  readonly samples?: number;
+  readonly dispersion?: { readonly min: number; readonly max: number; readonly stddev: number };
+  readonly uncertain?: boolean;
+  /** 判定呼び出しのトークン（P2）。samples 分の合計。 */
+  readonly usage?: { readonly promptTokens?: number; readonly completionTokens?: number; readonly totalTokens?: number };
+  /** 判定契約の指紋（P2）: どのプロンプト・ルーブリック版で判定したか。判定者の更新をドリフトとして検知する土台。 */
+  readonly contract?: { readonly promptHash: string; readonly rubricId: string; readonly rubricVersion: string };
+}
+/**
+ * 判定モデル（judge スロット）の準備状況。GET /runtime/capabilities の `judge` に載る。
+ * configured=false のときは judge 指標を含む実験を起票しても JUDGE_MODEL_NOT_CONFIGURED で拒否される。
+ */
+export interface JudgeReadinessDto {
+  readonly configured: boolean;
+  readonly provider?: string;
+  readonly model?: string;
+}
+/** GET /runtime/capabilities の応答。 */
+export interface RuntimeCapabilitiesDto {
+  readonly analysisAssistant: { readonly enabled: boolean };
+  readonly toolCheckSuggestions?: { readonly enabled: boolean };
+  readonly judge?: JudgeReadinessDto;
 }
 export interface CreateExperimentDto {
   readonly scope: TenantScopeDto;
@@ -689,6 +726,8 @@ export interface CreateExperimentDto {
   readonly dataset: { readonly id: string; readonly version: string };
   readonly evaluatorProfile: { readonly id: string; readonly version: string };
   readonly repetitions?: number;
+  /** 事例ごとの判定サンプル数（1〜5、既定 1）。 */
+  readonly judgeSamples?: number;
 }
 export interface MetricStatsDto { readonly count: number; readonly mean: number; readonly median: number; readonly p50: number; readonly p95: number; readonly stddev: number; readonly min: number; readonly max: number; readonly samples: readonly number[] }
 export interface MetricComparisonDto { readonly metric: string; readonly preference: 'higher' | 'lower'; readonly baseline?: MetricStatsDto; readonly candidate?: MetricStatsDto; readonly delta?: number; readonly direction: 'improved' | 'regressed' | 'unchanged' | 'incomparable' }

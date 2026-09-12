@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
 import { ValidationPage } from './ValidationPage';
+import { consumePendingOpen, requestOpenInScreen } from '../navigation';
 
 afterEach(cleanup);
 
@@ -556,5 +557,51 @@ describe('ValidationPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Open run trace run-agent-1' }));
     await waitFor(() => expect(getRunTrace).toHaveBeenCalledWith('run-agent-1', scope));
     expect(await screen.findByText(/summary_tool \{"month":"2026-06"\}/)).toBeTruthy();
+  });
+});
+
+
+/** 実験の 409 JUDGE_TRACE_UNAVAILABLE「ルーブリックを開く」からの依頼。ルーブリック編集はデータセットタブにある。 */
+describe('ValidationPage のルーブリックへの深いリンク', () => {
+  afterEach(() => { consumePendingOpen('Validation'); });
+  const rubricSummary = { internalId: 'quality-rubric', displayName: 'Quality rubric', publishName: 'quality_rubric', latestVersion: '1.2.0', state: 'draft', criterionCount: 1 };
+  const savedRubric = { metadata: { internalId: 'quality-rubric', workingName: 'Saved draft', displayName: 'Quality rubric', publishName: 'quality_rubric', owner: 'owner', version: '1.2.0' }, instructions: 'Judge accuracy.', referencePolicy: 'optional', tracePolicy: 'required', reasonRequired: true, criteria: [{ id: 'accuracy', label: 'Accuracy', description: 'Factual correctness', weight: 1, levels: [{ score: 0, label: 'Wrong', description: 'Incorrect' }, { score: 1, label: 'Correct', description: 'Fully correct' }] }] };
+
+  it('section=rubric の依頼で Datasets タブへ切り替え、そのルーブリック（版つき）をエディタに読み込んで軌跡ポリシーへフォーカスする', async () => {
+    const getJudgeRubric = vi.fn().mockResolvedValue(savedRubric);
+    requestOpenInScreen('Validation', { internalId: 'quality-rubric', version: '1.2.0', section: 'rubric' });
+    render(<ValidationPage client={stubClient({ listJudgeRubrics: vi.fn().mockResolvedValue([rubricSummary]), getJudgeRubric })} />);
+    expect(screen.getByRole('tab', { name: 'Datasets' }).getAttribute('aria-selected')).toBe('true');
+    await waitFor(() => expect(getJudgeRubric).toHaveBeenCalledWith('quality-rubric', scope, '1.2.0'));
+    await waitFor(() => expect((screen.getByRole('textbox', { name: 'Judge rubric internal ID' }) as HTMLInputElement).value).toBe('quality-rubric'));
+    const tracePolicy = screen.getByRole('combobox', { name: 'Judge trace policy' }) as HTMLSelectElement;
+    expect(tracePolicy.value).toBe('required');
+    await waitFor(() => expect(document.activeElement).toBe(tracePolicy));
+    // 必須の注意書きが見えるので、そのまま「任意」へ直せる。
+    expect(screen.getByText(/"required" works with turn cases only/)).toBeTruthy();
+  });
+
+  it('境界: 版の無い依頼は最新版を読み込む。section が rubric でない依頼はタブを変えない', async () => {
+    const getJudgeRubric = vi.fn().mockResolvedValue(savedRubric);
+    requestOpenInScreen('Validation', { internalId: 'quality-rubric', section: 'rubric' });
+    render(<ValidationPage client={stubClient({ getJudgeRubric })} />);
+    await waitFor(() => expect(getJudgeRubric).toHaveBeenCalledWith('quality-rubric', scope));
+    cleanup();
+    requestOpenInScreen('Validation', { internalId: 'whatever', section: 'other' });
+    render(<ValidationPage client={stubClient()} />);
+    expect(screen.getByRole('tab', { name: 'Personas' }).getAttribute('aria-selected')).toBe('true');
+    expect(await screen.findByText('No saved personas.')).toBeTruthy();
+  });
+
+  it('例外: 存在しないルーブリック ID の依頼は原因をアラートで出し、画面はそのまま使える', async () => {
+    const getJudgeRubric = vi.fn().mockRejectedValue(new Error('Judge rubric not found: missing'));
+    requestOpenInScreen('Validation', { internalId: 'missing', section: 'rubric' });
+    render(<ValidationPage client={stubClient({ getJudgeRubric })} />);
+    expect((await screen.findByRole('alert')).textContent).toBe('Judge rubric not found: missing');
+    expect(screen.getByRole('tab', { name: 'Datasets' }).getAttribute('aria-selected')).toBe('true');
+    // エディタは既定値のまま操作できる。
+    expect((screen.getByRole('textbox', { name: 'Judge rubric internal ID' }) as HTMLInputElement).value).toBe('default-quality-rubric');
+    await userEvent.click(screen.getByRole('tab', { name: 'Experiments' }));
+    expect(await screen.findByText('No experiments yet.')).toBeTruthy();
   });
 });

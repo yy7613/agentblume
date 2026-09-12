@@ -22,7 +22,7 @@ function version(value: string): SemVer { try { return SemVer.parse(value); } ca
 export function registerExperimentRoutes(app: FastifyInstance, deps: ExperimentRouteDeps): void {
   app.post('/experiments', async (request, reply) => {
     const body = parse(createExperimentBodySchema, request.body);
-    const experiment = await deps.createExperiment.execute({ scope: scopeOf(request), target: { agentId: body.target.agentId, version: version(body.target.version) }, dataset: { id: body.dataset.id, version: version(body.dataset.version) }, evaluatorProfile: { id: body.evaluatorProfile.id, version: version(body.evaluatorProfile.version) }, ...(body.repetitions !== undefined ? { repetitions: body.repetitions } : {}) });
+    const experiment = await deps.createExperiment.execute({ scope: scopeOf(request), target: { agentId: body.target.agentId, version: version(body.target.version) }, dataset: { id: body.dataset.id, version: version(body.dataset.version) }, evaluatorProfile: { id: body.evaluatorProfile.id, version: version(body.evaluatorProfile.version) }, ...(body.repetitions !== undefined ? { repetitions: body.repetitions } : {}), ...(body.judgeSamples !== undefined ? { judgeSamples: body.judgeSamples } : {}) });
     return reply.status(202).send({ experiment: serializeExperiment(experiment) });
   });
   app.get('/experiments', async (request) => { const query = parse(experimentListQuerySchema, request.query); return { experiments: (await deps.queryExperiments.list(scopeOf(request), query.status)).map(serializeExperiment) }; });

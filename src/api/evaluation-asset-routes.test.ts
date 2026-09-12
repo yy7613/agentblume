@@ -53,6 +53,16 @@ describe('evaluation asset routes', () => {
     expect((await server.inject({ method: 'GET', url: '/judge-rubrics/missing', query: scope })).statusCode).toBe(404);
   });
 
+  it('JudgeRubric の tracePolicy は三値を保存して返し、省略時 optional、不正値は 400', async () => {
+    const body = (internalId: string, tracePolicy?: string) => ({ scope, internalId, workingName: 'draft', displayName: 'Rubric', publishName: internalId, owner: 'owner', instructions: 'Judge.', referencePolicy: 'optional', ...(tracePolicy !== undefined ? { tracePolicy } : {}), criteria: [{ id: 'accuracy', label: 'Accuracy', description: 'Factual correctness', weight: 1, levels: [{ score: 0, label: 'Wrong', description: 'Incorrect' }, { score: 1, label: 'Correct', description: 'Fully correct' }] }] });
+    for (const tracePolicy of ['optional', 'required', 'forbidden']) {
+      const saved = await server.inject({ method: 'POST', url: '/judge-rubrics', payload: body(`rubric-${tracePolicy}`, tracePolicy) }); expect(saved.statusCode).toBe(201); expect(saved.json().rubric.tracePolicy).toBe(tracePolicy);
+      expect((await server.inject({ method: 'GET', url: `/judge-rubrics/rubric-${tracePolicy}`, query: scope })).json().rubric.tracePolicy).toBe(tracePolicy);
+    }
+    const defaulted = await server.inject({ method: 'POST', url: '/judge-rubrics', payload: body('rubric-default') }); expect(defaulted.statusCode).toBe(201); expect(defaulted.json().rubric.tracePolicy).toBe('optional');
+    const invalid = await server.inject({ method: 'POST', url: '/judge-rubrics', payload: body('rubric-bad', 'always') }); expect(invalid.statusCode).toBe(400); expect(invalid.json().error.message).toContain('tracePolicy');
+  });
+
   it('EvaluationDatasetを論理削除できる(listから除外、GETはfindLatestのため404、pinned versionはfindVersionで残る)', async () => {
     const saved = await server.inject({ method: 'POST', url: '/evaluation-datasets', payload: datasetBody });
     expect(saved.statusCode).toBe(201);

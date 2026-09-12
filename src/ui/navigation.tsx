@@ -65,13 +65,26 @@ export interface OpenTarget {
 const OPEN_EVENT = 'agentblume:open-target';
 const pendingOpen = new Map<ScreenName, OpenTarget>();
 
+function notifyOpen(screen: ScreenName): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: { screen } }));
+}
+
+/**
+ * 遷移せずに「その画面で対象を開く」依頼だけを出す。画面が未表示なら mount 時に、表示中なら即座に届く。
+ * React の外（テストの前準備・遷移を伴わない同一画面内の案内）から使う。通常の導線は useOpenInScreen。
+ */
+export function requestOpenInScreen(screen: ScreenName, target: OpenTarget): void {
+  pendingOpen.set(screen, target);
+  notifyOpen(screen);
+}
+
 /** 指定画面へ遷移し、その画面に対象を開くよう依頼する関数を返す。Provider の外では遷移だけが no-op。 */
 export function useOpenInScreen(): (screen: ScreenName, target: OpenTarget) => void {
   const navigate = useNavigateScreen();
   return (screen, target) => {
     pendingOpen.set(screen, target);
     navigate(screen);
-    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: { screen } }));
+    notifyOpen(screen);
   };
 }
 

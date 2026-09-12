@@ -22,6 +22,16 @@ function pick(bilingual: Bilingual, language: ErrorLanguage): string {
 }
 
 /**
+ * 判定モデル（judge スロット）が未設定のときの文言。起票の拒否（`JUDGE_MODEL_NOT_CONFIGURED`・409）と、
+ * 判定 1 件の失敗（`JUDGE_PROVIDER` + "is not configured"）の両方で同じ次の一手（設定画面の judge スロット）を示す。
+ * 原文は次の一手を含まないので括弧で残さない。
+ */
+const JUDGE_MODEL_NOT_CONFIGURED_MESSAGE: Bilingual = [
+  'The judge model is not configured. Set the judge slot in Settings before running experiments that use a judge rubric',
+  '判定モデルが設定されていません。審査ルーブリックを使う実験の前に、設定画面の judge スロットでモデルを設定してください',
+];
+
+/**
  * error.code ごとの見出し。src/api/error-mapping.ts が返す code 体系に対応する。
  * HTTP_ERROR / 未知の code は status から見出しを決める（statusHeading）。
  */
@@ -82,6 +92,9 @@ const HEADINGS: Record<string, Bilingual> = {
   JUDGE_RUBRIC_NOT_FOUND: ['The judge rubric was not found', '審査ルーブリックが見つかりませんでした'],
   JUDGE_INPUT: ['Please check the input given to the judge', '審査に渡す入力を確認してください'],
   JUDGE_SCHEMA: ['The judge response did not match the expected shape. Retry, or pick a different model', '審査結果が期待した形式ではありませんでした。再試行するか、別のモデルを選んでください'],
+  JUDGE_UNASSESSABLE: ['The judge could not assess any criterion', '審査者はどの基準も判定できませんでした'],
+  // 実験の起票時（POST /experiments・409）。判定モデル未設定は「設定画面の judge スロット」へ、軌跡必須は「ルーブリックの軌跡ポリシー」へ導く。
+  JUDGE_MODEL_NOT_CONFIGURED: JUDGE_MODEL_NOT_CONFIGURED_MESSAGE,
 
   MEMORY_DOMAIN: ['Please check the memory input', '記憶の入力内容を確認してください'],
   WIKI_PAGE_NOT_FOUND: ['The wiki page was not found', 'Wikiページが見つかりませんでした'],
@@ -151,6 +164,26 @@ const GENERIC_HEADING: Bilingual = ['The request failed', 'リクエストに失
 
 /** 詳細が英語定型文（statusText / 'internal error' / 見出しの原文）で情報量が無い code。 */
 const OPAQUE_DETAIL = new Set(['INTERNAL', 'HTTP_ERROR', 'INVALID_API_RESPONSE']);
+
+/** JUDGE_TRACE_UNAVAILABLE（409）: ルーブリック ID が分かれば文中に埋め、分からなければ一般形にする。 */
+function judgeTraceUnavailableMessage(rubricId: string | undefined, language: ErrorLanguage): string {
+  if (language === 'ja') {
+    return rubricId === undefined
+      ? 'ルーブリックがツール呼び出しの軌跡を必須にしていますが、シナリオ事例では軌跡が得られません。軌跡ポリシーを「任意」にするか、ターン事例だけのデータセットを使ってください'
+      : `ルーブリック '${rubricId}' はツール呼び出しの軌跡を必須にしていますが、シナリオ事例では軌跡が得られません。軌跡ポリシーを「任意」にするか、ターン事例だけのデータセットを使ってください`;
+  }
+  return rubricId === undefined
+    ? 'The rubric requires a tool trace, but scenario cases never produce one. Set its trace policy to optional, or use a dataset with turn cases only'
+    : `Rubric '${rubricId}' requires a tool trace, but scenario cases never produce one. Set its trace policy to optional, or use a dataset with turn cases only`;
+}
+
+/**
+ * 判定モデル未設定の失敗か（起票の 409 `JUDGE_MODEL_NOT_CONFIGURED`、または判定 1 件の `JUDGE_PROVIDER` で
+ * 原文が "is not configured"）。画面はこれで「設定で判定モデルを設定」ボタンを出す。
+ */
+export function isJudgeModelNotConfigured(failure: { readonly code: string; readonly message: string }): boolean {
+  return failure.code === 'JUDGE_MODEL_NOT_CONFIGURED' || (failure.code === 'JUDGE_PROVIDER' && /not configured/i.test(failure.message));
+}
 
 /** tool-output-dispatcher.ts が agent-output の maxBytes 超過で投げる文（SESSION_QUOTA_EXCEEDED の見出しを使わない）。 */
 const AGENT_OUTPUT_TOO_LARGE = /^agent-output exceeds maxBytes \(\d+ > \d+\)/;
@@ -1211,6 +1244,8 @@ export interface ApiErrorPayload {
   readonly status: number;
   readonly code: string;
   readonly serverMessage: string;
+  /** JUDGE_TRACE_UNAVAILABLE がエラー本文に載せるルーブリック参照（文言に ID を埋めるため）。 */
+  readonly rubric?: { readonly id: string; readonly version: string };
 }
 
 /** code（+ SECRET_CIPHER は status）から見出しを決める。 */
@@ -1223,6 +1258,10 @@ function headingFor(payload: ApiErrorPayload, language: ErrorLanguage): string {
 /** サーバー生メッセージをユーザー向け文言へ。language 省略時はエラー発生時点で判定する。 */
 export function localizeApiErrorMessage(payload: ApiErrorPayload, language: ErrorLanguage = detectErrorLanguage()): string {
   const raw = payload.serverMessage.trim();
+  // 判定モデル未設定は「設定画面の judge スロット」へ導く固定文（main スロット向けの LM_STUDIO_MODEL 案内にしない）。
+  if (isJudgeModelNotConfigured({ code: payload.code, message: raw })) return pick(JUDGE_MODEL_NOT_CONFIGURED_MESSAGE, language);
+  // 本文の rubric が無い旧形式でも、原文の `rubric '<id>'` から ID を拾って文中に埋める。
+  if (payload.code === 'JUDGE_TRACE_UNAVAILABLE') return judgeTraceUnavailableMessage(payload.rubric?.id ?? /rubric '([^']+)'/i.exec(raw)?.[1], language);
   if (isModelFailure(payload.code, raw)) return modelMessage(raw, language);
   // agent-output の上限超過は SessionQuotaExceededError（413・SESSION_QUOTA_EXCEEDED）として届くが、
   // 見出しの「不要な成果物を削除」では直らない（ツールの出力行数の問題）。詳細文だけを出す。
@@ -1249,6 +1288,47 @@ export function localizeRunFailure(failure: { readonly code: string; readonly me
   const raw = failure.message.trim();
   if (HEADINGS[failure.code] === undefined && !isModelFailure(failure.code, raw)) return localizeDetail(raw, language) || raw;
   return localizeApiErrorMessage({ status: 0, code: failure.code, serverMessage: raw }, language);
+}
+
+/**
+ * 判定（LLM-as-judge）1 件の失敗（実験結果の `judgeEvaluations[].error`）の表示文言。
+ * code ごとに「原因。次の一手」を固定文で返す（原文は原因の補足として括弧に残す）。
+ * - JUDGE_INPUT: ルーブリックが required にした実行履歴／参照が事例に無い → ポリシーを任意にするか、
+ *   ツールを使う（参照つきの）事例で実行する。原文に reference があれば参照側の案内にする。
+ * - JUDGE_UNASSESSABLE: どの基準も判定できなかった → 基準の説明を具体的にする／必要な参照や履歴を渡す。
+ * - JUDGE_SCHEMA: 修復を 1 回試みても出力が不正 → 判定モデルを構造化出力に強いものへ（設定画面の judge スロット）。
+ * - JUDGE_PROVIDER で原文が "is not configured": 判定モデル未設定 → 設定画面の judge スロットで設定する
+ *   （JUDGE_MODEL_NOT_CONFIGURED と同文。画面はこの場合だけ設定画面へのボタンを添える）。
+ * - JUDGE_MODEL_NOT_CONFIGURED / JUDGE_TRACE_UNAVAILABLE: 起票時の 409（localizeApiErrorMessage が扱う）。
+ * - JUDGE_PROVIDER（その他）・未知の code: 既存の実行失敗文言（プロバイダ中立のモデル案内）に委ねる。
+ */
+export function localizeJudgeFailure(failure: { readonly code: string; readonly message: string }, language: ErrorLanguage = detectErrorLanguage()): string {
+  const ja = language === 'ja';
+  const raw = failure.message.trim();
+  const detail = raw === '' ? '' : (ja ? `（${raw}）` : ` (${raw})`);
+  if (isJudgeModelNotConfigured({ code: failure.code, message: raw })) return pick(JUDGE_MODEL_NOT_CONFIGURED_MESSAGE, language);
+  switch (failure.code) {
+    case 'JUDGE_INPUT': {
+      if (/reference/i.test(raw) && !/trace|history|tool/i.test(raw)) {
+        return ja
+          ? `ルーブリックが必須にしている参照回答がこの事例にありません${detail}。ルーブリックの参照ポリシーを「任意」にするか、参照回答つきの事例で実行してください`
+          : `The rubric requires a reference answer but this case has none${detail}. Set the rubric's reference policy to optional, or run cases that carry a reference answer`;
+      }
+      return ja
+        ? `ルーブリックが必須にしている実行履歴がこの事例にありません${detail}。ルーブリックの実行履歴ポリシーを「任意」にするか、ツールを使う事例で実行してください`
+        : `The rubric requires a tool trace but this case has none${detail}. Set the rubric's trace policy to optional, or run cases that use tools`;
+    }
+    case 'JUDGE_UNASSESSABLE':
+      return ja
+        ? `審査者はどの基準も判定できませんでした${detail}。基準の説明を具体的にするか、必要な参照回答や実行履歴を判定者に渡してください`
+        : `The judge could not assess any criterion${detail}. Make the criterion descriptions more concrete, or give the judge the reference answer or trace it needs`;
+    case 'JUDGE_SCHEMA':
+      return ja
+        ? `判定結果が期待した形式ではありませんでした（修復を 1 回試みても不正）${detail}。設定画面の judge スロットで、構造化出力に強い判定モデルへ切り替えてください`
+        : `The judge output did not match the expected shape even after one repair${detail}. In Settings, switch the judge slot to a model that is strong at structured output`;
+    default:
+      return localizeRunFailure(failure, language);
+  }
 }
 
 /**

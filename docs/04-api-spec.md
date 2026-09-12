@@ -188,7 +188,7 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/tool-checks/cases/{id}/run` | 保存済みケースを実行し `lastResult` を更新 | `tool:execute` |
 | `POST` | `/tool-checks/cases/run-all` | 全ケース（または `toolId` のケース）を逐次実行 | `tool:execute` |
 | `POST` | `/tool-checks/suggest` | LLM による 正常 / 境界 / 異常 のケース案（保存しない。モデル未設定は 502。§3.2） | `tool:execute` |
-| `GET` | `/runtime/capabilities` | UI の機能フラグ: `{ analysisAssistant: { enabled }, toolCheckSuggestions: { enabled } }`（現在のモデル設定を毎回見る） | `workspace:read` |
+| `GET` | `/runtime/capabilities` | UI の機能フラグ: `{ analysisAssistant: { enabled }, toolCheckSuggestions: { enabled }, judge: { configured, provider?, model? } }`（現在のモデル設定を毎回見る。`judge` は judge スロットが判定に使える状態か） | `workspace:read` |
 | `POST` | `/tools/{id}/publish` | 公開（エイリアス/互換性管理） | `tool:publish` |
 | `POST` | `/tools/{id}/expose-mcp` | MCPサーバとして公開 | `deployment:publish` |
 | `POST` | `/skills` | Skill作成 | `skill:create` |
@@ -325,6 +325,72 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 モデルの出力は信用せず、サーバーで検証・修復する（落とした・直した点は各案の `warnings`、全体の注意は応答の `warnings`）: 未知のカテゴリは捨てる。カテゴリごとの超過分は切り詰める。名前は空・120 文字超なら `<category> case N` に置き換える。引数は inputSchema に無いキーを落とす（**異常系で `outcome: "error"` のときだけ未宣言キーを 1 つ残す**＝それが検証の狙い）、曖昧でない型違いは列の型へ寄せる（`"12"` → `12`、`"true"` → `true`、`12` → `"12"`）、nullable でない列への `null` は正常・境界では落とす（異常系では残す）。期待は保存時と同じドメイン検証をキーごとに通し、不正なものだけ落とす。`cells[].column` は出力列（宣言 outputSchema、無ければサンプル実行の列）に無ければ落とす。サンプル実行が失敗しても提案は続け、`warnings` に `sample run failed (…)` を残す。
 
 エラー: Tool が無ければ 404 `TOOL_NOT_FOUND`。モデル未設定・structured output 非対応は 502 `MODEL_PROVIDER`（`tool check suggestions are not configured`）、JSON でない／形の違う応答は `tool check suggestions returned invalid JSON`、使えるケースが 0 件なら `tool check suggestions returned no usable case`（いずれも 502）。
+
+### 3.3 評価: 実験と Judge ルーブリック（experiments / judge rubrics）
+
+LLM-as-Judge の採点は **基準別**（[ADR-0037](./adr/0037-criterion-level-judging.md)）。判定者はルーブリックの基準ごとに「理由 → 段階スコア」を返し、サーバーが重み付きで合成する。実装は `src/adapters/evaluation/structured-judge-evaluator.ts`、使い方の解説は [11-scenario-validation.md §9](./11-scenario-validation.md#9-llm-判定基準別採点判定契約自己一貫性)。
+
+| メソッド | パス | ユースケース | 認可アクション |
+|---|---|---|---|
+| `POST` | `/judge-rubrics` | ルーブリック保存（版は自動採番） | `evaluation:create` |
+| `GET` | `/judge-rubrics` / `/judge-rubrics/{id}` / `/judge-rubrics/{id}/versions` | 一覧 / 取得（`version` 省略で最新）/ 版一覧 | `evaluation:read` |
+| `POST` | `/experiments` | 実験の起票（202。worker が非同期に実行） | `evaluation:execute` |
+| `GET` | `/experiments` / `/experiments/{id}` / `/experiments/{id}/results` | 一覧 / 取得 / 事例ごとの結果 | `evaluation:read` |
+
+```jsonc
+// POST /judge-rubrics
+{ "scope": {…}, "internalId": "quality", "workingName": "…", "displayName": "…", "publishName": "quality", "owner": "…",
+  "instructions": "Judge factual correctness against the reference.",
+  "criteria": [{ "id": "accuracy", "label": "Accuracy", "description": "…", "weight": 2,
+                 "levels": [{ "score": 0, "label": "Wrong", "description": "…" }, { "score": 0.5, "label": "Partial", "description": "…" }, { "score": 1, "label": "Correct", "description": "…" }] }],
+  "referencePolicy": "required",          // optional | required | forbidden: 参照解答を渡すか
+  "tracePolicy": "optional" }             // optional | required | forbidden: ツール呼び出し列と会話履歴を渡すか（省略時 optional）
+// POST /experiments
+{ "scope": {…}, "target": { "agentId": "agent", "version": "1.2.0" }, "dataset": { "id": "set", "version": "1.0.0" }, "evaluatorProfile": { "id": "profile", "version": "1.0.0" },
+  "repetitions": 1,                       // 1〜10
+  "judgeSamples": 3 }                     // 1〜5（省略時 1）。2 以上で判定を独立に複数回行い中央値とばらつきを記録する
+// → 202 { "experiment": { …, "repetitions": 1, "judgeSamples": 3, "status": "queued", … } }
+```
+
+`tracePolicy` と `judgeSamples` は後付けの項目で、保存済みのルーブリック・実験は `optional` / `1` として読める。範囲外（`judgeSamples` 0 や 6、未知の `tracePolicy`）は 400。
+
+**判定レコード（`GET /experiments/{id}/results` の `judgeEvaluations[]`）**
+
+```jsonc
+{ "scorer": "llm-as-judge", "metricId": "judge", "rubric": { "id": "quality", "version": "1.0.0" }, "required": true,
+  "model": { "provider": "…", "model": "…", "modelConfigHash": "…" },
+  "status": "succeeded",
+  "score": 0.667,                                                    // 重み付き合成 Σ(weight×score)/Σ(weight)。判定不能（null）の基準は分母から外す。judgeSamples>1 なら各サンプルの合成の中央値
+  "reason": "…",                                                     // 全体の理由（judgeSamples>1 なら中央値に最も近いサンプルのもの）
+  "criteria": [{ "id": "accuracy", "score": 1, "reason": "…" },      // 基準別。score は基準の levels のいずれか、null = 判定不能（理由は必須）
+                { "id": "tone", "score": null, "reason": "…" }],
+  "samples": 3,                                                      // 実際に判定を得られたサンプル数（失敗したサンプルは数えない）
+  "dispersion": { "min": 0.5, "max": 0.833, "stddev": 0.136 },       // サンプル合成スコアの範囲と母標準偏差（samples=1 なら min=max=score, stddev 0）
+  "uncertain": true,                                                 // max − min ≥ 0.25 のとき true。UI は「判定が割れている」と示す
+  "usage": { "promptTokens": 1830, "completionTokens": 240, "totalTokens": 2070 },   // 修復呼び出し・全サンプル分の合計（provider が返した分だけ）
+  "contract": { "promptHash": "9f1c0b2a7d3e4f56", "rubricId": "quality", "rubricVersion": "1.0.0" } }   // 判定契約の指紋（後述）
+```
+
+- **派生指標**: 事例の `scores[]` には合成スコアが `metricId` で、基準別スコアが **`"<metricId>:<criterionId>"`**（例 `judge:accuracy`）で並ぶ（null の基準は出さない）。実験比較（`/experiments/compare`）や品質ゲートの `metric-threshold` / `max-regression` はこの名前で基準ごとに拾える。
+- **判定契約**: `contract.promptHash` はシステムプロンプトの版マーカー + ルーブリック JSON（id・版・文面・基準）+ 応答スキーマの sha256 先頭 16 hex。判定者側のプロンプト更新やルーブリック改版は指紋の変化として結果に残り、スコアのドリフトを説明できる。
+- **判定者が見るもの**: `input` / `output` / `reference`（`referencePolicy` に従う）に加え、`tracePolicy` が `forbidden` でなければ turn 事例では Run の `tool-call` / `tool-result`（引数と出力プレビュー先頭 10 行の JSON、上限 20 件・各 2,000 文字）、scenario 事例では最終応答を除く会話履歴（上限 20 件・各 2,000 文字）を **untrusted data ブロックの中に** 渡す。scenario 事例には軌跡が無いため、`tracePolicy: "required"` のルーブリックを scenario 事例に使うと判定は `JUDGE_INPUT` で失敗する。
+- **修復 1 回**: 判定者の出力がスキーマ・基準 id・段階に合わないときは、違反内容を添えて **1 回だけ** 修正を求める。それでも合わなければ `JUDGE_SCHEMA`。
+
+**判定の失敗コード（`status: "failed"` の `error.code`）** — 判定の失敗は事例の失敗にはせず、その指標のスコアを欠損（`scores[]` に出さない）として記録する。
+
+| code | 意味 |
+|---|---|
+| `JUDGE_INPUT` | 入力が契約を満たさない: ルーブリックが見つからない、`referencePolicy: required` で参照解答が無い、`tracePolicy: required` で軌跡が無い、`judgeSamples` が範囲外 |
+| `JUDGE_PROVIDER` | judge スロットのモデルが未設定・structured output 非対応・呼び出し失敗（一時障害の再試行は実験側） |
+| `JUDGE_SCHEMA` | 出力が応答契約に合わず、修復 1 回でも直らなかった |
+| `JUDGE_UNASSESSABLE` | 判定者が全基準を `null`（判定不能）にした。合成スコアを出せないので失敗として記録する |
+
+**起票時の判定ガード（`POST /experiments` の 409）** — 走らせれば必ず全事例が判定失敗になる組み合わせは実験を作らない。
+
+| code | 意味 | 本文 |
+|---|---|---|
+| `JUDGE_MODEL_NOT_CONFIGURED` | プロファイルに judge 指標があるが judge スロットにモデルが無い。設定画面で judge を保存すると直る | `{ error: { code, message } }` |
+| `JUDGE_TRACE_UNAVAILABLE` | `tracePolicy: required` のルーブリックを scenario 事例を含むデータセットに使った。ルーブリックの `tracePolicy` を `optional` にすると直る | `{ error: { code, message, rubric: { id, version } } }` |
 
 ### プロンプト自動生成（目玉機能）のリクエスト/レスポンス例
 

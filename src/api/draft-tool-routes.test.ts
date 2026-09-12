@@ -126,18 +126,38 @@ describe('draft tool routes', () => {
   });
 
   describe('GET /runtime/capabilities', () => {
-    it('test プロファイルでは分析アシスタントもツール検証の提案も無効（false）', async () => {
+    it('test プロファイルでは分析アシスタントもツール検証の提案も無効（false）、judge は scripted で設定済み', async () => {
       const response = await server.inject({ method: 'GET', url: '/runtime/capabilities' });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ analysisAssistant: { enabled: false }, toolCheckSuggestions: { enabled: false } });
+      expect(response.json()).toEqual({ analysisAssistant: { enabled: false }, toolCheckSuggestions: { enabled: false }, judge: { configured: true, provider: 'scripted-judge', model: 'scripted-judge' } });
     });
 
     it('提案ユースケースが利用可能なら toolCheckSuggestions.enabled が true になる（analysisAssistant とは独立）', async () => {
       const enabled = buildServer({ ...app, suggestToolCheckCases: { available: async () => true } as App['suggestToolCheckCases'] });
       try {
-        expect((await enabled.inject({ method: 'GET', url: '/runtime/capabilities' })).json()).toEqual({ analysisAssistant: { enabled: false }, toolCheckSuggestions: { enabled: true } });
+        expect((await enabled.inject({ method: 'GET', url: '/runtime/capabilities' })).json()).toMatchObject({ analysisAssistant: { enabled: false }, toolCheckSuggestions: { enabled: true } });
       } finally {
         await enabled.close();
+      }
+    });
+
+    it('judge が未設定なら judge.configured=false で provider / model は返さない（実験画面が起票前に未設定を示す）', async () => {
+      const unconfigured = buildServer({ ...app, judgeReadiness: async () => ({ configured: false }) });
+      try {
+        expect((await unconfigured.inject({ method: 'GET', url: '/runtime/capabilities' })).json().judge).toEqual({ configured: false });
+      } finally {
+        await unconfigured.close();
+      }
+    });
+
+    it('judge の設定状態は毎回解決する（切替直後のリクエストから新しい設定が見える）', async () => {
+      let calls = 0;
+      const switching = buildServer({ ...app, judgeReadiness: async () => { calls += 1; return calls === 1 ? { configured: false } : { configured: true, provider: 'openai', model: 'gpt-4o' }; } });
+      try {
+        expect((await switching.inject({ method: 'GET', url: '/runtime/capabilities' })).json().judge).toEqual({ configured: false });
+        expect((await switching.inject({ method: 'GET', url: '/runtime/capabilities' })).json().judge).toEqual({ configured: true, provider: 'openai', model: 'gpt-4o' });
+      } finally {
+        await switching.close();
       }
     });
   });
