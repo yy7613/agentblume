@@ -271,6 +271,11 @@ test('Chat・MCP・Validation・Memory・Settingsの全ナビが実操作でき�
   await page.getByRole('tab', { name: 'Runs' }).click();
   await expect(page.getByRole('tab', { name: 'Runs' })).toHaveAttribute('aria-selected', 'true');
 
+  // ツール検証は画面が開いて見出しが出ることだけを確かめる（サーバー側の /tool-checks が無い環境でも落ちないように）。
+  await page.getByRole('button', { name: 'Tool Check', exact: true }).click();
+  await expect(page).toHaveURL(/#\/toolcheck$/);
+  await expect(page.getByRole('heading', { name: 'Tool Check' })).toBeVisible();
+
   await page.getByRole('button', { name: 'Memory', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Long-term memory' })).toBeVisible();
   await page.getByLabel('Wiki ID').fill('screen-wiki');

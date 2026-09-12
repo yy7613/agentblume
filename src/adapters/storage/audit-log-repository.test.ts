@@ -84,7 +84,8 @@ contract('SqliteAuditLogRepository', () => new SqliteAuditLogRepository(':memory
  * 意図（テナントIDに現れない文字で区切る）はエスケープ表記で同じように書ける。
  */
 describe('ソースの健全性', () => {
-  it('src 配下のTypeScriptに生のNULバイトが無い（gitがバイナリ扱いしない）', async () => {
+  // src 全体（900 モジュール超）を読むので、全スイート並列実行時は既定の 5 秒に収まらないことがある。
+  it('src 配下のTypeScriptに生のNULバイトが無い（gitがバイナリ扱いしない）', { timeout: 60_000 }, async () => {
     const { readdir, readFile } = await import('node:fs/promises');
     const { join } = await import('node:path');
     const root = new URL('../../', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');

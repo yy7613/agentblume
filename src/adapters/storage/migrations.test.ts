@@ -68,6 +68,9 @@ describe('applyMigrations', () => {
       expect(tables.has('audit_log')).toBe(true);
       expect(indexes).toContain('idx_audit_log_scope_at');
       expect(indexes).toContain('idx_audit_log_scope_subject');
+      // version 4: ツール検証ケース。
+      expect(tables.has('tool_check_cases')).toBe(true);
+      expect(indexes).toContain('idx_tool_check_cases_scope_tool');
     } finally {
       database.close();
     }
@@ -94,6 +97,29 @@ describe('applyMigrations', () => {
       expect(tablesOf(upgraded.handle).has('audit_log')).toBe(true);
       expect(columnsOf(upgraded.handle, 'audit_log')).toEqual(new Set(['sequence', 'tenant_id', 'workspace_id', 'at', 'subject', 'action', 'resource_kind', 'resource_id', 'outcome', 'record_json']));
       // 既存データは残る（マイグレーションは足すだけ）。
+      expect(upgraded.handle.prepare('SELECT internal_id FROM tools').get()).toMatchObject({ internal_id: 'tool-1' });
+    } finally {
+      upgraded.close();
+    }
+  });
+
+  it('version 3 で止まっている既存DBに tool_check_cases を足す（既存データはそのまま）', () => {
+    const seeded = openSqliteDatabase(dbPath);
+    seeded.handle.exec(`INSERT INTO tools (tenant_id, workspace_id, internal_id, version, major, minor, patch, definition_json) VALUES ('t','w','tool-1','1.0.0',1,0,0,'{}')`);
+    seeded.close();
+
+    const legacy = new DatabaseSync(dbPath);
+    legacy.exec('DROP INDEX IF EXISTS idx_tool_check_cases_scope_tool');
+    legacy.exec('DROP TABLE IF EXISTS tool_check_cases');
+    legacy.exec('PRAGMA user_version = 3');
+    expect(tablesOf(legacy).has('tool_check_cases')).toBe(false);
+    legacy.close();
+
+    const upgraded = openSqliteDatabase(dbPath);
+    try {
+      expect(upgraded.schemaVersion).toBe(LATEST_SCHEMA_VERSION);
+      expect(tablesOf(upgraded.handle).has('tool_check_cases')).toBe(true);
+      expect(columnsOf(upgraded.handle, 'tool_check_cases')).toEqual(new Set(['tenant_id', 'workspace_id', 'id', 'tool_id', 'updated_at', 'record_json']));
       expect(upgraded.handle.prepare('SELECT internal_id FROM tools').get()).toMatchObject({ internal_id: 'tool-1' });
     } finally {
       upgraded.close();

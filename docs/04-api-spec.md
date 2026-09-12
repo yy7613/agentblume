@@ -181,6 +181,14 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/tools/{id}/preview` | 固定サンプルでプレビュー実行 | `tool:execute` |
 | `POST` | `/tools/{id}/infer-schema` | スキーマ伝播・推論 | `tool:edit` |
 | `POST` | `/tool-drafts/diagnose` | 未保存Toolのプリフライト診断（`POST /tools` と同じbodyを受け、保存せずに検査。§3.1） | `tool:execute` |
+| `POST` | `/tool-checks/run` | ツール検証: 保存済みToolを引数付きで単体実行し、期待との合否を返す（保存しない。§3.2） | `tool:execute` |
+| `GET` | `/tool-checks/cases` | ツール検証ケースの一覧（`toolId` で絞り込み。新しい定義が先） | `tool:read` |
+| `POST` | `/tool-checks/cases` | ツール検証ケースの保存（`id` 省略で新規、指定で上書き） | `tool:edit` |
+| `DELETE` | `/tool-checks/cases/{id}` | ツール検証ケースの削除 | `tool:edit` |
+| `POST` | `/tool-checks/cases/{id}/run` | 保存済みケースを実行し `lastResult` を更新 | `tool:execute` |
+| `POST` | `/tool-checks/cases/run-all` | 全ケース（または `toolId` のケース）を逐次実行 | `tool:execute` |
+| `POST` | `/tool-checks/suggest` | LLM による 正常 / 境界 / 異常 のケース案（保存しない。モデル未設定は 502。§3.2） | `tool:execute` |
+| `GET` | `/runtime/capabilities` | UI の機能フラグ: `{ analysisAssistant: { enabled }, toolCheckSuggestions: { enabled } }`（現在のモデル設定を毎回見る） | `workspace:read` |
 | `POST` | `/tools/{id}/publish` | 公開（エイリアス/互換性管理） | `tool:publish` |
 | `POST` | `/tools/{id}/expose-mcp` | MCPサーバとして公開 | `deployment:publish` |
 | `POST` | `/skills` | Skill作成 | `skill:create` |
@@ -251,6 +259,72 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | Tool | `output-schema` | 宣言 outputSchema が推論終端と不整合（実行後に落ちる。再保存で更新） |
 | Tool | `operator-arguments` | opBinding の許可リストが空・既定演算子の不一致・引数型が string でない（error） / 引数が inputSchema に無く実行時に不活性（warning） |
 | Tool | `side-effect` | warning のみ: 非 read-only は承認ゲートで停止する |
+
+### 3.2 ツール検証（tool checks）
+
+保存済み Tool を「Agent が渡すのと同じ引数」で**単体実行**し、出力・ノード別行数・所要時間を見せ、期待（行数 / 必須列 / セル値 / 所要時間上限）との合否を返す。引数の検証・グラフへの束縛・全行実行は Agent 経路と**同じ関数**（`validateToolArguments` → `graphWithArguments` → データソース解決 → `engine.preview`）を通すので、ここで通れば Agent から呼んでも同じ結果になる。出力ディスパッチャ（セッション成果物の書き込み）は呼ばず、`engine.preview` 内の sink ノードは表を通すだけなので、`write` の Tool も副作用なしに実行できる。
+
+実行自体の失敗（引数不正 `TOOL_ARGUMENTS`・inputSchema と agent-input の不整合 `AGENT_RUN`・ノードの実行エラー `ETL_*`＋`nodeId`）は HTTP エラーではなく **200 で `status: "error"`** の結果になる（画面の仕事は「実行すると何が起きるか」を見せること）。Tool が存在しなければ 404 `TOOL_NOT_FOUND`。
+
+```jsonc
+// POST /tool-checks/run
+{ "scope": {…}, "toolId": "sales", "version": "1.2.0",          // version 省略で最新版
+  "arguments": { "region": "Tokyo", "minimum": 10 },              // JSON セル（string / number / boolean / null）のみ
+  "expectations": {
+    "rowCount": { "op": "gte", "value": 1 },                       // op: eq | gte | lte
+    "columns": ["region", "amount"],
+    "cells": [{ "column": "region", "op": "eq", "value": "Tokyo", "mode": "all" }], // op: eq | neq | gte | lte | contains、mode: any | all
+    "maxDurationMs": 5000,
+    "outcome": "success"                                          // success | error（省略可。後述）
+  },
+  "rowLimit": 100 }                                                    // 表示用スナップショットの行数（既定 100、0 で本文なし）
+// → 200 { "result": ToolCheckRunResult }
+{ "tool": { "internalId": "sales", "version": "1.2.0", "publishName": "sales_search" },
+  "status": "failed",                                                 // passed | failed | error
+  "assertions": [
+    { "kind": "rowCount", "passed": true,  "expected": "row count >= 1", "actual": "row count 2" },
+    { "kind": "column",   "passed": false, "expected": "column 'amount' exists", "actual": "columns: region, total" },
+    { "kind": "cell",     "passed": true,  "expected": "every row has region == \"Tokyo\"", "actual": "2 of 2 rows match" },
+    { "kind": "duration", "passed": true,  "expected": "duration <= 5000ms", "actual": "12ms" }
+  ],
+  "output": Table,                                                     // 先頭 rowLimit 行のスナップショット
+  "rowCount": 2,                                                       // 全行数（期待の評価もこちら）
+  "nodes": [{ "nodeId": "data", "rowCount": 3 }, { "nodeId": "filter", "rowCount": 2 }],
+  "durationMs": 12, "checkedAt": "2026-09-12T09:00:00.000Z",
+  "error": { "code": "TOOL_ARGUMENTS", "message": "…", "nodeId": "…" } }  // status = error のときだけ
+```
+
+`expected` / `actual` は英語の定型文で UI が正規表現で日本語化する（`row count <sym> <n>` / `column '<name>' exists` / `some row has <col> <sym> <json>` / `every row has …` / `<matched> of <total> rows match` / `column '<name>' not in output` / `duration <= <ms>ms` / `outcome success` / `outcome error (<code>)`）。セル比較は eq / neq が JSON 表現の一致（Date は ISO 文字列化）、gte / lte は数値同士だけ、contains は文字列化した部分一致。null セルは `eq null` にだけ一致する。
+
+**結末の期待（`expectations.outcome`）** で異常系ケースを表現する。`"error"` は「引数不正・inputSchema の不整合・ノードエラーで**失敗すること**」自体を期待する: 実行が失敗すれば `status: "passed"`、assertions は `[{ kind: "outcome", passed: true, expected: "outcome error", actual: "outcome error (TOOL_ARGUMENTS)" }]` の 1 件だけ（他の期待は出力が無いので評価しない）、`error` は表示のために残る。失敗するはずが成功したら `status: "failed"` で結末の assertion（`actual: "outcome success"`）が不合格になり、残りの期待も評価して「実際に何が起きたか」を見せる。`"success"` を明示すると合格の結末 assertion が先頭に付き、実行が失敗したときは従来どおり `status: "error"` のまま不合格の結末 assertion（`actual: "outcome error (<code>)"`）を添える。省略時は従来どおり（結末の assertion は出ない）。要約は合格した異常系で `passed 1/1 (expected error: <message>)` になる。
+
+ケース（`ToolCheckCase`）は `{ id, toolId, toolVersion?, name, arguments, expectations, lastResult?, createdAt, updatedAt }`。版を持たず `id` で上書きし、上書きでは `createdAt` と `lastResult` を引き継ぐ。`lastResult` は `{ status, checkedAt, toolVersion, summary }` の要約だけ（`passed 3/3` / `failed 1/3: row count == 3 → row count 5` / `error: <message>`）で、実行（`/cases/{id}/run`・`/cases/run-all`）のたびに更新される。一括実行は一覧順に逐次実行し、1件が error でも止まらない。版を固定したケースの Tool が削除されていても 404 にせず `status: "error"`（`TOOL_NOT_FOUND`）の結果として返す。ケース定義の不変条件違反は 400 `TOOL_CHECK_VALIDATION`、未知のケースは 404 `TOOL_CHECK_NOT_FOUND`。
+
+#### ケース案の生成（`POST /tool-checks/suggest`）
+
+保存済み Tool の公開契約（inputSchema・`agentTool` の名前と説明・outputSchema）、グラフの要約（ノード id / type と、filter 条件が Agent 引数を束縛している箇所）、agent-input ノードの設計時サンプルでの 1 回の実行結果（出力列・先頭 5 行・全行数）を文脈としてモデルへ渡し、カテゴリ（`normal` / `boundary` / `abnormal`）ごとに `perCategory` 件のケース案を JSON（structured output、temperature 0）で返させる。**保存はしない**（利用者がレビューして `/tool-checks/run` で試し、`/tool-checks/cases` へ保存する）。分析アシスタントと同じ有効判定・同じモデル（main スロット）を使い、`GET /runtime/capabilities` の `toolCheckSuggestions.enabled` で UI に有無を伝える。
+
+```jsonc
+// POST /tool-checks/suggest
+{ "scope": {…}, "toolId": "sales", "version": "1.2.0",   // version 省略で最新版
+  "perCategory": 2,                                        // 1〜5、省略時 2（範囲外は 400）
+  "focus": "価格の境界を重点的に" }                          // 任意・500 文字まで
+// → 200 { "suggestions": ToolCheckSuggestions }
+{ "tool": { "internalId": "sales", "version": "1.2.0", "publishName": "sales_search" },
+  "suggestions": [
+    { "category": "normal", "name": "Tokyo rows", "rationale": "…",
+      "arguments": { "region": "Tokyo", "minimum": 0 }, "expectations": { "rowCount": { "op": "gte", "value": 1 } },
+      "warnings": ["argument 'minimum' was \"0\" (string); converted to number 0"] },
+    { "category": "abnormal", "name": "missing region", "rationale": "…",
+      "arguments": { "minimum": 0 }, "expectations": { "outcome": "error" }, "warnings": [] }
+  ],
+  "model": { "provider": "lm-studio", "model": "…" },        // 分かるときだけ
+  "warnings": ["model returned 4 normal cases; kept the first 2"] }
+```
+
+モデルの出力は信用せず、サーバーで検証・修復する（落とした・直した点は各案の `warnings`、全体の注意は応答の `warnings`）: 未知のカテゴリは捨てる。カテゴリごとの超過分は切り詰める。名前は空・120 文字超なら `<category> case N` に置き換える。引数は inputSchema に無いキーを落とす（**異常系で `outcome: "error"` のときだけ未宣言キーを 1 つ残す**＝それが検証の狙い）、曖昧でない型違いは列の型へ寄せる（`"12"` → `12`、`"true"` → `true`、`12` → `"12"`）、nullable でない列への `null` は正常・境界では落とす（異常系では残す）。期待は保存時と同じドメイン検証をキーごとに通し、不正なものだけ落とす。`cells[].column` は出力列（宣言 outputSchema、無ければサンプル実行の列）に無ければ落とす。サンプル実行が失敗しても提案は続け、`warnings` に `sample run failed (…)` を残す。
+
+エラー: Tool が無ければ 404 `TOOL_NOT_FOUND`。モデル未設定・structured output 非対応は 502 `MODEL_PROVIDER`（`tool check suggestions are not configured`）、JSON でない／形の違う応答は `tool check suggestions returned invalid JSON`、使えるケースが 0 件なら `tool check suggestions returned no usable case`（いずれも 502）。
 
 ### プロンプト自動生成（目玉機能）のリクエスト/レスポンス例
 

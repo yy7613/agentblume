@@ -1065,3 +1065,113 @@ export interface SampleDataSummaryDto {
   readonly wikis: readonly string[];
   readonly created: number;
 }
+
+// ---------------------------------------------------------------------------
+// ツール検証（Tool Check）: 保存済みツールを引数付きで単体実行し、期待との合否を出す。
+// サーバーの src/application/tool-check と対で保守する。
+// ---------------------------------------------------------------------------
+
+/** セル期待の比較演算子。contains は文字列化した値の部分一致。 */
+export type ToolCheckCellOpDto = 'eq' | 'neq' | 'gte' | 'lte' | 'contains';
+export interface ToolCheckExpectationsDto {
+  /** 出力行数（全行数、表示上限に依存しない）。 */
+  readonly rowCount?: { readonly op: 'eq' | 'gte' | 'lte'; readonly value: number };
+  /** 出力スキーマに含まれるべき列名。 */
+  readonly columns?: readonly string[];
+  /** セル値の期待。mode: any = 1行でも満たせば合格、all = 全行が満たす必要あり。 */
+  readonly cells?: readonly { readonly column: string; readonly op: ToolCheckCellOpDto; readonly value: JsonCell; readonly mode: 'any' | 'all' }[];
+  /** 実行時間の上限（ms）。 */
+  readonly maxDurationMs?: number;
+  /**
+   * 実行の結末。'error' は「引数不正やノードエラーで失敗すること」自体を期待する（異常系ケース用）。
+   * 省略時と 'success' は従来どおり、実行が成功したうえで他の期待を評価する。
+   */
+  readonly outcome?: 'success' | 'error';
+}
+export interface ToolCheckAssertionResultDto {
+  readonly kind: 'rowCount' | 'column' | 'cell' | 'duration' | 'outcome';
+  readonly passed: boolean;
+  /** 期待の説明（英語定型文。UI で言語化する）。 */
+  readonly expected: string;
+  /** 実際の値の説明。 */
+  readonly actual: string;
+}
+export interface ToolCheckRunResultDto {
+  readonly tool: { readonly internalId: string; readonly version: string; readonly publishName: string };
+  /** passed = 全期待合格、failed = 期待不合格あり、error = 実行自体が失敗（引数不正・ノードエラー等）。 */
+  readonly status: 'passed' | 'failed' | 'error';
+  readonly assertions: readonly ToolCheckAssertionResultDto[];
+  /** 表示用スナップショット（rowLimit 行まで）。 */
+  readonly output: TableDto;
+  /** 実際の出力行数。 */
+  readonly rowCount: number;
+  readonly nodes: readonly { readonly nodeId: string; readonly rowCount: number }[];
+  readonly durationMs: number;
+  /** status = error のときの失敗理由（code はサーバーのエラーコード、nodeId は分かるときだけ）。 */
+  readonly error?: { readonly code: string; readonly message: string; readonly nodeId?: string };
+  readonly checkedAt: string;
+}
+export interface RunToolCheckDto {
+  readonly scope: TenantScopeDto;
+  readonly toolId: string;
+  /** 省略時は最新版。 */
+  readonly version?: string;
+  readonly arguments: Readonly<Record<string, JsonCell>>;
+  readonly expectations?: ToolCheckExpectationsDto;
+  /** 表示用スナップショットの行数（既定 100）。 */
+  readonly rowLimit?: number;
+}
+export interface ToolCheckCaseDto {
+  readonly id: string;
+  readonly toolId: string;
+  /** 固定する版。省略時は実行時点の最新版。 */
+  readonly toolVersion?: string;
+  readonly name: string;
+  readonly arguments: Readonly<Record<string, JsonCell>>;
+  readonly expectations: ToolCheckExpectationsDto;
+  /** 直近の実行結果の要約（未実行なら無し）。 */
+  readonly lastResult?: { readonly status: ToolCheckRunResultDto['status']; readonly checkedAt: string; readonly toolVersion: string; readonly summary: string };
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+export interface SaveToolCheckCaseDto {
+  readonly scope: TenantScopeDto;
+  /** 省略時は新規作成、指定時は上書き。 */
+  readonly id?: string;
+  readonly toolId: string;
+  readonly toolVersion?: string;
+  readonly name: string;
+  readonly arguments: Readonly<Record<string, JsonCell>>;
+  readonly expectations: ToolCheckExpectationsDto;
+}
+export interface ToolCheckCaseRunDto { readonly case: ToolCheckCaseDto; readonly result: ToolCheckRunResultDto }
+
+// --- LLM によるケース提案（正常 / 境界 / 異常）。提案は保存されず、利用者がレビューして実行・保存する。 ---
+export type ToolCheckCaseCategoryDto = 'normal' | 'boundary' | 'abnormal';
+export interface ToolCheckSuggestionDto {
+  readonly category: ToolCheckCaseCategoryDto;
+  readonly name: string;
+  /** なぜこのケースか（モデルの説明。表示用、信用はしない）。 */
+  readonly rationale: string;
+  readonly arguments: Readonly<Record<string, JsonCell>>;
+  readonly expectations: ToolCheckExpectationsDto;
+  /** サーバー側の検証で落とした・直した点（例: 未宣言の引数を除去、数値へ変換）。 */
+  readonly warnings: readonly string[];
+}
+export interface SuggestToolCheckCasesDto {
+  readonly scope: TenantScopeDto;
+  readonly toolId: string;
+  readonly version?: string;
+  /** カテゴリごとの件数（1〜5、既定 2）。 */
+  readonly perCategory?: number;
+  /** 重点（自由文。例: 「価格の境界を重点的に」）。 */
+  readonly focus?: string;
+}
+export interface ToolCheckSuggestionsDto {
+  readonly tool: { readonly internalId: string; readonly version: string; readonly publishName: string };
+  readonly suggestions: readonly ToolCheckSuggestionDto[];
+  /** 提案に使ったモデル（分かるときだけ）。 */
+  readonly model?: { readonly provider: string; readonly model: string };
+  /** 提案全体への注意（例: サンプル実行に失敗したため期待値は推定）。 */
+  readonly warnings: readonly string[];
+}

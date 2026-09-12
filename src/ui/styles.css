@@ -831,3 +831,110 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 .welcome-check { width: 16px; color: #a7b0c4; font-weight: 800; }
 .welcome-checklist li.done .welcome-check { color: #17a37a; }
 .welcome-dismiss { display: block; margin: 16px 0 0; border: 0; background: transparent; color: #8a94a8; font-size: 11px; text-decoration: underline; padding: 0; }
+
+/* ツール検証（Tool Check）。左列 = 保存済みケース、右 = 引数・期待・結果のエディタ。 */
+.tool-check-layout { grid-template-columns: minmax(280px, .7fr) minmax(480px, 1.3fr); align-items: start; }
+.tool-check-toolbar { flex-wrap: wrap; }
+.tool-check-toolbar-field { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.tool-check-toolbar-field select { max-width: 220px; }
+.tool-check-section { margin-bottom: 18px; }
+.tool-check-section h2 { margin: 0 0 8px; font-size: 14px; }
+.tool-check-section h3 { margin: 14px 0 6px; font-size: 13px; }
+.tool-check-hint { margin: 0 0 10px; color: #758198; font-size: 11px; line-height: 1.45; }
+.tool-check-args { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.tool-check-arg { display: grid; gap: 4px; padding: 8px; border: 1px solid #e5e9f1; border-radius: 8px; min-width: 0; }
+.tool-check-arg.highlighted { border-color: #b73343; background: #fff5f6; }
+.tool-check-arg label { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.tool-check-arg-name { font-weight: 700; overflow-wrap: anywhere; }
+.tool-check-arg-type { color: #7d899f; font-size: 10px; white-space: nowrap; }
+.tool-check-arg .checkbox-label { justify-content: flex-start; font-size: 11px; color: #4f5d76; }
+.tool-check-arg .field-error { margin: 0; font-size: 11px; }
+.tool-check-expect-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
+.tool-check-expect-row input[type="number"] { width: 110px; }
+.tool-check-chips { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0 0 10px; padding: 0; }
+.tool-check-chips li { display: inline-flex; align-items: center; gap: 4px; }
+.tool-check-chip-remove { border: 0; background: transparent; padding: 0 2px; font-size: 12px; line-height: 1; cursor: pointer; color: inherit; }
+.tool-check-cells { display: grid; gap: 6px; margin-bottom: 10px; }
+.tool-check-cells-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 700; }
+.tool-check-cell-row { display: grid; grid-template-columns: minmax(120px, 1.2fr) 90px minmax(100px, 1fr) minmax(110px, .9fr) 32px; gap: 6px; align-items: center; }
+.tool-check-cell-row > button { height: 32px; padding: 0; }
+.tool-check-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin: 6px 0 10px; }
+.tool-check-actions .primary { min-height: 36px; }
+.tool-check-name-field { display: grid; gap: 4px; font-size: 12px; margin-left: auto; }
+.tool-check-name-field input { min-width: 200px; }
+.tool-check-banner { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 12px; }
+.tool-check-banner strong { font-size: 14px; }
+.tool-check-banner.passed { background: #e4f5ef; color: #137058; }
+.tool-check-banner.failed { background: #fff4dc; color: #856015; }
+.tool-check-banner.error { background: #fce8ea; color: #a62f3e; }
+.tool-check-argument-hint { padding: 8px 10px; border-radius: 6px; font-size: 11px; margin: 6px 0; background: #fff4dc; color: #6b4a08; }
+.tool-check-argument-hint p { margin: 0 0 4px; }
+.tool-check-assertions { margin-bottom: 12px; }
+.tool-check-assertions caption { text-align: left; padding: 6px 9px; font-size: 11px; font-weight: 700; color: #59667d; }
+.tool-check-assertions tr.failed td { background: #fff8f8; }
+.tool-check-mark.passed { color: #137058; font-weight: 800; }
+.tool-check-mark.failed { color: #b43a46; font-weight: 800; }
+.tool-check-nodes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: #4f5d76; margin: 10px 0 0; }
+.tool-check-meta { margin: 6px 0 0; color: #8a94a8; }
+.tool-check-cases { max-height: none; }
+.tool-check-case { display: flex; align-items: stretch; gap: 8px; border: 1px solid #dce1eb; background: white; border-radius: 8px; padding: 10px; }
+.tool-check-case.selected { border-color: #6576f1; background: #f2f4ff; }
+.tool-check-case-body { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
+.tool-check-case-body time { width: 100%; font-size: 10px; color: #7a869c; }
+.tool-check-case-tool { color: #68758f; font-size: 11px; }
+/* 長いツール名・ケース名は折り返して、行のボタンを押し出さない。 */
+.tool-check-name { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.tool-check-case-actions { display: grid; gap: 4px; align-content: center; }
+.tool-check-case-actions button { padding: 5px 9px; font-size: 11px; }
+.tool-check-chip.passed { background: #e4f5ef; color: #137058; }
+.tool-check-chip.failed { background: #fff4dc; color: #856015; }
+.tool-check-chip.error { background: #fce8ea; color: #b43a46; }
+.tool-check-chip.none { background: #edf0f6; color: #59667d; }
+.tool-check-run-all { padding: 10px; border-radius: 8px; background: #f5f7fa; margin-bottom: 10px; font-size: 12px; }
+.tool-check-run-all ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
+.tool-check-run-all li { display: flex; align-items: center; gap: 6px; }
+/* 期待どおりの失敗（outcome = error で合格）: 直すものは無いので、警告色ではなく情報色で見せる */
+.tool-check-expected-failure { padding: 8px 10px; border-radius: 6px; font-size: 11px; margin: 6px 0 10px; background: #eef2ff; color: #34418a; border: 1px solid #d5dbfa; }
+.tool-check-expected-failure p { margin: 0 0 4px; }
+.tool-check-outcome-hint { margin: 0; flex-basis: 100%; }
+/* LLM によるケース提案 */
+.tool-check-editor-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: flex-end; }
+.tool-check-suggest-disabled { flex-basis: 100%; text-align: right; color: #758198; font-size: 11px; }
+.tool-check-suggest { margin: 0 0 18px; padding: 12px; border: 1px solid #d5dbfa; border-radius: 10px; background: #fafbff; }
+.tool-check-suggest-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.tool-check-suggest-head h3 { margin: 0; font-size: 14px; }
+.tool-check-suggest-options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+.tool-check-suggest-options input[type="number"] { width: 70px; }
+.tool-check-suggest-focus { flex: 1 1 240px; }
+.tool-check-suggest-focus input { flex: 1; min-width: 160px; }
+.tool-check-suggest-progress { margin: 6px 0; font-size: 12px; color: #4f5d76; }
+.tool-check-suggest-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; margin: 10px 0 6px; }
+.tool-check-suggest-model { color: #7d899f; }
+.tool-check-suggest-bulk { display: flex; gap: 6px; }
+.tool-check-suggest-warnings { list-style: none; margin: 4px 0; padding: 0; font-size: 11px; color: #6b4a08; }
+.tool-check-suggest-group { margin-top: 12px; }
+.tool-check-suggest-group h4 { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 13px; }
+.tool-check-suggest-group-count { font-size: 11px; color: #7d899f; font-weight: 400; }
+.tool-check-category { display: inline-block; border-radius: 99px; padding: 2px 8px; font-size: 10px; font-weight: 800; }
+.tool-check-category.normal { background: #e4f5ef; color: #137058; }
+.tool-check-category.boundary { background: #fff4dc; color: #856015; }
+.tool-check-category.abnormal { background: #edf0f6; color: #59667d; }
+.tool-check-chip.expects-failure { background: #eef2ff; color: #34418a; }
+.tool-check-chip.saved { background: #e4f5ef; color: #137058; }
+.tool-check-suggest-card { border: 1px solid #dce1eb; background: white; border-radius: 8px; padding: 10px; margin-bottom: 8px; font-size: 12px; }
+.tool-check-suggest-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tool-check-suggest-rationale { margin: 4px 0 6px; color: #59667d; }
+.tool-check-suggest-args { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0 0 6px; }
+.tool-check-suggest-args > div { display: flex; gap: 4px; }
+.tool-check-suggest-args dt { font-weight: 700; }
+.tool-check-suggest-args dt::after { content: ':'; }
+.tool-check-suggest-args dd { margin: 0; }
+.tool-check-suggest-expectations { margin: 0 0 6px; padding-left: 18px; }
+.tool-check-suggest-run-detail { margin: 6px 0; padding: 6px 8px; border-radius: 6px; font-size: 11px; }
+.tool-check-suggest-run-detail p { margin: 0; }
+.tool-check-suggest-run-detail.passed { background: #e4f5ef; color: #137058; }
+.tool-check-suggest-run-detail.failed { background: #fff4dc; color: #856015; padding-left: 22px; }
+.tool-check-suggest-run-detail.error { background: #fce8ea; color: #a62f3e; }
+.tool-check-suggest-card-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.tool-check-suggest-card-actions button { padding: 5px 9px; font-size: 11px; }
+@media (max-width: 1100px) { .tool-check-layout { grid-template-columns: 1fr; } }

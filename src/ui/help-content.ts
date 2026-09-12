@@ -100,6 +100,16 @@ const HELP: Readonly<Record<ScreenName, ScreenHelp>> = {
     ],
     doc: 'docs/07-execution-model.md',
   },
+  ToolCheck: {
+    title: { en: 'Tool Check', ja: 'ツール検証' },
+    summary: { en: 'Run a saved Tool by itself with the arguments an Agent would pass, compare the output with what you expect (row count, columns, values, duration), and keep the case to re-run after changes.', ja: '保存済みツールを、エージェントが渡すのと同じ引数で単体実行し、期待する結果（行数・列・値・所要時間）と比べて合否を出します。ケースとして保存すれば、ツールやデータを変えた後に再実行して退行を見つけられます。' },
+    steps: [
+      { en: 'Pick a Tool, fill the arguments, run. The output is computed on the full data exactly as in an Agent run, without side effects.', ja: 'ツールを選び、引数を入れて実行します。エージェント実行と同じく全行で計算し、副作用は起こしません。' },
+      { en: 'Add expectations and save the case. "Run all" re-checks every saved case.', ja: '期待を追加してケースを保存します。「すべて実行」で保存済みケースをまとめて再確認できます。' },
+      { en: '"Suggest cases with the model" drafts normal / boundary / abnormal cases from the tool definition. Run each to confirm, then save the ones you keep. Needs a model with structured output (see Settings).', ja: '「LLMでケースを提案」は、ツール定義から 正常 / 境界 / 異常 のケース案を作ります。実行して確認し、残すものを保存します。構造化出力に対応したモデルが必要です（設定画面）。' },
+    ],
+    doc: 'docs/06-etl-tool-builder.md',
+  },
   Validation: {
     title: { en: 'Validation', ja: '検証' },
     summary: { en: 'Define personas and scenarios, run them against an Agent, and score the results before promoting a version.', ja: 'ペルソナとシナリオを定義してエージェントに実行させ、結果を採点してからバージョンを昇格します。' },

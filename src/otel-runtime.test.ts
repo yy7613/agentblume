@@ -138,7 +138,8 @@ describe('startTelemetry', () => {
     expect(messages[0]).toContain('already registered');
   });
 
-  it('既定のローダーは実SDKから TracerProvider を組み立てられる（OTelのAPI変更を検出する）', async () => {
+  // 実 SDK の読み込みは重く、全スイート並列実行時に既定の 5 秒を超えることがある（単体では 1 秒未満）。
+  it('既定のローダーは実SDKから TracerProvider を組み立てられる（OTelのAPI変更を検出する）', { timeout: 60_000 }, async () => {
     // ここだけは fake で代替できない。SDK側の型・コンストラクタ引数が変わったとき、
     // 「フラグを立てた本番でだけ落ちる」のを防ぐために実物を1回組み立てる。
     // register() はグローバルの TracerProvider を差し替えて他のテストへ漏れるので**呼ばない**。

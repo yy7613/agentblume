@@ -4,6 +4,7 @@ import type { z } from 'zod';
 import type { DiagnoseToolUseCase } from '../application/tool/diagnose-tool';
 import type { DraftToolUseCase } from '../application/tool/draft-tool';
 import type { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
+import type { SuggestToolCheckCasesUseCase } from '../application/tool-check/suggest-tool-check-cases';
 import { SemVer } from '../domain/tool/semver';
 import { createTool } from '../domain/tool/tool';
 import { scopeOf } from './authentication';
@@ -14,6 +15,7 @@ import { previewResponse } from './tool-routes';
 export interface DraftToolRouteDeps {
   readonly draftTool: DraftToolUseCase;
   readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
+  readonly suggestToolCheckCases: SuggestToolCheckCasesUseCase;
   readonly diagnoseTool: DiagnoseToolUseCase;
 }
 
@@ -66,7 +68,11 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
     });
     return { diagnostics: await deps.diagnoseTool.execute(scope, tool) };
   });
-  app.get('/runtime/capabilities', async () => ({ analysisAssistant: { enabled: await deps.suggestAnalysisConfig.available() } }));
+  // UI が「AI 補助」のボタンを出すかどうかを決めるための機能フラグ。どちらも現在のモデル設定を毎回見る。
+  app.get('/runtime/capabilities', async () => ({
+    analysisAssistant: { enabled: await deps.suggestAnalysisConfig.available() },
+    toolCheckSuggestions: { enabled: await deps.suggestToolCheckCases.available() },
+  }));
   app.post('/tool-drafts/suggest-analysis-config', async (request) => {
     const body = parseWith(analysisSuggestionBodySchema, request.body);
     return { proposal: await deps.suggestAnalysisConfig.execute({ graph: body.graph, nodeId: body.nodeId, intent: body.intent }) };

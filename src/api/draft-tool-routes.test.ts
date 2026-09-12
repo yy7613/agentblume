@@ -125,6 +125,23 @@ describe('draft tool routes', () => {
     expect(invalid.json().error.code).toBe('BAD_REQUEST');
   });
 
+  describe('GET /runtime/capabilities', () => {
+    it('test プロファイルでは分析アシスタントもツール検証の提案も無効（false）', async () => {
+      const response = await server.inject({ method: 'GET', url: '/runtime/capabilities' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ analysisAssistant: { enabled: false }, toolCheckSuggestions: { enabled: false } });
+    });
+
+    it('提案ユースケースが利用可能なら toolCheckSuggestions.enabled が true になる（analysisAssistant とは独立）', async () => {
+      const enabled = buildServer({ ...app, suggestToolCheckCases: { available: async () => true } as App['suggestToolCheckCases'] });
+      try {
+        expect((await enabled.inject({ method: 'GET', url: '/runtime/capabilities' })).json()).toEqual({ analysisAssistant: { enabled: false }, toolCheckSuggestions: { enabled: true } });
+      } finally {
+        await enabled.close();
+      }
+    });
+  });
+
   it('不正 body は 400 BAD_REQUEST', async () => {
     const response = await server.inject({ method: 'POST', url: '/tool-drafts/preview', payload: { graph, rowLimit: 0 } });
     expect(response.statusCode).toBe(400);

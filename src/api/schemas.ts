@@ -695,3 +695,46 @@ export const openAiCompatibleModelsBodySchema = z.object({
   baseUrl: modelBaseUrlSchema,
   slot: z.enum(MODEL_SLOT_NAMES).optional(),
 });
+
+// ---------------------------------------------------------------------------
+// ツール検証（Tool Check）
+// 引数・期待値は JSON セル（string / number / boolean / null）に限る（Agent の function calling が
+// 渡せる値と同じ集合）。境界値（件数上限・文字数）はドメイン createToolCheckCase が正本で、
+// ここでは形だけを検証する。
+// ---------------------------------------------------------------------------
+export const jsonCellSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+export const toolCheckExpectationsSchema = z.object({
+  rowCount: z.object({ op: z.enum(['eq', 'gte', 'lte']), value: z.number() }).optional(),
+  columns: z.array(z.string()).optional(),
+  cells: z.array(z.object({ column: z.string(), op: z.enum(['eq', 'neq', 'gte', 'lte', 'contains']), value: jsonCellSchema, mode: z.enum(['any', 'all']) })).optional(),
+  maxDurationMs: z.number().optional(),
+  outcome: z.enum(['success', 'error']).optional(),
+});
+export const runToolCheckBodySchema = z.object({
+  scope: tenantScopeSchema,
+  toolId: z.string().min(1),
+  version: z.string().optional(),
+  arguments: z.record(z.string(), jsonCellSchema),
+  expectations: toolCheckExpectationsSchema.optional(),
+  rowLimit: z.number().int().min(0).max(10000).optional(),
+});
+export const saveToolCheckCaseBodySchema = z.object({
+  scope: tenantScopeSchema,
+  id: z.string().min(1).optional(),
+  toolId: z.string().min(1),
+  toolVersion: z.string().optional(),
+  name: z.string(),
+  arguments: z.record(z.string(), jsonCellSchema),
+  expectations: toolCheckExpectationsSchema,
+});
+export const toolCheckCaseListQuerySchema = scopeQuerySchema.extend({ toolId: z.string().min(1).optional() });
+export const toolCheckCaseActionBodySchema = z.object({ scope: tenantScopeSchema });
+export const runAllToolCheckCasesBodySchema = z.object({ scope: tenantScopeSchema, toolId: z.string().min(1).optional() });
+/** LLM によるケース提案。perCategory の 1〜5 はここが正本（ユースケースは既定 2 を補うだけ）。 */
+export const suggestToolCheckCasesBodySchema = z.object({
+  scope: tenantScopeSchema,
+  toolId: z.string().min(1),
+  version: z.string().optional(),
+  perCategory: z.number().int().min(1).max(5).optional(),
+  focus: z.string().max(500).optional(),
+});

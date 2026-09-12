@@ -34,7 +34,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 /** このコードが理解できるスキーマの最新版。 */
-export const LATEST_SCHEMA_VERSION = 3;
+export const LATEST_SCHEMA_VERSION = 4;
 
 /** version 1 で作られるテーブル（列定義は「ALTER適用後の最終形」）。 */
 const BASELINE_TABLES: readonly string[] = [
@@ -279,6 +279,22 @@ const AUDIT_LOG_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_audit_log_scope_subject ON audit_log (tenant_id, workspace_id, subject, at DESC)`,
 ];
 
+/**
+ * version 4: ツール検証ケース（`docs/04-api-spec.md` §3.2）。
+ *
+ * 本体は `record_json`（SerializedToolCheckCase）。一覧の絞り込み（選択中ツールのケースだけ）と
+ * 並び（新しい定義が先）に使う `tool_id` / `updated_at` だけを列へ出す。ケースは版を持たず
+ * (tenant_id, workspace_id, id) で upsert する。
+ */
+const TOOL_CHECK_CASE_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS tool_check_cases (
+    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, id TEXT NOT NULL,
+    tool_id TEXT NOT NULL, updated_at TEXT NOT NULL, record_json TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, workspace_id, id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_tool_check_cases_scope_tool ON tool_check_cases (tenant_id, workspace_id, tool_id)`,
+];
+
 /** 適用順のマイグレーション一覧（version は 1 から連番）。 */
 export const MIGRATIONS: readonly SchemaMigration[] = [
   {
@@ -302,6 +318,13 @@ export const MIGRATIONS: readonly SchemaMigration[] = [
     description: 'audit log table (who did what, with which outcome)',
     apply(db) {
       for (const statement of AUDIT_LOG_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 4,
+    description: 'tool check cases (saved tool verification cases)',
+    apply(db) {
+      for (const statement of TOOL_CHECK_CASE_STATEMENTS) db.exec(statement);
     },
   },
 ];

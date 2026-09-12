@@ -19,6 +19,7 @@ import { WelcomeCard } from './onboarding/WelcomeCard';
 import { NavigationProvider } from './navigation';
 import { DEFAULT_SCREEN, SCREENS, type ScreenName } from './screens';
 import { useHashScreen } from './routing';
+import { ToolCheckPage } from './tool-check/ToolCheckPage';
 import { UnsavedChangesProvider, useUnsavedChangesRegistry } from './unsaved-changes';
 import { useI18n } from './i18n';
 
@@ -28,14 +29,14 @@ const ValidationPage = lazy(async () => ({ default: (await import('./validation/
 const CHAT_ITEM = { id: 'Chat', ja: 'チャット' } as const;
 const NAV_GROUPS: readonly { readonly en: string; readonly ja: string; readonly items: readonly { readonly id: ScreenName; readonly ja: string }[] }[] = [
   { en: 'Build', ja: '作る', items: [{ id: 'Data', ja: 'データソース' }, { id: 'Tool', ja: 'ツール' }, { id: 'Skill', ja: 'スキル' }, { id: 'Agent', ja: 'エージェント' }, { id: 'Harness', ja: 'マルチエージェント' }, { id: 'Factory', ja: '自動生成 (Factory)' }] },
-  { en: 'Check', ja: '確かめる', items: [{ id: 'Inspect', ja: '動作確認' }, { id: 'Validation', ja: '検証' }] },
+  { en: 'Check', ja: '確かめる', items: [{ id: 'Inspect', ja: '動作確認' }, { id: 'ToolCheck', ja: 'ツール検証' }, { id: 'Validation', ja: '検証' }] },
   { en: 'Operate', ja: '運用', items: [{ id: 'Memory', ja: '記憶' }, { id: 'MCP', ja: 'MCP' }, { id: 'Status', ja: 'ステータス' }, { id: 'Settings', ja: '設定' }] },
 ];
 // 画面ID・route slug の集合は screens.ts が単一の情報源（ナビゲーションcontextとヘルプも同じ集合を参照する）。
 type Screen = ScreenName;
 // ナビ項目の内部id(=画面遷移のキー)と英語表示文言を分離するための上書き表(idはそのまま、表示だけ変える)。
 // HarnessのUI表示名は実態(マルチエージェント・オーケストレーション)に合わせて英語だけ'Multi-Agent'へ差し替える(id/route/型名は変更しない)。
-const NAV_LABEL_EN_OVERRIDES: Readonly<Record<string, string>> = { Harness: 'Multi-Agent' };
+const NAV_LABEL_EN_OVERRIDES: Readonly<Record<string, string>> = { Harness: 'Multi-Agent', ToolCheck: 'Tool Check' };
 function navLabel(id: string): string { return NAV_LABEL_EN_OVERRIDES[id] ?? id; }
 
 /**
@@ -78,7 +79,7 @@ export function App({ client, session }: { readonly client: ToolApiClient; reado
       <ModeBadge {...(session === undefined ? {} : { session })} /></nav>
     <NavigationProvider navigate={requestScreen}>
       <UnsavedChangesProvider value={unsavedChanges.value}>
-        {screen === 'Tool' ? <ToolBuilder client={client} /> : screen === 'Agent' ? <AgentBuilder client={client} /> : screen === 'Harness' ? <HarnessBuilder client={client} /> : screen === 'Skill' ? <SkillBuilder client={client} /> : screen === 'Chat' ? <ChatPage client={client} /> : screen === 'Inspect' ? <AgentInspectorPage client={client} /> : screen === 'Data' ? <DataSourcesPage client={client} /> : screen === 'MCP' ? <McpPage client={client} /> : screen === 'Validation' ? <Suspense fallback={<main className="workspace-page"><p className="empty-state">{text('Loading validation…', '検証画面を読み込み中…')}</p></main>}><ValidationPage client={client} /></Suspense> : screen === 'Factory' ? <FactoryPage client={client} /> : screen === 'Memory' ? <MemoryPage client={client} /> : screen === 'Settings' ? <SettingsPage client={client} /> : <StatusPage client={client} />}
+        {screen === 'Tool' ? <ToolBuilder client={client} /> : screen === 'Agent' ? <AgentBuilder client={client} /> : screen === 'Harness' ? <HarnessBuilder client={client} /> : screen === 'Skill' ? <SkillBuilder client={client} /> : screen === 'Chat' ? <ChatPage client={client} /> : screen === 'Inspect' ? <AgentInspectorPage client={client} /> : screen === 'ToolCheck' ? <ToolCheckPage client={client} /> : screen === 'Data' ? <DataSourcesPage client={client} /> : screen === 'MCP' ? <McpPage client={client} /> : screen === 'Validation' ? <Suspense fallback={<main className="workspace-page"><p className="empty-state">{text('Loading validation…', '検証画面を読み込み中…')}</p></main>}><ValidationPage client={client} /></Suspense> : screen === 'Factory' ? <FactoryPage client={client} /> : screen === 'Memory' ? <MemoryPage client={client} /> : screen === 'Settings' ? <SettingsPage client={client} /> : <StatusPage client={client} />}
       </UnsavedChangesProvider>
       {screen === 'Chat' && <WelcomeCard client={client} />}
     </NavigationProvider>

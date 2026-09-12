@@ -135,6 +135,16 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   rule('POST', '/tool-drafts/suggest-analysis-config', 'edit', 'tool'),
   rule('GET', '/runtime/capabilities', 'read', 'workspace'),
 
+  // --- tool checks（保存済みToolの単体検証。実行はデータソース読み取りを伴うので preview と同じ execute） ---
+  rule('POST', '/tool-checks/run', 'execute', 'tool'),
+  rule('GET', '/tool-checks/cases', 'read', 'tool'),
+  rule('POST', '/tool-checks/cases', 'edit', 'tool', true),
+  rule('DELETE', '/tool-checks/cases/:id', 'edit', 'tool', true),
+  rule('POST', '/tool-checks/cases/:id/run', 'execute', 'tool'),
+  rule('POST', '/tool-checks/cases/run-all', 'execute', 'tool'),
+  // 提案はサンプル実行（engine.preview）を伴い、実行と同じ観点で見せる情報なので execute。
+  rule('POST', '/tool-checks/suggest', 'execute', 'tool'),
+
   // --- skills ---
   rule('POST', '/skills', 'create', 'skill'),
   rule('GET', '/skills', 'read', 'skill'),

@@ -16,6 +16,13 @@ import type {
   AgentDiagnosticsDto,
   ToolDiagnosticsDto,
   RunFailureToolRefDto,
+  RunToolCheckDto,
+  ToolCheckRunResultDto,
+  ToolCheckCaseDto,
+  SaveToolCheckCaseDto,
+  ToolCheckCaseRunDto,
+  SuggestToolCheckCasesDto,
+  ToolCheckSuggestionsDto,
   AgentKindDto,
   AgentToolRefDto,
   AgentSubAgentRefDto,
@@ -257,6 +264,40 @@ export class ToolApiClient {
     const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
     if (version !== undefined) query.set('version', version);
     return (await this.request<{ diagnostics: AgentDiagnosticsDto }>(`/agents/${encodeURIComponent(internalId)}/diagnostics?${query}`, { signal })).diagnostics;
+  }
+
+  // --- ツール検証（Tool Check） ---------------------------------------------------------------
+  /** 保存済みツールを引数付きで単体実行し、期待との合否を返す（ケースの保存はしない）。 */
+  async runToolCheck(input: RunToolCheckDto, signal?: AbortSignal): Promise<ToolCheckRunResultDto> {
+    return (await this.request<{ result: ToolCheckRunResultDto }>('/tool-checks/run', { method: 'POST', body: JSON.stringify(input), signal })).result;
+  }
+  async listToolCheckCases(scope: TenantScopeDto, toolId?: string): Promise<readonly ToolCheckCaseDto[]> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    if (toolId !== undefined) query.set('toolId', toolId);
+    return (await this.request<{ cases: readonly ToolCheckCaseDto[] }>(`/tool-checks/cases?${query}`)).cases;
+  }
+  async saveToolCheckCase(input: SaveToolCheckCaseDto): Promise<ToolCheckCaseDto> {
+    return (await this.request<{ case: ToolCheckCaseDto }>('/tool-checks/cases', { method: 'POST', body: JSON.stringify(input) })).case;
+  }
+  async deleteToolCheckCase(id: string, scope: TenantScopeDto): Promise<void> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    await this.request<void>(`/tool-checks/cases/${encodeURIComponent(id)}?${query}`, { method: 'DELETE' });
+  }
+  /** 保存済みケースを1件実行し、ケースの lastResult を更新して返す。 */
+  async runToolCheckCase(id: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<ToolCheckCaseRunDto> {
+    return this.request<ToolCheckCaseRunDto>(`/tool-checks/cases/${encodeURIComponent(id)}/run`, { method: 'POST', body: JSON.stringify({ scope }), signal });
+  }
+  /** 設定済みモデルが構造化出力に対応していれば true（提案ボタンの表示判定。失敗時は false 扱いにする）。 */
+  async toolCheckSuggestionCapability(): Promise<boolean> {
+    return (await this.request<{ toolCheckSuggestions?: { enabled: boolean } }>('/runtime/capabilities')).toolCheckSuggestions?.enabled === true;
+  }
+  /** LLM に 正常 / 境界 / 異常 のケース案を作らせる（保存はしない）。 */
+  async suggestToolCheckCases(input: SuggestToolCheckCasesDto, signal?: AbortSignal): Promise<ToolCheckSuggestionsDto> {
+    return (await this.request<{ suggestions: ToolCheckSuggestionsDto }>('/tool-checks/suggest', { method: 'POST', body: JSON.stringify(input), signal })).suggestions;
+  }
+  /** 保存済みケースをまとめて実行（toolId 指定でそのツールのケースだけ）。 */
+  async runAllToolCheckCases(scope: TenantScopeDto, toolId?: string, signal?: AbortSignal): Promise<readonly ToolCheckCaseRunDto[]> {
+    return (await this.request<{ results: readonly ToolCheckCaseRunDto[] }>('/tool-checks/cases/run-all', { method: 'POST', body: JSON.stringify({ scope, ...(toolId === undefined ? {} : { toolId }) }), signal })).results;
   }
 
   /** 未保存のAgent編集内容に対するプリフライト診断（保存せずに「組み込んだら呼び出せるか」を確認する）。 */

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { describeMcpServerSkipped, detectErrorLanguage, localizeApiErrorMessage, localizeDiagnosticDetail, localizeRunFailure, localizeRunTraceError, localizeSchemaIssueMessage, splitFailureMessage } from './error-messages';
+import { describeMcpServerSkipped, detectErrorLanguage, localizeApiErrorMessage, localizeDiagnosticDetail, localizeRunFailure, localizeRunTraceError, localizeSchemaIssueMessage, localizeToolCheckAssertion, splitFailureMessage } from './error-messages';
 
 function ja(status: number, code: string, serverMessage: string): string {
   return localizeApiErrorMessage({ status, code, serverMessage }, 'ja');
@@ -266,6 +266,26 @@ describe('モデル実行の失敗（プロバイダ中立）', () => {
     expect(en(502, 'MODEL_PROVIDER', 'offline')).toBe('The model run failed. Check the model settings, then retry. (offline)');
     expect(ja(502, 'MODEL_PROVIDER', '')).toBe('モデル実行に失敗しました。設定画面のモデル設定を確認して再試行してください。');
     expect(en(502, 'MODEL_PROVIDER', '')).toBe('The model run failed. Check the model settings, then retry.');
+  });
+
+  it('正常: ツール検証の LLM 提案（未設定）は「構造化出力対応モデルを設定画面で選ぶ」へ導く（ja / en）', () => {
+    expect(ja(502, 'MODEL_PROVIDER', 'tool check suggestions are not configured')).toBe('ケース提案に使うモデルが設定されていません。設定画面で構造化出力（JSON スキーマ）に対応したモデルを選んでから、もう一度提案してください。');
+    expect(en(502, 'MODEL_PROVIDER', 'tool check suggestions are not configured')).toBe('No model is configured for case suggestions. Choose a model that supports structured output (JSON schema) in Settings, then suggest again.');
+    // 汎用の「モデルが未設定（LM_STUDIO_MODEL）」に落ちない。
+    expect(ja(502, 'MODEL_PROVIDER', 'tool check suggestions are not configured')).not.toContain('LM_STUDIO_MODEL');
+  });
+
+  it('正常: LLM 提案の JSON 不正 / 使えるケース無しは「もう一度提案・重点を具体的に」へ導く（ja / en）', () => {
+    expect(ja(502, 'MODEL_PROVIDER', 'tool check suggestions: model returned invalid JSON')).toBe('モデルの応答が JSON として読めませんでした。設定画面で構造化出力に対応したモデルか確認し、もう一度提案してください。続くときは「重点」を具体的に書くと安定します。');
+    expect(en(502, 'MODEL_PROVIDER', 'tool check suggestions: model returned invalid JSON')).toContain('make the focus more specific');
+    expect(ja(502, 'MODEL_PROVIDER', 'tool check suggestions: model returned no usable case')).toBe('モデルは使えるケースを 1 件も返しませんでした（引数がツールの入力に合わない等）。「重点」を具体的に書いてもう一度提案するか、設定画面で別のモデルを試してください。');
+    expect(en(502, 'MODEL_PROVIDER', 'tool check suggestions: model returned no usable case')).toBe('The model returned no usable case (for example, arguments that do not match the tool input). Make the focus more specific and suggest again, or try another model in Settings.');
+  });
+
+  it('[回帰固定] 境界: 「tool check suggestion」を含むが未知の文は従来どおり汎用のモデル失敗文言に落ちる', () => {
+    expect(ja(502, 'MODEL_PROVIDER', 'tool check suggestions exploded')).toContain('モデル実行に失敗しました');
+    // 「tool check suggestion」を含まない invalid JSON は従来の「応答を解釈できません」のまま。
+    expect(ja(502, 'MODEL_PROVIDER', 'Model returned invalid JSON')).toContain('モデルの応答を解釈できませんでした');
   });
 
   it('審査プロバイダ失敗とメッセージ内 LM Studio 検出も同じ導線にする', () => {
@@ -1119,5 +1139,53 @@ describe('describeMcpServerSkipped の境界', () => {
       .toBe("The tools of MCP server 'files' were not loaded (auth-failed). Check the server settings and test the connection in MCP settings. Detail: token rejected");
     expect(describeMcpServerSkipped(event, 'ja'))
       .toBe('MCPサーバー「files」のツールを読み込めませんでした（auth-failed）。MCP設定画面でサーバーの設定と接続を確認してください。詳細: token rejected');
+  });
+});
+
+describe('localizeToolCheckAssertion（ツール検証の期待・実測の定型文）', () => {
+  it.each([
+    ['row count == 3', '行数 == 3'],
+    ['row count >= 3', '行数 >= 3'],
+    ['row count <= 3', '行数 <= 3'],
+    ['row count 5', '行数 5'],
+    ["column 'total' exists", '列「total」がある'],
+    ['columns: a, b, c', '列: a, b, c'],
+    ['columns: (none)', '列: （なし）'],
+    ['some row has total >= 100', 'いずれかの行で total >= 100'],
+    ['every row has region == "east"', 'すべての行で region == "east"'],
+    ['2 of 5 rows match', '5 行中 2 行が該当'],
+    ["column 'total' not in output", '列「total」は出力にない'],
+    ['duration <= 500ms', '所要時間 <= 500ms'],
+    ['outcome error', '実行が失敗すること'],
+    ['outcome success', '実行が成功すること'],
+  ])('正常: %s → %s', (input, expected) => {
+    expect(localizeToolCheckAssertion(input, 'ja')).toBe(expected);
+  });
+
+  it('正常: 実行の結末の実測は role = actual で「〜した」になり、失敗はコードを添える', () => {
+    expect(localizeToolCheckAssertion('outcome success', 'ja', 'actual')).toBe('成功した');
+    expect(localizeToolCheckAssertion('outcome error', 'ja', 'actual')).toBe('失敗した');
+    expect(localizeToolCheckAssertion('outcome error (TOOL_ARGUMENTS)', 'ja', 'actual')).toBe('失敗した（TOOL_ARGUMENTS）');
+    expect(localizeToolCheckAssertion('outcome error (TOOL_ARGUMENTS)', 'en', 'actual')).toBe('outcome error (TOOL_ARGUMENTS)');
+  });
+
+  it('正常: en は原文をそのまま返す', () => {
+    expect(localizeToolCheckAssertion('row count == 3', 'en')).toBe('row count == 3');
+    expect(localizeToolCheckAssertion("column 'total' exists", 'en')).toBe("column 'total' exists");
+  });
+
+  it('境界: 実測の所要時間（812ms）と未知の文は原文のまま（握りつぶさない）', () => {
+    expect(localizeToolCheckAssertion('812ms', 'ja')).toBe('812ms');
+    expect(localizeToolCheckAssertion('something new from the server', 'ja')).toBe('something new from the server');
+  });
+
+  it('境界: 前後の空白は無視して変換し、0 行・0 件も扱う', () => {
+    expect(localizeToolCheckAssertion('  row count == 0 ', 'ja')).toBe('行数 == 0');
+    expect(localizeToolCheckAssertion('0 of 0 rows match', 'ja')).toBe('0 行中 0 行が該当');
+  });
+
+  it('異常: 似ているが形が違う文（演算子が != など）は変換しない', () => {
+    expect(localizeToolCheckAssertion('row count != 3', 'ja')).toBe('row count != 3');
+    expect(localizeToolCheckAssertion('duration >= 500ms', 'ja')).toBe('duration >= 500ms');
   });
 });

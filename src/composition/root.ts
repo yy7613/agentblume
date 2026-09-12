@@ -198,6 +198,13 @@ import type { ModelCatalogPort } from '../application/model-settings/model-catal
 import type { ModelProviderFactoryPort, ResolvedSlotOptions } from '../application/model-settings/model-provider-factory';
 import { SwitchableModelProvider } from '../application/model-settings/switchable-model-provider';
 import { GetModelSettingsUseCase, SaveModelSettingsUseCase } from '../application/model-settings/manage-model-settings';
+import { InMemoryToolCheckCaseRepository } from '../adapters/storage/in-memory-tool-check-case-repository';
+import { SqliteToolCheckCaseRepository } from '../adapters/storage/sqlite-tool-check-case-repository';
+import type { ToolCheckCaseRepository } from '../domain/tool-check/tool-check-case-repository';
+import { RunToolCheckUseCase } from '../application/tool-check/run-tool-check';
+import { DeleteToolCheckCaseUseCase, ListToolCheckCasesUseCase, SaveToolCheckCaseUseCase } from '../application/tool-check/manage-tool-check-cases';
+import { RunToolCheckCaseUseCase } from '../application/tool-check/run-tool-check-case';
+import { SuggestToolCheckCasesUseCase } from '../application/tool-check/suggest-tool-check-cases';
 import { TestModelSettingsUseCase } from '../application/model-settings/test-model-settings';
 import { QueryModelCatalogUseCase } from '../application/model-settings/query-model-catalog';
 import type { ModelSlotName } from '../domain/model-settings/model-settings';
@@ -360,6 +367,13 @@ export interface App {
   readonly saveModelSettings: SaveModelSettingsUseCase;
   readonly testModelSettings: TestModelSettingsUseCase;
   readonly queryModelCatalog: QueryModelCatalogUseCase;
+  readonly toolCheckCaseRepo: ToolCheckCaseRepository;
+  readonly runToolCheck: RunToolCheckUseCase;
+  readonly saveToolCheckCase: SaveToolCheckCaseUseCase;
+  readonly listToolCheckCases: ListToolCheckCasesUseCase;
+  readonly deleteToolCheckCase: DeleteToolCheckCaseUseCase;
+  readonly runToolCheckCase: RunToolCheckCaseUseCase;
+  readonly suggestToolCheckCases: SuggestToolCheckCasesUseCase;
   readonly saveSkill: SaveSkillUseCase;
   readonly querySkills: QuerySkillsUseCase;
   readonly deleteSkill: DeleteSkillUseCase;
@@ -580,6 +594,7 @@ export function createApp(options?: AppOptions): App {
   const memoryProposalAdapter = { repo: pickRepository<MemoryProposalRepository>(undefined, database, (db) => new SqliteMemoryProposalRepository(db), () => new InMemoryMemoryProposalRepository()) };
   const evaluationDatasetAdapter = { repo: pickRepository<EvaluationDatasetRepository>(undefined, database, (db) => new SqliteEvaluationDatasetRepository(db), () => new InMemoryEvaluationDatasetRepository()) };
   const evaluatorProfileAdapter = { repo: pickRepository<EvaluatorProfileRepository>(undefined, database, (db) => new SqliteEvaluatorProfileRepository(db), () => new InMemoryEvaluatorProfileRepository()) };
+  const toolCheckCaseAdapter = { repo: pickRepository<ToolCheckCaseRepository>(undefined, database, (db) => new SqliteToolCheckCaseRepository(db), () => new InMemoryToolCheckCaseRepository()) };
   const experimentAdapter = { repo: pickRepository<ExperimentRepository>(options?.experimentRepository, database, (db) => new SqliteExperimentRepository(db), () => new InMemoryExperimentRepository()) };
   const qualityGateAdapter = { repo: pickRepository<QualityGateRepository>(options?.qualityGateRepository, database, (db) => new SqliteQualityGateRepository(db), () => new InMemoryQualityGateRepository()) };
   const judgeRubricAdapter = { repo: pickRepository<JudgeRubricRepository>(options?.judgeRubricRepository, database, (db) => new SqliteJudgeRubricRepository(db), () => new InMemoryJudgeRubricRepository()) };
@@ -706,6 +721,16 @@ export function createApp(options?: AppOptions): App {
   // Stage 5-6（検証資産の決定的マテリアライズ + 検証実行、M3）+ 改善ループ（Analystロール + 改訂適用 + 停止条件・
   // レポート、M4）。
   const saveTool = new SaveToolUseCase(repo, engine, resolveDataSources);
+  // ツール検証は Agent 経路と同じ engine / データソース解決を使う（別配線にすると結果が食い違う）。
+  const runToolCheck = new RunToolCheckUseCase(repo, engine, resolveDataSources);
+  /** LLM 補助（分析アシスタント・ツール検証のケース提案）を使えるか。モデルはUIからも設定できるため、envだけで判定しない。 */
+  const assistantEnabled = async (): Promise<boolean> => {
+    if (profile === 'test' || (process.env['ANALYSIS_ASSISTANT_ENABLED'] ?? 'true') === 'false') return false;
+    // 保存済みのmainスロットがあればそれで足りる。
+    if ((process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== '') return true;
+    try { return (await modelSettingsAdapter.repo.find(modelSettingsScope))?.main !== undefined; }
+    catch { return false; } // 設定が読めない/復号できない場合は「使えない」側へ倒す。
+  };
   // Tool 単位のプリフライト診断。未保存 draft のルートと Agent 診断の両方が同じインスタンスを使う。
   const diagnoseTool = new DiagnoseToolUseCase(engine, resolveDataSources);
   const saveAgent = new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo, wikiAdapter.repo);
@@ -924,13 +949,9 @@ export function createApp(options?: AppOptions): App {
     queryWikiSpaces,
     deleteWikiSpace: new DeleteWikiSpaceUseCase(wikiAdapter.repo),
     draftTool: new DraftToolUseCase(engine, resolveDataSources),
-    suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, async () => {
-      if (profile === 'test' || (process.env['ANALYSIS_ASSISTANT_ENABLED'] ?? 'true') === 'false') return false;
-      // モデルはUIからも設定できるため、envだけで判定しない（保存済みのmainスロットがあればそれで足りる）。
-      if ((process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== '') return true;
-      try { return (await modelSettingsAdapter.repo.find(modelSettingsScope))?.main !== undefined; }
-      catch { return false; } // 設定が読めない/復号できない場合は「使えない」側へ倒す。
-    }),
+    suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, assistantEnabled),
+    // ツール検証のケース提案は分析アシスタントと同じ有効判定・同じモデルを使う（別スロットを増やさない）。
+    suggestToolCheckCases: new SuggestToolCheckCasesUseCase(repo, engine, modelProvider, assistantEnabled, resolveDataSources, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot()),
     saveTool,
     getTool,
     listToolVersions: new ListToolVersionsUseCase(repo),
@@ -938,6 +959,12 @@ export function createApp(options?: AppOptions): App {
     deleteTool: new DeleteToolUseCase(repo),
     previewTool: new PreviewToolUseCase(repo, engine, resolveDataSources),
     seedSampleData,
+    toolCheckCaseRepo: toolCheckCaseAdapter.repo,
+    runToolCheck,
+    saveToolCheckCase: new SaveToolCheckCaseUseCase(toolCheckCaseAdapter.repo, repo),
+    listToolCheckCases: new ListToolCheckCasesUseCase(toolCheckCaseAdapter.repo),
+    deleteToolCheckCase: new DeleteToolCheckCaseUseCase(toolCheckCaseAdapter.repo),
+    runToolCheckCase: new RunToolCheckCaseUseCase(toolCheckCaseAdapter.repo, runToolCheck),
     // 2つのワーカーは互いに独立なので同時に待つ（直列にすると猶予が最大2倍かかる）。
     drainWorkers: async (graceMs: number) => {
       const drained = await Promise.all([experimentWorker.drainInFlight(graceMs), factoryWorker.drainInFlight(graceMs)]);

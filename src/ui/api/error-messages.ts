@@ -252,6 +252,8 @@ function isModelFailure(code: string, raw: string): boolean {
  */
 function modelMessage(raw: string, language: ErrorLanguage): string {
   const ja = language === 'ja';
+  const suggestion = toolCheckSuggestionMessage(raw, ja);
+  if (suggestion !== undefined) return suggestion;
   if (/not configured/i.test(raw)) {
     return ja
       ? 'モデルが未設定です。設定画面でモデルを選ぶか、環境変数 LM_STUDIO_MODEL を設定してください。'
@@ -287,6 +289,33 @@ function modelMessage(raw: string, language: ErrorLanguage): string {
   return ja
     ? `モデル実行に失敗しました。設定画面のモデル設定を確認して再試行してください。${detail}`
     : `The model run failed. Check the model settings, then retry.${detail}`;
+}
+
+/**
+ * ツール検証の「LLM でケースを提案」（POST /tool-checks/suggest、502 MODEL_PROVIDER）の失敗文言。
+ * 汎用のモデル実行文言（「モデルが未設定」「応答を解釈できない」）より先に判定する。提案は構造化出力
+ * （JSON スキーマ）に依存するので、次の一手は「設定画面で対応モデルを確認 → もう一度提案 → focus を具体的に」。
+ * サーバー定型文（src/application/tool-check/suggest と対で保守）:
+ * `tool check suggestions are not configured` / `... returned invalid JSON` / `... returned no usable case`
+ */
+function toolCheckSuggestionMessage(raw: string, ja: boolean): string | undefined {
+  if (!/tool check suggestion/i.test(raw)) return undefined;
+  if (/not configured/i.test(raw)) {
+    return ja
+      ? 'ケース提案に使うモデルが設定されていません。設定画面で構造化出力（JSON スキーマ）に対応したモデルを選んでから、もう一度提案してください。'
+      : 'No model is configured for case suggestions. Choose a model that supports structured output (JSON schema) in Settings, then suggest again.';
+  }
+  if (/invalid JSON/i.test(raw)) {
+    return ja
+      ? 'モデルの応答が JSON として読めませんでした。設定画面で構造化出力に対応したモデルか確認し、もう一度提案してください。続くときは「重点」を具体的に書くと安定します。'
+      : 'The model reply was not valid JSON. Check in Settings that the model supports structured output, then suggest again. If it keeps happening, make the focus more specific.';
+  }
+  if (/no usable case/i.test(raw)) {
+    return ja
+      ? 'モデルは使えるケースを 1 件も返しませんでした（引数がツールの入力に合わない等）。「重点」を具体的に書いてもう一度提案するか、設定画面で別のモデルを試してください。'
+      : 'The model returned no usable case (for example, arguments that do not match the tool input). Make the focus more specific and suggest again, or try another model in Settings.';
+  }
+  return undefined;
 }
 
 function statusHeading(status: number, language: ErrorLanguage): string {
@@ -1333,4 +1362,43 @@ export function describeMcpServerSkipped(
   return ja
     ? `MCPサーバー「${event.server}」のツールを読み込めませんでした（${reason}）。MCP設定画面でサーバーの設定と接続を確認してください${detail}`
     : `The tools of MCP server '${event.server}' were not loaded (${reason}). Check the server settings and test the connection in MCP settings${detail}`;
+}
+
+/**
+ * ツール検証（Tool Check）の期待・実測の定型文（`ToolCheckAssertionResultDto.expected / actual`）の日本語化。
+ * サーバーは英語定型文だけを返し、言語化は UI が担う。形が合わなければ原文をそのまま返す（en は常に原文）。
+ *
+ * 定型文（src/application/tool-check と対で保守する）:
+ * - 期待: `row count == 3` / `column 'total' exists` / `some row has total >= 100` / `every row has region == "east"` / `duration <= 500ms`
+ * - 実測: `row count 5` / `columns: a, b, c` / `columns: (none)` / `2 of 5 rows match` / `column 'total' not in output` / `812ms`
+ * - 結末: 期待 `outcome error` / `outcome success`、実測 `outcome success` / `outcome error (TOOL_ARGUMENTS)`
+ */
+export function localizeToolCheckAssertion(text: string, language: ErrorLanguage, role: 'expected' | 'actual' = 'expected'): string {
+  if (language !== 'ja') return text;
+  const trimmed = text.trim();
+  let matched = /^row count (==|>=|<=) (\d+)$/.exec(trimmed);
+  if (matched !== null) return `行数 ${matched[1]} ${matched[2]}`;
+  matched = /^row count (\d+)$/.exec(trimmed);
+  if (matched !== null) return `行数 ${matched[1]}`;
+  matched = /^column '(.+)' exists$/.exec(trimmed);
+  if (matched !== null) return `列「${matched[1]}」がある`;
+  matched = /^column '(.+)' not in output$/.exec(trimmed);
+  if (matched !== null) return `列「${matched[1]}」は出力にない`;
+  if (trimmed === 'columns: (none)') return '列: （なし）';
+  matched = /^columns: (.+)$/.exec(trimmed);
+  if (matched !== null) return `列: ${matched[1]}`;
+  matched = /^some row has (.+)$/.exec(trimmed);
+  if (matched !== null) return `いずれかの行で ${matched[1]}`;
+  matched = /^every row has (.+)$/.exec(trimmed);
+  if (matched !== null) return `すべての行で ${matched[1]}`;
+  matched = /^(\d+) of (\d+) rows match$/.exec(trimmed);
+  if (matched !== null) return `${matched[2]} 行中 ${matched[1]} 行が該当`;
+  matched = /^duration <= (\d+)ms$/.exec(trimmed);
+  if (matched !== null) return `所要時間 <= ${matched[1]}ms`;
+  // 実行の結末。同じ `outcome success` でも、期待欄は「〜すること」、実測欄は「〜した」で読み分ける（role で区別）。
+  matched = /^outcome error \((.+)\)$/.exec(trimmed);
+  if (matched !== null) return `失敗した（${matched[1]}）`;
+  if (trimmed === 'outcome error') return role === 'actual' ? '失敗した' : '実行が失敗すること';
+  if (trimmed === 'outcome success') return role === 'actual' ? '成功した' : '実行が成功すること';
+  return text;
 }
