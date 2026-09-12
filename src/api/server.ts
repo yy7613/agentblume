@@ -40,6 +40,7 @@ import { registerFactoryRoutes, type FactoryRouteDeps } from './factory-routes';
 import { registerMcpRoutes, type McpRouteDeps } from './mcp-routes';
 import { registerModelSettingsRoutes, type ModelSettingsRouteDeps } from './model-settings-routes';
 import { registerSampleDataRoutes, type SampleDataRouteDeps } from './sample-data-routes';
+import { registerToolCheckRoutes, type ToolCheckRouteDeps } from './tool-check-routes';
 
 /**
  * チャットの画像（最大2枚・各3 MiB）はBase64化で合計約8 MiBになる。
@@ -163,7 +164,7 @@ function messageOf(error: unknown): string {
 
 /** ルート・エラーハンドラ設定済みの Fastify インスタンスを組み立てる（listen しない）。 */
 export function buildServer(
-  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & HarnessRouteDeps & HarnessRunRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps & FactoryRouteDeps & McpRouteDeps & ModelSettingsRouteDeps & SampleDataRouteDeps,
+  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & HarnessRouteDeps & HarnessRunRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps & FactoryRouteDeps & McpRouteDeps & ModelSettingsRouteDeps & SampleDataRouteDeps & ToolCheckRouteDeps,
   options?: ServerOptions,
 ): FastifyInstance {
   const app = Fastify({
@@ -175,8 +176,12 @@ export function buildServer(
   });
 
   // ハンドラから throw された例外を §2 のマッピングで HTTP へ変換する。
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     const { status, body } = toHttpError(error);
+    // 500 は利用者へ 'internal error' 固定で返す代わりに、ここでスタック付きで記録する。
+    // カスタム errorHandler を置くと Fastify 既定のエラーログも消えるため、これが無いと 500 の原因が
+    // どこにも残らない（稼働サーバーで実際に原因追跡できなかった）。4xx は利用者の操作起因なので記録しない。
+    if (status >= 500) request.log.error({ err: error, reqId: request.id, method: request.method, url: request.url }, 'unhandled error');
     void reply.status(status).send(body);
   });
 
@@ -259,6 +264,7 @@ export function buildServer(
   registerMcpRoutes(app, deps);
   registerModelSettingsRoutes(app, deps);
   registerSampleDataRoutes(app, deps);
+  registerToolCheckRoutes(app, deps);
 
   const revision = options?.revision;
   const buildInfo = { node: process.version, ...(revision === undefined ? {} : { revision }) };

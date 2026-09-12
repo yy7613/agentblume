@@ -37,6 +37,7 @@ import { ModelSettingsValidationError } from '../domain/model-settings/errors';
 import { SecretCipherError } from '../application/model-settings/secret-cipher';
 import { ModelCatalogError } from '../application/model-settings/model-catalog';
 import { SharedValidationError } from '../domain/shared/errors';
+import { ToolCheckNotFoundError, ToolCheckValidationError } from '../domain/tool-check/errors';
 
 /**
  * HTTP エラーレスポンス表現。
@@ -87,7 +88,21 @@ function httpError(status: number, code: string, message: string): HttpError {
  * | ToolExecutionError | 元例外のstatus/code + tool（+ nodeId） |
  * | その他 | 500 | INTERNAL（message 'internal error' 固定） |
  */
+/**
+ * Fastify 自身が投げる 4xx（不正な JSON 本文 `FST_ERR_CTP_INVALID_JSON_BODY`、空本文 `FST_ERR_CTP_EMPTY_JSON_BODY`、
+ * 本文サイズ超過 `FST_ERR_CTP_BODY_TOO_LARGE`、未対応 content-type など）。
+ * カスタムの errorHandler を置くと Fastify 既定の写像が消え、これらが 500 'internal error' に化けていた
+ * （利用者は「送った JSON が壊れている」ことを知る手段が無かった）。code は FST_ 接頭辞、statusCode は数値で判別する。
+ * 5xx の FST_ エラーは Fastify 内部の失敗なので、従来どおり 500 に落として詳細を漏らさない。
+ */
+function isFastifyClientError(err: unknown): err is Error & { readonly code: string; readonly statusCode: number } {
+  if (!(err instanceof Error)) return false;
+  const { code, statusCode } = err as { code?: unknown; statusCode?: unknown };
+  return typeof code === 'string' && code.startsWith('FST_') && typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500;
+}
+
 export function toHttpError(err: unknown): HttpError {
+  if (isFastifyClientError(err)) return httpError(err.statusCode, err.code, err.message);
   if (err instanceof RunFailedError) {
     const mapped = toHttpError(err.cause);
     return { status: mapped.status, body: { error: { ...mapped.body.error, runId: err.runId } } };
@@ -164,6 +179,10 @@ export function toHttpError(err: unknown): HttpError {
   // Agent Factory ドメイン（v33）: NotFoundは404、その他の不変条件違反は400。
   if (err instanceof FactoryNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof FactoryValidationError) return httpError(400, err.code, err.message);
+
+  // ツール検証: 未知のケースは404、ケース定義の不変条件違反は400（実行自体の失敗は結果として200で返る）。
+  if (err instanceof ToolCheckNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof ToolCheckValidationError) return httpError(400, err.code, err.message);
 
   // MCPクライアント: 設定の不変条件違反は400、未登録サーバーは404。
   // 接続失敗（McpClientError）は外部依存の失敗なので ModelProviderError と同じ502。

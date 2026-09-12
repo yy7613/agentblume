@@ -19,6 +19,7 @@ import { RunNotFoundError } from '../domain/run/errors';
 import { SkillNotFoundError, SkillValidationError, SkillVersionConflictError } from '../domain/skill/errors';
 import { InvalidFileContentError } from '../domain/data-source/errors';
 import { SessionQuotaExceededError } from '../domain/session/errors';
+import { ToolCheckNotFoundError, ToolCheckValidationError } from '../domain/tool-check/errors';
 
 describe('toHttpError', () => {
   it.each([
@@ -38,6 +39,8 @@ describe('toHttpError', () => {
     [new SkillVersionConflictError('dup skill'), 409, 'SKILL_VERSION_CONFLICT', 'dup skill'],
     [new SkillValidationError('bad skill'), 400, 'SKILL_VALIDATION', 'bad skill'],
     [new InvalidFileContentError('bad content'), 400, 'INVALID_FILE_CONTENT', 'bad content'],
+    [new ToolCheckNotFoundError('missing case'), 404, 'TOOL_CHECK_NOT_FOUND', 'missing case'],
+    [new ToolCheckValidationError('bad case'), 400, 'TOOL_CHECK_VALIDATION', 'bad case'],
   ] as const)(
     '%s → status=%i code=%s',
     (err, status, code, message) => {
@@ -55,6 +58,30 @@ describe('toHttpError', () => {
     const bare = toHttpError(new GraphError('graph has a cycle'));
     expect(bare).toEqual({ status: 422, body: { error: { code: 'ETL_GRAPH', message: 'graph has a cycle' } } });
     expect(Object.hasOwn(bare.body.error, 'nodeId')).toBe(false);
+  });
+
+  describe('Fastify 自身の 4xx（本文の解析・サイズ）', () => {
+    function fastifyError(code: string, statusCode: number, message: string): Error {
+      return Object.assign(new Error(message), { code, statusCode });
+    }
+    it('不正な JSON・空本文・サイズ超過・未対応 content-type は Fastify の status/code をそのまま返す', () => {
+      expect(toHttpError(fastifyError('FST_ERR_CTP_INVALID_JSON_BODY', 400, "Body is not valid JSON but content-type is set to 'application/json'")))
+        .toEqual({ status: 400, body: { error: { code: 'FST_ERR_CTP_INVALID_JSON_BODY', message: "Body is not valid JSON but content-type is set to 'application/json'" } } });
+      expect(toHttpError(fastifyError('FST_ERR_CTP_EMPTY_JSON_BODY', 400, 'Body cannot be empty')).status).toBe(400);
+      expect(toHttpError(fastifyError('FST_ERR_CTP_BODY_TOO_LARGE', 413, 'Request body is too large')).status).toBe(413);
+      expect(toHttpError(fastifyError('FST_ERR_CTP_INVALID_MEDIA_TYPE', 415, 'Unsupported Media Type')).status).toBe(415);
+    });
+    it('境界: 400 と 499 は通し、399 と 500 以上の FST_ エラーは従来どおり 500 に落として詳細を漏らさない', () => {
+      expect(toHttpError(fastifyError('FST_ERR_X', 400, 'm')).status).toBe(400);
+      expect(toHttpError(fastifyError('FST_ERR_X', 499, 'm')).status).toBe(499);
+      expect(toHttpError(fastifyError('FST_ERR_X', 399, 'm'))).toEqual({ status: 500, body: { error: { code: 'INTERNAL', message: 'internal error' } } });
+      expect(toHttpError(fastifyError('FST_ERR_INTERNAL', 500, 'secret detail'))).toEqual({ status: 500, body: { error: { code: 'INTERNAL', message: 'internal error' } } });
+    });
+    it('異常: FST_ 接頭辞が無い・statusCode が文字列・Error でない値は Fastify エラーとして扱わない', () => {
+      expect(toHttpError(Object.assign(new Error('m'), { code: 'SOMETHING', statusCode: 400 })).status).toBe(500);
+      expect(toHttpError(Object.assign(new Error('m'), { code: 'FST_ERR_X', statusCode: '400' })).status).toBe(500);
+      expect(toHttpError({ code: 'FST_ERR_X', statusCode: 400, message: 'm' }).status).toBe(500);
+    });
   });
 
   it('RunFailedErrorは元status/codeを維持してrunIdを付ける', () => {
