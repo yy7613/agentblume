@@ -72,7 +72,8 @@ describe('JournalPage', () => {
   it('正常: 取込 / 判定 / ルール / 科目 / 出力の 5 サブタブを切り替えて表示する', async () => {
     renderPage(stubClient());
     const tabs = screen.getAllByRole('tab');
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['Ingest', 'Judge', 'Rules', 'Chart', 'Export']);
+    // 読み上げ用の名前は素のラベルのまま。並びは設定する順（科目が先）。
+    expect(tabs.map((tab) => tab.getAttribute('aria-label'))).toEqual(['Chart', 'Ingest', 'Judge', 'Rules', 'Export']);
     expect(screen.getByRole('tab', { name: 'Ingest' }).getAttribute('aria-selected')).toBe('true');
     expect(await screen.findByRole('heading', { name: 'Import a bank / card CSV' })).toBeTruthy();
 
@@ -97,6 +98,9 @@ describe('JournalPage', () => {
     expect(await screen.findByText(/Could not load the chart of accounts/)).toBeTruthy();
     expect(await screen.findByText(/Could not load the rules/)).toBeTruthy();
     expect(screen.getByText(/chart down/)).toBeTruthy();
+    // 画面は使えるので、赤い失敗ではなく「次の一手つきの通知」で出す。
+    expect(document.querySelector('.journal-load-notice')).toBeTruthy();
+    expect(document.querySelector('.api-error')).toBeNull();
 
     // タブ切り替えは生きている。科目タブは「読み込み中」を出して落ちない。
     await userEvent.click(screen.getByRole('tab', { name: 'Chart' }));
@@ -181,5 +185,86 @@ describe('JournalPage', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: 'Ingest' }).getAttribute('aria-selected')).toBe('true'));
     expect(await screen.findByRole('heading', { name: 'Edit facts of document doc-nr' })).toBeTruthy();
     expect(((await screen.findByLabelText('Issuer name')) as HTMLInputElement).value).toBe('サンプルカフェ');
+  });
+});
+
+describe('JournalPage（読み込めないときの伝え方）', () => {
+  /** 経路そのものが無い（= API サーバーが古い）ときの失敗。 */
+  function routeMissing(): Error {
+    const error = new Error('Route GET:/journal/chart not found');
+    Reflect.set(error, 'status', 404);
+    Reflect.set(error, 'name', 'ApiError');
+    return error;
+  }
+
+  it('異常: 経路が無い（404）ときは「API サーバーを再起動」を案内する', async () => {
+    const client = stubClient({
+      getJournalChart: vi.fn().mockRejectedValue(routeMissing()),
+      listJournalRules: vi.fn().mockRejectedValue(routeMissing()),
+    });
+    renderPage(client);
+
+    expect(await screen.findByText(/Restart the API server/)).toBeTruthy();
+    // 生の Fastify 文言をそのまま突きつけない。
+    expect(screen.queryByText(/Route GET/)).toBeNull();
+  });
+
+  it('正常: 読み込めていれば通知は出さない（未設定でも赤くしない）', async () => {
+    renderPage(stubClient({ listJournalRules: vi.fn().mockResolvedValue([]) }));
+
+    await screen.findByRole('tab', { name: 'Ingest' });
+    expect(document.querySelector('.journal-load-notice')).toBeNull();
+    expect(document.querySelector('.api-error')).toBeNull();
+  });
+
+  it('境界: 再試行で読み直せたら通知は消える', async () => {
+    const getJournalChart = vi.fn().mockRejectedValueOnce(new Error('chart down')).mockResolvedValue(chart);
+    const client = stubClient({ getJournalChart });
+    renderPage(client);
+
+    await screen.findByText(/Could not load the chart of accounts/);
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText(/Could not load the chart of accounts/)).toBeNull());
+  });
+});
+
+describe('JournalPage（手順の流れ図）', () => {
+  it('正常: 設定する順に番号つきの四角が並び、間に矢印が入る', async () => {
+    renderPage(stubClient());
+
+    const steps = screen.getAllByRole('tab');
+    expect(steps.map((step) => step.getAttribute('aria-label'))).toEqual(['Chart', 'Ingest', 'Judge', 'Rules', 'Export']);
+    expect(steps.map((step) => step.querySelector('.journal-step-no')?.textContent)).toEqual(['1', '2', '3', '4', '5']);
+    // 矢印は四角の間だけ（4 本）。読み上げからは外す。
+    const arrows = document.querySelectorAll('.journal-step-arrow');
+    expect(arrows).toHaveLength(4);
+    for (const arrow of arrows) expect(arrow.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('正常: 各四角に「ここで何をするか」を添え、分かっている件数を出す', async () => {
+    renderPage(stubClient());
+
+    expect(await screen.findByText('Define accounts and tax categories')).toBeTruthy();
+    expect(screen.getByText('Turn undecided documents into rules')).toBeTruthy();
+    // 科目数とルール件数はこの画面が既に持っている値なので出す（判定・出力の件数は各タブが持つ）。
+    expect(screen.getByText('2 accounts')).toBeTruthy();
+    expect(screen.getByText('1 rules')).toBeTruthy();
+  });
+
+  it('正常: 四角をクリックするとその設定に移り、選択中が分かる', async () => {
+    renderPage(stubClient());
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Chart' }));
+    expect(await screen.findByRole('heading', { name: /^Accounts/ })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Chart' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Ingest' }).getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('境界: 科目マスタを読めていないときは件数を出さず、手順は並べたままにする', async () => {
+    renderPage(stubClient({ getJournalChart: vi.fn().mockRejectedValue(new Error('chart down')) }));
+
+    await screen.findByText(/Could not load the chart of accounts/);
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
+    expect(screen.queryByText(/accounts$/)).toBeNull();
   });
 });
