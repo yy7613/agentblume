@@ -1,0 +1,59 @@
+{
+  "kind": "invoice",
+  "source": {
+    "type": "structured",
+    "fileName": "freelancer-invoice-individual.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "テスト花子（フリーランスライター）",
+    "recipientName": "テスト工業株式会社",
+    "registrationNumber": "T7777777777777",
+    "issueDate": "2026-09-05",
+    "transactionDate": "2026-08-31",
+    "dueDate": "2026-09-30",
+    "grandTotal": 110000,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 100000,
+        "taxAmount": 10000,
+        "amountIncludesTax": false
+      }
+    ],
+    "lines": [
+      {
+        "description": "技術ブログ記事 原稿料（4本）",
+        "quantity": 4,
+        "unitPrice": 20000,
+        "amount": 80000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "取材・構成費",
+        "quantity": 1,
+        "unitPrice": 20000,
+        "amount": 20000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      }
+    ],
+    "paymentMethod": "bank_transfer",
+    "description": "8月分 原稿料",
+    "descriptionNorm": "8月分 原稿料",
+    "counterpartyHint": "テスト花子",
+    "extra": {
+      "issuerType": "individual",
+      "issuerAddress": "東京都千代田区霞が関1-1-1 サンプルコート305",
+      "withholdingTax": 10210,
+      "withholdingNote": "源泉徴収税額（10.21%）は報酬 100,000 円に対して計算",
+      "netTransferAmount": 99790,
+      "bankAccount": "サンプル銀行 霞が関支店 普通 7654321 テスト ハナコ"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

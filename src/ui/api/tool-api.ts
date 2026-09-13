@@ -113,6 +113,22 @@ import type {
   SampleDataSummaryDto,
   AuthSessionDto,
   RuntimeCapabilitiesDto,
+  JournalCapabilitiesDto,
+  JournalChartOfAccountsDto,
+  SaveJournalChartOfAccountsDto,
+  JournalRuleDto,
+  SaveJournalRuleDto,
+  JournalRuleTestResultDto,
+  JournalDocumentDto,
+  JournalDocumentSummaryDto,
+  SaveJournalDocumentDto,
+  ImportJournalCsvDto,
+  ImportJournalCsvResultDto,
+  JournalCsvPresetDto,
+  JudgeJournalDocumentsResultDto,
+  JournalEntryDto,
+  SaveJournalEntryDto,
+  JournalExportResultDto,
 } from './types';
 import { localizeApiErrorMessage } from './error-messages';
 
@@ -129,19 +145,22 @@ export class ApiError extends Error {
   declare readonly nodeId?: string;
   /** JUDGE_TRACE_UNAVAILABLE など、審査ルーブリックが原因の失敗が指すルーブリック（version は "1.0.0" 形式）。 */
   declare readonly rubric?: { readonly id: string; readonly version: string };
+  /** JOURNAL_CSV_IMPORT が特定した失敗行（1 始まり）。取込画面がその行を示す。 */
+  declare readonly row?: number;
 
   constructor(
     readonly status: number,
     readonly code: string,
     readonly serverMessage: string,
     readonly runId?: string,
-    context?: { readonly tool?: RunFailureToolRefDto; readonly nodeId?: string; readonly rubric?: { readonly id: string; readonly version: string } },
+    context?: { readonly tool?: RunFailureToolRefDto; readonly nodeId?: string; readonly rubric?: { readonly id: string; readonly version: string }; readonly row?: number },
   ) {
-    super(localizeApiErrorMessage({ status, code, serverMessage, ...(context?.rubric === undefined ? {} : { rubric: context.rubric }) }));
+    super(localizeApiErrorMessage({ status, code, serverMessage, ...(context?.rubric === undefined ? {} : { rubric: context.rubric }), ...(context?.row === undefined ? {} : { row: context.row }) }));
     this.name = 'ApiError';
     if (context?.tool !== undefined) this.tool = context.tool;
     if (context?.nodeId !== undefined) this.nodeId = context.nodeId;
     if (context?.rubric !== undefined) this.rubric = context.rubric;
+    if (context?.row !== undefined) this.row = context.row;
   }
 }
 
@@ -961,6 +980,121 @@ export class ToolApiClient {
     })).sample;
   }
 
+  // ---------------------------------------------------------------------------
+  // 仕訳（docs/20-journal.md §9）。scope は他のメソッドと同じくクエリ（GET/DELETE）または JSON 本文に載せる。
+  // Phase 1 は抽出（/journal/documents/extract）とヒアリング（/journal/hearings*）を含まない。
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 仕訳の LLM 抽出 / ヒアリングの可否。旧サーバー（`journal` 無し）は「どちらも使えない」として扱い、
+   * 画面は機能の案内（設定画面のモデルスロットへのボタン）を出す。
+   */
+  async journalCapabilities(signal?: AbortSignal): Promise<JournalCapabilitiesDto> {
+    const capabilities = await this.request<RuntimeCapabilitiesDto>('/runtime/capabilities', { signal });
+    return capabilities.journal ?? { extraction: { enabled: false, vision: false }, hearing: { enabled: false } };
+  }
+
+  async getJournalChart(scope: TenantScopeDto, signal?: AbortSignal): Promise<JournalChartOfAccountsDto> {
+    return (await this.request<{ chart: JournalChartOfAccountsDto }>(`/journal/chart?${scopeQuery(scope)}`, { signal })).chart;
+  }
+
+  async saveJournalChart(scope: TenantScopeDto, chart: SaveJournalChartOfAccountsDto): Promise<JournalChartOfAccountsDto> {
+    return (await this.request<{ chart: JournalChartOfAccountsDto }>('/journal/chart', { method: 'PUT', body: JSON.stringify({ scope, ...chart }) })).chart;
+  }
+
+  async resetJournalChart(scope: TenantScopeDto): Promise<JournalChartOfAccountsDto> {
+    return (await this.request<{ chart: JournalChartOfAccountsDto }>('/journal/chart/reset', { method: 'POST', body: JSON.stringify({ scope }) })).chart;
+  }
+
+  async exportJournalChartCsv(scope: TenantScopeDto, signal?: AbortSignal): Promise<string> {
+    return (await this.request<{ content: string }>(`/journal/chart/export?${scopeQuery(scope)}`, { signal })).content;
+  }
+
+  async importJournalChartCsv(scope: TenantScopeDto, input: { readonly content: string }): Promise<JournalChartOfAccountsDto> {
+    return (await this.request<{ chart: JournalChartOfAccountsDto }>('/journal/chart/import', { method: 'POST', body: JSON.stringify({ scope, content: input.content }) })).chart;
+  }
+
+  async listJournalRules(scope: TenantScopeDto, signal?: AbortSignal): Promise<readonly JournalRuleDto[]> {
+    return (await this.request<{ rules: JournalRuleDto[] }>(`/journal/rules?${scopeQuery(scope)}`, { signal })).rules;
+  }
+
+  async saveJournalRule(scope: TenantScopeDto, rule: SaveJournalRuleDto): Promise<JournalRuleDto> {
+    return (await this.request<{ rule: JournalRuleDto }>('/journal/rules', { method: 'POST', body: JSON.stringify({ scope, rule }) })).rule;
+  }
+
+  async deleteJournalRule(id: string, scope: TenantScopeDto): Promise<void> {
+    await this.request(`/journal/rules/${encodeURIComponent(id)}?${scopeQuery(scope)}`, { method: 'DELETE' });
+  }
+
+  /** ルール草案を保存せずに文書群へ照合する（「文書でテスト」）。 */
+  async testJournalRule(scope: TenantScopeDto, input: { readonly rule: SaveJournalRuleDto; readonly documentIds: readonly string[] }, signal?: AbortSignal): Promise<readonly JournalRuleTestResultDto[]> {
+    return (await this.request<{ result: JournalRuleTestResultDto[] }>('/journal/rules/test', { method: 'POST', body: JSON.stringify({ scope, ...input }), signal })).result;
+  }
+
+  async listJournalDocuments(scope: TenantScopeDto, filter: { readonly status?: string; readonly kind?: string; readonly from?: string; readonly to?: string } = {}, signal?: AbortSignal): Promise<readonly JournalDocumentSummaryDto[]> {
+    const query = scopeQuery(scope);
+    for (const [key, value] of Object.entries(filter)) if (value !== undefined && value !== '') query.set(key, value);
+    return (await this.request<{ documents: JournalDocumentSummaryDto[] }>(`/journal/documents?${query}`, { signal })).documents;
+  }
+
+  async getJournalDocument(id: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<JournalDocumentDto> {
+    return (await this.request<{ document: JournalDocumentDto }>(`/journal/documents/${encodeURIComponent(id)}?${scopeQuery(scope)}`, { signal })).document;
+  }
+
+  /** id 無しは新規（POST）、id 付きは更新（PUT）。 */
+  async saveJournalDocument(scope: TenantScopeDto, document: SaveJournalDocumentDto): Promise<JournalDocumentDto> {
+    const path = document.id === undefined ? '/journal/documents' : `/journal/documents/${encodeURIComponent(document.id)}`;
+    return (await this.request<{ document: JournalDocumentDto }>(path, { method: document.id === undefined ? 'POST' : 'PUT', body: JSON.stringify({ scope, ...document }) })).document;
+  }
+
+  async deleteJournalDocument(id: string, scope: TenantScopeDto): Promise<void> {
+    await this.request(`/journal/documents/${encodeURIComponent(id)}?${scopeQuery(scope)}`, { method: 'DELETE' });
+  }
+
+  async importJournalCsv(scope: TenantScopeDto, input: ImportJournalCsvDto, signal?: AbortSignal): Promise<ImportJournalCsvResultDto> {
+    return (await this.request<{ result: ImportJournalCsvResultDto }>('/journal/documents/import-csv', { method: 'POST', body: JSON.stringify({ scope, ...input }), signal })).result;
+  }
+
+  async listJournalCsvPresets(signal?: AbortSignal): Promise<readonly JournalCsvPresetDto[]> {
+    return (await this.request<{ presets: JournalCsvPresetDto[] }>('/journal/csv-presets', { signal })).presets;
+  }
+
+  /** documentIds 省略時は未判定の全件。 */
+  async judgeJournalDocuments(scope: TenantScopeDto, input: { readonly documentIds?: readonly string[] } = {}, signal?: AbortSignal): Promise<JudgeJournalDocumentsResultDto> {
+    return (await this.request<{ result: JudgeJournalDocumentsResultDto }>('/journal/documents/judge', { method: 'POST', body: JSON.stringify({ scope, ...input }), signal })).result;
+  }
+
+  async listJournalEntries(scope: TenantScopeDto, filter: { readonly status?: string; readonly from?: string; readonly to?: string; readonly documentId?: string } = {}, signal?: AbortSignal): Promise<readonly JournalEntryDto[]> {
+    const query = scopeQuery(scope);
+    for (const [key, value] of Object.entries(filter)) if (value !== undefined && value !== '') query.set(key, value);
+    return (await this.request<{ entries: JournalEntryDto[] }>(`/journal/entries?${query}`, { signal })).entries;
+  }
+
+  /** id 無しは新規（POST）、id 付きは更新（PUT）。 */
+  async saveJournalEntry(scope: TenantScopeDto, entry: SaveJournalEntryDto): Promise<JournalEntryDto> {
+    const path = entry.id === undefined ? '/journal/entries' : `/journal/entries/${encodeURIComponent(entry.id)}`;
+    return (await this.request<{ entry: JournalEntryDto }>(path, { method: entry.id === undefined ? 'POST' : 'PUT', body: JSON.stringify({ scope, ...entry }) })).entry;
+  }
+
+  async confirmJournalEntry(id: string, scope: TenantScopeDto): Promise<JournalEntryDto> {
+    return (await this.request<{ entry: JournalEntryDto }>(`/journal/entries/${encodeURIComponent(id)}/confirm`, { method: 'POST', body: JSON.stringify({ scope }) })).entry;
+  }
+
+  async deleteJournalEntry(id: string, scope: TenantScopeDto): Promise<void> {
+    await this.request(`/journal/entries/${encodeURIComponent(id)}?${scopeQuery(scope)}`, { method: 'DELETE' });
+  }
+
+  /** 仕訳 CSV。`markExported` で出力した仕訳を exported にする。 */
+  async exportJournalEntries(scope: TenantScopeDto, input: { readonly format: 'generic' | 'yayoi' | 'freee' | 'mf'; readonly status?: string; readonly from?: string; readonly to?: string; readonly markExported?: boolean }, signal?: AbortSignal): Promise<JournalExportResultDto> {
+    const query = scopeQuery(scope);
+    query.set('format', input.format);
+    if (input.status !== undefined && input.status !== '') query.set('status', input.status);
+    if (input.from !== undefined && input.from !== '') query.set('from', input.from);
+    if (input.to !== undefined && input.to !== '') query.set('to', input.to);
+    if (input.markExported === true) query.set('markExported', 'true');
+    return (await this.request<{ result: JournalExportResultDto }>(`/journal/export?${query}`, { signal })).result;
+  }
+
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const token = this.authToken();
     // body 無し（DELETE 等）に content-type を付けると Fastify が空JSON本文として 400/500 にする。
@@ -987,7 +1121,8 @@ export class ToolApiClient {
       }
     }
     if (!response.ok) {
-      const error = body as { error?: { code?: string; message?: string; runId?: string; tool?: RunFailureToolRefDto; nodeId?: string; rubric?: { id?: unknown; version?: unknown } } };
+      const error = body as { error?: { code?: string; message?: string; runId?: string; tool?: RunFailureToolRefDto; nodeId?: string; rubric?: { id?: unknown; version?: unknown }; row?: unknown } };
+      const row = typeof error.error?.row === 'number' && Number.isInteger(error.error.row) ? error.error.row : undefined;
       const rubric = error.error?.rubric;
       // rubric は JUDGE_TRACE_UNAVAILABLE だけが載せる。形が崩れていれば（id が文字列でない等）載せない。
       const rubricRef = rubric !== undefined && typeof rubric.id === 'string' && typeof rubric.version === 'string' ? { id: rubric.id, version: rubric.version } : undefined;
@@ -996,9 +1131,14 @@ export class ToolApiClient {
         error.error?.code ?? 'HTTP_ERROR',
         error.error?.message ?? response.statusText,
         error.error?.runId,
-        { ...(error.error?.tool === undefined ? {} : { tool: error.error.tool }), ...(error.error?.nodeId === undefined ? {} : { nodeId: error.error.nodeId }), ...(rubricRef === undefined ? {} : { rubric: rubricRef }) },
+        { ...(error.error?.tool === undefined ? {} : { tool: error.error.tool }), ...(error.error?.nodeId === undefined ? {} : { nodeId: error.error.nodeId }), ...(rubricRef === undefined ? {} : { rubric: rubricRef }), ...(row === undefined ? {} : { row }) },
       );
     }
     return body as T;
   }
+}
+
+/** scope をクエリ文字列にする（GET / DELETE 用）。 */
+function scopeQuery(scope: TenantScopeDto): URLSearchParams {
+  return new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
 }

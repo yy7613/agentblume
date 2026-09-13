@@ -110,6 +110,18 @@ const HELP: Readonly<Record<ScreenName, ScreenHelp>> = {
     ],
     doc: 'docs/06-etl-tool-builder.md',
   },
+  Journal: {
+    title: { en: 'Journal', ja: '仕訳' },
+    summary: { en: 'Ingest receipts, invoices, and bank/card CSV rows, judge each one against your own rules (stage 1), and export the resulting journal entries as a generic CSV.', ja: 'レシート・請求書・銀行/カード明細 CSV を取り込み、自分で決めたルールで判定（Stage 1）して仕訳を起こし、汎用 CSV に出力します。' },
+    steps: [
+      { en: 'Accounts, tax categories, and dimensions are yours to define in the Chart tab — the standard set is only a starting point. Rules refer to accounts by id, so renaming is safe.', ja: '勘定科目・税区分・補助軸は「科目」タブで自由に定義できます。標準セットは初期値に過ぎません。ルールは科目を id で参照するので、名前を変えても壊れません。' },
+      { en: 'Ingest: import a bank/card CSV (the preset is detected from the header), fill the facts form, paste facts JSON, or store a text source for later extraction.', ja: '取込: 銀行/カード CSV（ヘッダーからプリセットを自動判定）、事実フォーム、JSON 貼り付け、またはテキストの保存（後で抽出）。' },
+      { en: 'Judge: "Judge pending" applies enabled rules. Undecided rows show the cause, the next step, and a button that opens the place to fix it (make a rule, edit facts, open the chart).', ja: '判定: 「未判定を判定」で有効なルールを照合します。未確定の行には原因 → 次の一手 → 直す場所へのボタン（ルールを作る / 項目を編集 / 科目マスタを開く）が出ます。' },
+      { en: 'Export: confirm the draft entries, then download the generic CSV (UTF-8 BOM, CRLF).', ja: '出力: ドラフトの仕訳を確定し、汎用 CSV（UTF-8 BOM・CRLF）をダウンロードします。' },
+      { en: 'LLM extraction from images/PDF/text and the hearing (stage 2) become available when the main model slot is configured and the server enables them.', ja: '画像 / PDF / テキストの LLM 抽出とヒアリング（Stage 2）は、main モデルを設定しサーバーが有効化すると使えるようになります。' },
+    ],
+    doc: 'docs/20-journal.md',
+  },
   Validation: {
     title: { en: 'Validation', ja: '検証' },
     summary: { en: 'Define personas and scenarios, run them against an Agent, and score the results before promoting a version.', ja: 'ペルソナとシナリオを定義してエージェントに実行させ、結果を採点してからバージョンを昇格します。' },

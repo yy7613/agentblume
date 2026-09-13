@@ -56,6 +56,10 @@ describe('applyMigrations', () => {
       for (const expected of ['tools', 'agents', 'skills', 'runs', 'wiki_pages', 'session_artifacts', 'model_settings', 'mcp_servers']) {
         expect(tables.has(expected)).toBe(true);
       }
+      // version 5（仕訳）のテーブルも空DBから一度に作られる。
+      for (const expected of ['journal_chart', 'journal_documents', 'journal_rules', 'journal_entries', 'journal_hearings']) {
+        expect(tables.has(expected)).toBe(true);
+      }
       const indexes = database.handle.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'`).all().map((row) => String(row['name']));
       expect(indexes).toContain('idx_runs_scope_started');
       expect(indexes).toContain('idx_wiki_pages_scope_wiki_updated');
@@ -230,6 +234,71 @@ describe('旧 payload_json 列を持つ session_artifacts', () => {
       expect(await repository.find(scope, 's', 'a')).toMatchObject({ payload: { legacy: true } });
     } finally {
       database.close();
+    }
+  });
+});
+
+describe('version 5（仕訳）', () => {
+  it('version 4 のDBへ後から適用でき、既存データは残る', () => {
+    // version 4 相当のDBを作る（user_version を戻すと version 5 だけが未適用になる）。
+    const before = openSqliteDatabase(dbPath);
+    try {
+      before.handle.prepare(`INSERT INTO tools (tenant_id, workspace_id, internal_id, version, major, minor, patch, definition_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run('t', 'w', 'keep-me', '1.0.0', 1, 0, 0, '{}');
+      before.handle.exec('DROP TABLE journal_chart');
+      before.handle.exec('DROP TABLE journal_documents');
+      before.handle.exec('DROP TABLE journal_rules');
+      before.handle.exec('DROP TABLE journal_entries');
+      before.handle.exec('DROP TABLE journal_hearings');
+      before.handle.exec('PRAGMA user_version = 4');
+    } finally {
+      before.close();
+    }
+
+    const upgraded = openSqliteDatabase(dbPath);
+    try {
+      expect(upgraded.schemaVersion).toBe(5);
+      const tables = tablesOf(upgraded.handle);
+      for (const expected of ['journal_chart', 'journal_documents', 'journal_rules', 'journal_entries', 'journal_hearings']) {
+        expect(tables.has(expected)).toBe(true);
+      }
+      // 既存の行は触られない。
+      expect(upgraded.handle.prepare(`SELECT internal_id FROM tools`).get()).toMatchObject({ internal_id: 'keep-me' });
+    } finally {
+      upgraded.close();
+    }
+  });
+
+  it('docs/20 §11 の列と索引を作る（科目マスタはスコープが主キー、id 列を持たない）', () => {
+    const database = openSqliteDatabase(dbPath);
+    try {
+      expect([...columnsOf(database.handle, 'journal_chart')]).toEqual(['tenant_id', 'workspace_id', 'record_json']);
+      expect(columnsOf(database.handle, 'journal_documents')).toEqual(new Set(['tenant_id', 'workspace_id', 'id', 'kind', 'status', 'transaction_date', 'created_at', 'record_json']));
+      expect(columnsOf(database.handle, 'journal_rules')).toEqual(new Set(['tenant_id', 'workspace_id', 'id', 'enabled', 'priority', 'created_at', 'record_json']));
+      expect(columnsOf(database.handle, 'journal_entries')).toEqual(new Set(['tenant_id', 'workspace_id', 'id', 'document_id', 'status', 'entry_date', 'created_at', 'record_json']));
+      expect(columnsOf(database.handle, 'journal_hearings')).toEqual(new Set(['tenant_id', 'workspace_id', 'id', 'document_id', 'status', 'created_at', 'record_json']));
+
+      const indexes = database.handle.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_journal_%'`).all().map((row) => String(row['name']));
+      expect(indexes).toEqual(expect.arrayContaining([
+        'idx_journal_documents_scope_status', 'idx_journal_documents_scope_date',
+        'idx_journal_rules_scope_priority',
+        'idx_journal_entries_scope_status', 'idx_journal_entries_scope_date', 'idx_journal_entries_scope_document',
+        'idx_journal_hearings_scope_document',
+      ]));
+    } finally {
+      database.close();
+    }
+  });
+
+  it('[回帰固定] 冪等: 最新版のDBを開き直しても何も適用されない', () => {
+    const first = openSqliteDatabase(dbPath);
+    first.close();
+    const second = openSqliteDatabase(dbPath);
+    try {
+      expect(applyMigrations(second.handle).applied).toEqual([]);
+      expect(readSchemaVersion(second.handle)).toBe(LATEST_SCHEMA_VERSION);
+    } finally {
+      second.close();
     }
   });
 });

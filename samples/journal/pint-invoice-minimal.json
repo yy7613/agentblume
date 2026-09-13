@@ -1,0 +1,106 @@
+{
+  "kind": "invoice",
+  "source": {
+    "type": "structured",
+    "fileName": "pint-invoice-minimal.json",
+    "mime": "application/json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "株式会社サンプル商事",
+    "recipientName": "テスト工業株式会社",
+    "registrationNumber": "T1234567890123",
+    "issueDate": "2026-09-01",
+    "transactionDate": "2026-08-31",
+    "dueDate": "2026-09-20",
+    "grandTotal": 174000,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 100000,
+        "taxAmount": 10000,
+        "amountIncludesTax": false
+      },
+      {
+        "rate": 8,
+        "taxableAmount": 50000,
+        "taxAmount": 4000,
+        "amountIncludesTax": false
+      },
+      {
+        "rate": 0,
+        "taxableAmount": 10000,
+        "taxAmount": 0,
+        "amountIncludesTax": false
+      }
+    ],
+    "lines": [
+      {
+        "description": "商品A（標準税率）",
+        "quantity": 10,
+        "unitPrice": 10000,
+        "amount": 100000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "商品B（軽減税率）",
+        "quantity": 5,
+        "unitPrice": 10000,
+        "amount": 50000,
+        "taxRate": 8,
+        "reducedRateMark": true
+      },
+      {
+        "description": "配送保険料（課税対象外）",
+        "quantity": 1,
+        "unitPrice": 10000,
+        "amount": 10000,
+        "taxRate": 0,
+        "reducedRateMark": false
+      }
+    ],
+    "paymentMethod": "bank_transfer",
+    "description": "2026年8月分（月末締め翌月20日払い）",
+    "descriptionNorm": "2026年8月分(月末締め翌月20日払い)",
+    "counterpartyHint": "サンプル商事",
+    "extra": {
+      "customizationId": "urn:peppol:pint:billing-1@jp-1",
+      "profileId": "urn:peppol:bis:billing",
+      "invoiceTypeCode": "380",
+      "invoiceId": "PINT-2026-0001",
+      "documentCurrencyCode": "JPY",
+      "sellerSchemeId": "0221",
+      "buyerSchemeId": "0221",
+      "buyerRegistrationNumber": "T9876543210987",
+      "taxCategories": [
+        {
+          "id": "S",
+          "percent": 10,
+          "taxableAmount": 100000,
+          "taxAmount": 10000
+        },
+        {
+          "id": "AA",
+          "percent": 8,
+          "taxableAmount": 50000,
+          "taxAmount": 4000
+        },
+        {
+          "id": "O",
+          "percent": 0,
+          "taxableAmount": 10000,
+          "taxAmount": 0,
+          "exemptionReason": "不課税"
+        }
+      ],
+      "paymentMeansCode": "30",
+      "payeeFinancialAccount": "サンプル銀行 本店 普通 1234567",
+      "note": "月末締め翌月20日払い"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

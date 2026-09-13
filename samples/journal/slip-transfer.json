@@ -1,0 +1,37 @@
+{
+  "kind": "slip_transfer",
+  "source": {
+    "type": "structured",
+    "fileName": "slip-transfer.json"
+  },
+  "facts": {
+    "issueDate": "2026-09-30",
+    "transactionDate": "2026-09-30",
+    "grandTotal": 50000,
+    "lines": [
+      {
+        "description": "9月分 減価償却（複合機）",
+        "amount": 50000,
+        "taxRate": 0
+      }
+    ],
+    "description": "9月分 減価償却 複合機",
+    "descriptionNorm": "9月分 減価償却 複合機",
+    "extra": {
+      "slipNo": "振-0930-01",
+      "debit": {
+        "account": "減価償却費",
+        "amount": 50000
+      },
+      "credit": {
+        "account": "減価償却累計額",
+        "amount": 50000
+      },
+      "preparedBy": "テスト花子"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

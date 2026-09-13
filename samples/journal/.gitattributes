@@ -1,0 +1,4 @@
+# Shift-JIS の CSV と描画済み画像 / PDF は改行変換・diff の対象にしない
+*.sjis.csv binary
+rendered/* binary
+public/*.pdf binary

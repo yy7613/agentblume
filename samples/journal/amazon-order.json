@@ -1,0 +1,63 @@
+{
+  "kind": "invoice",
+  "source": {
+    "type": "structured",
+    "fileName": "amazon-order.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "サンプルマーケットプレイス合同会社（EC）",
+    "recipientName": "テスト工業株式会社",
+    "registrationNumber": "T3333333333333",
+    "issueDate": "2026-08-06",
+    "transactionDate": "2026-08-06",
+    "grandTotal": 9780,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 9780,
+        "taxAmount": 889,
+        "amountIncludesTax": true
+      }
+    ],
+    "lines": [
+      {
+        "description": "USB-C ハブ 7in1",
+        "quantity": 1,
+        "unitPrice": 4980,
+        "amount": 4980,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "HDMI ケーブル 2m",
+        "quantity": 1,
+        "unitPrice": 1280,
+        "amount": 1280,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "書籍「TypeScript 実践入門」",
+        "quantity": 1,
+        "unitPrice": 3520,
+        "amount": 3520,
+        "taxRate": 10,
+        "reducedRateMark": false
+      }
+    ],
+    "paymentMethod": "credit_card",
+    "description": "AMAZON.CO.JP 注文番号 123-4567890-1234567",
+    "descriptionNorm": "AMAZON.CO.JP 注文番号 123-4567890-1234567",
+    "counterpartyHint": "AMAZON.CO.JP",
+    "extra": {
+      "orderNumber": "123-4567890-1234567",
+      "marketplaceSeller": "サンプル電機オンライン",
+      "shipping": 0
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

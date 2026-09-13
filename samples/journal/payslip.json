@@ -1,0 +1,44 @@
+{
+  "kind": "payslip",
+  "source": {
+    "type": "structured",
+    "fileName": "payslip.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "テスト工業株式会社",
+    "recipientName": "テスト太郎",
+    "issueDate": "2026-09-25",
+    "transactionDate": "2026-09-25",
+    "grandTotal": 247690,
+    "paymentMethod": "bank_transfer",
+    "description": "2026年8月分 給与（支給日 2026-09-25）",
+    "descriptionNorm": "2026年8月分 給与(支給日 2026-09-25)",
+    "counterpartyHint": "テスト太郎",
+    "extra": {
+      "employee": "テスト太郎",
+      "employeeId": "E-0007",
+      "payPeriod": "2026-08",
+      "gross": 310000,
+      "allowances": {
+        "基本給": 300000,
+        "通勤手当": 10000
+      },
+      "deductions": {
+        "健康保険料": 15000,
+        "厚生年金保険料": 27450,
+        "雇用保険料": 1860,
+        "所得税": 6000,
+        "住民税": 12000
+      },
+      "deductionsTotal": 62310,
+      "netPay": 247690
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": [
+      "grandTotal は差引支給額（振込額）。総支給・控除は extra を参照"
+    ]
+  }
+}

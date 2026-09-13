@@ -4,7 +4,7 @@
  * ルーティング（routing.ts）・ナビゲーション context（navigation.tsx）・アプリ内ヘルプ（help-content.ts）が
  * 同じ集合を参照できるよう、依存を持たないこのモジュールに置く。
  */
-export const SCREENS = ['Chat', 'Data', 'Tool', 'Skill', 'Agent', 'Harness', 'Factory', 'Inspect', 'ToolCheck', 'Validation', 'Memory', 'MCP', 'Status', 'Settings'] as const;
+export const SCREENS = ['Chat', 'Data', 'Tool', 'Skill', 'Agent', 'Harness', 'Factory', 'Journal', 'Inspect', 'ToolCheck', 'Validation', 'Memory', 'MCP', 'Status', 'Settings'] as const;
 
 export type ScreenName = (typeof SCREENS)[number];
 

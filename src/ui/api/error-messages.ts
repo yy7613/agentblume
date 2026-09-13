@@ -118,6 +118,15 @@ const HEADINGS: Record<string, Bilingual> = {
   MCP_VALIDATION: ['Please check the MCP server settings', 'MCPサーバー設定の入力内容を確認してください'],
   MCP_NOT_FOUND: ['The MCP server was not found', 'MCPサーバーが見つかりませんでした'],
 
+  // 仕訳（docs/20）。src/domain/journal のエラー → src/api/error-mapping.ts の code 体系に対応する。
+  JOURNAL_DOMAIN: ['Please check the journal input', '仕訳の入力内容を確認してください'],
+  JOURNAL_DOCUMENT_NOT_FOUND: ['The journal document was not found', '帳票が見つかりませんでした'],
+  JOURNAL_RULE_NOT_FOUND: ['The journal rule was not found', '仕訳ルールが見つかりませんでした'],
+  JOURNAL_ENTRY_NOT_FOUND: ['The journal entry was not found', '仕訳が見つかりませんでした'],
+  JOURNAL_HEARING_NOT_FOUND: ['The hearing session was not found', 'ヒアリングが見つかりませんでした'],
+  JOURNAL_CSV_IMPORT: ['The CSV could not be imported. Check the preset, the header row, and the character encoding', 'CSV を取り込めませんでした。プリセット・ヘッダー行・文字コードを確認してください'],
+  JOURNAL_EXPORT: ['The journal export failed. Check the status filter and date range, then retry', '仕訳の出力に失敗しました。状態の絞り込みと期間を確認して再試行してください'],
+
   // モデル設定の入力不正（400）。LM Studio 前提の実行エラー文言に混ぜない。
   MODEL_SETTINGS_VALIDATION: ['Please check the model settings', 'モデル設定の入力内容を確認してください'],
   // モデル一覧の取得失敗（502）。実行エラーではなく「一覧が引けない」だけ。
@@ -1246,10 +1255,14 @@ export interface ApiErrorPayload {
   readonly serverMessage: string;
   /** JUDGE_TRACE_UNAVAILABLE がエラー本文に載せるルーブリック参照（文言に ID を埋めるため）。 */
   readonly rubric?: { readonly id: string; readonly version: string };
+  /** JOURNAL_CSV_IMPORT がエラー本文に載せる失敗行（1 始まり。ヘッダー行を含む行番号）。 */
+  readonly row?: number;
 }
 
 /** code（+ SECRET_CIPHER は status）から見出しを決める。 */
 function headingFor(payload: ApiErrorPayload, language: ErrorLanguage): string {
+  // CSV 取込の失敗は「何行目か」が直す場所そのものなので、見出しに行番号を埋める。
+  if (payload.code === 'JOURNAL_CSV_IMPORT' && payload.row !== undefined) return language === 'ja' ? `CSV の ${payload.row} 行目を取り込めませんでした。その行の列数・日付・金額を確認してください` : `Row ${payload.row} of the CSV could not be imported. Check the column count, date, and amount on that row`;
   if (payload.code === 'SECRET_CIPHER') return pick(payload.status === 500 ? SECRET_CIPHER_KEY_FILE : SECRET_CIPHER_DECRYPT, language);
   const known = HEADINGS[payload.code];
   return known === undefined ? statusHeading(payload.status, language) : pick(known, language);
@@ -1481,4 +1494,22 @@ export function localizeToolCheckAssertion(text: string, language: ErrorLanguage
   if (trimmed === 'outcome error') return role === 'actual' ? '失敗した' : '実行が失敗すること';
   if (trimmed === 'outcome success') return role === 'actual' ? '成功した' : '実行が成功すること';
   return text;
+}
+
+/**
+ * 仕訳の Stage 1 判定が「未確定」になった理由（`JournalUndecidedReasonDto.code`）の短い見出し。
+ * 判定タブは summarizeJudgment（原因 → 次の一手 → ボタン）で詳しく描くが、一覧のチップやテスト結果の
+ * 1 行表示にはこの見出しだけを使う。未知の code はそのまま返す（新しいサーバーに追従できるよう握りつぶさない）。
+ */
+export function localizeJournalReason(reason: { readonly code: string }, text: (en: string, ja: string) => string): string {
+  switch (reason.code) {
+    case 'no-rule': return text('No matching rule', '該当ルール無し');
+    case 'multiple-rules': return text('Several rules tie', '複数ルールが同点');
+    case 'missing-fact': return text('Required facts missing', '必要項目の不足');
+    case 'ask-if': return text('Needs an answer', '追加質問あり');
+    case 'rule-suggest-mode': return text('Only suggest-mode rules matched', '推測ルールのみ一致');
+    case 'unknown-account': return text('Account missing from the chart', '科目がマスタに無い');
+    case 'unbalanced': return text('Debit and credit differ', '貸借不一致');
+    default: return reason.code;
+  }
 }

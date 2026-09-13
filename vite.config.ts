@@ -49,6 +49,7 @@ export default defineConfig({
       '/model-settings': apiTarget,
       '/model-catalog': apiTarget,
       '/sample-data': apiTarget,
+      '/journal': apiTarget,
     },
   },
   build: { outDir: 'dist/ui', emptyOutDir: true },

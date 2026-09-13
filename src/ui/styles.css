@@ -378,6 +378,67 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .judge-notice .save-actions { margin-top: 6px; }
 .judge-hint { display: grid; gap: 2px; margin: 4px 0 8px; font-size: 11px; line-height: 1.5; color: #5b6785; }
 .judge-criterion-head { grid-template-columns: 1fr 1fr 110px auto 34px; }
+/* 仕訳（docs/20）: 帳票の状態チップ・未確定の理由カード・CSV プレビュー表。色は既存トークンを流用する。 */
+.journal-page .validation-tabs { margin-bottom: 14px; }
+.journal-ingest, .journal-chart, .journal-export { display: grid; gap: 16px; }
+.journal-source-switch { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.journal-source-switch button { border: 1px solid #ccd3e0; background: white; color: #354158; border-radius: 99px; padding: 6px 14px; font-size: 12px; font-weight: 700; }
+.journal-source-switch button.active { background: #5365ed; border-color: #5365ed; color: white; }
+.journal-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+.journal-toolbar h2 { margin: 0; }
+.journal-toolbar label { flex-direction: row; align-items: center; gap: 6px; margin: 0; font-size: 11px; color: #5c6880; }
+.journal-toolbar > button { margin-left: auto; }
+.journal-toolbar > button ~ button { margin-left: 0; }
+.journal-file-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 10px 0; }
+.journal-file-row label, .journal-inline-file { display: grid; gap: 4px; font-size: 11px; color: #5c6880; }
+.journal-detected { margin: 10px 0; font-size: 11px; color: #4f5d76; }
+.journal-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.journal-form-grid .journal-span { grid-column: 1 / -1; }
+.journal-checkbox { display: flex !important; flex-direction: row !important; align-items: center; gap: 6px; font-size: 11px; }
+.journal-checkbox input { width: auto; }
+.journal-kinds { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0; padding: 8px 12px; border: 1px solid #dce1eb; border-radius: 8px; }
+.journal-kinds legend { padding: 0 4px; color: #5c6880; font-size: 11px; font-weight: 700; }
+.journal-condition-row, .journal-line-row, .journal-askif-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-bottom: 8px; }
+.journal-condition-row input, .journal-condition-row select, .journal-line-row select, .journal-line-row input, .journal-askif-row input { min-width: 120px; }
+.journal-editor-actions { margin-top: 14px; }
+.journal-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.journal-table th { position: sticky; top: 0; background: #f4f6fb; text-align: left; padding: 7px 9px; color: #52607a; font-weight: 700; white-space: nowrap; }
+.journal-table td { padding: 6px 9px; border-top: 1px solid #eef1f6; vertical-align: top; }
+.journal-table tr.selected > td { background: #f2f4ff; }
+.journal-table .journal-amount { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.journal-editor-table input, .journal-editor-table select { width: 100%; min-width: 90px; }
+.journal-editor-table .journal-order { display: flex; gap: 2px; }
+.journal-editor-table .journal-order button { padding: 2px 6px; }
+.journal-row-actions { display: flex; gap: 6px; white-space: nowrap; }
+.journal-entry-detail > td { background: #fafbfe; }
+/* 帳票・仕訳の状態チップ。judge-chip を土台に、状態ごとの色だけ足す。 */
+.journal-status-extracted { background: #eef1f6; color: #526078; }
+.journal-status-undecided, .journal-entry-draft { background: #fff1d7; border-color: #f4dfb0; color: #97640c; }
+.journal-status-decided, .journal-entry-confirmed { background: #e4f5ef; border-color: #cbe9de; color: #137058; }
+.journal-status-hearing { background: #e8ecff; border-color: #d5dbff; color: #3545b7; }
+.journal-status-skipped { background: #f1f3f8; border-style: dashed; color: #7a869c; }
+.journal-status-exported, .journal-entry-exported { background: #eef1ff; border-color: #d9dffb; color: #4657d7; }
+/* 未確定の理由: 原因 → 次の一手 → 直す場所へのボタン。 */
+.journal-reason { margin: 10px 0; padding: 12px; border-radius: 9px; border: 1px solid #dce1eb; background: #fafbfe; font-size: 12px; line-height: 1.55; }
+.journal-reason p { margin: 0 0 6px; }
+.journal-reason-undecided { border-color: #f4dfb0; background: #fff8e8; color: #6e5218; }
+.journal-reason-decided { border-color: #cbe9de; background: #f0faf6; color: #135d4b; }
+.journal-reason-skipped { border-style: dashed; color: #5c6880; }
+.journal-reason .run-failure-actions { margin-top: 8px; }
+.journal-facts { display: grid; grid-template-columns: minmax(96px, auto) 1fr; gap: 4px 12px; margin: 12px 0; font-size: 11px; }
+.journal-facts dt { color: #7a869c; font-weight: 700; }
+.journal-facts dd { margin: 0; color: #354158; overflow-wrap: anywhere; }
+.journal-warnings { display: grid; gap: 6px; margin: 8px 0; padding: 0; list-style: none; }
+.journal-answer { display: grid; gap: 6px; margin: 10px 0; padding: 12px; border: 1px solid #d5dbff; border-radius: 9px; background: #f5f7ff; }
+.journal-json-errors { display: grid; gap: 3px; margin: 8px 0; padding-left: 18px; color: #a62f3e; font-size: 11px; }
+.journal-entry-lines { display: grid; gap: 2px; margin: 0; padding-left: 16px; }
+.journal-test { margin-top: 14px; padding-top: 12px; border-top: 1px solid #e5e9f1; }
+.journal-test-pick { display: grid; gap: 4px; max-height: 190px; overflow: auto; margin-bottom: 10px; }
+.journal-csv-out, .journal-export-result, .journal-import-result { display: grid; gap: 8px; margin-top: 12px; }
+.journal-dimension { margin-bottom: 14px; padding: 12px; border: 1px solid #dce1eb; border-radius: 9px; background: #fafbfe; }
+.journal-dimension-values { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+.journal-dimension-values li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+@media (max-width: 1050px) { .journal-form-grid { grid-template-columns: 1fr; } }
 /* 品質比較: `metric:criterion` の基準行は親の直後に字下げして群として読ませる。 */
 .metric-row-criterion td:first-child { padding-left: 22px; }
 .metric-criterion { color: #526078; }

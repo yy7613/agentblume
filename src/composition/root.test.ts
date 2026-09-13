@@ -31,6 +31,14 @@ import type { TenantScope } from '../domain/tool/ids';
 import { beginFactoryRun, DEFAULT_FACTORY_OPTIONS, startFactoryRun, type FactoryRun } from '../domain/factory/factory-run';
 import { createExperiment, startExperiment } from '../domain/evaluation/experiment';
 import { SemVer } from '../domain/tool/semver';
+import {
+  InMemoryChartOfAccountsRepository, InMemoryJournalDocumentRepository, InMemoryJournalEntryRepository,
+  InMemoryJournalHearingRepository, InMemoryJournalRuleRepository,
+} from '../adapters/storage/in-memory-journal-repositories';
+import {
+  SqliteChartOfAccountsRepository, SqliteJournalDocumentRepository, SqliteJournalEntryRepository,
+  SqliteJournalHearingRepository, SqliteJournalRuleRepository,
+} from '../adapters/storage/sqlite-journal-repositories';
 import { createApp, resolveDatabasePath } from './root';
 import type { App } from './root';
 
@@ -528,5 +536,94 @@ describe('createApp', () => {
         app.close();
       }
     });
+  });
+});
+
+describe('仕訳（journal）の配線', () => {
+  it('test プロファイルは InMemory リポジトリを 5 つとも配線する', () => {
+    const app = createApp({ profile: 'test' });
+    try {
+      expect(app.journalChartRepo).toBeInstanceOf(InMemoryChartOfAccountsRepository);
+      expect(app.journalDocumentRepo).toBeInstanceOf(InMemoryJournalDocumentRepository);
+      expect(app.journalRuleRepo).toBeInstanceOf(InMemoryJournalRuleRepository);
+      expect(app.journalEntryRepo).toBeInstanceOf(InMemoryJournalEntryRepository);
+      expect(app.journalHearingRepo).toBeInstanceOf(InMemoryJournalHearingRepository);
+    } finally {
+      app.close();
+    }
+  });
+
+  it('local プロファイルは共有接続の SQLite リポジトリを配線する', () => {
+    const app = createApp({ profile: 'local', dbPath: join(mkdtempSync(join(tmpdir(), 'agentblume-journal-')), 'db.sqlite') });
+    try {
+      expect(app.journalChartRepo).toBeInstanceOf(SqliteChartOfAccountsRepository);
+      expect(app.journalDocumentRepo).toBeInstanceOf(SqliteJournalDocumentRepository);
+      expect(app.journalRuleRepo).toBeInstanceOf(SqliteJournalRuleRepository);
+      expect(app.journalEntryRepo).toBeInstanceOf(SqliteJournalEntryRepository);
+      expect(app.journalHearingRepo).toBeInstanceOf(SqliteJournalHearingRepository);
+    } finally {
+      app.close();
+    }
+  });
+
+  it('ユースケースが App に揃っている（api の JournalRouteDeps がそのまま満たされる）', () => {
+    const app = createApp({ profile: 'test' });
+    try {
+      for (const name of [
+        'getJournalChart', 'saveJournalChart', 'resetJournalChart', 'exportJournalChartCsv', 'importJournalChartCsv',
+        'saveJournalRule', 'listJournalRules', 'deleteJournalRule', 'testJournalRule',
+        'saveJournalDocument', 'listJournalDocuments', 'getJournalDocument', 'deleteJournalDocument',
+        'importJournalCsv', 'judgeJournalDocuments',
+        'saveJournalEntry', 'listJournalEntries', 'confirmJournalEntry', 'deleteJournalEntry',
+        'exportJournalEntries', 'journalCapabilities',
+      ] as const) {
+        expect(app[name], name).toBeDefined();
+      }
+    } finally {
+      app.close();
+    }
+  });
+
+  it('test プロファイルの機能フラグは決定的に「どちらも使えない」（缶詰モデルの能力を見に行かない）', async () => {
+    const app = createApp({ profile: 'test' });
+    try {
+      expect(await app.journalCapabilities.execute()).toEqual({
+        extraction: { enabled: false, vision: false },
+        hearing: { enabled: false },
+      });
+    } finally {
+      app.close();
+    }
+  });
+
+  it('保存 → 判定 → 出力の縦切りが配線越しに通る', async () => {
+    const app = createApp({ profile: 'test' });
+    try {
+      await app.saveJournalRule.execute({
+        scope,
+        rule: {
+          name: '消耗品', enabled: true, mode: 'auto', priority: 100, scope: {},
+          conditions: [{ field: 'descriptionNorm', op: 'contains', value: 'テスト' }],
+          outcome: { lines: [
+            { side: 'debit', accountId: 'expense.supplies', taxCode: 'JP-IN-10-S', amount: 'total' },
+            { side: 'credit', accountId: 'asset.cash', taxCode: 'JP-NA', amount: 'total' },
+          ] },
+          askIf: [], requiredFacts: [],
+        },
+      });
+      await app.saveJournalDocument.execute({
+        scope, kind: 'invoice', source: { type: 'structured' },
+        facts: { direction: 'out', transactionDate: '2026-09-10', grandTotal: 1100, description: 'テスト仕入' },
+      });
+
+      const judged = await app.judgeJournalDocuments.execute({ scope });
+      expect(judged).toMatchObject({ decided: 1, undecided: 0, skipped: 0 });
+
+      const exported = await app.exportJournalEntries.execute({ scope, format: 'generic' });
+      expect(exported.entryCount).toBe(1);
+      expect(exported.content).toContain('消耗品費');
+    } finally {
+      app.close();
+    }
   });
 });

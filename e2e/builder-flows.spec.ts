@@ -220,7 +220,7 @@ test('Skill Builderで名前・説明・内容を保存できる', async ({ page
   expect(skill.tools).toEqual([]);
 });
 
-test('Chat・MCP・Validation・Memory・Settingsの全ナビが実操作できる', async ({ page }) => {
+test('Chat・MCP・Validation・仕訳・Memory・Settingsの全ナビが実操作できる', async ({ page }) => {
   const tool = await page.request.post('/tools', { data: {
     scope, internalId: 'screen-tool', workingName: 'Screen tool', displayName: 'Screen Tool', publishName: 'screen_tool', owner: 'e2e', sideEffect: 'read-only',
     graph: { nodes: [{ id: 'input', type: 'agent-input', config: { schema: { columns: [] }, sample: {} } }], edges: [] }, inputSchema: { columns: [] }, outputSchema: { columns: [] },
@@ -275,6 +275,11 @@ test('Chat・MCP・Validation・Memory・Settingsの全ナビが実操作でき�
   await page.getByRole('button', { name: 'Tool Check', exact: true }).click();
   await expect(page).toHaveURL(/#\/toolcheck$/);
   await expect(page.getByRole('heading', { name: 'Tool Check' })).toBeVisible();
+
+  // 仕訳も同じく、画面が開いて見出しが出ることだけを確かめる（/journal 系のAPIが無い環境でも落ちないように）。
+  await page.getByRole('button', { name: 'Journal', exact: true }).click();
+  await expect(page).toHaveURL(/#\/journal$/);
+  await expect(page.getByRole('heading', { name: 'Journal entries' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Memory', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Long-term memory' })).toBeVisible();

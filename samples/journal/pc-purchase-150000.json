@@ -1,0 +1,47 @@
+{
+  "kind": "invoice",
+  "source": {
+    "type": "structured",
+    "fileName": "pc-purchase-150000.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "サンプル電機株式会社 霞が関店",
+    "recipientName": "テスト工業株式会社",
+    "registrationNumber": "T4444444444444",
+    "issueDate": "2026-08-02",
+    "transactionDate": "2026-08-02",
+    "grandTotal": 150000,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 136364,
+        "taxAmount": 13636,
+        "amountIncludesTax": false
+      }
+    ],
+    "lines": [
+      {
+        "description": "ノートPC SampleBook 14 (16GB/512GB)",
+        "quantity": 1,
+        "unitPrice": 136364,
+        "amount": 136364,
+        "taxRate": 10,
+        "reducedRateMark": false
+      }
+    ],
+    "paymentMethod": "credit_card",
+    "description": "ノートPC 1台",
+    "descriptionNorm": "ノートPC 1台",
+    "counterpartyHint": "サンプル電機",
+    "extra": {
+      "serialNo": "SB14-000123",
+      "installments": 3,
+      "warrantyMonths": 12
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

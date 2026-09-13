@@ -1,0 +1,78 @@
+{
+  "kind": "expense_report",
+  "source": {
+    "type": "structured",
+    "fileName": "expense-report.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "テスト太郎",
+    "recipientName": "テスト工業株式会社",
+    "issueDate": "2026-09-10",
+    "transactionDate": "2026-09-10",
+    "grandTotal": 14770,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 10450,
+        "amountIncludesTax": true
+      },
+      {
+        "rate": 8,
+        "taxableAmount": 4320,
+        "amountIncludesTax": true
+      }
+    ],
+    "lines": [
+      {
+        "description": "09/02 タクシー代（東京駅→霞が関 サンプル商事訪問）",
+        "amount": 3200,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "09/04 JR 東京→新横浜 往復（客先打合せ）",
+        "amount": 3400,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "09/05 会議用弁当 4名分 ※",
+        "quantity": 4,
+        "unitPrice": 1080,
+        "amount": 4320,
+        "taxRate": 8,
+        "reducedRateMark": true
+      },
+      {
+        "description": "09/08 書籍「実務インボイス入門」",
+        "amount": 2750,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "09/09 宅配便 送料（資料送付）",
+        "amount": 1100,
+        "taxRate": 10,
+        "reducedRateMark": false
+      }
+    ],
+    "paymentMethod": "unknown",
+    "description": "2026年9月 立替金精算（テスト太郎）",
+    "descriptionNorm": "2026年9月 立替金精算(テスト太郎)",
+    "counterpartyHint": "テスト太郎",
+    "extra": {
+      "employee": "テスト太郎",
+      "employeeId": "E-0007",
+      "department": "営業部",
+      "reportNo": "EXP-2026-0910-01",
+      "reimbursement": "銀行振込（給与とは別）",
+      "attachedReceipts": 4,
+      "approvedBy": "テスト花子"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

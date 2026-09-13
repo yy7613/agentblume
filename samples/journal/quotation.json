@@ -1,0 +1,44 @@
+{
+  "kind": "quotation",
+  "source": {
+    "type": "structured",
+    "fileName": "quotation.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "株式会社サンプル商事",
+    "recipientName": "テスト工業株式会社",
+    "registrationNumber": "T1234567890123",
+    "issueDate": "2026-09-01",
+    "grandTotal": 165000,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 150000,
+        "taxAmount": 15000,
+        "amountIncludesTax": false
+      }
+    ],
+    "lines": [
+      {
+        "description": "業務用複合機 初期設置費用 一式",
+        "quantity": 1,
+        "unitPrice": 150000,
+        "amount": 150000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      }
+    ],
+    "description": "御見積書 複合機 初期設置費用",
+    "descriptionNorm": "御見積書 複合機 初期設置費用",
+    "counterpartyHint": "サンプル商事",
+    "extra": {
+      "quotationNumber": "Q-2026-0901",
+      "validUntil": "2026-09-30"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

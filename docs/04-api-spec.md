@@ -188,7 +188,30 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/tool-checks/cases/{id}/run` | 保存済みケースを実行し `lastResult` を更新 | `tool:execute` |
 | `POST` | `/tool-checks/cases/run-all` | 全ケース（または `toolId` のケース）を逐次実行 | `tool:execute` |
 | `POST` | `/tool-checks/suggest` | LLM による 正常 / 境界 / 異常 のケース案（保存しない。モデル未設定は 502。§3.2） | `tool:execute` |
-| `GET` | `/runtime/capabilities` | UI の機能フラグ: `{ analysisAssistant: { enabled }, toolCheckSuggestions: { enabled }, judge: { configured, provider?, model? } }`（現在のモデル設定を毎回見る。`judge` は judge スロットが判定に使える状態か） | `workspace:read` |
+| `GET` | `/runtime/capabilities` | UI の機能フラグ: `{ analysisAssistant: { enabled }, toolCheckSuggestions: { enabled }, judge: { configured, provider?, model? }, journal: { extraction: { enabled, vision }, hearing: { enabled } } }`（現在のモデル設定を毎回見る。`judge` は judge スロットが判定に使える状態か、`journal` は仕訳の LLM 抽出・ヒアリングの可否） | `workspace:read` |
+| `GET` | `/journal/chart` | 科目マスタの取得（未保存なら標準セット。保存はしない。§3.4） | `workspace:read` |
+| `PUT` | `/journal/chart` | 科目マスタの全体保存 | `workspace:edit` |
+| `POST` | `/journal/chart/reset` | 科目マスタを標準セットへ戻す | `workspace:edit` |
+| `GET` | `/journal/chart/export` | 科目 CSV の出力（`{ content }`） | `workspace:read` |
+| `POST` | `/journal/chart/import` | 科目 CSV の取込（勘定科目の一覧だけを置き換え） | `workspace:edit` |
+| `GET` | `/journal/rules` | 自動仕訳ルールの一覧（priority 降順） | `workspace:read` |
+| `POST` | `/journal/rules` | ルールの保存（`id` 省略で新規、指定で上書き） | `workspace:edit` |
+| `DELETE` | `/journal/rules/{id}` | ルールの削除 | `workspace:edit` |
+| `POST` | `/journal/rules/test` | ルール草案を保存せずに文書群へ照合 | `workspace:read` |
+| `GET` | `/journal/documents` | 文書一覧（**要約**。証憑本体を含まない。`status` / `kind` / `from` / `to` / `limit`） | `workspace:read` |
+| `POST` | `/journal/documents` | 文書の作成（facts 直接 / JSON 貼付） | `workspace:edit` |
+| `GET` | `/journal/documents/{id}` | 文書の取得（証憑本体つき） | `workspace:read` |
+| `PUT` | `/journal/documents/{id}` | 文書の更新（facts が変われば未判定へ戻る） | `workspace:edit` |
+| `DELETE` | `/journal/documents/{id}` | 文書の削除（下書きの仕訳も消す） | `workspace:edit` |
+| `POST` | `/journal/documents/import-csv` | 銀行 / カード明細 CSV の取込（1 行 = 1 文書。読めない行は `skippedRows`） | `workspace:edit` |
+| `POST` | `/journal/documents/judge` | Stage 1 判定（`documentIds` 省略で未判定の全件） | `workspace:edit` |
+| `GET` | `/journal/csv-presets` | CSV プリセットの一覧（列名署名つき） | `workspace:read` |
+| `GET` | `/journal/entries` | 仕訳一覧（`status` / `from` / `to` / `documentId`） | `workspace:read` |
+| `POST` | `/journal/entries` | 仕訳の手入力（作成） | `workspace:edit` |
+| `PUT` | `/journal/entries/{id}` | 仕訳の更新 | `workspace:edit` |
+| `POST` | `/journal/entries/{id}/confirm` | 仕訳の確定（draft → confirmed） | `workspace:edit` |
+| `DELETE` | `/journal/entries/{id}` | 仕訳の削除（紐づく文書は未判定へ戻る） | `workspace:edit` |
+| `GET` | `/journal/export` | 仕訳 CSV の出力（`format` / `status` / `from` / `to` / `markExported`） | `workspace:read` |
 | `POST` | `/tools/{id}/publish` | 公開（エイリアス/互換性管理） | `tool:publish` |
 | `POST` | `/tools/{id}/expose-mcp` | MCPサーバとして公開 | `deployment:publish` |
 | `POST` | `/skills` | Skill作成 | `skill:create` |
@@ -391,6 +414,109 @@ LLM-as-Judge の採点は **基準別**（[ADR-0037](./adr/0037-criterion-level-
 |---|---|---|
 | `JUDGE_MODEL_NOT_CONFIGURED` | プロファイルに judge 指標があるが judge スロットにモデルが無い。設定画面で judge を保存すると直る | `{ error: { code, message } }` |
 | `JUDGE_TRACE_UNAVAILABLE` | `tracePolicy: required` のルーブリックを scenario 事例を含むデータセットに使った。ルーブリックの `tracePolicy` を `optional` にすると直る | `{ error: { code, message, rubric: { id, version } } }` |
+
+### 3.4 仕訳（journal）
+
+伝票・帳票を取り込み、**2 段階判定**（① 既存ルールで決定的に仕訳できるか / ② できなければヒアリングでルール化）で仕訳を起こし、汎用 CSV へ出す（[docs/20-journal.md](./20-journal.md) / [ADR-0038](./adr/0038-journal-two-stage-judgment.md)）。**フェーズ 1 の API は下表のみ**で、LLM 抽出（`/journal/documents/extract`）とヒアリング（`/journal/hearings*`）は登録していない。画面は `GET /runtime/capabilities` の `journal` を見て、使えない機能の導線を出さない。
+
+応答の文書 / ルール / 仕訳は永続化用の形から `tenant` を除いたもの（スコープは Principal 由来なので返さない）。すべて `{ chart } / { rules } / { rule } / { documents } / { document } / { entries } / { entry } / { presets } / { content } / { result }` のいずれかで包み、削除は 204。
+
+#### 科目マスタ（`/journal/chart`）
+
+**勘定科目・税区分・補助軸はコードに持たず、ワークスペースのデータとして持つ**（ADR-0038）。保存したことが無いワークスペースは `GET` で標準セットを返すが**保存はしない**（参照が書き込みを起こすと、読み取り権限しか無い利用者が失敗し、標準セットの改善が焼き付く）。
+
+```jsonc
+// GET /journal/chart?tenantId&workspaceId → 200 { chart }
+{ "accounts": [{ "id": "expense.supplies", "name": "消耗品費", "category": "expense", "defaultTaxCode": "JP-IN-10-S", "aliases": ["消耗品", "事務用品"], "enabled": true, "sortOrder": 140 }],
+  "dimensions": [{ "id": "sub_account", "name": "補助科目", "values": [] }, { "id": "department", "name": "部門", "values": [] }],
+  "taxCategories": [{ "code": "JP-IN-10-S", "name": "課税仕入 10%", "side": "in", "rate": 10, "enabled": true, "mapping": { "yayoi": "課対仕入込10%" } }],
+  "updatedAt": "2026-09-13T00:00:00.000Z" }
+// PUT /journal/chart  { scope, accounts, dimensions, taxCategories } → 200 { chart }（全体を置き換え）
+// POST /journal/chart/reset  { scope } → 200 { chart }（標準セットを保存して返す）
+```
+
+科目 CSV は `id,code,name,category,defaultTaxCode,aliases,enabled`（`aliases` は `;` 区切り、`enabled` は `true|false`、BOM 付き CRLF）。**取込は勘定科目の一覧だけを置き換え、税区分と補助軸は既存のものを残す**（科目 CSV に税区分の定義が無いため、全体上書きと解釈すると既存のルールと仕訳が一斉に壊れる）。行の不正は 400 `JOURNAL_DOMAIN` で、メッセージに**行番号（1 始まり・ヘッダ込み）**を含める。
+
+削除は論理削除（`enabled: false`）。ルールと仕訳は科目を **id** で参照するので改名に追従し、仕訳の各行は確定時の科目名も写して持つ（過去の仕訳は当時の名前のまま）。
+
+#### ルール（`/journal/rules`）
+
+```jsonc
+// POST /journal/rules  { scope, rule } → 200 { rule }
+{ "scope": {…},
+  "rule": { "id": "…",                       // 省略で新規。更新は createdAt を保つ（優先順が入れ替わらない）
+    "name": "Amazon は消耗品費", "enabled": true, "mode": "auto", "priority": 100,
+    "scope": { "documentKinds": ["card_statement"], "direction": "out", "accountHints": ["楽天カード"] },
+    "conditions": [{ "field": "descriptionNorm", "op": "contains", "value": "アマゾン" }],
+    "outcome": { "lines": [
+        { "side": "debit",  "accountId": "expense.supplies", "taxCode": "JP-IN-10-S", "amount": "total", "partnerFrom": "issuerName" },
+        { "side": "credit", "accountId": "liability.other_payables", "taxCode": "JP-NA", "amount": "total" }],
+      "descriptionTemplate": "{issuerName} {description}", "invoiceStatus": "auto" },
+    "askIf": [{ "conditions": [{ "field": "grandTotal", "op": "gte", "value": 100000 }], "questionId": "fixed_asset_check", "prompt": "固定資産の確認" }],
+    "requiredFacts": ["grandTotal"] } }
+```
+
+`op` は `equals | contains | startsWith | endsWith | regex | between | gte | lte | in | exists | notExists | isTrue | isFalse`。`amount` は `total | taxable:10 | taxable:8 | tax:10 | tax:8 | remainder | { fixed } | { ratio }`。保存時に **outcome が参照する科目 id と税区分コードが現在のマスタにあり有効か**を確かめ、無ければ 400 `JOURNAL_DOMAIN`（ここで弾かないと、保存は通るのに判定のたびに `unknown-account` で止まるルールが溜まる）。
+
+`POST /journal/rules/test` は草案 × 文書 id の一覧を受け、**保存せずに**判定と同じ関数で照合する（`{ result: [{ documentId, matched, specificity?, entry?, reasons? }] }`）。見つからない文書 id は結果に現れない。
+
+#### 文書（`/journal/documents`）
+
+一覧は**要約**を返す（`sourceType` / `fileName` / `transactionDate` / `issuerName` / `grandTotal` / `judgment` など）。証憑本体（画像 data URL・原文テキスト・CSV 1 行の生値）は含まれないので、一覧の応答が数 MiB になることはない。本体は `GET /journal/documents/{id}` で 1 件ずつ読む。`source.dataUrl` と `source.text` は 1 件 8 MiB が上限。
+
+保存時に facts を正規化する（`descriptionNorm` を作り直し、`registrationNumber` を `T` + 13 桁へ寄せ、`counterpartyHint` を摘要から切り出す）。**facts が変わった更新は `judgment` と `entryId` を落として `extracted`（未判定）へ戻す** — 帳票を直したのに古い判定結果と仕訳が残ると、画面には「確定済み」と出るのに中身が食い違う。facts が同じなら状態は保つ。
+
+`DELETE` は紐づく仕訳が **`draft` のときだけ**一緒に消す（判定が作った下書きは元の証憑が消えれば残す意味が無い）。`confirmed` / `exported` の仕訳は会計上の記録なので残す。
+
+#### CSV 取込（`POST /journal/documents/import-csv`）
+
+```jsonc
+{ "scope": {…}, "content": "日付,摘要,出金,入金,残高\r\n…",  // 5 MiB まで
+  "preset": "rakuten-bank",        // 省略時は columnMapping →列名署名の自動判定の順
+  "columnMapping": { "date": "取引日", "description": "摘要", "amount": "入出金" },
+  "fileName": "202609.csv", "accountHint": "楽天銀行" }
+// → 200 { result }
+{ "preset": "rakuten-bank", "imported": [ JournalDocumentSummary ],
+  "skippedRows": [{ "row": 12, "reason": "CSV row 12: date is missing or unreadable" }],
+  "warnings": ["detected preset: rakuten-bank", "skipped 1 of 40 rows"] }
+```
+
+**1 行の失敗で取込全体を捨てない**。明細 CSV には合計行・注記行が混ざるので、読めなかった行は `skippedRows`（行番号 + 理由）へ積み、残りを保存する。行番号は**ヘッダ行を 1 とした 1 始まり**（表計算ソフトの行番号と一致する）。全列が空白の行は黙って捨てる。プリセットが決まらない（列名がどれにも一致せず列マッピングも無い）ときだけ、行の問題ではなく取込全体の前提の問題として 400 `JOURNAL_CSV_IMPORT`（`row` なし）で断る。引用符の閉じ忘れは `row` つきで返る。
+
+`GET /journal/csv-presets` は `{ presets: [{ id, name, description, headerSignature, kind }] }`（楽天銀行・MUFG・SMBC・ゆうちょ・楽天カード・汎用）。
+
+#### 判定（`POST /journal/documents/judge`）
+
+`{ scope, documentIds? }` → `{ result: { judged: [JournalDocumentSummary], decided, undecided, skipped } }`。`documentIds` 省略時は状態が `extracted` / `undecided` の全件。判定は純粋関数（`judgeDocument`）で、確定できないことは**エラーではなく結果**として返る。
+
+```jsonc
+"judgment": { "stage": "undecided", "judgedAt": "…", "candidates": [{ "ruleId": "…", "ruleName": "…", "mode": "suggest", "priority": 100, "specificity": 4 }],
+  "reasons": [{ "code": "multiple-rules", "ruleIds": ["r1", "r2"] }] }
+```
+
+理由コードは `no-rule` / `multiple-rules` / `missing-fact` / `ask-if` / `rule-suggest-mode` / `unknown-account` / `unbalanced`。UI はこれを「原因 → 次の一手 → 修正場所へのボタン」に写す。
+
+**確定済みの仕訳は再判定で上書きしない**。`confirmed` / `exported` の仕訳が紐づく文書は判定結果だけを更新し、仕訳には触れない（利用者が確認・修正した内容を黙って消さない）。`exported` の文書は判定の対象外（明示指定でも飛ばす）。
+
+#### 仕訳と出力（`/journal/entries`・`/journal/export`）
+
+仕訳は借方合計 = 貸方合計を不変条件に持ち、状態は `draft` → `confirmed` → `exported`。保存時に**各行の科目名をマスタから写し直す**（クライアントの申告を採らない。id と名前が食い違う行は CSV の中身を壊す）。マスタに無い / 無効な科目は 400 `JOURNAL_DOMAIN`。`DELETE` は紐づく文書を `extracted` へ戻す（参照切れの `entryId` を残さない）。
+
+```jsonc
+// GET /journal/export?format=generic&status=confirmed&from&to&markExported=true → 200 { result }
+{ "format": "generic", "fileName": "journal-2026-09-13.csv", "content": "﻿entry_id,line_no,…", "entryCount": 12 }
+```
+
+汎用 CSV は 25 列・UTF-8 BOM・CRLF・`YYYY/MM/DD`・税込整数（列は docs/20 §8）。単純仕訳（借方 1 行 × 貸方 1 行）は 1 行に両側を出し、複合仕訳は行ごとに片側だけを出して同じ `entry_id` で束ねる。`markExported=true` は出力した仕訳を `exported` にする（既定 off。中身を確かめるだけのダウンロードで状態を動かさない）。弥生 / freee / MF は列写像を `src/application/journal/export-presets.ts` にデータとして置いてあるだけで**変換はまだ無く、`generic` 以外は 400 `JOURNAL_EXPORT`**（空の CSV を返して会計ソフトの取込画面で初めて失敗させない）。
+
+#### エラー
+
+| 例外 | status | code |
+|---|---|---|
+| `JournalDocumentNotFoundError` ほか参照切れ | 404 | `JOURNAL_DOCUMENT_NOT_FOUND` / `JOURNAL_RULE_NOT_FOUND` / `JOURNAL_ENTRY_NOT_FOUND` / `JOURNAL_HEARING_NOT_FOUND` |
+| `JournalDomainError`（不変条件違反） | 400 | `JOURNAL_DOMAIN` |
+| `JournalCsvImportError` | 400 | `JOURNAL_CSV_IMPORT`（**本文に `row`**。行が特定できるときだけ） |
+| `JournalExportError` | 400 | `JOURNAL_EXPORT` |
 
 ### プロンプト自動生成（目玉機能）のリクエスト/レスポンス例
 

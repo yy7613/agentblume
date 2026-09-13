@@ -126,10 +126,10 @@ describe('draft tool routes', () => {
   });
 
   describe('GET /runtime/capabilities', () => {
-    it('test プロファイルでは分析アシスタントもツール検証の提案も無効（false）、judge は scripted で設定済み', async () => {
+    it('test プロファイルでは分析アシスタントもツール検証の提案も仕訳の LLM 機能も無効（false）、judge は scripted で設定済み', async () => {
       const response = await server.inject({ method: 'GET', url: '/runtime/capabilities' });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ analysisAssistant: { enabled: false }, toolCheckSuggestions: { enabled: false }, judge: { configured: true, provider: 'scripted-judge', model: 'scripted-judge' } });
+      expect(response.json()).toEqual({ analysisAssistant: { enabled: false }, toolCheckSuggestions: { enabled: false }, judge: { configured: true, provider: 'scripted-judge', model: 'scripted-judge' }, journal: { extraction: { enabled: false, vision: false }, hearing: { enabled: false } } });
     });
 
     it('提案ユースケースが利用可能なら toolCheckSuggestions.enabled が true になる（analysisAssistant とは独立）', async () => {

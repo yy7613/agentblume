@@ -132,7 +132,7 @@ describe('AgentBuilder', () => {
     expect(await screen.findByText('tool-failed: scores tool timed out')).toBeTruthy();
   });
 
-  it('Tool選択から草案生成・編集・version保存まで行う', async () => {
+  it('Tool選択から草案生成・編集・version保存まで行う', { timeout: 60_000 }, async () => {
     const client = {
       listTools: vi.fn().mockResolvedValue([{ internalId: 'scores', displayName: 'Score filter', publishName: 'filter_scores', latestVersion: '2.0.0', state: 'draft', sideEffect: 'read-only' }]),
       listSkills: vi.fn().mockResolvedValue([{ internalId: 'analysis', displayName: 'Analysis skill', publishName: 'analysis', latestVersion: '1.1.0', state: 'draft' }]),

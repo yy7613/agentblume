@@ -1,0 +1,51 @@
+{
+  "kind": "invoice",
+  "source": {
+    "type": "structured",
+    "fileName": "foreign-saas-usd.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "Sample Cloud Inc.",
+    "recipientName": "Test Kogyo K.K.",
+    "issueDate": "2026-08-09",
+    "transactionDate": "2026-08-09",
+    "grandTotal": 7350,
+    "totalsByRate": [
+      {
+        "rate": 0,
+        "taxableAmount": 7350,
+        "taxAmount": 0,
+        "amountIncludesTax": true
+      }
+    ],
+    "lines": [
+      {
+        "description": "Team plan (5 seats) - monthly",
+        "quantity": 1,
+        "unitPrice": 7350,
+        "amount": 7350,
+        "taxRate": 0
+      }
+    ],
+    "paymentMethod": "credit_card",
+    "description": "SAMPLE CLOUD INC, SAN FRANCISCO",
+    "descriptionNorm": "SAMPLE CLOUD INC, SAN FRANCISCO",
+    "counterpartyHint": "Sample Cloud Inc.",
+    "extra": {
+      "currency": "USD",
+      "amountForeign": 49,
+      "exchangeRate": 150,
+      "exchangeRateSource": "カード会社の換算レート（明細記載）",
+      "issuerCountry": "US",
+      "vatNote": "税額の記載なし。事業者向け電気通信利用役務の提供（リバースチャージ）か消費者向け（登録国外事業者）かを確認",
+      "invoiceNumber": "SC-2026-081234"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": [
+      "外貨建て（USD 49.00）。grandTotal はカード会社レートで円換算"
+    ]
+  }
+}

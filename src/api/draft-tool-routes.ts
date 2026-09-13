@@ -6,6 +6,7 @@ import type { DiagnoseToolUseCase } from '../application/tool/diagnose-tool';
 import type { DraftToolUseCase } from '../application/tool/draft-tool';
 import type { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
 import type { SuggestToolCheckCasesUseCase } from '../application/tool-check/suggest-tool-check-cases';
+import type { JournalCapabilitiesUseCase } from '../application/journal/capabilities';
 import { SemVer } from '../domain/tool/semver';
 import { createTool } from '../domain/tool/tool';
 import { scopeOf } from './authentication';
@@ -20,6 +21,8 @@ export interface DraftToolRouteDeps {
   readonly diagnoseTool: DiagnoseToolUseCase;
   /** judge スロットの設定状態（実験画面が「judge 未設定」を起票前に示すため）。毎回現在の設定を見る。 */
   readonly judgeReadiness: () => Promise<JudgeReadiness>;
+  /** 仕訳の LLM 抽出・ヒアリングの可否（仕訳画面が取込タブの選択肢を出し分ける）。 */
+  readonly journalCapabilities: JournalCapabilitiesUseCase;
 }
 
 /** 未保存 draft を表す版。採番は保存時に決まるので、診断結果にはこの値が「未保存」の印として載る。 */
@@ -77,6 +80,7 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
     analysisAssistant: { enabled: await deps.suggestAnalysisConfig.available() },
     toolCheckSuggestions: { enabled: await deps.suggestToolCheckCases.available() },
     judge: await deps.judgeReadiness(),
+    journal: await deps.journalCapabilities.execute(),
   }));
   app.post('/tool-drafts/suggest-analysis-config', async (request) => {
     const body = parseWith(analysisSuggestionBodySchema, request.body);

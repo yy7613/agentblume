@@ -1,0 +1,50 @@
+{
+  "kind": "invoice",
+  "source": {
+    "type": "structured",
+    "fileName": "annual-subscription.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "サンプルクラウド株式会社",
+    "recipientName": "テスト工業株式会社",
+    "registrationNumber": "T6666666666666",
+    "issueDate": "2026-08-15",
+    "transactionDate": "2026-08-15",
+    "grandTotal": 39600,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 36000,
+        "taxAmount": 3600,
+        "amountIncludesTax": false
+      }
+    ],
+    "lines": [
+      {
+        "description": "クラウド会計 スタンダードプラン 年額（2026/10/01〜2027/09/30）",
+        "quantity": 1,
+        "unitPrice": 36000,
+        "amount": 36000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      }
+    ],
+    "paymentMethod": "credit_card",
+    "description": "クラウド会計 年額プラン",
+    "descriptionNorm": "クラウド会計 年額プラン",
+    "counterpartyHint": "サンプルクラウド",
+    "extra": {
+      "servicePeriod": {
+        "from": "2026-10-01",
+        "to": "2027-09-30"
+      },
+      "autoRenew": true,
+      "plan": "standard"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

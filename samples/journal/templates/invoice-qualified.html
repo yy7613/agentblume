@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>請求書 INV-2026-0901</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #fff; color: #111; font-family: "Yu Gothic", "Meiryo", "Hiragino Sans", "Noto Sans CJK JP", sans-serif; font-size: 13px; }
+  .sheet { width: 820px; margin: 0 auto; padding: 40px 40px 48px; box-sizing: border-box; }
+  h1 { text-align: center; font-size: 26px; letter-spacing: 0.6em; margin: 0 0 24px; }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+  .to { font-size: 16px; }
+  .to .name { font-size: 18px; border-bottom: 1px solid #111; padding-bottom: 4px; margin-bottom: 8px; }
+  .from { font-size: 12px; line-height: 1.6; text-align: left; position: relative; padding-right: 84px; flex-shrink: 0; }
+  .from .co { font-size: 15px; font-weight: bold; }
+  .stamp { position: absolute; right: 0; top: 10px; width: 54px; height: 54px; border: 2px solid #c0392b; border-radius: 50%; color: #c0392b; font-size: 11px; display: flex; align-items: center; justify-content: center; text-align: center; opacity: .85; transform: rotate(-8deg); }
+  .meta { margin: 18px 0; display: flex; flex-wrap: wrap; gap: 8px 28px; font-size: 12px; white-space: nowrap; }
+  .meta div span { display: inline-block; min-width: 72px; color: #555; }
+  .total-box { margin: 12px 0 20px; border: 2px solid #111; padding: 10px 16px; display: inline-block; font-size: 16px; }
+  .total-box b { font-size: 22px; margin-left: 16px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { border: 1px solid #333; padding: 6px 8px; }
+  th { background: #eef1f5; font-weight: normal; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.c { text-align: center; }
+  .sum { width: 60%; margin-left: auto; margin-top: 14px; }
+  .sum td { border: 1px solid #333; }
+  .sum td.lbl { background: #eef1f5; }
+  .note { margin-top: 16px; font-size: 11.5px; color: #333; line-height: 1.7; }
+  .bank { margin-top: 14px; border: 1px solid #999; padding: 8px 12px; font-size: 12px; background: #fafafa; }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <h1>請求書</h1>
+  <div class="head">
+    <div class="to">
+      <div class="name">テスト工業株式会社 御中</div>
+      <div>下記のとおり御請求申し上げます。</div>
+    </div>
+    <div class="from">
+      <div class="co">株式会社サンプル商事</div>
+      <div>〒100-0013 東京都千代田区霞が関1-1-1 サンプルビル3F</div>
+      <div>TEL 03-0000-0000</div>
+      <div>登録番号 T1234567890123</div>
+      <div class="stamp">株式会社<br>サンプル商事<br>之印</div>
+    </div>
+  </div>
+
+  <div class="meta">
+    <div><span>請求書番号</span> INV-2026-0901</div>
+    <div><span>発行日</span> 2026年9月5日</div>
+    <div><span>取引期間</span> 2026年8月1日〜8月31日</div>
+    <div><span>お支払期限</span> 2026年9月30日</div>
+  </div>
+
+  <div class="total-box">御請求金額（税込）<b>¥67,960</b></div>
+
+  <table>
+    <thead>
+      <tr><th style="width:44%">品名</th><th>数量</th><th>単位</th><th>単価</th><th>金額（税抜）</th><th>税率</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>コピー用紙 A4（5,000枚/箱）</td><td class="num">10</td><td class="c">箱</td><td class="num">2,500</td><td class="num">25,000</td><td class="c">10%</td></tr>
+      <tr><td>トナーカートリッジ（黒）</td><td class="num">2</td><td class="c">本</td><td class="num">12,000</td><td class="num">24,000</td><td class="c">10%</td></tr>
+      <tr><td>配送料</td><td class="num">1</td><td class="c">式</td><td class="num">1,000</td><td class="num">1,000</td><td class="c">10%</td></tr>
+      <tr><td>来客用お茶（500ml×24本）※</td><td class="num">3</td><td class="c">箱</td><td class="num">2,000</td><td class="num">6,000</td><td class="c">8%</td></tr>
+      <tr><td>来客用菓子詰合せ ※</td><td class="num">2</td><td class="c">箱</td><td class="num">3,000</td><td class="num">6,000</td><td class="c">8%</td></tr>
+    </tbody>
+  </table>
+
+  <table class="sum">
+    <tr><td class="lbl">10%対象（税抜）</td><td class="num">50,000</td><td class="lbl">消費税（10%）</td><td class="num">5,000</td></tr>
+    <tr><td class="lbl">8%対象（税抜）※軽減税率</td><td class="num">12,000</td><td class="lbl">消費税（8%）</td><td class="num">960</td></tr>
+    <tr><td class="lbl">小計（税抜）</td><td class="num">62,000</td><td class="lbl">消費税合計</td><td class="num">5,960</td></tr>
+    <tr><td class="lbl"><b>合計（税込）</b></td><td class="num" colspan="3"><b>67,960</b></td></tr>
+  </table>
+
+  <div class="bank">
+    お振込先: サンプル銀行 本店 普通 1234567 カ）サンプルショウジ<br>
+    ※恐れ入りますが、振込手数料は貴社にてご負担ください。
+  </div>
+  <div class="note">
+    ※印は軽減税率（8%）対象品目です。<br>
+    備考: 2026年8月分 事務用品等
+  </div>
+</div>
+</body>
+</html>

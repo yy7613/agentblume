@@ -1,0 +1,43 @@
+{
+  "kind": "slip_cash_out",
+  "source": {
+    "type": "structured",
+    "fileName": "slip-cash-out.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "霞が関郵便局",
+    "issueDate": "2026-09-07",
+    "transactionDate": "2026-09-07",
+    "grandTotal": 4200,
+    "totalsByRate": [
+      {
+        "rate": 0,
+        "taxableAmount": 4200,
+        "amountIncludesTax": true
+      }
+    ],
+    "lines": [
+      {
+        "description": "切手 84円×50枚",
+        "quantity": 50,
+        "unitPrice": 84,
+        "amount": 4200,
+        "taxRate": 0
+      }
+    ],
+    "paymentMethod": "cash",
+    "description": "切手代 84円×50枚",
+    "descriptionNorm": "切手代 84円×50枚",
+    "counterpartyHint": "霞が関郵便局",
+    "extra": {
+      "slipNo": "出-0907-01",
+      "accountOnSlip": "通信費",
+      "preparedBy": "テスト太郎"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

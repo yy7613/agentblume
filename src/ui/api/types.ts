@@ -719,6 +719,8 @@ export interface RuntimeCapabilitiesDto {
   readonly analysisAssistant: { readonly enabled: boolean };
   readonly toolCheckSuggestions?: { readonly enabled: boolean };
   readonly judge?: JudgeReadinessDto;
+  /** 仕訳の LLM 抽出 / ヒアリングの可否（docs/20 §9）。旧サーバーでは undefined = どちらも使えないものとして扱う。 */
+  readonly journal?: JournalCapabilitiesDto;
 }
 export interface CreateExperimentDto {
   readonly scope: TenantScopeDto;
@@ -1214,3 +1216,188 @@ export interface ToolCheckSuggestionsDto {
   /** 提案全体への注意（例: サンプル実行に失敗したため期待値は推定）。 */
   readonly warnings: readonly string[];
 }
+
+/* ------------------------------------------------------------------------- */
+/* 仕訳（journal）: docs/20-journal.md の契約。サーバー側 domain と同型に保つ。    */
+/* ------------------------------------------------------------------------- */
+
+/** 帳票種別。quotation / delivery_note は判定キューに乗せない。 */
+export type JournalDocumentKindDto = 'invoice' | 'simplified_invoice' | 'receipt' | 'delivery_note' | 'quotation' | 'bank_statement' | 'card_statement' | 'expense_report' | 'payslip' | 'slip_transfer' | 'slip_cash_in' | 'slip_cash_out' | 'other' | 'unknown';
+export type JournalDirectionDto = 'in' | 'out';
+export type JournalPaymentMethodDto = 'cash' | 'credit_card' | 'bank_transfer' | 'qr' | 'e_money' | 'direct_debit' | 'unknown';
+export type JournalInvoiceStatusDto = 'qualified' | 'transitional' | 'none' | 'not_required';
+export type JournalJsonValueDto = string | number | boolean | null | readonly JournalJsonValueDto[] | { readonly [key: string]: JournalJsonValueDto };
+
+/** 正規化済み事実。金額は税込整数（円）、日付は YYYY-MM-DD。判定はここだけを見る。 */
+export interface JournalDocumentFactsDto {
+  readonly direction?: JournalDirectionDto;
+  readonly issuerName?: string;
+  readonly recipientName?: string;
+  /** T + 13 桁に正規化済み。 */
+  readonly registrationNumber?: string;
+  readonly issueDate?: string;
+  readonly transactionDate?: string;
+  readonly dueDate?: string;
+  readonly grandTotal?: number;
+  readonly totalsByRate?: readonly { readonly rate: 10 | 8 | 0; readonly taxableAmount: number; readonly taxAmount?: number; readonly amountIncludesTax: boolean }[];
+  readonly lines?: readonly { readonly description: string; readonly quantity?: number; readonly unitPrice?: number; readonly amount: number; readonly taxRate?: 10 | 8 | 0; readonly reducedRateMark?: boolean }[];
+  readonly paymentMethod?: JournalPaymentMethodDto;
+  /** 銀行口座 / カード名（CSV プリセット由来）。ルールの scope.accountHints に使う。 */
+  readonly accountHint?: string;
+  readonly description?: string;
+  readonly descriptionNorm?: string;
+  readonly counterpartyHint?: string;
+  /** 帳票固有の追加項目。ヒアリングの回答もここに書き戻す（例: purpose, headcount）。 */
+  readonly extra?: { readonly [key: string]: JournalJsonValueDto };
+}
+
+export interface JournalDocumentSourceDto {
+  readonly type: 'image' | 'pdf' | 'text' | 'structured' | 'csv-row';
+  readonly fileName?: string;
+  readonly mime?: string;
+  /** 画像（PDF は UI でページ画像化したもの）。data:image/... */
+  readonly dataUrl?: string;
+  /** 原文テキスト（メール本文・メモ、PDF のテキスト層）。 */
+  readonly text?: string;
+  /** CSV 1 行の生値（列名 → 値）。 */
+  readonly row?: { readonly [column: string]: string };
+  readonly preset?: string;
+}
+
+export interface JournalExtractionDto {
+  readonly method: 'manual' | 'llm' | 'csv-preset' | 'structured';
+  readonly model?: { readonly provider: string; readonly model: string };
+  /** 0..1。 */
+  readonly confidence?: number;
+  readonly warnings: readonly string[];
+  /** facts のパス → 根拠（原文断片と信頼度）。低信頼の項目は UI で強調する。 */
+  readonly fieldEvidence?: { readonly [factPath: string]: { readonly sourceText?: string; readonly confidence: number } };
+}
+
+export type JournalDocumentStatusDto = 'extracted' | 'decided' | 'undecided' | 'hearing' | 'skipped' | 'exported';
+
+export interface JournalRuleMatchDto { readonly ruleId: string; readonly ruleName: string; readonly mode: 'auto' | 'suggest'; readonly priority: number; readonly specificity: number }
+export type JournalUndecidedReasonDto =
+  | { readonly code: 'no-rule' }
+  | { readonly code: 'multiple-rules'; readonly ruleIds: readonly string[] }
+  | { readonly code: 'missing-fact'; readonly ruleId: string; readonly facts: readonly string[] }
+  | { readonly code: 'ask-if'; readonly ruleId: string; readonly questionId: string; readonly prompt: string }
+  | { readonly code: 'rule-suggest-mode'; readonly ruleIds: readonly string[] }
+  | { readonly code: 'unknown-account'; readonly ruleId: string; readonly accountIds: readonly string[] }
+  | { readonly code: 'unbalanced'; readonly ruleId: string };
+export type JournalJudgmentDto =
+  | { readonly stage: 'decided'; readonly ruleId: string; readonly entryId?: string; readonly specificity: number; readonly candidates: readonly JournalRuleMatchDto[]; readonly judgedAt: string }
+  | { readonly stage: 'undecided'; readonly reasons: readonly JournalUndecidedReasonDto[]; readonly candidates: readonly JournalRuleMatchDto[]; readonly judgedAt: string }
+  | { readonly stage: 'skipped'; readonly reason: 'document-kind'; readonly judgedAt: string };
+
+export interface JournalDocumentDto {
+  readonly id: string;
+  readonly kind: JournalDocumentKindDto;
+  readonly source: JournalDocumentSourceDto;
+  readonly facts: JournalDocumentFactsDto;
+  readonly extraction: JournalExtractionDto;
+  readonly status: JournalDocumentStatusDto;
+  readonly judgment?: JournalJudgmentDto;
+  readonly entryId?: string;
+  readonly hearingId?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+/** 一覧用（画像 data URL を含まない）。 */
+export interface JournalDocumentSummaryDto {
+  readonly id: string; readonly kind: JournalDocumentKindDto; readonly status: JournalDocumentStatusDto; readonly sourceType: JournalDocumentSourceDto['type']; readonly fileName?: string;
+  readonly transactionDate?: string; readonly issuerName?: string; readonly description?: string; readonly grandTotal?: number; readonly direction?: JournalDirectionDto;
+  readonly judgment?: JournalJudgmentDto; readonly entryId?: string; readonly hearingId?: string; readonly createdAt: string; readonly updatedAt: string;
+}
+export interface SaveJournalDocumentDto {
+  readonly id?: string;
+  readonly kind: JournalDocumentKindDto;
+  readonly source: JournalDocumentSourceDto;
+  readonly facts: JournalDocumentFactsDto;
+  readonly extraction?: JournalExtractionDto;
+}
+
+/* 科目マスタ ---------------------------------------------------------------- */
+export type JournalAccountCategoryDto = 'asset' | 'liability' | 'equity' | 'revenue' | 'expense' | 'other';
+export interface JournalAccountDto {
+  readonly id: string; readonly code?: string; readonly name: string; readonly category: JournalAccountCategoryDto;
+  readonly defaultTaxCode?: string; readonly aliases: readonly string[]; readonly enabled: boolean; readonly sortOrder: number; readonly note?: string;
+}
+export interface JournalDimensionDto { readonly id: string; readonly name: string; readonly values: readonly { readonly id: string; readonly name: string; readonly enabled: boolean }[] }
+export interface JournalTaxCategoryDto {
+  readonly code: string; readonly name: string; readonly side: 'in' | 'out' | 'none'; readonly rate?: number;
+  /** 経過措置の控除割合（0..1）。未指定は全額。 */
+  readonly deductionRate?: number; readonly enabled: boolean;
+  readonly mapping?: { readonly yayoi?: string; readonly freee?: string; readonly mf?: string };
+}
+export interface JournalChartOfAccountsDto { readonly accounts: readonly JournalAccountDto[]; readonly dimensions: readonly JournalDimensionDto[]; readonly taxCategories: readonly JournalTaxCategoryDto[]; readonly updatedAt: string }
+export type SaveJournalChartOfAccountsDto = Omit<JournalChartOfAccountsDto, 'updatedAt'>;
+
+/* ルール ----------------------------------------------------------------------- */
+export type JournalConditionOpDto = 'equals' | 'contains' | 'startsWith' | 'endsWith' | 'regex' | 'between' | 'gte' | 'lte' | 'in' | 'exists' | 'notExists' | 'isTrue' | 'isFalse';
+export interface JournalConditionDto { readonly field: string; readonly op: JournalConditionOpDto; readonly value?: JournalJsonValueDto }
+export type JournalAmountSpecDto = 'total' | 'taxable:10' | 'taxable:8' | 'tax:10' | 'tax:8' | 'remainder' | { readonly fixed: number } | { readonly ratio: number };
+export interface JournalOutcomeLineDto {
+  readonly side: 'debit' | 'credit'; readonly accountId: string; readonly dimensionValues?: { readonly [dimensionId: string]: string };
+  readonly taxCode: string; readonly amount: JournalAmountSpecDto; readonly partnerFrom?: 'issuerName' | 'counterpartyHint' | { readonly fixed: string };
+}
+export interface JournalRuleOutcomeDto { readonly lines: readonly JournalOutcomeLineDto[]; readonly descriptionTemplate?: string; readonly invoiceStatus?: JournalInvoiceStatusDto | 'auto' }
+export interface JournalAskIfDto { readonly conditions: readonly JournalConditionDto[]; readonly questionId: string; readonly prompt: string }
+export interface JournalRuleDto {
+  readonly id: string; readonly name: string; readonly enabled: boolean; readonly mode: 'auto' | 'suggest'; readonly priority: number;
+  readonly scope: { readonly documentKinds?: readonly JournalDocumentKindDto[]; readonly direction?: JournalDirectionDto; readonly accountHints?: readonly string[] };
+  readonly conditions: readonly JournalConditionDto[]; readonly outcome: JournalRuleOutcomeDto; readonly askIf: readonly JournalAskIfDto[]; readonly requiredFacts: readonly string[];
+  readonly provenance: { readonly origin: 'manual' | 'hearing' | 'seed'; readonly hearingId?: string; readonly exampleDocumentIds: readonly string[] };
+  readonly createdAt: string; readonly updatedAt: string;
+}
+export type SaveJournalRuleDto = Omit<JournalRuleDto, 'id' | 'createdAt' | 'updatedAt' | 'provenance'> & { readonly id?: string; readonly provenance?: JournalRuleDto['provenance'] };
+export interface JournalRuleTestResultDto { readonly documentId: string; readonly matched: boolean; readonly specificity?: number; readonly entry?: JournalEntryDraftDto; readonly reasons?: readonly JournalUndecidedReasonDto[] }
+
+/* 仕訳 ------------------------------------------------------------------------- */
+export interface JournalEntryLineDto {
+  readonly side: 'debit' | 'credit'; readonly accountId: string; readonly accountName: string; readonly dimensionValues?: { readonly [dimensionId: string]: string };
+  readonly taxCode: string; readonly amount: number; readonly taxAmount?: number; readonly partner?: string;
+}
+export interface JournalEntryDraftDto {
+  readonly date: string; readonly lines: readonly JournalEntryLineDto[]; readonly description: string;
+  readonly invoiceStatus: JournalInvoiceStatusDto; readonly registrationNumber?: string; readonly item?: string; readonly tags?: readonly string[];
+}
+export interface JournalEntryDto extends JournalEntryDraftDto {
+  readonly id: string; readonly documentId?: string; readonly ruleId?: string; readonly status: 'draft' | 'confirmed' | 'exported';
+  readonly decidedBy: 'rule' | 'hearing' | 'manual'; readonly confidence?: number; readonly createdAt: string; readonly updatedAt: string;
+}
+export type SaveJournalEntryDto = JournalEntryDraftDto & { readonly id?: string; readonly documentId?: string; readonly ruleId?: string; readonly decidedBy?: JournalEntryDto['decidedBy'] };
+
+/* 判定・取込・出力 ------------------------------------------------------------- */
+export interface JudgeJournalDocumentsResultDto { readonly judged: readonly JournalDocumentSummaryDto[]; readonly decided: number; readonly undecided: number; readonly skipped: number }
+export interface JournalCsvPresetDto { readonly id: string; readonly name: string; readonly description: string; readonly headerSignature: readonly string[]; readonly kind: 'bank_statement' | 'card_statement' | 'generic' }
+export interface ImportJournalCsvDto { readonly preset?: string; readonly content: string; readonly fileName?: string; readonly accountHint?: string; readonly columnMapping?: { readonly date: string; readonly description: string; readonly withdrawal?: string; readonly deposit?: string; readonly amount?: string; readonly balance?: string; readonly detail?: string } }
+export interface ImportJournalCsvResultDto { readonly preset: string; readonly imported: readonly JournalDocumentSummaryDto[]; readonly skippedRows: readonly { readonly row: number; readonly reason: string }[]; readonly warnings: readonly string[] }
+export interface ExtractJournalDocumentDto { readonly images?: readonly string[]; readonly text?: string; readonly fileName?: string; readonly hintKind?: JournalDocumentKindDto }
+export interface ExtractJournalDocumentResultDto { readonly kind: JournalDocumentKindDto; readonly facts: JournalDocumentFactsDto; readonly extraction: JournalExtractionDto }
+export interface JournalExportResultDto { readonly format: 'generic' | 'yayoi' | 'freee' | 'mf'; readonly fileName: string; readonly content: string; readonly entryCount: number }
+export interface JournalCapabilitiesDto { readonly extraction: { readonly enabled: boolean; readonly vision: boolean }; readonly hearing: { readonly enabled: boolean } }
+
+/* ヒアリング（Stage 2） ---------------------------------------------------------- */
+export interface JournalHearingQuestionDto {
+  readonly id: string; readonly text: string; readonly kind: 'single' | 'multi' | 'text' | 'number' | 'confirm';
+  readonly options?: readonly { readonly value: string; readonly label: string; readonly hint?: string }[];
+  /** 回答を書き戻す facts のパス（例: extra.purpose）。 */
+  readonly factPath?: string;
+  /** 根拠（迷うケースカタログの id と法令メモ）。 */
+  readonly catalogId?: string; readonly note?: string;
+}
+export type JournalHearingTurnDto =
+  | { readonly role: 'assistant'; readonly question: JournalHearingQuestionDto; readonly at: string }
+  | { readonly role: 'user'; readonly answer: { readonly questionId: string; readonly value: JournalJsonValueDto }; readonly at: string };
+export interface JournalHearingProposalDto {
+  readonly rule: SaveJournalRuleDto; readonly entry: JournalEntryDraftDto;
+  readonly newAccounts: readonly Omit<JournalAccountDto, 'sortOrder' | 'enabled'>[]; readonly newDimensionValues: readonly { readonly dimensionId: string; readonly id: string; readonly name: string }[];
+  readonly newTaxCategories: readonly Omit<JournalTaxCategoryDto, 'enabled'>[]; readonly rationale: string; readonly warnings: readonly string[];
+}
+export interface JournalHearingDto {
+  readonly id: string; readonly documentId: string; readonly status: 'open' | 'proposed' | 'accepted' | 'cancelled';
+  readonly turns: readonly JournalHearingTurnDto[]; readonly proposal?: JournalHearingProposalDto; readonly createdAt: string; readonly updatedAt: string;
+}
+export interface AnswerJournalHearingDto { readonly answers: readonly { readonly questionId: string; readonly value: JournalJsonValueDto }[] }
+export interface AcceptJournalHearingDto { readonly registerAccountIds?: readonly string[]; readonly registerDimensionValueIds?: readonly string[]; readonly registerTaxCodes?: readonly string[]; readonly rule?: SaveJournalRuleDto; readonly entry?: JournalEntryDraftDto }

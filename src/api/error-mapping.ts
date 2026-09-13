@@ -38,6 +38,10 @@ import { SecretCipherError } from '../application/model-settings/secret-cipher';
 import { ModelCatalogError } from '../application/model-settings/model-catalog';
 import { SharedValidationError } from '../domain/shared/errors';
 import { ToolCheckNotFoundError, ToolCheckValidationError } from '../domain/tool-check/errors';
+import {
+  JournalCsvImportError, JournalDocumentNotFoundError, JournalDomainError, JournalEntryNotFoundError,
+  JournalExportError, JournalHearingNotFoundError, JournalRuleNotFoundError,
+} from '../domain/journal/errors';
 
 /**
  * HTTP エラーレスポンス表現。
@@ -45,10 +49,12 @@ import { ToolCheckNotFoundError, ToolCheckValidationError } from '../domain/tool
  * 利用者がどのToolのどのノードを直せばよいかをUIが示すために使う。
  * `rubric` は judge の tracePolicy と事例種別の矛盾（JudgeTraceUnavailableError）だけが持ち、
  * どのルーブリックを直せばよいかを UI が示すために使う。
+ * `row` は仕訳 CSV 取込の失敗（JournalCsvImportError）だけが持ち、CSV の何行目を直せばよいかを示す
+ * （1 始まり・ヘッダ行込みなので表計算ソフトの行番号と一致する）。
  */
 export interface HttpError {
   readonly status: number;
-  readonly body: { error: { code: string; message: string; runId?: string; tool?: RunFailureToolRef; nodeId?: string; rubric?: { id: string; version: string } } };
+  readonly body: { error: { code: string; message: string; runId?: string; tool?: RunFailureToolRef; nodeId?: string; rubric?: { id: string; version: string }; row?: number } };
 }
 
 /**
@@ -88,6 +94,9 @@ function httpError(status: number, code: string, message: string): HttpError {
  * | RunNotFoundError | 404 | RUN_NOT_FOUND |
  * | JudgeModelNotConfiguredError | 409 | JUDGE_MODEL_NOT_CONFIGURED |
  * | JudgeTraceUnavailableError | 409 | JUDGE_TRACE_UNAVAILABLE + rubric |
+ * | Journal*NotFoundError | 404 | JOURNAL_*_NOT_FOUND |
+ * | JournalCsvImportError | 400 | JOURNAL_CSV_IMPORT + row |
+ * | JournalExportError / JournalDomainError | 400 | JOURNAL_EXPORT / JOURNAL_DOMAIN |
  * | RunFailedError | 元例外のstatus/code + runId |
  * | ToolExecutionError | 元例外のstatus/code + tool（+ nodeId） |
  * | その他 | 500 | INTERNAL（message 'internal error' 固定） |
@@ -190,6 +199,19 @@ export function toHttpError(err: unknown): HttpError {
   // ツール検証: 未知のケースは404、ケース定義の不変条件違反は400（実行自体の失敗は結果として200で返る）。
   if (err instanceof ToolCheckNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof ToolCheckValidationError) return httpError(400, err.code, err.message);
+
+  // 仕訳: 参照切れは404、入力・保存済みレコードの不変条件違反と出力の前提違反は400。
+  // CSV 取込だけは「何行目が悪いか」を本文へ載せる（UI が行番号つきの日本語メッセージにする）。
+  // 判定が「確定できなかった」ことはエラーではなく結果（undecided）なので、ここには現れない。
+  if (err instanceof JournalDocumentNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof JournalRuleNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof JournalEntryNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof JournalHearingNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof JournalCsvImportError) {
+    return { status: 400, body: { error: { code: err.code, message: err.message, ...(err.row === undefined ? {} : { row: err.row }) } } };
+  }
+  if (err instanceof JournalExportError) return httpError(400, err.code, err.message);
+  if (err instanceof JournalDomainError) return httpError(400, err.code, err.message);
 
   // MCPクライアント: 設定の不変条件違反は400、未登録サーバーは404。
   // 接続失敗（McpClientError）は外部依存の失敗なので ModelProviderError と同じ502。

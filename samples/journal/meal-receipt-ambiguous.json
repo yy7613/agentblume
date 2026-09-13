@@ -1,0 +1,53 @@
+{
+  "kind": "simplified_invoice",
+  "source": {
+    "type": "structured",
+    "fileName": "meal-receipt-ambiguous.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "鉄板焼き さんぷる 霞が関店",
+    "registrationNumber": "T2222222222222",
+    "issueDate": "2026-08-11",
+    "transactionDate": "2026-08-11",
+    "grandTotal": 38000,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 38000,
+        "taxAmount": 3454,
+        "amountIncludesTax": true
+      }
+    ],
+    "lines": [
+      {
+        "description": "特選コース 4名",
+        "quantity": 4,
+        "unitPrice": 8000,
+        "amount": 32000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "飲み物 各種",
+        "amount": 6000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      }
+    ],
+    "paymentMethod": "credit_card",
+    "description": "鉄板焼き さんぷる 霞が関店 4名",
+    "descriptionNorm": "鉄板焼き さんぷる 霞が関店 4名",
+    "counterpartyHint": "鉄板焼き さんぷる",
+    "extra": {
+      "headcount": 4,
+      "perHead": 9500,
+      "time": "19:30",
+      "cardLast4": "1234"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

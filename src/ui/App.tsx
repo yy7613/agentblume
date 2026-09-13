@@ -24,11 +24,13 @@ import { UnsavedChangesProvider, useUnsavedChangesRegistry } from './unsaved-cha
 import { useI18n } from './i18n';
 
 const ValidationPage = lazy(async () => ({ default: (await import('./validation/ValidationPage')).ValidationPage }));
+// 仕訳画面は 5 サブタブ（取込 / 判定 / ルール / 科目 / 出力）を持つ大きな画面なので、検証画面と同じく遅延読込にする。
+const JournalPage = lazy(async () => ({ default: (await import('./journal/JournalPage')).JournalPage }));
 
 // チャットは主役画面として単独で最上部、以降は作成フロー(Data→Tool→Skill→Agent→Harness→Factory)の順にグルーピングして提示する(UXレビュー反映)
 const CHAT_ITEM = { id: 'Chat', ja: 'チャット' } as const;
 const NAV_GROUPS: readonly { readonly en: string; readonly ja: string; readonly items: readonly { readonly id: ScreenName; readonly ja: string }[] }[] = [
-  { en: 'Build', ja: '作る', items: [{ id: 'Data', ja: 'データソース' }, { id: 'Tool', ja: 'ツール' }, { id: 'Skill', ja: 'スキル' }, { id: 'Agent', ja: 'エージェント' }, { id: 'Harness', ja: 'マルチエージェント' }, { id: 'Factory', ja: '自動生成 (Factory)' }] },
+  { en: 'Build', ja: '作る', items: [{ id: 'Data', ja: 'データソース' }, { id: 'Tool', ja: 'ツール' }, { id: 'Skill', ja: 'スキル' }, { id: 'Agent', ja: 'エージェント' }, { id: 'Harness', ja: 'マルチエージェント' }, { id: 'Factory', ja: '自動生成 (Factory)' }, { id: 'Journal', ja: '仕訳' }] },
   { en: 'Check', ja: '確かめる', items: [{ id: 'Inspect', ja: '動作確認' }, { id: 'ToolCheck', ja: 'ツール検証' }, { id: 'Validation', ja: '検証' }] },
   { en: 'Operate', ja: '運用', items: [{ id: 'Memory', ja: '記憶' }, { id: 'MCP', ja: 'MCP' }, { id: 'Status', ja: 'ステータス' }, { id: 'Settings', ja: '設定' }] },
 ];
@@ -79,7 +81,7 @@ export function App({ client, session }: { readonly client: ToolApiClient; reado
       <ModeBadge {...(session === undefined ? {} : { session })} /></nav>
     <NavigationProvider navigate={requestScreen}>
       <UnsavedChangesProvider value={unsavedChanges.value}>
-        {screen === 'Tool' ? <ToolBuilder client={client} /> : screen === 'Agent' ? <AgentBuilder client={client} /> : screen === 'Harness' ? <HarnessBuilder client={client} /> : screen === 'Skill' ? <SkillBuilder client={client} /> : screen === 'Chat' ? <ChatPage client={client} /> : screen === 'Inspect' ? <AgentInspectorPage client={client} /> : screen === 'ToolCheck' ? <ToolCheckPage client={client} /> : screen === 'Data' ? <DataSourcesPage client={client} /> : screen === 'MCP' ? <McpPage client={client} /> : screen === 'Validation' ? <Suspense fallback={<main className="workspace-page"><p className="empty-state">{text('Loading validation…', '検証画面を読み込み中…')}</p></main>}><ValidationPage client={client} /></Suspense> : screen === 'Factory' ? <FactoryPage client={client} /> : screen === 'Memory' ? <MemoryPage client={client} /> : screen === 'Settings' ? <SettingsPage client={client} /> : <StatusPage client={client} />}
+        {screen === 'Tool' ? <ToolBuilder client={client} /> : screen === 'Agent' ? <AgentBuilder client={client} /> : screen === 'Harness' ? <HarnessBuilder client={client} /> : screen === 'Skill' ? <SkillBuilder client={client} /> : screen === 'Chat' ? <ChatPage client={client} /> : screen === 'Inspect' ? <AgentInspectorPage client={client} /> : screen === 'ToolCheck' ? <ToolCheckPage client={client} /> : screen === 'Data' ? <DataSourcesPage client={client} /> : screen === 'MCP' ? <McpPage client={client} /> : screen === 'Validation' ? <Suspense fallback={<main className="workspace-page"><p className="empty-state">{text('Loading validation…', '検証画面を読み込み中…')}</p></main>}><ValidationPage client={client} /></Suspense> : screen === 'Factory' ? <FactoryPage client={client} /> : screen === 'Journal' ? <Suspense fallback={<main className="workspace-page"><p className="empty-state">{text('Loading journal…', '仕訳画面を読み込み中…')}</p></main>}><JournalPage client={client} /></Suspense> : screen === 'Memory' ? <MemoryPage client={client} /> : screen === 'Settings' ? <SettingsPage client={client} /> : <StatusPage client={client} />}
       </UnsavedChangesProvider>
       {screen === 'Chat' && <WelcomeCard client={client} />}
     </NavigationProvider>

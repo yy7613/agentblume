@@ -1,0 +1,45 @@
+{
+  "kind": "delivery_note",
+  "source": {
+    "type": "structured",
+    "fileName": "delivery-note.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "株式会社サンプル商事",
+    "recipientName": "テスト工業株式会社",
+    "registrationNumber": "T1234567890123",
+    "issueDate": "2026-08-28",
+    "transactionDate": "2026-08-28",
+    "grandTotal": 27500,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 25000,
+        "taxAmount": 2500,
+        "amountIncludesTax": false
+      }
+    ],
+    "lines": [
+      {
+        "description": "コピー用紙 A4（5,000枚/箱）",
+        "quantity": 10,
+        "unitPrice": 2500,
+        "amount": 25000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      }
+    ],
+    "description": "納品書 コピー用紙（8月分請求 INV-2026-0901 に含む）",
+    "descriptionNorm": "納品書 コピー用紙(8月分請求 INV-2026-0901 に含む)",
+    "counterpartyHint": "サンプル商事",
+    "extra": {
+      "deliveryNoteNumber": "DN-2026-0828",
+      "relatedInvoice": "INV-2026-0901"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

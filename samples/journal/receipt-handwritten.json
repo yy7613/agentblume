@@ -1,0 +1,50 @@
+{
+  "kind": "receipt",
+  "source": {
+    "type": "structured",
+    "fileName": "receipt-handwritten.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "居酒屋さんぷる",
+    "recipientName": "上様",
+    "registrationNumber": "T1111111111111",
+    "issueDate": "2026-09-12",
+    "transactionDate": "2026-09-12",
+    "grandTotal": 12000,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 12000,
+        "taxAmount": 1090,
+        "amountIncludesTax": true
+      }
+    ],
+    "lines": [
+      {
+        "description": "お品代として",
+        "amount": 12000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      }
+    ],
+    "paymentMethod": "cash",
+    "description": "お品代として",
+    "descriptionNorm": "お品代として",
+    "counterpartyHint": "居酒屋さんぷる",
+    "extra": {
+      "receiptNo": "No.0421",
+      "issuerAddress": "東京都千代田区霞が関1-1-1 サンプル横丁",
+      "issuerTel": "03-0000-0001",
+      "revenueStamp": false,
+      "handwritten": true
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": [
+      "宛名が「上様」です",
+      "但し書きが「お品代」のため内容を確認してください"
+    ]
+  }
+}

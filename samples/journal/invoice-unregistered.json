@@ -1,0 +1,50 @@
+{
+  "kind": "invoice",
+  "source": {
+    "type": "structured",
+    "fileName": "invoice-unregistered.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "山田デザイン事務所",
+    "recipientName": "テスト工業株式会社",
+    "issueDate": "2026-09-10",
+    "transactionDate": "2026-09-08",
+    "dueDate": "2026-10-31",
+    "grandTotal": 88000,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 80000,
+        "taxAmount": 8000,
+        "amountIncludesTax": false
+      }
+    ],
+    "lines": [
+      {
+        "description": "Webバナーデザイン制作 一式",
+        "quantity": 1,
+        "unitPrice": 80000,
+        "amount": 80000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      }
+    ],
+    "paymentMethod": "bank_transfer",
+    "description": "9月分 デザイン料",
+    "descriptionNorm": "9月分 デザイン料",
+    "counterpartyHint": "山田デザイン事務所",
+    "extra": {
+      "invoiceNumber": "2026-09-001",
+      "issuerAddress": "東京都千代田区霞が関1-1-1 サンプルハイツ201",
+      "issuerType": "individual",
+      "registrationNote": "登録番号の記載なし（免税事業者の可能性。取引日 2026-09-08 は経過措置 80% の期間）"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": [
+      "登録番号がありません（経過措置の対象か確認してください）"
+    ]
+  }
+}

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>領収書 居酒屋さんぷる</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #e8e4dc; }
+  .paper { width: 640px; margin: 20px auto; background: #fffdf5; padding: 28px 36px 30px; box-sizing: border-box; border: 1px solid #b9b3a5; font-family: "Yu Mincho", "Hiragino Mincho ProN", "Noto Serif CJK JP", serif; color: #1c1c1c; position: relative; }
+  .hw { font-family: "Klee One", "Segoe Print", "Segoe Script", "UD Digi Kyokasho N-R", "Yu Mincho", cursive; color: #1a3a8a; }
+  h1 { text-align: center; margin: 0 0 14px; font-size: 26px; letter-spacing: 0.8em; font-weight: normal; }
+  .line { display: flex; align-items: flex-end; gap: 8px; margin: 12px 0; }
+  .line .lbl { font-size: 13px; color: #444; white-space: nowrap; }
+  .line .val { flex: 1; border-bottom: 1px solid #333; padding: 0 6px 2px; font-size: 18px; min-height: 26px; }
+  .no { position: absolute; right: 36px; top: 24px; font-size: 12px; }
+  .amount { margin: 20px 0 8px; display: flex; align-items: flex-end; gap: 10px; }
+  .amount .val { flex: 1; border-bottom: 2px solid #333; font-size: 30px; padding: 0 12px 4px; text-align: center; }
+  .tax { display: flex; gap: 24px; font-size: 12.5px; margin: 6px 0 12px 8px; }
+  .tax .hw { font-size: 15px; }
+  .proviso { display: flex; align-items: flex-end; gap: 8px; margin: 14px 0; }
+  .proviso .val { flex: 1; border-bottom: 1px solid #333; font-size: 18px; padding: 0 6px 2px; }
+  .foot { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 22px; }
+  .issuer { font-size: 12.5px; line-height: 1.7; }
+  .issuer .co { font-size: 15px; }
+  .stamp { width: 60px; height: 60px; border: 2px solid #c0392b; border-radius: 50%; color: #c0392b; font-size: 12px; display: flex; align-items: center; justify-content: center; text-align: center; transform: rotate(6deg); opacity: .8; }
+  .revstamp { width: 90px; height: 62px; border: 1px dashed #777; font-size: 10px; color: #777; display: flex; align-items: center; justify-content: center; text-align: center; }
+  .received { font-size: 13px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="paper">
+  <div class="no">No. <span class="hw">0421</span></div>
+  <h1>領収書</h1>
+  <div class="line"><span class="lbl">　</span><span class="val hw">上　様</span></div>
+  <div class="line"><span class="lbl">日付</span><span class="val hw" style="max-width:260px">2026年 9月 12日</span></div>
+  <div class="amount"><span class="lbl">金額</span><span class="val hw">￥12,000－</span></div>
+  <div class="tax">
+    <span>（内訳）10%対象 <span class="hw">12,000</span> 円</span>
+    <span>内消費税等 <span class="hw">1,090</span> 円</span>
+    <span>8%対象 <span class="hw">－</span> 円</span>
+  </div>
+  <div class="proviso"><span class="lbl">但し</span><span class="val hw">お品代として</span></div>
+  <div class="received">上記正に領収いたしました。</div>
+  <div class="foot">
+    <div class="revstamp">収入印紙<br>（5万円未満 不要）</div>
+    <div class="issuer">
+      <div class="co">居酒屋さんぷる</div>
+      <div>東京都千代田区霞が関1-1-1 サンプル横丁</div>
+      <div>TEL 03-0000-0001</div>
+      <div>登録番号 T1111111111111</div>
+    </div>
+    <div class="stamp">居酒屋<br>さんぷる<br>之印</div>
+  </div>
+</div>
+</body>
+</html>

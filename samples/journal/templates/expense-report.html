@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>立替金精算書 EXP-2026-0910-01</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #fff; color: #111; font-family: "Yu Gothic", "Meiryo", "Hiragino Sans", "Noto Sans CJK JP", sans-serif; font-size: 13px; }
+  .sheet { width: 820px; margin: 0 auto; padding: 40px 40px 48px; box-sizing: border-box; }
+  h1 { text-align: center; font-size: 24px; letter-spacing: 0.4em; margin: 0 0 20px; }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; }
+  .head .l { line-height: 1.8; }
+  .head .r { line-height: 1.8; text-align: right; font-size: 12px; }
+  .approvals { display: flex; margin-top: 10px; }
+  .approvals div { border: 1px solid #333; width: 70px; height: 70px; font-size: 11px; text-align: center; padding-top: 4px; box-sizing: border-box; position: relative; }
+  .approvals div + div { border-left: none; }
+  .approvals .stamp { position: absolute; left: 14px; top: 22px; width: 38px; height: 38px; border: 1.5px solid #c0392b; border-radius: 50%; color: #c0392b; font-size: 10px; display: flex; align-items: center; justify-content: center; transform: rotate(-10deg); }
+  table { width: 100%; border-collapse: collapse; margin-top: 18px; }
+  th, td { border: 1px solid #333; padding: 6px 8px; }
+  th { background: #eef1f5; font-weight: normal; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.c { text-align: center; }
+  .sum { width: 55%; margin-left: auto; margin-top: 12px; }
+  .sum td.lbl { background: #eef1f5; }
+  .note { margin-top: 16px; font-size: 11.5px; line-height: 1.7; color: #333; }
+  .total-box { margin-top: 14px; border: 2px solid #111; display: inline-block; padding: 8px 16px; font-size: 15px; }
+  .total-box b { font-size: 21px; margin-left: 14px; }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <h1>立替金精算書</h1>
+  <div class="head">
+    <div class="l">
+      <div>テスト工業株式会社 経理部 御中</div>
+      <div>精算日: 2026年9月10日　　精算書番号: EXP-2026-0910-01</div>
+      <div>所属: 営業部　　社員番号: E-0007　　氏名: <b>テスト太郎</b></div>
+      <div>精算方法: 銀行振込（給与とは別）</div>
+    </div>
+    <div class="r">
+      <div class="approvals">
+        <div>承認<div class="stamp">テスト</div></div>
+        <div>経理</div>
+        <div>申請者<div class="stamp">テスト</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="total-box">精算金額合計<b>¥14,770</b></div>
+
+  <table>
+    <thead>
+      <tr><th style="width:9%">日付</th><th>内容</th><th style="width:12%">支払先</th><th style="width:8%">税率</th><th style="width:12%">金額（税込）</th><th style="width:8%">領収書</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="c">09/02</td><td>タクシー代（東京駅→霞が関 サンプル商事訪問）</td><td>さんぷるタクシー</td><td class="c">10%</td><td class="num">3,200</td><td class="c">有</td></tr>
+      <tr><td class="c">09/04</td><td>JR 東京→新横浜 往復（客先打合せ）</td><td>JR（券売機）</td><td class="c">10%</td><td class="num">3,400</td><td class="c">無（3万円未満 公共交通）</td></tr>
+      <tr><td class="c">09/05</td><td>会議用弁当 4名分 ※（@1,080×4）</td><td>サンプル弁当</td><td class="c">8%</td><td class="num">4,320</td><td class="c">有</td></tr>
+      <tr><td class="c">09/08</td><td>書籍「実務インボイス入門」</td><td>サンプル書店</td><td class="c">10%</td><td class="num">2,750</td><td class="c">有</td></tr>
+      <tr><td class="c">09/09</td><td>宅配便 送料（資料送付）</td><td>サンプル運輸</td><td class="c">10%</td><td class="num">1,100</td><td class="c">有</td></tr>
+    </tbody>
+  </table>
+
+  <table class="sum">
+    <tr><td class="lbl">10%対象（税込）</td><td class="num">10,450</td></tr>
+    <tr><td class="lbl">8%対象（税込）※軽減税率</td><td class="num">4,320</td></tr>
+    <tr><td class="lbl"><b>合計</b></td><td class="num"><b>14,770</b></td></tr>
+  </table>
+
+  <div class="note">
+    ※印は軽減税率（8%）対象。添付領収書 4 枚（JR 運賃は帳簿のみ保存の特例対象のため領収書なし）。<br>
+    承認者: テスト花子
+  </div>
+</div>
+</body>
+</html>

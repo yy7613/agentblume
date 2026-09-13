@@ -1,0 +1,78 @@
+{
+  "kind": "simplified_invoice",
+  "source": {
+    "type": "structured",
+    "fileName": "receipt-simplified.json"
+  },
+  "facts": {
+    "direction": "out",
+    "issuerName": "サンプルマート 霞が関店",
+    "registrationNumber": "T9876543210987",
+    "issueDate": "2026-09-03",
+    "transactionDate": "2026-09-03",
+    "grandTotal": 1230,
+    "totalsByRate": [
+      {
+        "rate": 8,
+        "taxableAmount": 680,
+        "amountIncludesTax": true
+      },
+      {
+        "rate": 10,
+        "taxableAmount": 550,
+        "amountIncludesTax": true
+      }
+    ],
+    "lines": [
+      {
+        "description": "お茶 500ml ※",
+        "quantity": 2,
+        "unitPrice": 150,
+        "amount": 300,
+        "taxRate": 8,
+        "reducedRateMark": true
+      },
+      {
+        "description": "サンドイッチ ※",
+        "quantity": 1,
+        "unitPrice": 380,
+        "amount": 380,
+        "taxRate": 8,
+        "reducedRateMark": true
+      },
+      {
+        "description": "ボールペン 黒 3本組",
+        "quantity": 1,
+        "unitPrice": 330,
+        "amount": 330,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "クリアファイル 10枚",
+        "quantity": 1,
+        "unitPrice": 220,
+        "amount": 220,
+        "taxRate": 10,
+        "reducedRateMark": false
+      }
+    ],
+    "paymentMethod": "cash",
+    "description": "サンプルマート 霞が関店",
+    "descriptionNorm": "サンプルマート 霞が関店",
+    "counterpartyHint": "サンプルマート",
+    "extra": {
+      "receivedAmount": 2000,
+      "changeAmount": 770,
+      "registerNo": "0003",
+      "receiptNo": "1234",
+      "time": "12:34",
+      "issuerAddress": "東京都千代田区霞が関1-1-1",
+      "reducedRateNote": "※は軽減税率対象"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

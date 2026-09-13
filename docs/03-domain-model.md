@@ -277,4 +277,63 @@ classDiagram
 
 検証指標の一覧は [09-roadmap.md](./09-roadmap.md#検証指標) を参照。
 
+---
+
+## 7. 仕訳（Journal）
+
+伝票・帳票から仕訳を起こす境界づけられたコンテキスト（詳細は [20-journal.md](./20-journal.md) / [ADR-0038](./adr/0038-journal-two-stage-judgment.md)）。他の BC と資産を共有せず、`domain/journal` に閉じている。
+
+```mermaid
+classDiagram
+  class ChartOfAccounts {
+    +Account[] accounts
+    +Dimension[] dimensions
+    +TaxCategory[] taxCategories
+    +IsoDateTime updatedAt
+  }
+  class JournalDocument {
+    +DocumentKind kind
+    +JournalDocumentSource source
+    +DocumentFacts facts
+    +Extraction extraction
+    +DocumentStatus status
+    +StoredJudgment judgment
+  }
+  class JournalRule {
+    +RuleMode mode
+    +int priority
+    +RuleScope scope
+    +RuleCondition[] conditions
+    +RuleOutcome outcome
+    +AskIf[] askIf
+    +string[] requiredFacts
+  }
+  class JournalEntry {
+    +JournalEntryLine[] lines
+    +InvoiceStatus invoiceStatus
+    +EntryStatus status
+    +DecidedBy decidedBy
+  }
+  class HearingSession {
+    +HearingStatus status
+    +HearingTurn[] turns
+    +HearingProposal proposal
+  }
+  ChartOfAccounts "1" o-- "*" Account
+  JournalDocument "1" --> "0..1" JournalEntry : entryId
+  JournalDocument "1" --> "0..1" HearingSession : hearingId
+  JournalRule "1" --> "*" JournalEntry : decided
+  HearingSession --> JournalRule : proposes
+```
+
+| 集約 | 役割と不変条件 |
+|---|---|
+| `ChartOfAccounts` | ワークスペースに 1 つの科目マスタ（勘定科目 / 税区分 / 補助軸）。**科目体系はコードに持たずデータとして持つ**。科目 id・科目コード・税区分コード・補助軸 id はそれぞれ一意、`defaultTaxCode` は実在する税区分を指す。削除は論理削除（`enabled: false`）。 |
+| `JournalDocument` | 取込んだ 1 証憑。帳票種別を問わず `facts`（正規化済み事実）を同じ形で持ち、**判定はここだけを見る**。証憑本体（画像 data URL / 原文 / CSV 行）は `source` に同梱（1 件 8 MiB 上限）。状態は `extracted` → `decided` / `undecided` → `hearing` → `decided` / `skipped` / `exported`。`decided` の文書は必ず `entryId` を持つ。 |
+| `JournalRule` | 自動仕訳ルール。**科目を id で参照**し、名称変更に追従する。`mode: auto` は Stage 1 で確定してよく、`suggest` は一致しても Stage 2 へ回す。競合解決は priority → 特異度 → createdAt。 |
+| `JournalEntry` | 仕訳。**借方合計 = 貸方合計**が不変条件。各行は科目 id と**確定時の科目名**の両方を持つ（マスタを改名しても過去の仕訳は当時の名前を保つ）。状態は `draft` → `confirmed` → `exported`。 |
+| `HearingSession` | Stage 2 のヒアリング（質問と回答の列 + 提案）。フェーズ 1 では集約とリポジトリだけを用意し、質問生成はフェーズ 2。 |
+
+判定（Stage 1）は `judgeDocument(document, rules, chart, now)` という**純粋関数**で、確定できないことはエラーではなく結果（`undecided` + 理由コード）として返す。理由コードは UI が「原因 → 次の一手 → 修正場所」を出すための情報になる。
+
 疑似ユーザーの種別（Persona）・複数ターン会話・アンケート/感想を含む**シナリオ検証**の詳細モデル（Persona / Scenario / ScenarioRun / SurveyQuestion）は [11-scenario-validation.md](./11-scenario-validation.md) を参照。v16では疑似ユーザーは検証コンテキストの `Persona` として実装（[ADR-0017](./adr/0017-scenario-validation-pseudo-users.md)）、**v18でPersona登録から `AgentKind.PseudoUser` のAgentへ実体化する統合**を行う（[ADR-0019](./adr/0019-persona-pseudo-user-agent-integration.md)。Agentは出所 `persona@version` を保持し、シナリオの疑似ユーザー選択はAgent参照に統一）。
