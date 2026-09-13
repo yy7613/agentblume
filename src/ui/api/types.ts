@@ -1398,6 +1398,14 @@ export interface JournalHearingProposalDto {
 export interface JournalHearingDto {
   readonly id: string; readonly documentId: string; readonly status: 'open' | 'proposed' | 'accepted' | 'cancelled';
   readonly turns: readonly JournalHearingTurnDto[]; readonly proposal?: JournalHearingProposalDto; readonly createdAt: string; readonly updatedAt: string;
+  /**
+   * 直近の回答応答（POST /journal/hearings/:id/answers）が返した警告。
+   * 提案を採用できなかった理由や打ち切りの通知が入る。**提案が無いときはここにしか出ない**ので、
+   * 画面は proposal.warnings と併せて必ず表示する。サーバーに保存される値ではない（応答ごとに入れ替わる）。
+   */
+  readonly sessionWarnings?: readonly string[];
 }
 export interface AnswerJournalHearingDto { readonly answers: readonly { readonly questionId: string; readonly value: JournalJsonValueDto }[] }
 export interface AcceptJournalHearingDto { readonly registerAccountIds?: readonly string[]; readonly registerDimensionValueIds?: readonly string[]; readonly registerTaxCodes?: readonly string[]; readonly rule?: SaveJournalRuleDto; readonly entry?: JournalEntryDraftDto }
+/** accept の応答。登録したマスタ（chart）とルール・仕訳をまとめて返すので、画面は 1 往復で描き直せる。 */
+export interface AcceptJournalHearingResultDto { readonly hearing: JournalHearingDto; readonly rule: JournalRuleDto; readonly entry: JournalEntryDto; readonly chart: JournalChartOfAccountsDto }

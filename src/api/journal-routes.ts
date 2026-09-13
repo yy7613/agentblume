@@ -26,9 +26,17 @@
  * | POST /journal/entries/:id/confirm | 200 { entry } |
  * | DELETE /journal/entries/:id | 204 |
  * | GET /journal/export | 200 { result } — 仕訳 CSV |
+ * | POST /journal/documents/extract | 200 { result } — 画像 / テキストから facts を LLM 抽出（**保存しない**） |
+ * | POST /journal/hearings | 200 { hearing } — Stage 2 開始（既に開いていればそれを返す） |
+ * | GET /journal/hearings | 200 { hearings } — `documentId` で絞れる |
+ * | GET /journal/hearings/:id | 200 { hearing } |
+ * | POST /journal/hearings/:id/answers | 200 { hearing, warnings } |
+ * | POST /journal/hearings/:id/accept | 200 { hearing, rule, entry?, chart } |
+ * | POST /journal/hearings/:id/cancel | 200 { hearing } — 文書は未判定へ戻る |
  *
- * フェーズ 2 の抽出（`/journal/documents/extract`）とヒアリング（`/journal/hearings*`）は**まだ登録しない**。
- * 画面は `GET /runtime/capabilities` の `journal` で有無を判断するので、404 を踏むことはない。
+ * 抽出と回答は**モデルを回すので遅い**（実測で 1 枚 17〜229 秒）。利用者は待ちきれずに閉じるので、
+ * どちらも `clientAbortSignal` を通し、切断でモデル呼び出しごと止める。
+ * 画面は `GET /runtime/capabilities` の `journal` を見て、使えない機能の導線を出さない。
  *
  * 応答の文書 / ルール / 仕訳は永続化用の Serialized から `tenant` を除いた形（scope は Principal 由来で、
  * クライアントは自分のスコープしか見られないため返す意味が無い）。
@@ -37,6 +45,11 @@ import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { ExportChartCsvUseCase, ImportChartCsvUseCase } from '../application/journal/chart-transfer';
 import type { ExportJournalEntriesUseCase } from '../application/journal/export-entries';
+import type { ExtractJournalDocumentUseCase } from '../application/journal/extract-document';
+import type {
+  AcceptJournalHearingUseCase, AnswerJournalHearingUseCase, CancelJournalHearingUseCase,
+  GetJournalHearingUseCase, ListJournalHearingsUseCase, StartJournalHearingUseCase,
+} from '../application/journal/hearing';
 import type { ImportJournalCsvUseCase } from '../application/journal/import-csv';
 import type { JudgeJournalDocumentsUseCase } from '../application/journal/judge-documents';
 import type { GetChartOfAccountsUseCase, ResetChartOfAccountsUseCase, SaveChartOfAccountsUseCase } from '../application/journal/manage-chart';
@@ -52,19 +65,24 @@ import type {
 import { JOURNAL_CSV_PRESETS } from '../domain/journal/csv-presets';
 import type { JournalDocument } from '../domain/journal/document';
 import type { JournalEntry } from '../domain/journal/entry';
+import type { HearingSession } from '../domain/journal/hearing';
 import type { JournalRule } from '../domain/journal/rule';
 import {
-  serializeJournalDocument, serializeJournalEntry, serializeJournalRule,
-  type SerializedJournalDocument, type SerializedJournalEntry, type SerializedJournalRule,
+  serializeHearingSession, serializeJournalDocument, serializeJournalEntry, serializeJournalRule,
+  type SerializedHearingSession, type SerializedJournalDocument, type SerializedJournalEntry, type SerializedJournalRule,
 } from '../domain/journal/serialization';
 import { scopeOf } from './authentication';
+import { clientAbortSignal } from './client-abort';
 import { BadRequestError } from './error-mapping';
 import {
+  acceptJournalHearingBodySchema, answerJournalHearingBodySchema, extractJournalDocumentBodySchema,
   journalChartActionBodySchema, journalChartImportBodySchema, journalChartQuerySchema,
   journalDocumentActionQuerySchema, journalDocumentListQuerySchema, journalEntryActionBodySchema,
-  journalEntryListQuerySchema, journalExportQuerySchema, journalImportCsvBodySchema, journalJudgeBodySchema,
+  journalEntryListQuerySchema, journalExportQuerySchema, journalHearingActionBodySchema,
+  journalHearingActionQuerySchema, journalHearingListQuerySchema, journalImportCsvBodySchema, journalJudgeBodySchema,
   journalRuleListQuerySchema, journalRuleTestBodySchema, saveJournalChartBodySchema,
   saveJournalDocumentBodySchema, saveJournalEntryBodySchema, saveJournalRuleBodySchema,
+  startJournalHearingBodySchema,
 } from './schemas';
 
 export interface JournalRouteDeps {
@@ -88,6 +106,14 @@ export interface JournalRouteDeps {
   readonly confirmJournalEntry: ConfirmJournalEntryUseCase;
   readonly deleteJournalEntry: DeleteJournalEntryUseCase;
   readonly exportJournalEntries: ExportJournalEntriesUseCase;
+  /* フェーズ 2（LLM 抽出とヒアリング）。 */
+  readonly extractJournalDocument: ExtractJournalDocumentUseCase;
+  readonly startJournalHearing: StartJournalHearingUseCase;
+  readonly answerJournalHearing: AnswerJournalHearingUseCase;
+  readonly acceptJournalHearing: AcceptJournalHearingUseCase;
+  readonly cancelJournalHearing: CancelJournalHearingUseCase;
+  readonly getJournalHearing: GetJournalHearingUseCase;
+  readonly listJournalHearings: ListJournalHearingsUseCase;
 }
 
 function parseWith<S extends z.ZodType>(schema: S, value: unknown, label: string): z.infer<S> {
@@ -109,6 +135,11 @@ export function journalRuleResponse(rule: JournalRule): Omit<SerializedJournalRu
 
 export function journalEntryResponse(entry: JournalEntry): Omit<SerializedJournalEntry, 'tenant'> {
   const { tenant: _tenant, ...rest } = serializeJournalEntry(entry);
+  return rest;
+}
+
+export function journalHearingResponse(session: HearingSession): Omit<SerializedHearingSession, 'tenant'> {
+  const { tenant: _tenant, ...rest } = serializeHearingSession(session);
   return rest;
 }
 
@@ -295,6 +326,84 @@ export function registerJournalRoutes(app: FastifyInstance, deps: JournalRouteDe
       markExported: query.markExported === 'true',
     });
     return { result };
+  });
+
+  /* 帳票の LLM 読取（フェーズ 2。docs/20 §6） ----------------------------- */
+
+  /**
+   * 画像 / テキスト → facts。**保存しない**（利用者が確認・修正してから `POST /journal/documents`）。
+   * モデル未設定・vision 非対応は 409 `JOURNAL_EXTRACTION_UNAVAILABLE`（設定画面で直せる）。
+   */
+  app.post('/journal/documents/extract', async (request, reply) => {
+    const body = parseWith(extractJournalDocumentBodySchema, request.body, 'invalid body');
+    const result = await deps.extractJournalDocument.execute({
+      ...(body.images === undefined ? {} : { images: body.images }),
+      ...(body.text === undefined ? {} : { text: body.text }),
+      ...(body.fileName === undefined ? {} : { fileName: body.fileName }),
+      ...(body.hintKind === undefined ? {} : { hintKind: body.hintKind }),
+    }, clientAbortSignal(request, reply));
+    return { result };
+  });
+
+  /* ヒアリング（Stage 2。docs/20 §7） ------------------------------------ */
+
+  app.post('/journal/hearings', async (request, reply) => {
+    const body = parseWith(startJournalHearingBodySchema, request.body, 'invalid body');
+    const hearing = await deps.startJournalHearing.execute(
+      { scope: scopeOf(request), documentId: body.documentId },
+      clientAbortSignal(request, reply),
+    );
+    return { hearing: journalHearingResponse(hearing) };
+  });
+
+  app.get('/journal/hearings', async (request) => {
+    const query = parseWith(journalHearingListQuerySchema, request.query, 'invalid query');
+    const hearings = await deps.listJournalHearings.execute(scopeOf(request), {
+      ...(query.documentId === undefined ? {} : { documentId: query.documentId }),
+    });
+    return { hearings: hearings.map(journalHearingResponse) };
+  });
+
+  app.get<{ Params: { id: string } }>('/journal/hearings/:id', async (request) => {
+    parseWith(journalHearingActionQuerySchema, request.query, 'invalid query');
+    const hearing = await deps.getJournalHearing.execute(scopeOf(request), request.params.id);
+    return { hearing: journalHearingResponse(hearing) };
+  });
+
+  /** 回答 → 次の質問か提案。`warnings` は「提案を採れなかった理由」「打ち切り」を利用者へ見せるため。 */
+  app.post<{ Params: { id: string } }>('/journal/hearings/:id/answers', async (request, reply) => {
+    const body = parseWith(answerJournalHearingBodySchema, request.body, 'invalid body');
+    const result = await deps.answerJournalHearing.execute(
+      { scope: scopeOf(request), hearingId: request.params.id, answers: body.answers },
+      clientAbortSignal(request, reply),
+    );
+    return { hearing: journalHearingResponse(result.hearing), warnings: result.warnings };
+  });
+
+  /** 受け入れ: 選ばれた id だけをマスタへ登録 → ルール保存 → 再判定。 */
+  app.post<{ Params: { id: string } }>('/journal/hearings/:id/accept', async (request) => {
+    const body = parseWith(acceptJournalHearingBodySchema, request.body, 'invalid body');
+    const result = await deps.acceptJournalHearing.execute({
+      scope: scopeOf(request),
+      hearingId: request.params.id,
+      ...(body.registerAccountIds === undefined ? {} : { registerAccountIds: body.registerAccountIds }),
+      ...(body.registerDimensionValueIds === undefined ? {} : { registerDimensionValueIds: body.registerDimensionValueIds }),
+      ...(body.registerTaxCodes === undefined ? {} : { registerTaxCodes: body.registerTaxCodes }),
+      ...(body.rule === undefined ? {} : { rule: body.rule }),
+      ...(body.entry === undefined ? {} : { entry: body.entry }),
+    });
+    return {
+      hearing: journalHearingResponse(result.hearing),
+      rule: journalRuleResponse(result.rule),
+      ...(result.entry === undefined ? {} : { entry: journalEntryResponse(result.entry) }),
+      chart: result.chart,
+    };
+  });
+
+  app.post<{ Params: { id: string } }>('/journal/hearings/:id/cancel', async (request) => {
+    parseWith(journalHearingActionBodySchema, request.body, 'invalid body');
+    const hearing = await deps.cancelJournalHearing.execute(scopeOf(request), request.params.id);
+    return { hearing: journalHearingResponse(hearing) };
   });
 }
 

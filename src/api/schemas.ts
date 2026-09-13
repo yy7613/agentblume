@@ -27,6 +27,11 @@ import {
 import { DECIDED_BY, ENTRY_STATUSES } from '../domain/journal/entry';
 import { AMOUNT_SPEC_KEYWORDS, CONDITION_OPS, ENTRY_SIDES, RULE_MODES, RULE_ORIGINS } from '../domain/journal/rule';
 import { JOURNAL_EXPORT_FORMATS } from '../application/journal/export-presets';
+import {
+  EXTRACT_IMAGE_MAX_CHARS as JOURNAL_EXTRACT_IMAGE_MAX_CHARS,
+  EXTRACT_MAX_IMAGES as JOURNAL_EXTRACT_MAX_IMAGES,
+  EXTRACT_TEXT_MAX_CHARS as JOURNAL_EXTRACT_TEXT_MAX_CHARS,
+} from '../application/journal/extract-document';
 
 /**
  * テナントスコープ。**サーバーはこの値を読まない**。
@@ -984,3 +989,57 @@ export const journalExportQuerySchema = scopeQuerySchema.extend({
   to: z.string().optional(),
   markExported: z.enum(['true', 'false']).optional(),
 });
+
+/* 帳票の LLM 読取（フェーズ 2。docs/20 §6） -------------------------------- */
+
+/**
+ * 画像はチャット添付と同じ上限（data URL で 4,200,000 文字）。**SVG と外部 URL は受けない**
+ * （サーバーが意図せず外へ取りに行かないため。UI は長辺 2000px の JPEG へ縮小して送る）。
+ * 保存はしないので `source` ではなく画像とテキストだけを受け取る。
+ */
+export const extractJournalDocumentBodySchema = z.object({
+  scope: tenantScopeSchema,
+  images: z.array(z.string().max(JOURNAL_EXTRACT_IMAGE_MAX_CHARS).regex(/^data:image\/(?:jpeg|png|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/)).max(JOURNAL_EXTRACT_MAX_IMAGES).optional(),
+  text: z.string().max(JOURNAL_EXTRACT_TEXT_MAX_CHARS).optional(),
+  fileName: z.string().max(255).optional(),
+  hintKind: z.enum(DOCUMENT_KINDS).optional(),
+});
+
+/* ヒアリング（Stage 2。docs/20 §7） ---------------------------------------- */
+
+/** 仕訳の草案（`saveJournalEntryBodySchema` から scope と保存用の id を除いた形）。 */
+export const journalEntryDraftSchema = z.object({
+  date: z.string().min(1),
+  lines: z.array(journalEntryLineSchema).min(1).max(100),
+  description: z.string(),
+  invoiceStatus: z.enum(INVOICE_STATUSES),
+  registrationNumber: z.string().optional(),
+  item: z.string().optional(),
+  tags: z.array(z.string()).max(50).optional(),
+});
+
+export const journalHearingListQuerySchema = scopeQuerySchema.extend({
+  documentId: z.string().min(1).optional(),
+});
+export const journalHearingActionQuerySchema = scopeQuerySchema;
+export const startJournalHearingBodySchema = z.object({
+  scope: tenantScopeSchema,
+  documentId: z.string().min(1),
+});
+export const answerJournalHearingBodySchema = z.object({
+  scope: tenantScopeSchema,
+  answers: z.array(z.object({ questionId: z.string().min(1), value: journalJsonValueSchema })).min(1).max(10),
+});
+/**
+ * 受け入れ。`register*` は**利用者が明示的に選んだ id だけ**を並べる
+ * （提案に載っていても選ばれなければマスタへ入らない。モデルが科目体系を勝手に増やせない要）。
+ */
+export const acceptJournalHearingBodySchema = z.object({
+  scope: tenantScopeSchema,
+  registerAccountIds: z.array(z.string().min(1)).max(10).optional(),
+  registerDimensionValueIds: z.array(z.string().min(1)).max(10).optional(),
+  registerTaxCodes: z.array(z.string().min(1)).max(5).optional(),
+  rule: journalRuleDraftSchema.optional(),
+  entry: journalEntryDraftSchema.optional(),
+});
+export const journalHearingActionBodySchema = z.object({ scope: tenantScopeSchema });

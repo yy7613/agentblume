@@ -59,6 +59,7 @@
     "@types/pg": "^8.20.0",
     "@xyflow/react": "^12.11.1",
     "fastify": "^5.9.0",
+    "pdfjs-dist": "^6.3.289",
     "pg": "^8.22.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

@@ -185,3 +185,78 @@ describe('RulesTab', () => {
     expect(await screen.findByText(/The chart of accounts is not loaded/)).toBeTruthy();
   });
 });
+
+describe('RulesTab（仕訳行・条件・対象帳票の編集）', () => {
+  const draft: SaveJournalRuleDto = {
+    name: '編集用', enabled: true, mode: 'auto', priority: 0, scope: {},
+    conditions: [{ field: 'descriptionNorm', op: 'contains', value: 'カフェ' }],
+    outcome: { lines: [
+      { side: 'debit', accountId: 'meeting', taxCode: 'JP-IN-10-S', amount: 'total' },
+      { side: 'credit', accountId: 'cash', taxCode: 'JP-IN-10-S', amount: 'total' },
+    ] },
+    askIf: [], requiredFacts: [],
+  };
+
+  it('正常: 仕訳行の貸借・科目・税区分・金額の指定を切り替えられる', async () => {
+    renderTab(stubClient(), { draft });
+
+    const side = await screen.findByLabelText('Line 1 side');
+    await userEvent.selectOptions(side, 'credit');
+    expect((side as HTMLSelectElement).value).toBe('credit');
+
+    const account = screen.getByLabelText('Line 1 account');
+    await userEvent.selectOptions(account, 'cash');
+    expect((account as HTMLSelectElement).value).toBe('cash');
+
+    const amount = screen.getByLabelText('Line 1 amount');
+    await userEvent.selectOptions(amount, 'taxable:10');
+    expect((amount as HTMLSelectElement).value).toBe('taxable:10');
+  });
+
+  it('境界: 金額を固定額にすると値の入力欄が出る（それ以外の指定では出さない）', async () => {
+    renderTab(stubClient(), { draft });
+
+    expect(screen.queryByLabelText('Line 1 amount value')).toBeNull();
+    await userEvent.selectOptions(await screen.findByLabelText('Line 1 amount'), 'fixed');
+    const value = screen.getByLabelText('Line 1 amount value');
+    await userEvent.type(value, '1000');
+    expect((value as HTMLInputElement).value).toContain('1000');
+  });
+
+  it('正常: 条件の項目・演算・値を編集できる', async () => {
+    renderTab(stubClient(), { draft });
+
+    const field = await screen.findByLabelText('Condition 1 field');
+    await userEvent.clear(field);
+    await userEvent.type(field, 'issuerName');
+    expect((field as HTMLInputElement).value).toBe('issuerName');
+
+    const operator = screen.getByLabelText('Condition 1 operator');
+    await userEvent.selectOptions(operator, 'equals');
+    expect((operator as HTMLSelectElement).value).toBe('equals');
+
+    const value = screen.getByLabelText('Condition 1 value');
+    await userEvent.clear(value);
+    await userEvent.type(value, 'サンプル商事');
+    expect((value as HTMLInputElement).value).toBe('サンプル商事');
+  });
+
+  it('境界: 存在を見るだけの演算（exists）では値の入力欄を出さない', async () => {
+    renderTab(stubClient(), { draft });
+
+    await userEvent.selectOptions(await screen.findByLabelText('Condition 1 operator'), 'exists');
+    expect(screen.queryByLabelText('Condition 1 value')).toBeNull();
+  });
+
+  it('正常: 対象帳票の種別は付け外しでき、全て外すと種別の指定なしに戻る', async () => {
+    renderTab(stubClient(), { draft });
+
+    const invoice = (await screen.findAllByRole('checkbox')).find((box) => (box as HTMLInputElement).checked === false);
+    expect(invoice).toBeTruthy();
+    if (invoice === undefined) return;
+    await userEvent.click(invoice);
+    expect((invoice as HTMLInputElement).checked).toBe(true);
+    await userEvent.click(invoice);
+    expect((invoice as HTMLInputElement).checked).toBe(false);
+  });
+});

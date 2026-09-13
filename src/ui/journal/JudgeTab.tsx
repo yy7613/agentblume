@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { JournalCapabilitiesDto, JournalChartOfAccountsDto, JournalDocumentDto, JournalDocumentStatusDto, JournalDocumentSummaryDto, JournalEntryDto, JournalRuleDto, JudgeJournalDocumentsResultDto } from '../api/types';
+import type { AcceptJournalHearingResultDto, JournalCapabilitiesDto, JournalChartOfAccountsDto, JournalDocumentDto, JournalDocumentStatusDto, JournalDocumentSummaryDto, JournalEntryDto, JournalRuleDto, JudgeJournalDocumentsResultDto } from '../api/types';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { InlineFeedback } from '../components/InlineFeedback';
 import { useI18n } from '../i18n';
 import { scope } from '../scope';
+import { HearingPanel } from './HearingPanel';
 import type { TabFocus } from './JournalPage';
 import { SKIPPED_KINDS, directionLabel, formatYen, kindLabel, paymentMethodLabel, summarizeJudgment, type JournalAction } from './journal-model';
 import { CapabilityNotice, StatusChip, messageOf } from './journal-shared';
@@ -16,9 +17,11 @@ const STATUSES: readonly JournalDocumentStatusDto[] = ['extracted', 'undecided',
  * 判定結果は summarizeJudgment で「原因 → 次の一手 → 直す場所へのボタン」に組み替える。ボタンの遷移は onAction（JournalPage）に委ね、
  * `ask-if` の回答だけはここで完結する（facts.extra[questionId] に書いて保存 → 再判定）。
  */
-export function JudgeTab({ client, chart, rules, capabilities, focus, onAction }: {
+export function JudgeTab({ client, chart, rules, capabilities, focus, onAction, reloadChart, reloadRules }: {
   readonly client: ToolApiClient; readonly chart: JournalChartOfAccountsDto | undefined; readonly rules: readonly JournalRuleDto[]; readonly capabilities: JournalCapabilitiesDto | undefined;
   readonly focus: TabFocus | undefined; readonly onAction: (action: JournalAction, document: JournalDocumentSummaryDto) => void;
+  /** ヒアリングの登録で科目マスタ / ルールが増えるので、親の持つ一覧を読み直してもらう（省略可）。 */
+  readonly reloadChart?: () => Promise<void>; readonly reloadRules?: () => Promise<void>;
 }) {
   const { text } = useI18n();
   const [documents, setDocuments] = useState<readonly JournalDocumentSummaryDto[]>();
@@ -34,6 +37,7 @@ export function JudgeTab({ client, chart, rules, capabilities, focus, onAction }
   const [answer, setAnswer] = useState<{ readonly questionId: string; readonly prompt: string; readonly value: string }>();
   const [pendingDelete, setPendingDelete] = useState<JournalDocumentSummaryDto>();
   const [deleting, setDeleting] = useState(false);
+  const [hearingOpen, setHearingOpen] = useState(false);
 
   const reload = useCallback(async () => {
     try { setDocuments(await client.listJournalDocuments(scope, status === '' ? {} : { status })); setListError(undefined); }
@@ -48,6 +52,7 @@ export function JudgeTab({ client, chart, rules, capabilities, focus, onAction }
     let active = true;
     setDetailError(undefined);
     setAnswer(undefined);
+    setHearingOpen(false);
     void client.getJournalDocument(selectedId, scope)
       .then(async (document) => {
         if (!active) return;
@@ -113,8 +118,28 @@ export function JudgeTab({ client, chart, rules, capabilities, focus, onAction }
 
   const act = (action: JournalAction, document: JournalDocumentSummaryDto) => {
     if (action.kind === 'answer') { setAnswer({ questionId: action.questionId, prompt: action.prompt, value: String(detail?.facts.extra?.[action.questionId] ?? '') }); return; }
-    if (action.kind === 'hearing') return;
+    if (action.kind === 'hearing') { setHearingOpen(true); return; }
     onAction(action, document);
+  };
+
+  /** ヒアリングでルールが登録されたら、一覧・詳細・親の持つマスタ / ルールを読み直す。 */
+  const afterHearingAccepted = async (result: AcceptJournalHearingResultDto) => {
+    setEntry(result.entry);
+    await reload();
+    await reloadRules?.();
+    await reloadChart?.();
+    if (selectedId === undefined) return;
+    try { setDetail(await client.getJournalDocument(selectedId, scope)); }
+    catch { /* 一覧は更新済み。詳細の再取得失敗は結果を左右しない。 */ }
+  };
+
+  /** ヒアリングを閉じた（中止した）。行は未確定に戻っているので読み直す。 */
+  const afterHearingClosed = async () => {
+    setHearingOpen(false);
+    await reload();
+    if (selectedId === undefined) return;
+    try { setDetail(await client.getJournalDocument(selectedId, scope)); }
+    catch { /* 同上。 */ }
   };
 
   const pendingCount = documents?.filter((document) => document.status === 'extracted' || document.status === 'undecided').length ?? 0;
@@ -181,6 +206,18 @@ export function JudgeTab({ client, chart, rules, capabilities, focus, onAction }
           </div>}
           {card.actions.some((action) => action.target.kind === 'hearing') && <CapabilityNotice capabilities={capabilities} feature="hearing" />}
         </article>)}
+
+        {hearingOpen && <HearingPanel
+          client={client}
+          chart={chart}
+          documentId={detail.id}
+          hearingId={detail.hearingId}
+          onEditRule={(rule) => { setHearingOpen(false); onAction({ kind: 'edit-rule-draft', rule }, selected); }}
+          onAccepted={(result) => { void afterHearingAccepted(result); }}
+          onClosed={() => { void afterHearingClosed(); }}
+          onOpenEntry={(entryId) => onAction({ kind: 'open-entry', entryId }, selected)}
+          onManualRule={() => { setHearingOpen(false); onAction({ kind: 'new-rule' }, selected); }}
+        />}
 
         {answer !== undefined && <form className="journal-answer" onSubmit={(event) => { event.preventDefault(); void submitAnswer(); }}>
           <label>{answer.prompt}<input aria-label={text('Answer', '回答')} value={answer.value} onChange={(event) => setAnswer({ ...answer, value: event.target.value })} /></label>

@@ -233,6 +233,11 @@ import {
 import {
   DeleteJournalRuleUseCase, ListJournalRulesUseCase, SaveJournalRuleUseCase, TestJournalRuleUseCase,
 } from '../application/journal/manage-rules';
+import { ExtractJournalDocumentUseCase } from '../application/journal/extract-document';
+import {
+  AcceptJournalHearingUseCase, AnswerJournalHearingUseCase, CancelJournalHearingUseCase,
+  GetJournalHearingUseCase, ListJournalHearingsUseCase, StartJournalHearingUseCase,
+} from '../application/journal/hearing';
 import { TestModelSettingsUseCase } from '../application/model-settings/test-model-settings';
 import { QueryModelCatalogUseCase } from '../application/model-settings/query-model-catalog';
 import type { ModelSlotName } from '../domain/model-settings/model-settings';
@@ -429,6 +434,14 @@ export interface App {
   readonly confirmJournalEntry: ConfirmJournalEntryUseCase;
   readonly deleteJournalEntry: DeleteJournalEntryUseCase;
   readonly exportJournalEntries: ExportJournalEntriesUseCase;
+  /* フェーズ 2（LLM 抽出と Stage 2 ヒアリング）。 */
+  readonly extractJournalDocument: ExtractJournalDocumentUseCase;
+  readonly startJournalHearing: StartJournalHearingUseCase;
+  readonly answerJournalHearing: AnswerJournalHearingUseCase;
+  readonly acceptJournalHearing: AcceptJournalHearingUseCase;
+  readonly cancelJournalHearing: CancelJournalHearingUseCase;
+  readonly getJournalHearing: GetJournalHearingUseCase;
+  readonly listJournalHearings: ListJournalHearingsUseCase;
   /** 仕訳の LLM 抽出・ヒアリングの可否（`GET /runtime/capabilities` の `journal`）。 */
   readonly journalCapabilities: JournalCapabilitiesUseCase;
   readonly saveSkill: SaveSkillUseCase;
@@ -804,10 +817,9 @@ export function createApp(options?: AppOptions): App {
   /**
    * 仕訳の LLM 機能（抽出・ヒアリング）が使えるか。
    *
-   * フェーズ 1 では**抽出もヒアリングも実装が無い**が、画面が「使えない理由」を出し分けられるよう、
-   * モデル側の能力だけは正しく答える: テキストからの抽出は structured output があれば足り、
+   * 画面が「使えない理由」を出し分けられるよう、モデル側の能力をそのまま答える:
+   * テキストからの抽出も Stage 2 のヒアリングも structured output があれば足り、
    * 画像（PDF はブラウザで画像化する）は vision も要る。判定は毎回行う（モデル設定は UI から変わる）。
-   * TODO(フェーズ 2): 抽出とヒアリングのユースケースを載せたら、ここを実装の有無と併せて返す。
    */
   const journalCapabilitiesResolver = async (): Promise<JournalCapabilities> => {
     if (profile === 'test') return JOURNAL_CAPABILITIES_DISABLED;
@@ -819,14 +831,26 @@ export function createApp(options?: AppOptions): App {
       const vision = capabilities.includes('vision');
       return {
         extraction: { enabled: structured, vision: structured && vision },
-        // フェーズ 2 で Stage 2 を載せるまでは常に false（画面はヒアリングの導線を出さない）。
-        hearing: { enabled: false },
+        // Stage 2 は構造化出力だけで足りる（質問も提案も JSON で受け取る。画像は見ない）。
+        hearing: { enabled: structured },
       };
     } catch {
       // 設定が読めない / 復号できない場合は「使えない」側へ倒す。
       return JOURNAL_CAPABILITIES_DISABLED;
     }
   };
+  /**
+   * 仕訳の LLM 機能を回してよいか（能力ではなく**設定の有無**）。分析アシスタントと同じ判定だが、
+   * `ANALYSIS_ASSISTANT_ENABLED` では切らない（仕訳の抽出は分析アシスタントとは別の機能である）。
+   */
+  const journalLlmEnabled = async (): Promise<boolean> => {
+    if (profile === 'test') return false;
+    if ((process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== '') return true;
+    try { return (await modelSettingsAdapter.repo.find(modelSettingsScope))?.main !== undefined; }
+    catch { return false; }
+  };
+  // 判定は純粋関数なので profile 非依存。ヒアリングの受け入れ（再判定）もこの 1 つを共有する。
+  const judgeJournalDocuments = new JudgeJournalDocumentsUseCase(journalDocumentAdapter.repo, journalRuleAdapter.repo, journalChartAdapter.repo, journalEntryAdapter.repo);
 
   // Tool 単位のプリフライト診断。未保存 draft のルートと Agent 診断の両方が同じインスタンスを使う。
   const diagnoseTool = new DiagnoseToolUseCase(engine, resolveDataSources);
@@ -1083,12 +1107,20 @@ export function createApp(options?: AppOptions): App {
     getJournalDocument: new GetJournalDocumentUseCase(journalDocumentAdapter.repo),
     deleteJournalDocument: new DeleteJournalDocumentUseCase(journalDocumentAdapter.repo, journalEntryAdapter.repo),
     importJournalCsv: new ImportJournalCsvUseCase(journalDocumentAdapter.repo),
-    judgeJournalDocuments: new JudgeJournalDocumentsUseCase(journalDocumentAdapter.repo, journalRuleAdapter.repo, journalChartAdapter.repo, journalEntryAdapter.repo),
+    judgeJournalDocuments,
     saveJournalEntry: new SaveJournalEntryUseCase(journalEntryAdapter.repo, journalChartAdapter.repo),
     listJournalEntries: new ListJournalEntriesUseCase(journalEntryAdapter.repo),
     confirmJournalEntry: new ConfirmJournalEntryUseCase(journalEntryAdapter.repo),
     deleteJournalEntry: new DeleteJournalEntryUseCase(journalEntryAdapter.repo, journalDocumentAdapter.repo),
     exportJournalEntries: new ExportJournalEntriesUseCase(journalEntryAdapter.repo, journalChartAdapter.repo),
+    // フェーズ 2: 抽出とヒアリング。モデルは main スロット（切替可能な配線ならその実体）。
+    extractJournalDocument: new ExtractJournalDocumentUseCase(modelProvider, journalLlmEnabled, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot(), errorLogger),
+    startJournalHearing: new StartJournalHearingUseCase(journalDocumentAdapter.repo, journalHearingAdapter.repo, journalChartAdapter.repo, modelProvider, journalLlmEnabled),
+    answerJournalHearing: new AnswerJournalHearingUseCase(journalDocumentAdapter.repo, journalHearingAdapter.repo, journalChartAdapter.repo, modelProvider, journalLlmEnabled),
+    acceptJournalHearing: new AcceptJournalHearingUseCase(journalDocumentAdapter.repo, journalHearingAdapter.repo, journalChartAdapter.repo, journalRuleAdapter.repo, journalEntryAdapter.repo, judgeJournalDocuments),
+    cancelJournalHearing: new CancelJournalHearingUseCase(journalDocumentAdapter.repo, journalHearingAdapter.repo),
+    getJournalHearing: new GetJournalHearingUseCase(journalHearingAdapter.repo),
+    listJournalHearings: new ListJournalHearingsUseCase(journalHearingAdapter.repo),
     journalCapabilities: new JournalCapabilitiesUseCase(journalCapabilitiesResolver),
     // 2つのワーカーは互いに独立なので同時に待つ（直列にすると猶予が最大2倍かかる）。
     drainWorkers: async (graceMs: number) => {

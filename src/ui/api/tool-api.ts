@@ -126,6 +126,12 @@ import type {
   ImportJournalCsvResultDto,
   JournalCsvPresetDto,
   JudgeJournalDocumentsResultDto,
+  ExtractJournalDocumentDto,
+  ExtractJournalDocumentResultDto,
+  JournalHearingDto,
+  AnswerJournalHearingDto,
+  AcceptJournalHearingDto,
+  AcceptJournalHearingResultDto,
   JournalEntryDto,
   SaveJournalEntryDto,
   JournalExportResultDto,
@@ -982,7 +988,8 @@ export class ToolApiClient {
 
   // ---------------------------------------------------------------------------
   // 仕訳（docs/20-journal.md §9）。scope は他のメソッドと同じくクエリ（GET/DELETE）または JSON 本文に載せる。
-  // Phase 1 は抽出（/journal/documents/extract）とヒアリング（/journal/hearings*）を含まない。
+  // 抽出（/journal/documents/extract）とヒアリング（/journal/hearings*）は LLM を呼ぶので遅い。
+  // 画面が中断できるよう signal を受ける（tool-check の提案パネルと同じ作法）。
   // ---------------------------------------------------------------------------
 
   /**
@@ -1062,6 +1069,47 @@ export class ToolApiClient {
   /** documentIds 省略時は未判定の全件。 */
   async judgeJournalDocuments(scope: TenantScopeDto, input: { readonly documentIds?: readonly string[] } = {}, signal?: AbortSignal): Promise<JudgeJournalDocumentsResultDto> {
     return (await this.request<{ result: JudgeJournalDocumentsResultDto }>('/journal/documents/judge', { method: 'POST', body: JSON.stringify({ scope, ...input }), signal })).result;
+  }
+
+  /**
+   * 画像 / PDF ページ画像 / テキストから facts を LLM 抽出する（保存はしない。利用者が確認して保存する）。
+   * 遅い（モデル 1 往復）ので signal を受ける。vision / 構造化出力に対応しないモデルでは 409
+   * `JOURNAL_EXTRACTION_UNAVAILABLE`、画像が大きすぎる / 形式違いは 400 が返る。
+   */
+  async extractJournalDocument(scope: TenantScopeDto, input: ExtractJournalDocumentDto, signal?: AbortSignal): Promise<ExtractJournalDocumentResultDto> {
+    return (await this.request<{ result: ExtractJournalDocumentResultDto }>('/journal/documents/extract', { method: 'POST', body: JSON.stringify({ scope, ...input }), signal })).result;
+  }
+
+  /** ヒアリング（Stage 2）を開始する。最初の質問は応答の hearing.turns に入る。 */
+  async createJournalHearing(scope: TenantScopeDto, input: { readonly documentId: string }, signal?: AbortSignal): Promise<JournalHearingDto> {
+    return (await this.request<{ hearing: JournalHearingDto }>('/journal/hearings', { method: 'POST', body: JSON.stringify({ scope, ...input }), signal })).hearing;
+  }
+
+  async getJournalHearing(id: string, scope: TenantScopeDto, signal?: AbortSignal): Promise<JournalHearingDto> {
+    return (await this.request<{ hearing: JournalHearingDto }>(`/journal/hearings/${encodeURIComponent(id)}?${scopeQuery(scope)}`, { signal })).hearing;
+  }
+
+  async listJournalHearings(scope: TenantScopeDto, filter: { readonly documentId?: string } = {}, signal?: AbortSignal): Promise<readonly JournalHearingDto[]> {
+    const query = scopeQuery(scope);
+    if (filter.documentId !== undefined && filter.documentId !== '') query.set('documentId', filter.documentId);
+    return (await this.request<{ hearings: JournalHearingDto[] }>(`/journal/hearings?${query}`, { signal })).hearings;
+  }
+
+  /** 回答をまとめて送る。次の質問か提案（proposal）が返る。遅い（モデル 1 往復）。 */
+  async answerJournalHearing(id: string, scope: TenantScopeDto, input: AnswerJournalHearingDto, signal?: AbortSignal): Promise<JournalHearingDto> {
+    // サーバーは { hearing, warnings } を返す。warnings は提案が作れなかった理由なので、
+    // 捨てずに sessionWarnings として畳み込む（提案が無いときは他に出しどころが無い）。
+    const response = await this.request<{ hearing: JournalHearingDto; warnings?: readonly string[] }>(`/journal/hearings/${encodeURIComponent(id)}/answers`, { method: 'POST', body: JSON.stringify({ scope, ...input }), signal });
+    return response.warnings === undefined || response.warnings.length === 0 ? response.hearing : { ...response.hearing, sessionWarnings: response.warnings };
+  }
+
+  /** 提案を受け入れる。`register*Ids` に挙げたものだけをマスタへ登録する（既定は 1 件も登録しない）。 */
+  async acceptJournalHearing(id: string, scope: TenantScopeDto, input: AcceptJournalHearingDto = {}): Promise<AcceptJournalHearingResultDto> {
+    return this.request<AcceptJournalHearingResultDto>(`/journal/hearings/${encodeURIComponent(id)}/accept`, { method: 'POST', body: JSON.stringify({ scope, ...input }) });
+  }
+
+  async cancelJournalHearing(id: string, scope: TenantScopeDto): Promise<JournalHearingDto> {
+    return (await this.request<{ hearing: JournalHearingDto }>(`/journal/hearings/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: JSON.stringify({ scope }) })).hearing;
   }
 
   async listJournalEntries(scope: TenantScopeDto, filter: { readonly status?: string; readonly from?: string; readonly to?: string; readonly documentId?: string } = {}, signal?: AbortSignal): Promise<readonly JournalEntryDto[]> {

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { JournalChartOfAccountsDto, JournalCsvPresetDto, JournalDocumentDto, JournalDocumentSummaryDto, JournalJudgmentDto, JournalRuleDto } from '../api/types';
+import type { JournalChartOfAccountsDto, JournalCsvPresetDto, JournalDocumentDto, JournalDocumentSummaryDto, JournalHearingDto, JournalHearingQuestionDto, JournalJudgmentDto, JournalRuleDto } from '../api/types';
 import {
-  EMPTY_FACTS_LINE, EMPTY_FACTS_TOTAL, accountsByCategory, amountSpecChoice, amountSpecFromChoice, draftFromFacts, emptyFactsDraft, factsFromDraft, chartValidation, conditionValueFromInput, conditionValueToInput, csvDownloadName, decodeCsvText, detectCsvPreset,
-  editableRule, entryBalance, moveAccount, newAccount, newRuleFromDocument, newTaxCategory, normalizeHeader, openJournalTarget, parseCsvRows, previewRows, ruleSpecificity,
-  ruleValidation, sortRules, splitList, summarizeConditions, summarizeJudgment, summarizeScope, triggerDownload, validateFactsJson,
+  EMPTY_FACTS_LINE, EMPTY_FACTS_TOTAL, accountsByCategory, amountSpecChoice, amountSpecFromChoice, answeredHearingQuestions, describeOutcomeLine, draftFromFacts, emptyFactsDraft, factsFromDraft, chartValidation, conditionValueFromInput, conditionValueToInput, csvDownloadName, decodeCsvText, detectCsvPreset,
+  editableRule, entryBalance, formatPixels, hearingAnswerLabel, hearingAnswerValue, lowConfidenceFields, moveAccount, newAccount, newRuleFromDocument, newTaxCategory, normalizeHeader, openJournalTarget, parseCsvRows, pdfRenderScale, pendingHearingQuestions, pickedFileKind, previewRows, resolveAccountName, resolveTaxName, ruleSpecificity,
+  ruleValidation, scaledSize, sortRules, splitList, summarizeConditions, summarizeJudgment, summarizeScope, triggerDownload, validateFactsJson, withinDataUrlLimit,
 } from './journal-model';
 
 const text = (_en: string, ja: string) => ja;
@@ -458,5 +458,170 @@ describe('factsFromDraft / draftFromFacts', () => {
     const facts = { direction: 'in' as const, issuerName: 'A', grandTotal: 500, paymentMethod: 'cash' as const, lines: [{ description: 'x', amount: 500, taxRate: 10 as const, reducedRateMark: false }], totalsByRate: [{ rate: 10 as const, taxableAmount: 455, amountIncludesTax: false }], extra: { a: 1 } };
     expect(factsFromDraft(draftFromFacts(facts)).facts).toEqual(facts);
     expect(draftFromFacts({}).lines).toEqual([]);
+  });
+});
+
+describe('送信する画像の大きさ（scaledSize / pdfRenderScale）', () => {
+  it('正常: 長辺が目標を超える画像だけ縮小し、縦横比を保つ', () => {
+    expect(scaledSize(4000, 3000)).toEqual({ width: 2000, height: 1500 });
+    expect(scaledSize(3000, 4000)).toEqual({ width: 1500, height: 2000 });
+  });
+
+  it('境界: 目標以下の画像は引き伸ばさない（水増ししても情報は増えない）', () => {
+    expect(scaledSize(510, 881)).toEqual({ width: 510, height: 881 });
+    // ちょうど目標の長辺はそのまま。
+    expect(scaledSize(2000, 1000)).toEqual({ width: 2000, height: 1000 });
+    expect(scaledSize(2001, 1000).width).toBe(2000);
+  });
+
+  it('例外: 大きさが取れない（0 / NaN）画像は 0 を返し、落ちない', () => {
+    expect(scaledSize(0, 0)).toEqual({ width: 0, height: 0 });
+    expect(scaledSize(Number.NaN, 100)).toEqual({ width: 0, height: 0 });
+  });
+
+  it('正常: PDF の倍率はページの長辺を 1600〜2000px に収める（A4 は約 2.1 倍）', () => {
+    const a4 = pdfRenderScale(595, 842);
+    expect(Math.round(842 * a4)).toBe(1800);
+    expect(842 * a4).toBeGreaterThanOrEqual(1600);
+    expect(842 * a4).toBeLessThanOrEqual(2000);
+  });
+
+  it('境界: 小さいページは拡大し、大きいページは縮める（固定倍率にしない）', () => {
+    expect(Math.round(300 * pdfRenderScale(200, 300))).toBe(1800);
+    expect(Math.round(5000 * pdfRenderScale(3000, 5000))).toBe(1800);
+  });
+
+  it('例外: 大きさが取れないページは等倍にする', () => {
+    expect(pdfRenderScale(0, 0)).toBe(1);
+    expect(pdfRenderScale(Number.NaN, Number.NaN)).toBe(1);
+  });
+
+  it('境界: data URL は上限ちょうどまで送れる', () => {
+    expect(withinDataUrlLimit('a'.repeat(4_200_000))).toBe(true);
+    expect(withinDataUrlLimit('a'.repeat(4_200_001))).toBe(false);
+  });
+
+  it('正常: ファイル種別は MIME で判定し、type が空のときだけ拡張子で補う', () => {
+    expect(pickedFileKind({ type: 'image/png', name: 'a.png' })).toBe('image');
+    expect(pickedFileKind({ type: 'application/pdf', name: 'a.pdf' })).toBe('pdf');
+    expect(pickedFileKind({ type: 'text/plain', name: 'a.png' })).toBe('other');
+    expect(pickedFileKind({ type: '', name: 'a.PDF' })).toBe('pdf');
+    expect(pickedFileKind({ type: '', name: 'a.JPEG' })).toBe('image');
+    expect(pickedFileKind({ type: '', name: 'a.docx' })).toBe('other');
+  });
+
+  it('正常: 実寸はサムネイルに添える形（幅×高さ）にする', () => {
+    expect(formatPixels(1350, 1355)).toBe('1350×1355');
+  });
+});
+
+describe('lowConfidenceFields（読み取りの信頼度が低い項目）', () => {
+  const evidence = {
+    grandTotal: { sourceText: '¥1,100', confidence: 0.95 },
+    registrationNumber: { sourceText: 'T12345678901234', confidence: 0.4 },
+    issuerName: { confidence: 0.7 },
+  };
+
+  it('正常: 閾値を下回る項目だけを根拠つきで返す', () => {
+    expect(lowConfidenceFields({ fieldEvidence: evidence })).toEqual({ registrationNumber: { sourceText: 'T12345678901234', confidence: 0.4 } });
+  });
+
+  it('境界: ちょうど閾値（0.7）は低信頼に含めない。閾値は変えられる', () => {
+    expect('issuerName' in lowConfidenceFields({ fieldEvidence: evidence })).toBe(false);
+    expect(Object.keys(lowConfidenceFields({ fieldEvidence: evidence }, 0.96)).sort()).toEqual(['grandTotal', 'issuerName', 'registrationNumber']);
+  });
+
+  it('例外: fieldEvidence が無い / extraction 自体が無ければ空を返す', () => {
+    expect(lowConfidenceFields({})).toEqual({});
+    expect(lowConfidenceFields(undefined)).toEqual({});
+  });
+});
+
+describe('ヒアリングの質問と回答', () => {
+  const single: JournalHearingQuestionDto = { id: 'purpose', text: '何の費用ですか？', kind: 'single', options: [{ value: 'meeting', label: '打ち合わせ' }, { value: 'gift', label: '贈答' }] };
+  const confirm: JournalHearingQuestionDto = { id: 'asset', text: '10 万円以上の資産ですか？', kind: 'confirm', note: '取得価額 10 万円以上は固定資産' };
+  const turns = (...items: JournalHearingDto['turns']): Pick<JournalHearingDto, 'turns'> => ({ turns: items });
+
+  it('正常: まだ答えていない質問だけを順に返す', () => {
+    const session = turns(
+      { role: 'assistant', question: single, at: '2026-09-01T00:00:00.000Z' },
+      { role: 'user', answer: { questionId: 'purpose', value: 'meeting' }, at: '2026-09-01T00:01:00.000Z' },
+      { role: 'assistant', question: confirm, at: '2026-09-01T00:02:00.000Z' },
+    );
+    expect(pendingHearingQuestions(session).map((question) => question.id)).toEqual(['asset']);
+    expect(answeredHearingQuestions(session).map(({ question, value }) => [question.id, value])).toEqual([['purpose', 'meeting']]);
+  });
+
+  it('境界: 同じ質問が 2 回出ても 1 回だけ出す', () => {
+    const session = turns(
+      { role: 'assistant', question: single, at: '2026-09-01T00:00:00.000Z' },
+      { role: 'assistant', question: single, at: '2026-09-01T00:01:00.000Z' },
+    );
+    expect(pendingHearingQuestions(session)).toHaveLength(1);
+  });
+
+  it('例外: やり取りが空でも落ちない', () => {
+    expect(pendingHearingQuestions(turns())).toEqual([]);
+    expect(answeredHearingQuestions(turns())).toEqual([]);
+  });
+
+  it('正常: 回答は kind ごとの型（単一 = 文字列 / 複数 = 配列 / 確認 = 真偽 / 数値 = 数）で送る', () => {
+    expect(hearingAnswerValue(single, 'meeting')).toBe('meeting');
+    expect(hearingAnswerValue({ ...single, kind: 'multi' }, ['meeting', 'gift'])).toEqual(['meeting', 'gift']);
+    expect(hearingAnswerValue(confirm, 'yes')).toBe(true);
+    expect(hearingAnswerValue(confirm, 'no')).toBe(false);
+    expect(hearingAnswerValue({ ...single, kind: 'number' }, '150,000')).toBe(150000);
+  });
+
+  it('境界: 空欄・空の選択は未回答（undefined）にする', () => {
+    expect(hearingAnswerValue(single, '')).toBeUndefined();
+    expect(hearingAnswerValue({ ...single, kind: 'multi' }, [])).toBeUndefined();
+    expect(hearingAnswerValue({ ...single, kind: 'text' }, '   ')).toBeUndefined();
+  });
+
+  it('異常: 数値として読めない回答は未回答にする（NaN を送らない）', () => {
+    expect(hearingAnswerValue({ ...single, kind: 'number' }, 'いくらか')).toBeUndefined();
+  });
+
+  it('正常: 回答の表示は選択肢のラベルに直す', () => {
+    expect(hearingAnswerLabel(single, 'meeting', text)).toBe('打ち合わせ');
+    expect(hearingAnswerLabel(confirm, true, text)).toBe('はい');
+    expect(hearingAnswerLabel({ ...single, kind: 'multi' }, ['meeting', 'gift'], text)).toBe('打ち合わせ, 贈答');
+    // 選択肢に無い値は原文のまま（勝手に言い換えない）。
+    expect(hearingAnswerLabel(single, 'other', text)).toBe('other');
+  });
+});
+
+describe('提案の科目名・税区分名（利用者のマスタから引く）', () => {
+  const chartOf: Pick<JournalChartOfAccountsDto, 'accounts' | 'taxCategories'> = {
+    accounts: [{ id: 'meeting', name: '会議費', category: 'expense', aliases: [], enabled: true, sortOrder: 1 }],
+    taxCategories: [{ code: 'JP-IN-10-S', name: '課税仕入 10%', side: 'in', rate: 10, enabled: true }],
+  };
+
+  it('正常: マスタにある科目・税区分は利用者が付けた名前で出す', () => {
+    expect(resolveAccountName('meeting', chartOf)).toBe('会議費');
+    expect(resolveTaxName('JP-IN-10-S', chartOf)).toBe('課税仕入 10%');
+  });
+
+  it('境界: マスタに無くても提案の新規科目にあればその名前で出す（登録前でも読める）', () => {
+    expect(resolveAccountName('gift', chartOf, [{ id: 'gift', name: '交際費' }])).toBe('交際費');
+    expect(resolveTaxName('JP-IN-8-S', chartOf, [{ code: 'JP-IN-8-S', name: '課税仕入 8%' }])).toBe('課税仕入 8%');
+  });
+
+  it('異常: どちらにも無い id は id のまま出す（名前をでっち上げない）', () => {
+    expect(resolveAccountName('ghost', chartOf)).toBe('ghost');
+    expect(resolveTaxName('ghost', chartOf)).toBe('ghost');
+    expect(resolveAccountName('ghost', undefined)).toBe('ghost');
+  });
+
+  it('正常: 提案の行は「借方 科目名（税区分名）· 金額」の平文になる', () => {
+    const line = describeOutcomeLine({ side: 'debit', accountId: 'meeting', taxCode: 'JP-IN-10-S', amount: 'total' }, chartOf, undefined, text);
+    expect(line).toContain('借方');
+    expect(line).toContain('会議費');
+    expect(line).toContain('課税仕入 10%');
+  });
+
+  it('境界: 税区分が空の行は「税区分なし」と明示する', () => {
+    expect(describeOutcomeLine({ side: 'credit', accountId: 'meeting', taxCode: '', amount: 'remainder' }, chartOf, undefined, text)).toContain('税区分なし');
   });
 });

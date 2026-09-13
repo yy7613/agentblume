@@ -2,8 +2,8 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ToolApiClient } from '../api/tool-api';
-import type { JournalCapabilitiesDto, JournalChartOfAccountsDto, JournalCsvPresetDto, JournalDocumentDto } from '../api/types';
+import { ApiError, type ToolApiClient } from '../api/tool-api';
+import type { ExtractJournalDocumentResultDto, JournalCapabilitiesDto, JournalChartOfAccountsDto, JournalCsvPresetDto, JournalDocumentDto } from '../api/types';
 import { NavigationProvider, consumePendingOpen } from '../navigation';
 import { IngestTab } from './IngestTab';
 
@@ -234,5 +234,101 @@ describe('IngestTab', () => {
     renderTab(stubClient({ listJournalCsvPresets: vi.fn().mockRejectedValue(new Error('presets down')) }));
     expect(await screen.findByText(/Could not load CSV presets/)).toBeTruthy();
     expect(screen.getByLabelText('CSV file')).toBeTruthy();
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * AI 読取（テキストから）。画像 / PDF の準備そのものは ImageIngest.test.tsx が持つ。
+ * ------------------------------------------------------------------------- */
+
+const extractionOn: JournalCapabilitiesDto = { extraction: { enabled: true, vision: true }, hearing: { enabled: false } };
+
+const extractedInvoice: ExtractJournalDocumentResultDto = {
+  kind: 'invoice',
+  facts: { issuerName: 'サンプル商事', transactionDate: '2026-09-01', grandTotal: 67960, registrationNumber: 'T1234567890123' },
+  extraction: {
+    method: 'llm',
+    warnings: ['税率別合計と総額が一致しません（差 20 円）'],
+    fieldEvidence: { registrationNumber: { sourceText: 'T1234567890123', confidence: 0.4 }, grandTotal: { sourceText: '67,960', confidence: 0.95 } },
+  },
+};
+
+/** テキスト取込に文面を入れて「AI で読み取る」を押す。 */
+async function readText(client: ToolApiClient, navigate = vi.fn()) {
+  renderTab(client, { capabilities: extractionOn }, navigate);
+  await userEvent.click(screen.getByRole('button', { name: 'Text' }));
+  await userEvent.type(await screen.findByLabelText('Source text'), 'ご請求金額 67,960 円');
+  await userEvent.click(screen.getByRole('button', { name: 'Read with AI' }));
+  return navigate;
+}
+
+describe('IngestTab の AI 読取', () => {
+  it('正常: 読み取った事実をフォームに載せ、整合の注意を並べる（保存はまだしない）', async () => {
+    const client = stubClient({ extractJournalDocument: vi.fn().mockResolvedValue(extractedInvoice) });
+    await readText(client);
+
+    await waitFor(() => expect(client.extractJournalDocument).toHaveBeenCalled());
+    expect((client.extractJournalDocument as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toEqual({ text: 'ご請求金額 67,960 円' });
+
+    expect(((await screen.findByLabelText('Issuer name')) as HTMLInputElement).value).toBe('サンプル商事');
+    expect((screen.getByLabelText('Grand total') as HTMLInputElement).value).toBe('67960');
+    expect((screen.getByLabelText('Document kind') as HTMLSelectElement).value).toBe('invoice');
+    expect(screen.getByText('税率別合計と総額が一致しません（差 20 円）')).toBeTruthy();
+    expect(screen.getByText(/Read by the model/)).toBeTruthy();
+    expect(client.saveJournalDocument).not.toHaveBeenCalled();
+  });
+
+  it('境界: 信頼度が 0.7 未満の項目にだけ「要確認」の印と根拠を付ける', async () => {
+    await readText(stubClient({ extractJournalDocument: vi.fn().mockResolvedValue(extractedInvoice) }));
+
+    const registration = (await screen.findByLabelText('Registration number')).closest('label');
+    expect(registration?.className).toContain('journal-uncertain');
+    expect(registration?.getAttribute('title')).toContain('T1234567890123');
+    expect(within(registration as HTMLElement).getByText('check')).toBeTruthy();
+
+    // 0.95 の項目には印を付けない（全部に印を付けたら意味がない）。
+    expect(screen.getByLabelText('Grand total').closest('label')?.className ?? '').not.toContain('journal-uncertain');
+  });
+
+  it('正常: 保存では読み取り結果（extraction）と原文を書き換えずに持ち越す', async () => {
+    const client = stubClient({ extractJournalDocument: vi.fn().mockResolvedValue(extractedInvoice) });
+    await readText(client);
+    await userEvent.click(await screen.findByRole('button', { name: 'Save document' }));
+
+    await waitFor(() => expect(client.saveJournalDocument).toHaveBeenCalled());
+    const payload = (client.saveJournalDocument as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as { kind: string; source: unknown; extraction: unknown };
+    expect(payload.kind).toBe('invoice');
+    expect(payload.source).toEqual({ type: 'text', text: 'ご請求金額 67,960 円' });
+    expect(payload.extraction).toEqual(extractedInvoice.extraction);
+  });
+
+  it('境界: 中断は失敗ではないので、エラーではなく通知にする', async () => {
+    const extractJournalDocument = vi.fn().mockImplementation((_scope: unknown, _input: unknown, signal: AbortSignal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => { const abort = new Error('aborted'); abort.name = 'AbortError'; reject(abort); });
+    }));
+    await readText(stubClient({ extractJournalDocument }));
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByText('Cancelled. Nothing was read and nothing was saved.')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Read with AI' })).toBeTruthy();
+  });
+
+  it('異常: モデルが対応していない（409）ときは原因と設定画面への導線を出す', async () => {
+    const client = stubClient({ extractJournalDocument: vi.fn().mockRejectedValue(new ApiError(409, 'JOURNAL_EXTRACTION_UNAVAILABLE', 'the configured model does not support structured output')) });
+    const navigate = await readText(client);
+
+    expect(await screen.findByText('AI reading is not available')).toBeTruthy();
+    expect(screen.getByText(/pick a main model that accepts images and structured output/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Set the main model in Settings' }));
+    expect(navigate).toHaveBeenCalledWith('Settings');
+    expect(consumePendingOpen('Settings')).toEqual({ internalId: 'main', section: 'model-slot' });
+  });
+
+  it('例外: 読み取りがサーバーで失敗したら、その理由を操作の近くに出す', async () => {
+    await readText(stubClient({ extractJournalDocument: vi.fn().mockRejectedValue(new Error('model provider unreachable')) }));
+    expect(await screen.findByText('model provider unreachable')).toBeTruthy();
+    // 事実フォームへは移らない（読めていないので載せるものが無い）。
+    expect(screen.queryByLabelText('Issuer name')).toBeNull();
   });
 });

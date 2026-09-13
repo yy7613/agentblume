@@ -431,9 +431,13 @@ describe('journal routes', () => {
       expect(res.json().journal).toEqual({ extraction: { enabled: false, vision: false }, hearing: { enabled: false } });
     });
 
-    it('フェーズ 2 の抽出・ヒアリングはまだ登録していない（404）', async () => {
-      expect((await server.inject({ method: 'POST', url: '/journal/documents/extract', payload: { scope: SCOPE } })).statusCode).toBe(404);
-      expect((await server.inject({ method: 'POST', url: '/journal/hearings', payload: { scope: SCOPE } })).statusCode).toBe(404);
+    it('フェーズ 2 の抽出・ヒアリングも登録されている（test プロファイルはモデル未設定なので 409 / 検証エラー）', async () => {
+      // 404（未登録）ではないことがここでの主眼。抽出はモデル未設定なので 409、
+      // ヒアリングは documentId が無いので本文の検証で 400。
+      const extract = await server.inject({ method: 'POST', url: '/journal/documents/extract', payload: { scope: SCOPE, text: 'テスト' } });
+      expect(extract.statusCode).toBe(409);
+      expect(extract.json().error).toMatchObject({ code: 'JOURNAL_EXTRACTION_UNAVAILABLE' });
+      expect((await server.inject({ method: 'POST', url: '/journal/hearings', payload: { scope: SCOPE } })).statusCode).toBe(400);
     });
 
     it('全ルートが認可表に載っている（参照は read、変更は edit）', () => {
@@ -442,6 +446,14 @@ describe('journal routes', () => {
       expect(explicitRouteAuthorization('POST', '/journal/rules')).toMatchObject({ action: 'edit', audit: true });
       expect(explicitRouteAuthorization('DELETE', '/journal/entries/:id')).toMatchObject({ action: 'edit', audit: true });
       expect(explicitRouteAuthorization('GET', '/journal/export')).toMatchObject({ action: 'read', audit: true });
+      // フェーズ 2: 抽出はモデルを回すので edit、参照は read、受け入れだけ監査する。
+      expect(explicitRouteAuthorization('POST', '/journal/documents/extract')).toMatchObject({ action: 'edit', kind: 'workspace' });
+      expect(explicitRouteAuthorization('GET', '/journal/hearings')).toMatchObject({ action: 'read', kind: 'workspace' });
+      expect(explicitRouteAuthorization('GET', '/journal/hearings/:id')).toMatchObject({ action: 'read', kind: 'workspace' });
+      expect(explicitRouteAuthorization('POST', '/journal/hearings')).toMatchObject({ action: 'edit' });
+      expect(explicitRouteAuthorization('POST', '/journal/hearings/:id/answers')).toMatchObject({ action: 'edit' });
+      expect(explicitRouteAuthorization('POST', '/journal/hearings/:id/accept')).toMatchObject({ action: 'edit', audit: true });
+      expect(explicitRouteAuthorization('POST', '/journal/hearings/:id/cancel')).toMatchObject({ action: 'edit' });
       expect(server.unmappedAuthorizationRoutes.filter((route) => route.includes('/journal'))).toEqual([]);
     });
   });

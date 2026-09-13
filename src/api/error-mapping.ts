@@ -42,6 +42,7 @@ import {
   JournalCsvImportError, JournalDocumentNotFoundError, JournalDomainError, JournalEntryNotFoundError,
   JournalExportError, JournalHearingNotFoundError, JournalRuleNotFoundError,
 } from '../domain/journal/errors';
+import { JournalExtractionSchemaError, JournalExtractionUnavailableError } from '../application/journal/errors';
 
 /**
  * HTTP エラーレスポンス表現。
@@ -97,6 +98,8 @@ function httpError(status: number, code: string, message: string): HttpError {
  * | Journal*NotFoundError | 404 | JOURNAL_*_NOT_FOUND |
  * | JournalCsvImportError | 400 | JOURNAL_CSV_IMPORT + row |
  * | JournalExportError / JournalDomainError | 400 | JOURNAL_EXPORT / JOURNAL_DOMAIN |
+ * | JournalExtractionUnavailableError | 409 | JOURNAL_EXTRACTION_UNAVAILABLE |
+ * | JournalExtractionSchemaError | 502 | JOURNAL_EXTRACTION_SCHEMA |
  * | RunFailedError | 元例外のstatus/code + runId |
  * | ToolExecutionError | 元例外のstatus/code + tool（+ nodeId） |
  * | その他 | 500 | INTERNAL（message 'internal error' 固定） |
@@ -212,6 +215,10 @@ export function toHttpError(err: unknown): HttpError {
   }
   if (err instanceof JournalExportError) return httpError(400, err.code, err.message);
   if (err instanceof JournalDomainError) return httpError(400, err.code, err.message);
+  // 仕訳の LLM 抽出（フェーズ 2）: モデル未設定・能力不足は**利用者が設定画面で直せる**ので 409、
+  // 応答が修復後もスキーマに合わないのはモデル側の問題なので ModelProviderError と同じ 502。
+  if (err instanceof JournalExtractionUnavailableError) return httpError(409, err.code, err.message);
+  if (err instanceof JournalExtractionSchemaError) return httpError(502, err.code, err.message);
 
   // MCPクライアント: 設定の不変条件違反は400、未登録サーバーは404。
   // 接続失敗（McpClientError）は外部依存の失敗なので ModelProviderError と同じ502。

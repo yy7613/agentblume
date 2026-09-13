@@ -212,6 +212,13 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/journal/entries/{id}/confirm` | 仕訳の確定（draft → confirmed） | `workspace:edit` |
 | `DELETE` | `/journal/entries/{id}` | 仕訳の削除（紐づく文書は未判定へ戻る） | `workspace:edit` |
 | `GET` | `/journal/export` | 仕訳 CSV の出力（`format` / `status` / `from` / `to` / `markExported`） | `workspace:read` |
+| `POST` | `/journal/documents/extract` | 画像 / テキストから facts を LLM 抽出（**保存しない**。§3.4） | `workspace:edit` |
+| `POST` | `/journal/hearings` | Stage 2 ヒアリングの開始（既に開いていればそれを返す） | `workspace:edit` |
+| `GET` | `/journal/hearings` | ヒアリングの一覧（`documentId` で絞れる） | `workspace:read` |
+| `GET` | `/journal/hearings/{id}` | ヒアリングの取得 | `workspace:read` |
+| `POST` | `/journal/hearings/{id}/answers` | 回答 → 次の質問か提案 | `workspace:edit` |
+| `POST` | `/journal/hearings/{id}/accept` | 提案の受け入れ（**選んだ id だけ**登録 → ルール保存 → 再判定） | `workspace:edit` |
+| `POST` | `/journal/hearings/{id}/cancel` | ヒアリングの中止（文書は未判定へ戻る） | `workspace:edit` |
 | `POST` | `/tools/{id}/publish` | 公開（エイリアス/互換性管理） | `tool:publish` |
 | `POST` | `/tools/{id}/expose-mcp` | MCPサーバとして公開 | `deployment:publish` |
 | `POST` | `/skills` | Skill作成 | `skill:create` |
@@ -417,7 +424,7 @@ LLM-as-Judge の採点は **基準別**（[ADR-0037](./adr/0037-criterion-level-
 
 ### 3.4 仕訳（journal）
 
-伝票・帳票を取り込み、**2 段階判定**（① 既存ルールで決定的に仕訳できるか / ② できなければヒアリングでルール化）で仕訳を起こし、汎用 CSV へ出す（[docs/20-journal.md](./20-journal.md) / [ADR-0038](./adr/0038-journal-two-stage-judgment.md)）。**フェーズ 1 の API は下表のみ**で、LLM 抽出（`/journal/documents/extract`）とヒアリング（`/journal/hearings*`）は登録していない。画面は `GET /runtime/capabilities` の `journal` を見て、使えない機能の導線を出さない。
+伝票・帳票を取り込み、**2 段階判定**（① 既存ルールで決定的に仕訳できるか / ② できなければヒアリングでルール化）で仕訳を起こし、汎用 CSV へ出す（[docs/20-journal.md](./20-journal.md) / [ADR-0038](./adr/0038-journal-two-stage-judgment.md)）。LLM 抽出（`/journal/documents/extract`）と Stage 2 ヒアリング（`/journal/hearings*`）も登録済み。画面は `GET /runtime/capabilities` の `journal`（`extraction: { enabled, vision }` / `hearing: { enabled }`）を見て、モデルが無い環境では導線を出さない。
 
 応答の文書 / ルール / 仕訳は永続化用の形から `tenant` を除いたもの（スコープは Principal 由来なので返さない）。すべて `{ chart } / { rules } / { rule } / { documents } / { document } / { entries } / { entry } / { presets } / { content } / { result }` のいずれかで包み、削除は 204。
 
@@ -509,11 +516,54 @@ LLM-as-Judge の採点は **基準別**（[ADR-0037](./adr/0037-criterion-level-
 
 汎用 CSV は 25 列・UTF-8 BOM・CRLF・`YYYY/MM/DD`・税込整数（列は docs/20 §8）。単純仕訳（借方 1 行 × 貸方 1 行）は 1 行に両側を出し、複合仕訳は行ごとに片側だけを出して同じ `entry_id` で束ねる。`markExported=true` は出力した仕訳を `exported` にする（既定 off。中身を確かめるだけのダウンロードで状態を動かさない）。弥生 / freee / MF は列写像を `src/application/journal/export-presets.ts` にデータとして置いてあるだけで**変換はまだ無く、`generic` 以外は 400 `JOURNAL_EXPORT`**（空の CSV を返して会計ソフトの取込画面で初めて失敗させない）。
 
+#### 帳票の LLM 読取（`POST /journal/documents/extract`）
+
+```jsonc
+{ "scope": {…}, "images": ["data:image/jpeg;base64,…"],  // 最大 4 枚・1 枚 4,200,000 文字。SVG と外部 URL は不可
+  "text": "メール本文…",                                   // 最大 100,000 文字。画像とテキストはどちらか一方でよい
+  "fileName": "receipt.jpg", "hintKind": "simplified_invoice" }
+// → 200 { result }
+{ "kind": "simplified_invoice",
+  "facts": { "issuerName": "サンプルマート 霞が関店", "transactionDate": "2026-08-31", "issueDate": "2026-09-05", "grandTotal": 1230, … },
+  "extraction": { "method": "llm", "model": { "provider": "…", "model": "…" }, "confidence": 0.82,
+    "warnings": ["税率別の内訳の合計（1430 円）が総額（1230 円）と 200 円ずれている…"],
+    "fieldEvidence": { "grandTotal": { "sourceText": "合計 ¥1,230", "confidence": 0.9 } } } }
+```
+
+**保存しない**（利用者が確認・修正してから `POST /journal/documents`）。読み取った値はサーバー側で正規化し（和暦 → ISO、全角・カンマ → 整数、登録番号 → `T` + 13 桁）、通らない項目は落として理由を `extraction.warnings` に残す。抽出後の整合チェック（税率別合計 vs 総額 ±税率行数、明細合計 vs 総額、単価 × 数量、お預り − お釣、8% 行の軽減記号、請求書なのに登録番号が無い）も同じ `warnings` に積む。**値を勝手に補正はしない**（帳簿の数字を推測で書き換えない）。UI は warnings を一覧で見せ、`fieldEvidence` の信頼度が低い項目を強調する。
+
+モデルが 1 枚 20〜230 秒かかることがあるので、クライアント切断で処理ごと中断する（`clientAbortSignal`）。
+
+#### ヒアリング（Stage 2。`/journal/hearings`）
+
+```jsonc
+// POST /journal/hearings  { scope, documentId } → 200 { hearing }
+// 文書は undecided か hearing であること。既に開いているセッションがあればそれを返す（二重に作らない）。
+{ "id": "…", "documentId": "…", "status": "open",
+  "turns": [{ "role": "assistant", "question": { "id": "meal_purpose", "text": "誰と・何の目的の飲食でしたか？",
+    "kind": "single", "options": [{ "value": "internal-meeting", "label": "社内打合せ" }], "factPath": "extra.purpose", "catalogId": "meal_purpose" }, "at": "…" }],
+  "createdAt": "…", "updatedAt": "…" }
+
+// POST /journal/hearings/{id}/answers  { scope, answers: [{ questionId, value }] } → 200 { hearing, warnings }
+// 回答は question.factPath（`extra.<key>` のみ）へ書き戻す。次の質問か proposal が付く。
+// POST /journal/hearings/{id}/accept  { scope, registerAccountIds?, registerDimensionValueIds?, registerTaxCodes?, rule?, entry? }
+//   → 200 { hearing, rule, entry?, chart }
+// POST /journal/hearings/{id}/cancel  { scope } → 200 { hearing }（文書は undecided へ戻る）
+```
+
+一度に聞くのは最大 3 問、1 セッションの発話は 60 件まで（超えたら打ち切ってセッションを閉じ、文書を未判定へ戻す）。聞いていない `questionId` への回答と、`extra.` 以外への書き戻しは 400 `JOURNAL_DOMAIN`。
+
+**提案は検証を通ったものだけ保存する**: 科目 id・税区分コード・補助軸の値がマスタか同じ提案の `newAccounts` などにあること、仕訳の貸借が一致すること、ルールがドメインの検証（条件の演算子・金額指定・置換子）を通ること、条件の `field` が facts のパスであること。壊れていれば 1 回だけ修復を求め、それでも駄目なら**提案の無いセッション**として保存し、理由を `warnings` と assistant の発話で返す（壊れた提案を保存すると「登録」を押せてしまう）。
+
+`accept` が科目マスタへ書き込むのは **`register*` に明示された id だけ**で、提案に無い id を指定すると 400。モデルが科目体系を勝手に増やす経路は存在しない。受け入れ後はルールを `provenance: { origin: 'hearing', hearingId, exampleDocumentIds }` で保存し、対象文書を再判定する（当たれば `decided` + 仕訳の下書き）。
+
 #### エラー
 
 | 例外 | status | code |
 |---|---|---|
 | `JournalDocumentNotFoundError` ほか参照切れ | 404 | `JOURNAL_DOCUMENT_NOT_FOUND` / `JOURNAL_RULE_NOT_FOUND` / `JOURNAL_ENTRY_NOT_FOUND` / `JOURNAL_HEARING_NOT_FOUND` |
+| `JournalExtractionUnavailableError`（モデル未設定 / structured output・vision 非対応） | 409 | `JOURNAL_EXTRACTION_UNAVAILABLE`（設定画面で直せる） |
+| `JournalExtractionSchemaError`（修復後もスキーマ違反） | 502 | `JOURNAL_EXTRACTION_SCHEMA` |
 | `JournalDomainError`（不変条件違反） | 400 | `JOURNAL_DOMAIN` |
 | `JournalCsvImportError` | 400 | `JOURNAL_CSV_IMPORT`（**本文に `row`**。行が特定できるときだけ） |
 | `JournalExportError` | 400 | `JOURNAL_EXPORT` |

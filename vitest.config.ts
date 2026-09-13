@@ -6,6 +6,10 @@ export default defineConfig({
     // node:sqlite（組込み・実験的）を各テストワーカーで有効化する（ADR-0004）
     pool: 'forks',
     execArgv: ['--experimental-sqlite', '--disable-warning=ExperimentalWarning'],
+    // 既定の 5 秒は、357 ファイルを並列実行する本リポジトリでは重い UI テストが偶発的に超える
+    // （単体では通るのに全体実行でだけ落ちる偽陽性が続いた）。ハングは 20 秒で十分捕まえられる。
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],

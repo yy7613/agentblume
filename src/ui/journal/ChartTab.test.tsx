@@ -213,3 +213,44 @@ describe('ChartTab', () => {
     expect(await screen.findByText('JOURNAL_CHART_INVALID: account in use')).toBeTruthy();
   });
 });
+
+describe('ChartTab（科目行の各項目を編集する）', () => {
+  it('正常: 名前・コード・区分・既定税区分・別名・有効を編集すると、その場の表示に反映される', async () => {
+    renderTab(stubClient(), {});
+
+    const name = await screen.findByLabelText('Account 1 name');
+    await userEvent.clear(name);
+    await userEvent.type(name, '現金（小口）');
+    expect((name as HTMLInputElement).value).toBe('現金（小口）');
+
+    const code = screen.getByLabelText('Account 1 code');
+    await userEvent.type(code, '100');
+    expect((code as HTMLInputElement).value).toBe('100');
+
+    await userEvent.selectOptions(screen.getByLabelText('Account 1 category'), 'expense');
+    expect((screen.getByLabelText('Account 1 category') as HTMLSelectElement).value).toBe('expense');
+
+    await userEvent.selectOptions(screen.getByLabelText('Account 1 default tax'), 'JP-IN-10-S');
+    expect((screen.getByLabelText('Account 1 default tax') as HTMLSelectElement).value).toBe('JP-IN-10-S');
+
+    const aliases = screen.getByLabelText('Account 1 aliases');
+    await userEvent.clear(aliases);
+    await userEvent.type(aliases, '小口現金, キャッシュ');
+    // 入力のたびに別名を配列へ解釈して結合し直すので、区切りの見た目ではなく中身が残ることを見る。
+    expect((aliases as HTMLInputElement).value).toContain('小口現金');
+    expect((aliases as HTMLInputElement).value).toContain('キャッシュ');
+
+    const enabled = screen.getByLabelText('Account 1 enabled') as HTMLInputElement;
+    await userEvent.click(enabled);
+    expect(enabled.checked).toBe(false);
+  });
+
+  it('境界: 税区分行の名前と区分も編集できる（科目だけでなく税区分マスタも利用者が定義する）', async () => {
+    renderTab(stubClient(), {});
+
+    const taxName = await screen.findByLabelText('Tax 1 name');
+    await userEvent.clear(taxName);
+    await userEvent.type(taxName, '課税仕入 10％（標準）');
+    expect((taxName as HTMLInputElement).value).toBe('課税仕入 10％（標準）');
+  });
+});

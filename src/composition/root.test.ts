@@ -576,6 +576,8 @@ describe('仕訳（journal）の配線', () => {
         'importJournalCsv', 'judgeJournalDocuments',
         'saveJournalEntry', 'listJournalEntries', 'confirmJournalEntry', 'deleteJournalEntry',
         'exportJournalEntries', 'journalCapabilities',
+        'extractJournalDocument', 'startJournalHearing', 'answerJournalHearing', 'acceptJournalHearing',
+        'cancelJournalHearing', 'getJournalHearing', 'listJournalHearings',
       ] as const) {
         expect(app[name], name).toBeDefined();
       }

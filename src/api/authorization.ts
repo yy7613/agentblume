@@ -373,6 +373,18 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   rule('POST', '/journal/entries/:id/confirm', 'edit', 'workspace', true),
   rule('DELETE', '/journal/entries/:id', 'edit', 'workspace', true),
   rule('GET', '/journal/export', 'read', 'workspace', true),
+  /**
+   * フェーズ 2（LLM 抽出とヒアリング）。抽出は保存しないが**モデルを回す**ので edit に置く
+   * （参照権限しか無い利用者が課金の伴う処理を走らせられるのは違う）。
+   * 受け入れだけ監査する: 科目マスタへの登録・ルールの保存・再判定を一度に行う「後から必ず問われる操作」だから。
+   */
+  rule('POST', '/journal/documents/extract', 'edit', 'workspace'),
+  rule('POST', '/journal/hearings', 'edit', 'workspace'),
+  rule('GET', '/journal/hearings', 'read', 'workspace'),
+  rule('GET', '/journal/hearings/:id', 'read', 'workspace'),
+  rule('POST', '/journal/hearings/:id/answers', 'edit', 'workspace'),
+  rule('POST', '/journal/hearings/:id/accept', 'edit', 'workspace', true),
+  rule('POST', '/journal/hearings/:id/cancel', 'edit', 'workspace'),
 ];
 
 const ruleKey = (method: string, url: string): string => `${method.toUpperCase()} ${url}`;

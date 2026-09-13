@@ -42,4 +42,14 @@ export async function chartOfAccountsRepositoryContract(repo: ChartOfAccountsRep
   expect(first?.accounts).not.toBe(mutable.accounts);
   (first?.accounts as unknown as { name: string }[])[0]!.name = '書き換え';
   expect((await repo.get(scope))?.accounts[0]?.name).toBe(mutable.accounts[0]?.name);
+
+  // 異常: 同じスコープへの 2 回目の保存は「後勝ち」で、消した科目が復活しない（部分マージしない）。
+  // 利用者が科目を削ったのに古い科目が残ると、ルールの参照先が知らぬ間に生き返る。
+  const full = chartFixture();
+  await repo.save(scope, full);
+  const trimmedChart = createChartOfAccounts({ ...full, accounts: [full.accounts[0]!], updatedAt: AT });
+  await repo.save(scope, trimmedChart);
+  const afterTrim = await repo.get(scope);
+  expect(afterTrim?.accounts).toHaveLength(1);
+  expect(afterTrim?.accounts[0]?.id).toBe(full.accounts[0]?.id);
 }

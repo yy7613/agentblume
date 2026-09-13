@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
-import type { JournalCapabilitiesDto, JournalChartOfAccountsDto, JournalDocumentDto, JournalDocumentSummaryDto, JournalEntryDto, JournalJudgmentDto, JournalRuleDto, JournalUndecidedReasonDto } from '../api/types';
+import type { AcceptJournalHearingResultDto, JournalCapabilitiesDto, JournalChartOfAccountsDto, JournalDocumentDto, JournalDocumentSummaryDto, JournalEntryDto, JournalHearingDto, JournalHearingProposalDto, JournalHearingQuestionDto, JournalJudgmentDto, JournalRuleDto, JournalUndecidedReasonDto } from '../api/types';
 import { JudgeTab } from './JudgeTab';
 
 afterEach(cleanup);
@@ -241,5 +241,244 @@ describe('JudgeTab', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(client.deleteJournalDocument).toHaveBeenCalledWith('doc-1', expect.anything()));
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * ヒアリング（Stage 2）: 質問カード → 提案カード → 登録
+ * ------------------------------------------------------------------------- */
+
+const hearingOn: JournalCapabilitiesDto = { extraction: { enabled: true, vision: true }, hearing: { enabled: true } };
+
+const purposeQuestion: JournalHearingQuestionDto = {
+  id: 'purpose', text: '何の費用ですか？', kind: 'single',
+  options: [{ value: 'meeting', label: '打ち合わせ' }, { value: 'gift', label: '贈答' }],
+  note: '1 人あたり 1 万円以下の飲食は会議費として扱える（国税庁 Q&A 問 104）',
+};
+const partnerQuestion: JournalHearingQuestionDto = { id: 'partner', text: '相手先は？', kind: 'text' };
+const headcountQuestion: JournalHearingQuestionDto = { id: 'headcount', text: '参加人数は？', kind: 'number' };
+const assetQuestion: JournalHearingQuestionDto = { id: 'asset', text: '10 万円以上の資産ですか？', kind: 'confirm' };
+const tagsQuestion: JournalHearingQuestionDto = { id: 'tags', text: '当てはまるものは？', kind: 'multi', options: [{ value: 'reduced', label: '軽減税率' }, { value: 'entertainment', label: '接待' }] };
+
+function hearingOf(questions: readonly JournalHearingQuestionDto[], overrides: Partial<JournalHearingDto> = {}): JournalHearingDto {
+  return {
+    id: 'h1', documentId: 'doc-1', status: 'open',
+    turns: questions.map((question) => ({ role: 'assistant' as const, question, at: '2026-09-03T00:00:00.000Z' })),
+    createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z', ...overrides,
+  };
+}
+
+const proposal: JournalHearingProposalDto = {
+  rule: {
+    name: '打ち合わせのカフェ', enabled: true, mode: 'auto', priority: 0, scope: { direction: 'out' },
+    conditions: [{ field: 'descriptionNorm', op: 'contains', value: 'カフェ' }],
+    outcome: { lines: [{ side: 'debit', accountId: 'meeting', taxCode: 'JP-IN-10-S', amount: 'total' }, { side: 'credit', accountId: 'cash', taxCode: 'JP-IN-10-S', amount: 'total' }] },
+    askIf: [], requiredFacts: [],
+  },
+  entry: {
+    date: '2026-09-01', description: 'コーヒー', invoiceStatus: 'not_required',
+    lines: [{ side: 'debit', accountId: 'meeting', accountName: '会議費', taxCode: 'JP-IN-10-S', amount: 1100 }, { side: 'credit', accountId: 'cash', accountName: '現金', taxCode: 'JP-IN-10-S', amount: 1100 }],
+  },
+  newAccounts: [{ id: 'gift', name: '交際費', category: 'expense', aliases: [] }],
+  newDimensionValues: [], newTaxCategories: [],
+  rationale: '少人数の打ち合わせの飲食なので会議費が妥当です',
+  warnings: [],
+};
+
+const acceptedRule: JournalRuleDto = { ...rules[0]!, id: 'r9', name: '打ち合わせのカフェ' };
+const acceptedEntry: JournalEntryDto = {
+  id: 'entry-9', date: '2026-09-01', description: 'コーヒー', invoiceStatus: 'not_required', status: 'draft', decidedBy: 'hearing',
+  lines: proposal.entry.lines, createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z',
+};
+const acceptResult: AcceptJournalHearingResultDto = {
+  hearing: hearingOf([], { status: 'accepted', proposal }), rule: acceptedRule, entry: acceptedEntry, chart,
+};
+
+function renderHearingTab(client: ToolApiClient, onAction = vi.fn()) {
+  render(<JudgeTab client={client} chart={chart} rules={rules} capabilities={hearingOn} focus={undefined} onAction={onAction} />);
+  return onAction;
+}
+
+/** 未確定（該当ルール無し）の帳票を開き、「ヒアリングを開始」を押した状態にする。 */
+async function startHearing(overrides: Record<string, unknown> = {}) {
+  const client = stubClient({ getJournalDocument: vi.fn().mockResolvedValue(detail(undecided({ code: 'no-rule' }))), ...overrides });
+  const onAction = renderHearingTab(client);
+  await selectDocument();
+  await userEvent.click(await screen.findByRole('button', { name: 'Start a hearing' }));
+  return { client, onAction };
+}
+
+describe('JudgeTab のヒアリング', () => {
+  it('正常: 質問は種類ごとの入力になり、法令メモも添える', async () => {
+    await startHearing({ createJournalHearing: vi.fn().mockResolvedValue(hearingOf([purposeQuestion, tagsQuestion, partnerQuestion, headcountQuestion, assetQuestion])) });
+
+    expect(await screen.findByRole('radio', { name: '打ち合わせ' })).toBeTruthy();
+    expect(screen.getByRole('checkbox', { name: '軽減税率' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: '相手先は？' })).toBeTruthy();
+    expect(screen.getByRole('spinbutton', { name: '参加人数は？' })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'Yes' })).toBeTruthy();
+    expect(screen.getByText(/1 人あたり 1 万円以下の飲食は会議費/)).toBeTruthy();
+  });
+
+  it('異常: 未回答のまま送ると、どの質問が残っているかを言って送信しない', async () => {
+    const { client } = await startHearing({
+      createJournalHearing: vi.fn().mockResolvedValue(hearingOf([purposeQuestion, partnerQuestion])),
+      answerJournalHearing: vi.fn(),
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'Send the answers' }));
+
+    // 判定理由のカードも role="alert" なので、ヒアリングの中だけを見る。
+    const blocked = await within(screen.getByRole('region', { name: 'Hearing' })).findByRole('alert');
+    expect(blocked.textContent).toContain('何の費用ですか？');
+    expect(blocked.textContent).toContain('相手先は？');
+    expect(client.answerJournalHearing).not.toHaveBeenCalled();
+  });
+
+  it('正常: 回答は 1 回でまとめて送り、次の質問が出る', async () => {
+    const answerJournalHearing = vi.fn().mockResolvedValue(hearingOf([purposeQuestion, partnerQuestion, assetQuestion], {
+      turns: [
+        { role: 'assistant', question: purposeQuestion, at: '2026-09-03T00:00:00.000Z' },
+        { role: 'user', answer: { questionId: 'purpose', value: 'meeting' }, at: '2026-09-03T00:01:00.000Z' },
+        { role: 'assistant', question: partnerQuestion, at: '2026-09-03T00:00:00.000Z' },
+        { role: 'user', answer: { questionId: 'partner', value: 'カフェ' }, at: '2026-09-03T00:01:00.000Z' },
+        { role: 'assistant', question: assetQuestion, at: '2026-09-03T00:02:00.000Z' },
+      ],
+    }));
+    const { client } = await startHearing({ createJournalHearing: vi.fn().mockResolvedValue(hearingOf([purposeQuestion, partnerQuestion])), answerJournalHearing });
+
+    await userEvent.click(await screen.findByRole('radio', { name: '打ち合わせ' }));
+    await userEvent.type(screen.getByRole('textbox', { name: '相手先は？' }), 'カフェ');
+    await userEvent.click(screen.getByRole('button', { name: 'Send the answers' }));
+
+    await waitFor(() => expect(client.answerJournalHearing).toHaveBeenCalled());
+    expect((client.answerJournalHearing as ReturnType<typeof vi.fn>).mock.calls[0]?.[2]).toEqual({
+      answers: [{ questionId: 'purpose', value: 'meeting' }, { questionId: 'partner', value: 'カフェ' }],
+    });
+    // 次の質問と、答え済みの振り返りが出る。
+    expect(await screen.findByRole('radio', { name: 'Yes' })).toBeTruthy();
+    expect(screen.getByText('打ち合わせ')).toBeTruthy();
+  });
+
+  it('正常: 提案は科目マスタの名前で説明し、新規科目は既定で未チェック。チェックしたものだけ登録する', async () => {
+    const { client } = await startHearing({
+      createJournalHearing: vi.fn().mockResolvedValue(hearingOf([], { status: 'proposed', proposal })),
+      acceptJournalHearing: vi.fn().mockResolvedValue(acceptResult),
+    });
+
+    expect(await screen.findByText('少人数の打ち合わせの飲食なので会議費が妥当です')).toBeTruthy();
+    const lines = screen.getByRole('list', { name: 'Proposed entry lines' });
+    expect(within(lines).getByText(/会議費/)).toBeTruthy();
+    // 借方・貸方の 2 行とも、税区分はマスタの名前で出る。
+    expect(within(lines).getAllByText(/課税仕入 10%/)).toHaveLength(2);
+    const preview = screen.getByRole('table', { name: 'Proposed entry' });
+    expect(within(preview).getByText('現金')).toBeTruthy();
+
+    expect(screen.getByText('These will be added to your chart of accounts')).toBeTruthy();
+    const newAccount = screen.getByRole('checkbox', { name: /Account: 交際費/ }) as HTMLInputElement;
+    expect(newAccount.checked).toBe(false);
+
+    await userEvent.click(newAccount);
+    await userEvent.click(screen.getByRole('button', { name: 'Register this rule' }));
+    await waitFor(() => expect(client.acceptJournalHearing).toHaveBeenCalled());
+    expect((client.acceptJournalHearing as ReturnType<typeof vi.fn>).mock.calls[0]?.[2]).toEqual({
+      registerAccountIds: ['gift'], registerDimensionValueIds: [], registerTaxCodes: [],
+    });
+
+    // 登録後は作られた仕訳と、出力タブへの導線を出す。
+    expect(await screen.findByRole('table', { name: 'Created entry' })).toBeTruthy();
+    expect(screen.getByText(/Registered rule "打ち合わせのカフェ"/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open in the Export tab' })).toBeTruthy();
+  });
+
+  it('境界: 何もチェックしなければ、マスタには 1 件も登録しない', async () => {
+    const { client } = await startHearing({
+      createJournalHearing: vi.fn().mockResolvedValue(hearingOf([], { status: 'proposed', proposal })),
+      acceptJournalHearing: vi.fn().mockResolvedValue(acceptResult),
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'Register this rule' }));
+
+    await waitFor(() => expect(client.acceptJournalHearing).toHaveBeenCalled());
+    expect((client.acceptJournalHearing as ReturnType<typeof vi.fn>).mock.calls[0]?.[2]).toEqual({
+      registerAccountIds: [], registerDimensionValueIds: [], registerTaxCodes: [],
+    });
+  });
+
+  it('正常: 「ルールを編集してから登録」は提案をルール編集フォームへ送る', async () => {
+    const { onAction } = await startHearing({ createJournalHearing: vi.fn().mockResolvedValue(hearingOf([], { status: 'proposed', proposal })) });
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit the rule before registering' }));
+
+    expect(onAction).toHaveBeenCalledWith({ kind: 'edit-rule-draft', rule: proposal.rule }, summary);
+  });
+
+  it('境界: ヒアリングをやめると取り消しを送り、パネルを閉じる（行は未確定に戻る）', async () => {
+    const { client } = await startHearing({
+      createJournalHearing: vi.fn().mockResolvedValue(hearingOf([purposeQuestion])),
+      cancelJournalHearing: vi.fn().mockResolvedValue(hearingOf([], { status: 'cancelled' })),
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'Stop the hearing' }));
+
+    await waitFor(() => expect(client.cancelJournalHearing).toHaveBeenCalledWith('h1', expect.anything()));
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Hearing' })).toBeNull());
+  });
+
+  it('異常: 提案が科目と噛み合わなかったときは、原因と「手でルールを作る」を出す', async () => {
+    const broken: JournalHearingProposalDto = {
+      ...proposal,
+      rule: { ...proposal.rule, outcome: { lines: [] } },
+      warnings: ['提案された科目 "接待交際費" はマスタにありません'],
+    };
+    const { onAction } = await startHearing({ createJournalHearing: vi.fn().mockResolvedValue(hearingOf([], { status: 'proposed', proposal: broken })) });
+
+    const card = await within(screen.getByRole('region', { name: 'Hearing' })).findByRole('alert');
+    expect(card.textContent).toContain('did not line up with your chart of accounts');
+    expect(card.textContent).toContain('Write the rule by hand');
+    expect(screen.getByText('提案された科目 "接待交際費" はマスタにありません')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Write a rule by hand' }));
+    expect(onAction).toHaveBeenCalledWith({ kind: 'new-rule' }, summary);
+  });
+
+  it('例外: ヒアリングを始められなかったら理由と、もう一度 / 手で作る導線を出す', async () => {
+    await startHearing({ createJournalHearing: vi.fn().mockRejectedValue(new Error('hearing model unreachable')) });
+
+    expect(await screen.findByText('hearing model unreachable')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Write a rule by hand' })).toBeTruthy();
+  });
+});
+
+describe('JudgeTab（回答応答の警告）', () => {
+  it('異常: 提案を作れなかった理由（sessionWarnings）を画面に出す', async () => {
+    // 提案が無いセッションでは proposal.warnings が存在しないので、ここを落とすと利用者は理由を知れない。
+    const answerJournalHearing = vi.fn().mockResolvedValue(hearingOf([purposeQuestion], {
+      turns: [
+        { role: 'assistant', question: purposeQuestion, at: '2026-09-03T00:00:00.000Z' },
+        { role: 'user', answer: { questionId: 'purpose', value: 'meeting' }, at: '2026-09-03T00:01:00.000Z' },
+      ],
+      sessionWarnings: ['提案を採用できなかった: rule.outcome.lines が空'],
+    }));
+    const { client } = await startHearing({ createJournalHearing: vi.fn().mockResolvedValue(hearingOf([purposeQuestion])), answerJournalHearing });
+
+    await userEvent.click(await screen.findByRole('radio', { name: '打ち合わせ' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Send the answers' }));
+
+    await waitFor(() => expect(client.answerJournalHearing).toHaveBeenCalled());
+    expect(await screen.findByText(/提案を採用できなかった/)).toBeTruthy();
+  });
+
+  it('正常: 警告が無ければ何も出さない（通常の往復を汚さない）', async () => {
+    const answerJournalHearing = vi.fn().mockResolvedValue(hearingOf([purposeQuestion], {
+      turns: [
+        { role: 'assistant', question: purposeQuestion, at: '2026-09-03T00:00:00.000Z' },
+        { role: 'user', answer: { questionId: 'purpose', value: 'meeting' }, at: '2026-09-03T00:01:00.000Z' },
+      ],
+    }));
+    const { client } = await startHearing({ createJournalHearing: vi.fn().mockResolvedValue(hearingOf([purposeQuestion])), answerJournalHearing });
+
+    await userEvent.click(await screen.findByRole('radio', { name: '打ち合わせ' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Send the answers' }));
+
+    await waitFor(() => expect(client.answerJournalHearing).toHaveBeenCalled());
+    expect(screen.queryByText(/提案を採用できなかった/)).toBeNull();
   });
 });

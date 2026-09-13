@@ -1250,6 +1250,18 @@ describe('localizeJudgeFailure（判定 1 件の失敗）', () => {
  * 実験の起票時（POST /experiments・409）の判定まわりのコードと、判定 1 件の「判定モデル未設定」。
  * どちらも次の一手（設定画面の judge スロット / ルーブリックの軌跡ポリシー）まで言う。
  */
+describe('仕訳の AI 読取が使えない（JOURNAL_EXTRACTION_UNAVAILABLE）', () => {
+  it('正常: 原因（画像読取・構造化出力に非対応）と次の一手（設定で main モデルを変える）を出す', () => {
+    const message = ja(409, 'JOURNAL_EXTRACTION_UNAVAILABLE', 'the configured model does not support vision');
+    expect(message).toContain('画像読取または構造化出力に対応していません');
+    expect(message).toContain('設定画面で main モデル');
+  });
+
+  it('境界: 詳細が空でも見出しだけで次の一手が分かる（en も同じ導線）', () => {
+    expect(en(409, 'JOURNAL_EXTRACTION_UNAVAILABLE', '')).toContain('Change the main model in Settings');
+  });
+});
+
 describe('判定モデル未設定・軌跡必須（JUDGE_MODEL_NOT_CONFIGURED / JUDGE_TRACE_UNAVAILABLE）', () => {
   it('JUDGE_MODEL_NOT_CONFIGURED は設定画面の judge スロットへ導く固定文（ja / en）で、原文は括弧で残さない', () => {
     expect(ja(409, 'JUDGE_MODEL_NOT_CONFIGURED', 'judge model is not configured')).toBe('判定モデルが設定されていません。審査ルーブリックを使う実験の前に、設定画面の judge スロットでモデルを設定してください');

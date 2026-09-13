@@ -100,6 +100,7 @@ flowchart LR
 | UIフレームワーク | 🔶 **React 19** | ノードUI・エコシステムが厚い（ADR-0007） |
 | ノードエディタ | 🔶 **React Flow（`@xyflow/react` 12）** | ETLキャンバスの標準的選択 |
 | 状態管理 | 🔶 **Zustand 5** | キャンバス状態を1ストアで管理（`src/ui/tool-builder/store.ts`）。Redux Toolkitは不採用 |
+| PDFの画像化 | 🔶 **`pdfjs-dist` 6** | 仕訳の帳票取込で、PDFは**ブラウザ側**でページ画像にしてから送る。サーバーにPDF依存を持ち込まない（ADR-0038、`src/ui/journal/pdf-raster.ts`）。本体もワーカーも動的importで、PDFを選ぶまで初期バンドルに載せない |
 | APIスタイル | 🔶 **REST（Fastify 5）** | ADR-0006で確定。tRPCは不採用。[04-api-spec.md](./04-api-spec.md) 参照 |
 | ビルド | 🔶 **Vite 8（UI SPA + サーバーSSRビルド）** | 開発実行は `tsx`。サーバーもtscではなくviteでビルドする理由は§6 |
 | 永続化 | 🔶 **SQLite（`node:sqlite` 組込み・現行）** / PostgreSQL（Phase 2） | v1は導入・運用が軽いSQLiteで定義・バージョン・実行履歴を保存（§5）。チーム利用時は`StoragePort`を介してPostgreSQLへ移行し、テナント境界を行レベルで適用。※ 依存にある `pg` はアプリの永続化用ではなく、データソースレジストリ（ADR-0029）で外部PostgreSQLを読むためのもの（`src/adapters/database/environment-postgres.ts`） |

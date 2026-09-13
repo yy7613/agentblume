@@ -124,6 +124,11 @@ const HEADINGS: Record<string, Bilingual> = {
   JOURNAL_RULE_NOT_FOUND: ['The journal rule was not found', '仕訳ルールが見つかりませんでした'],
   JOURNAL_ENTRY_NOT_FOUND: ['The journal entry was not found', '仕訳が見つかりませんでした'],
   JOURNAL_HEARING_NOT_FOUND: ['The hearing session was not found', 'ヒアリングが見つかりませんでした'],
+  // 409。原因（モデルが画像読取／構造化出力に非対応）→ 次の一手（設定画面でモデルを変える）まで 1 文で言う。
+  JOURNAL_EXTRACTION_UNAVAILABLE: [
+    'The model used for the journal does not support image reading or structured output. Change the main model in Settings to one with vision and structured output, then reopen this screen',
+    '判定に使うモデルが画像読取または構造化出力に対応していません。設定画面で main モデルを画像読取・構造化出力に対応したものへ変え、この画面を開き直してください',
+  ],
   JOURNAL_CSV_IMPORT: ['The CSV could not be imported. Check the preset, the header row, and the character encoding', 'CSV を取り込めませんでした。プリセット・ヘッダー行・文字コードを確認してください'],
   JOURNAL_EXPORT: ['The journal export failed. Check the status filter and date range, then retry', '仕訳の出力に失敗しました。状態の絞り込みと期間を確認して再試行してください'],
 

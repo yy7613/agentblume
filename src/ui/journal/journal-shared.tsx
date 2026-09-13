@@ -48,6 +48,23 @@ export function TaxSelect({ chart, value, onChange, label, id, disabled = false 
 }
 
 /**
+ * 読み取りを実際に試したら 409（JOURNAL_EXTRACTION_UNAVAILABLE）で断られたときの案内。
+ * 機能フラグ上は使える扱いでも、モデルを差し替えた直後などは実行時に判明する。原因（サーバーの文言）→ 次の一手 → 設定画面。
+ */
+export function ExtractionUnavailableNotice({ message }: { readonly message: string }) {
+  const { text } = useI18n();
+  const openInScreen = useOpenInScreen();
+  return <div className="notice-card journal-capability" role="alert">
+    <strong>{text('AI reading is not available', 'AI 読み取りが使えません')}</strong>
+    <p>{message}</p>
+    <p>{text('Next step: pick a main model that accepts images and structured output in Settings, then read the document again.', '次の一手: 設定画面で、画像と構造化出力に対応した main モデルを選んでから、もう一度読み取ってください。')}</p>
+    <div className="run-failure-actions">
+      <button type="button" className="secondary" onClick={() => openInScreen('Settings', { internalId: 'main', section: 'model-slot' })}>{text('Set the main model in Settings', '設定で main モデルを設定')}</button>
+    </div>
+  </div>;
+}
+
+/**
  * LLM 抽出 / ヒアリングが使えないときの案内。原因 → 次の一手 → 設定画面（main モデルスロット）へのボタン。
  * `feature` で文言を切り替える。使える状態では何も描かない。
  */

@@ -70,7 +70,7 @@ export function JournalPage({ client }: { readonly client: ToolApiClient }) {
     else setEntryFocus({ id: focus.id, seq: next });
   });
 
-  /** 判定タブのボタン → 対象タブへ。`answer` は判定タブ内で完結し、`hearing` は Phase 1 では無効なので来ない。 */
+  /** 判定タブのボタン → 対象タブへ。`answer` と `hearing` は判定タブ内で完結する。 */
   const handleAction = (action: JournalAction, document: JournalDocumentSummaryDto) => {
     const next = nextSeq();
     switch (action.kind) {
@@ -78,6 +78,8 @@ export function JournalPage({ client }: { readonly client: ToolApiClient }) {
         if (chart !== undefined) setRuleDraft({ rule: newRuleFromDocument(document, chart), seq: next });
         setTab('rules');
         return;
+      // ヒアリングの提案を、登録する前にルール編集フォームで直す（既存の事前入力の経路をそのまま使う）。
+      case 'edit-rule-draft': setRuleDraft({ rule: action.rule, seq: next }); setTab('rules'); return;
       case 'open-rule': setRuleFocus({ id: action.ruleId, seq: next }); setTab('rules'); return;
       case 'open-chart': setAccountFocus({ id: action.accountIds[0] ?? '', seq: next }); setTab('chart'); return;
       case 'edit-facts': setEditDocument({ id: document.id, seq: next }); setTab('ingest'); return;
@@ -102,7 +104,7 @@ export function JournalPage({ client }: { readonly client: ToolApiClient }) {
       {tabs.map((item) => <button type="button" key={item.id} role="tab" aria-selected={tab === item.id} className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}>{item.label}</button>)}
     </div>
     {tab === 'ingest' ? <IngestTab client={client} chart={chart} capabilities={capabilities} editDocument={editDocument} onSaved={() => { void reloadRules(); }} />
-      : tab === 'judge' ? <JudgeTab client={client} chart={chart} rules={rules} capabilities={capabilities} focus={documentFocus} onAction={handleAction} />
+      : tab === 'judge' ? <JudgeTab client={client} chart={chart} rules={rules} capabilities={capabilities} focus={documentFocus} onAction={handleAction} reloadChart={reloadChart} reloadRules={reloadRules} />
       : tab === 'rules' ? <RulesTab client={client} chart={chart} rules={rules} reloadRules={reloadRules} focus={ruleFocus} draft={ruleDraft} />
       : tab === 'chart' ? <ChartTab client={client} chart={chart} onChartChanged={setChart} focus={accountFocus} />
       : <ExportTab client={client} chart={chart} focus={entryFocus} />}

@@ -438,6 +438,34 @@ th { background: #f5f7fa; color: #59667d; position: sticky; top: 0; }
 .journal-dimension { margin-bottom: 14px; padding: 12px; border: 1px solid #dce1eb; border-radius: 9px; background: #fafbfe; }
 .journal-dimension-values { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
 .journal-dimension-values li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* 画像 / PDF の取込: 落とす場所・送る画像のサムネイル（実寸つき）。 */
+.journal-drop { border: 1px dashed #ccd3e0; border-radius: 9px; padding: 6px 12px 2px; background: #fafbfe; }
+.journal-drop.dragging { border-color: #5365ed; background: #f2f4ff; }
+.journal-thumbs { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; padding: 0; list-style: none; }
+.journal-thumbs li { display: grid; gap: 3px; justify-items: center; width: 132px; padding: 8px; border: 1px solid #dce1eb; border-radius: 9px; background: white; }
+.journal-thumbs li.low-resolution { border-color: #f4dfb0; background: #fff8e8; }
+.journal-thumbs img { width: 100%; height: 96px; object-fit: contain; background: #f4f6fb; border-radius: 6px; }
+.journal-thumb-label { font-size: 10px; color: #354158; overflow-wrap: anywhere; text-align: center; }
+.journal-thumb-size { font-size: 10px; color: #7a869c; font-variant-numeric: tabular-nums; }
+.journal-low-resolution strong { display: block; margin-bottom: 4px; }
+/* 抽出の信頼度が低い項目は輪郭で示し、根拠は title 属性で読ませる。 */
+.journal-uncertain input, .journal-uncertain select { border-color: #e0a93c; background: #fffaf0; }
+.journal-uncertain-chip { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 99px; background: #fff1d7; color: #97640c; font-size: 9px; font-weight: 800; }
+/* ヒアリング（Stage 2）: 質問カード → 提案カード → 登録。 */
+.journal-hearing { margin: 12px 0; padding: 12px; border: 1px solid #d5dbff; border-radius: 9px; background: #f5f7ff; }
+.journal-hearing h3, .journal-hearing h4 { margin: 0 0 8px; }
+.journal-question { margin-bottom: 10px; padding: 10px; border: 1px solid #dce1eb; border-radius: 8px; background: white; }
+.journal-question legend, .journal-question > strong { font-size: 12px; color: #263049; font-weight: 700; }
+.journal-question .journal-question-note { display: block; margin: 4px 0 6px; font-size: 11px; color: #5c6880; }
+.journal-question label { display: flex; flex-direction: row; align-items: center; gap: 6px; margin: 4px 0; font-size: 12px; color: #354158; }
+.journal-question label input[type="radio"], .journal-question label input[type="checkbox"] { width: auto; }
+.journal-hearing-history { display: grid; gap: 3px; margin: 0 0 10px; padding: 0; list-style: none; font-size: 11px; color: #5c6880; }
+.journal-proposal { margin-top: 10px; padding: 12px; border: 1px solid #cbe9de; border-radius: 9px; background: #f0faf6; }
+.journal-proposal ul { display: grid; gap: 3px; margin: 6px 0; padding-left: 18px; font-size: 12px; }
+.journal-register { margin: 10px 0; padding: 10px; border: 1px solid #dce1eb; border-radius: 8px; background: white; }
+.journal-register strong { display: block; margin-bottom: 6px; font-size: 12px; }
+.journal-register label { display: flex; flex-direction: row; align-items: center; gap: 6px; margin: 3px 0; font-size: 12px; }
+.journal-register label input { width: auto; }
 @media (max-width: 1050px) { .journal-form-grid { grid-template-columns: 1fr; } }
 /* 品質比較: `metric:criterion` の基準行は親の直後に字下げして群として読ませる。 */
 .metric-row-criterion td:first-child { padding-left: 22px; }

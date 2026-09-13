@@ -1,6 +1,7 @@
 import type {
   JournalAccountCategoryDto, JournalAccountDto, JournalAmountSpecDto, JournalChartOfAccountsDto, JournalConditionOpDto, JournalCsvPresetDto, JournalDocumentDto,
-  JournalDocumentFactsDto, JournalDocumentKindDto, JournalDocumentStatusDto, JournalDocumentSummaryDto, JournalJsonValueDto, JournalJudgmentDto, JournalPaymentMethodDto,
+  JournalDocumentFactsDto, JournalDocumentKindDto, JournalDocumentStatusDto, JournalDocumentSummaryDto, JournalExtractionDto, JournalHearingDto, JournalHearingProposalDto,
+  JournalHearingQuestionDto, JournalJsonValueDto, JournalJudgmentDto, JournalOutcomeLineDto, JournalPaymentMethodDto,
   JournalRuleDto, JournalTaxCategoryDto, SaveJournalChartOfAccountsDto, SaveJournalRuleDto,
 } from '../api/types';
 import type { OpenTarget } from '../navigation';
@@ -383,6 +384,8 @@ export function amountSpecLabel(amount: JournalAmountSpecDto, text: Translate): 
 export type JournalAction =
   | { readonly kind: 'new-rule' }
   | { readonly kind: 'hearing' }
+  /** ヒアリングの提案を、登録する前にルール編集フォームで直す。 */
+  | { readonly kind: 'edit-rule-draft'; readonly rule: SaveJournalRuleDto }
   | { readonly kind: 'open-rule'; readonly ruleId: string }
   | { readonly kind: 'edit-facts' }
   | { readonly kind: 'answer'; readonly questionId: string; readonly prompt: string }
@@ -740,4 +743,171 @@ export function factsFromDraft(draft: FactsDraft): { readonly facts: JournalDocu
     } catch { errors['extra'] = ['extra is not valid JSON', 'extra が JSON として読めません']; }
   }
   return { facts: facts as JournalDocumentFactsDto, errors };
+}
+
+/* ---------------------------------------------------------------------------
+ * LLM 抽出（画像 / PDF / テキスト）
+ * ------------------------------------------------------------------------- */
+
+/** 送信する画像の目標長辺。これを超える画像だけ縮小する。 */
+export const IMAGE_TARGET_LONG_EDGE = 2000;
+/**
+ * これを下回る長辺は「解像度が足りない」と注意する（送信は止めない）。
+ * 実測: 1350x1355 の A4 適格請求書は登録番号・税率別内訳まで読めたが、510x881 のレシートは
+ * 登録番号を 14 桁に、8% 対象額を 680 → 880 と誤読した。解像度が読み取り精度に効く。
+ */
+export const IMAGE_LOW_RESOLUTION_LONG_EDGE = 1200;
+export const IMAGE_JPEG_QUALITY = 0.85;
+/** これより小さく、かつ上限内に収まる画像は再エンコードせずそのまま送る（無駄に劣化させない）。 */
+export const IMAGE_SKIP_REENCODE_BYTES = 1_000_000;
+/** 1 回の抽出に渡せる画像の枚数（PDF はページ数）。 */
+export const MAX_EXTRACTION_IMAGES = 4;
+/** data URL 1 本の文字数上限（サーバーの受け入れ上限）。 */
+export const MAX_DATA_URL_LENGTH = 4_200_000;
+/** PDF ページの目標長辺（1600〜2000px の中央）。倍率はページごとに決める。 */
+export const PDF_TARGET_LONG_EDGE = 1800;
+/** fieldEvidence の信頼度がこの値未満なら「先に確かめてほしい項目」として印を付ける。 */
+export const LOW_CONFIDENCE_THRESHOLD = 0.7;
+export const EXTRACTABLE_IMAGE_TYPES: readonly string[] = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+export const PDF_MIME = 'application/pdf';
+
+/** 選ばれたファイルの種類。MIME で見て、type が空のときだけ拡張子で補う。 */
+export function pickedFileKind(file: { readonly type: string; readonly name: string }): 'image' | 'pdf' | 'other' {
+  const type = file.type.toLowerCase();
+  if (EXTRACTABLE_IMAGE_TYPES.includes(type)) return 'image';
+  if (type === PDF_MIME) return 'pdf';
+  if (type !== '') return 'other';
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.pdf')) return 'pdf';
+  return /\.(png|jpe?g|webp|gif)$/.test(name) ? 'image' : 'other';
+}
+
+/**
+ * 長辺 `target` に収まる縮小後のサイズ。**元より大きくは引き伸ばさない**
+ * （小さい画像を水増ししても読み取れる情報は増えず、転送量だけが増える）。
+ */
+export function scaledSize(width: number, height: number, target = IMAGE_TARGET_LONG_EDGE): { readonly width: number; readonly height: number } {
+  const longEdge = Math.max(width, height);
+  if (!Number.isFinite(longEdge) || longEdge <= 0) return { width: 0, height: 0 };
+  if (longEdge <= target) return { width: Math.round(width), height: Math.round(height) };
+  const ratio = target / longEdge;
+  return { width: Math.max(1, Math.round(width * ratio)), height: Math.max(1, Math.round(height * ratio)) };
+}
+
+/**
+ * PDF ページ（72dpi 基準の CSS px）を長辺 1600〜2000px で描くための倍率。
+ * PDF はベクタなので拡大しても情報が失われない。固定倍率だと小さいページが潰れる。
+ */
+export function pdfRenderScale(width: number, height: number, target = PDF_TARGET_LONG_EDGE): number {
+  const longEdge = Math.max(width, height);
+  if (!Number.isFinite(longEdge) || longEdge <= 0) return 1;
+  return Math.min(10, Math.max(0.1, target / longEdge));
+}
+
+/** 送信できる大きさか（data URL の文字数上限）。 */
+export function withinDataUrlLimit(dataUrl: string): boolean {
+  return dataUrl.length <= MAX_DATA_URL_LENGTH;
+}
+
+/** サムネイルに添える実寸（利用者が解像度不足に自分で気づけるように）。 */
+export function formatPixels(width: number, height: number): string {
+  return `${width}×${height}`;
+}
+
+/** facts のパス → 低信頼の根拠。信頼度が閾値未満の項目だけを返す。 */
+export function lowConfidenceFields(
+  extraction: Pick<JournalExtractionDto, 'fieldEvidence'> | undefined,
+  threshold = LOW_CONFIDENCE_THRESHOLD,
+): Readonly<Record<string, { readonly sourceText?: string; readonly confidence: number }>> {
+  const evidence = extraction?.fieldEvidence;
+  if (evidence === undefined) return {};
+  const low: Record<string, { readonly sourceText?: string; readonly confidence: number }> = {};
+  for (const [path, item] of Object.entries(evidence)) if (item.confidence < threshold) low[path] = item;
+  return low;
+}
+
+/* ---------------------------------------------------------------------------
+ * ヒアリング（Stage 2）
+ * ------------------------------------------------------------------------- */
+
+/** まだ答えていない質問（同じ id が 2 回出ても 1 回だけ）。 */
+export function pendingHearingQuestions(hearing: Pick<JournalHearingDto, 'turns'>): readonly JournalHearingQuestionDto[] {
+  const answered = new Set(hearing.turns.filter((turn) => turn.role === 'user').map((turn) => turn.answer.questionId));
+  const seen = new Set<string>();
+  const questions: JournalHearingQuestionDto[] = [];
+  for (const turn of hearing.turns) {
+    if (turn.role !== 'assistant') continue;
+    if (answered.has(turn.question.id) || seen.has(turn.question.id)) continue;
+    seen.add(turn.question.id);
+    questions.push(turn.question);
+  }
+  return questions;
+}
+
+/** 答え済みの質問と回答（やり取りの振り返り用）。 */
+export function answeredHearingQuestions(hearing: Pick<JournalHearingDto, 'turns'>): readonly { readonly question: JournalHearingQuestionDto; readonly value: JournalJsonValueDto }[] {
+  const questions = new Map<string, JournalHearingQuestionDto>();
+  for (const turn of hearing.turns) if (turn.role === 'assistant') questions.set(turn.question.id, turn.question);
+  const answered: { question: JournalHearingQuestionDto; value: JournalJsonValueDto }[] = [];
+  for (const turn of hearing.turns) {
+    if (turn.role !== 'user') continue;
+    const question = questions.get(turn.answer.questionId);
+    if (question !== undefined) answered.push({ question, value: turn.answer.value });
+  }
+  return answered;
+}
+
+/** 入力欄の下書き（文字列 / 文字列の配列）→ 送信する値。空欄は undefined（＝未回答）。 */
+export function hearingAnswerValue(question: JournalHearingQuestionDto, draft: string | readonly string[]): JournalJsonValueDto | undefined {
+  if (question.kind === 'multi') {
+    const values = Array.isArray(draft) ? [...draft] : draft === '' ? [] : [draft as string];
+    return values.length === 0 ? undefined : values;
+  }
+  const raw = (Array.isArray(draft) ? draft[0] ?? '' : draft as string).trim();
+  if (raw === '') return undefined;
+  if (question.kind === 'confirm') return raw === 'yes';
+  if (question.kind === 'number') { const parsed = Number(raw.replace(/[,¥]/g, '')); return Number.isFinite(parsed) ? parsed : undefined; }
+  return raw;
+}
+
+/** 回答の表示用文字列（選択肢は label に直す）。 */
+export function hearingAnswerLabel(question: JournalHearingQuestionDto, value: JournalJsonValueDto, text: Translate): string {
+  const labelOf = (raw: string) => question.options?.find((option) => option.value === raw)?.label ?? raw;
+  if (typeof value === 'boolean') return value ? text('Yes', 'はい') : text('No', 'いいえ');
+  if (Array.isArray(value)) return value.map((item) => labelOf(String(item))).join(', ');
+  return labelOf(String(value));
+}
+
+/**
+ * 科目 id → 表示名。マスタに無いものは提案の newAccounts から引く（登録前でも名前で読める）。
+ * どちらにも無ければ id をそのまま出す（名前をでっち上げない）。
+ */
+export function resolveAccountName(
+  accountId: string,
+  chart: Pick<JournalChartOfAccountsDto, 'accounts'> | undefined,
+  newAccounts: readonly { readonly id: string; readonly name: string }[] = [],
+): string {
+  return chart?.accounts.find((account) => account.id === accountId)?.name ?? newAccounts.find((account) => account.id === accountId)?.name ?? accountId;
+}
+
+/** 税区分コード → 表示名（マスタ → 提案の newTaxCategories → コードそのまま）。 */
+export function resolveTaxName(
+  code: string,
+  chart: Pick<JournalChartOfAccountsDto, 'taxCategories'> | undefined,
+  newTaxCategories: readonly { readonly code: string; readonly name: string }[] = [],
+): string {
+  return chart?.taxCategories.find((tax) => tax.code === code)?.name ?? newTaxCategories.find((tax) => tax.code === code)?.name ?? code;
+}
+
+/** 提案ルールの 1 行を「借方 会議費（課税仕入 10%）· 合計」のような平文にする。 */
+export function describeOutcomeLine(
+  line: JournalOutcomeLineDto,
+  chart: Pick<JournalChartOfAccountsDto, 'accounts' | 'taxCategories'> | undefined,
+  proposal: Pick<JournalHearingProposalDto, 'newAccounts' | 'newTaxCategories'> | undefined,
+  text: Translate,
+): string {
+  const side = line.side === 'debit' ? text('Debit', '借方') : text('Credit', '貸方');
+  const account = resolveAccountName(line.accountId, chart, proposal?.newAccounts ?? []);
+  const tax = line.taxCode === '' ? text('(no tax category)', '（税区分なし）') : resolveTaxName(line.taxCode, chart, proposal?.newTaxCategories ?? []);
+  return `${side} ${account}（${tax}）· ${amountSpecLabel(line.amount, text)}`;
 }

@@ -66,4 +66,9 @@ export async function journalHearingRepositoryContract(repo: JournalHearingRepos
   expect(fetched?.turns).not.toBe(mutable.turns);
   (fetched as unknown as { turns: { at: string }[] }).turns[0]!.at = '2000-01-01T00:00:00.000Z';
   expect((await repo.findById(scope, 'hearing-mutable'))?.turns[0]?.at).toBe(mutable.turns[0]?.at);
+
+  // 異常: 知らない id・知らない文書を引いても例外にせず、null と空配列を返す。
+  // 画面はヒアリングの有無を「取れたかどうか」で判断するので、ここで投げられると開けなくなる。
+  expect(await repo.findById(scope, 'no-such-hearing')).toBeNull();
+  expect(await repo.findByDocument(scope, 'no-such-document')).toEqual([]);
 }

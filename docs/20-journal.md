@@ -182,14 +182,33 @@ UI は理由ごとに「原因 → 次の一手 → 修正場所へのボタン�
 | テキスト | `POST /journal/documents/extract` に `text` を渡して LLM 抽出 | メール本文・メモ |
 | 構造化 | 手入力フォーム（facts を直接編集）/ JSON 貼付（DocumentFacts）/ **CSV プリセット**（楽天銀行 4 列、MUFG 9 列、SMBC 7 列、ゆうちょ 12 列、楽天カード、汎用「日付,摘要,出金,入金,残高」、全銀協固定長は対象外）→ 1 行 1 document | 列名署名でプリセット自動判定、失敗時は列マッピング UI |
 
-抽出プロンプトの要点: 帳票にある情報だけ・無いものは null、金額は整数・日付は ISO・登録番号は `T`+13 桁に正規化、`amountIncludesTax` を必ず出す、「御中/様＝宛名」「登録番号・印・住所がある側＝発行者」、お預り/お釣を合計と混同しない。抽出後に整合チェック（税率別合計 = 合計 ± 税率行数、明細合計 ≒ 合計）を行い `warnings[]` に残す。
+`POST /journal/documents/extract`（`ExtractJournalDocumentUseCase`）は構造化出力で `kind` + `DocumentFacts` + `fieldEvidence` を受け取り、**保存はしない**（利用者が確認・修正してから保存する）。プロンプト版は `journal-extract/v1`、温度 0、スキーマ違反は 1 回だけ修復を求める。入力の上限は画像 4 枚 × 4,200,000 文字（data URL。SVG と外部 URL は不可）とテキスト 100,000 文字。
+
+抽出プロンプトの要点: 帳票にある情報だけ・無いものは null（**推測しない**）、金額は整数・日付は ISO（和暦は換算）、登録番号は `T` + 数字ちょうど 13 桁、`amountIncludesTax` を必ず出す、`issueDate`（発行日）と `transactionDate`（取引年月日。無い場合だけ null）を**別項目として区別する**、「御中/様＝宛名」「登録番号・印・住所がある側＝発行者（店舗名・支店名まで）」「経費精算書は申請者・伝票は作成者が発行者」、お預り/お釣は `extra.receivedAmount` / `extra.changeAmount` へ入れて合計と混同しない、記載の無い税率行（8%: 0 円 など）を作らない。
+
+受け取った値は**そのまま信じず**ドメインの正規化関数（`normalizeRegistrationNumber` / `parseJapaneseDate` / `parseAmount` / `normalizeDescription` / `counterpartyFromDescription`）へ通し、通らない項目は落として理由を `extraction.warnings` に残す。さらに次の整合チェックを行い、**値は補正せず**警告だけを積む（差額を文言に入れる）:
+
+| チェック | 許容 | 根拠 / 実測 |
+|---|---|---|
+| 税率別合計（税抜なら税額を加算）vs `grandTotal` | ±（税率行数）円 | 国税庁 Q&A 問57。**実測の誤読 3 件はすべてこれで捕まった**（1130 / 1430 / 14650 対 1230 / 1230 / 14770） |
+| 税率行の `amountIncludesTax` が行ごとに食い違う | 不可 | 通常は帳票内で一貫する（10% 行と 8% 行で割れる応答が出た） |
+| 対象額 0 円の税率行 | 落として警告 | 記載の無い行の捏造（手書き領収書で発生） |
+| 登録番号が `T` + 13 桁でない | 落として**生の文字列と桁数**を警告 | 最頻の失敗（14 桁・12 桁の誤読。同じ数字が並ぶと数え違える） |
+| 明細合計 vs `grandTotal` / 単価 × 数量 vs 金額 | ±（明細行数）円 / ±1 円 | 税抜明細なら差額は消費税である旨も文言に入れる |
+| お預り − お釣 vs `grandTotal` | ±1 円 | レシートの読み違え検出 |
+| 取引年月日が無く発行日で代用した | 警告 | 経過措置の控除割合は取引日で決まる（発行日を入れると税区分が狂う） |
+| 8% 行に軽減税率の記号が無い / 請求書なのに登録番号が無い | 警告 | 適格請求書の記載要件・免税事業者の確認 |
+
+モデル未設定・structured output 非対応・画像なのに vision 非対応は `JournalExtractionUnavailableError`（409。何が足りず設定画面のどこで直すかを message に書く）。1 枚あたりの所要時間は実測で 17〜229 秒（ローカル 12b / 26b）なので、`clientAbortSignal` を通して中断が確実に効くようにしてある。
 
 ## 7. ヒアリング（Stage 2）
 
-1. `POST /journal/hearings`（documentId）: 判定理由 + facts + 迷うケースカタログ + マスタ（有効科目一覧）を LLM に渡し、最初の質問（最大 3 問）を構造化出力で得る。
-2. `POST /journal/hearings/:id/answers`: 回答を facts.extra に書き、LLM に次の質問か **提案** を出させる（`proposal`: rule + entry + newAccounts + rationale）。提案は検証（科目 id がマスタか newAccounts にある、貸借一致、税区分が有効）し、壊れていれば 1 回修復を試みる。
-3. `POST /journal/hearings/:id/accept`: newAccounts をマスタへ登録（利用者が選んだものだけ）→ ルール保存 → 対象 document を再判定 → decided。
-4. LLM 非対応 / 無効時は「手動でルールを作る」導線（ルール編集フォームに facts から条件を事前入力）。
+1. `POST /journal/hearings`（documentId）: 文書は `undecided` か `hearing` であること。判定理由 + facts + **当てはまる**迷うケース（`selectAmbiguityCases`。純関数でトリガ語と `ask-if` から最大 5 件に絞る）+ 有効な科目 / 税区分 / 補助軸を LLM に渡し、最初の質問（最大 3 問）を構造化出力で得る。文書は `hearing` になる。既に開いているセッションがあれば**作り直さずそれを返す**。
+2. `POST /journal/hearings/:id/answers`: 聞いた質問の id だけを受け付け、回答を `facts.extra.<key>`（質問の `factPath`。`extra.` 以外は拒否）へ書き戻し、LLM に次の質問か **提案** を出させる（`proposal`: rule + entry + newAccounts + newDimensionValues + newTaxCategories + rationale）。発話が 60 件に達したら打ち切ってセッションを閉じ、文書を未判定へ戻す。
+3. 提案の検証（`hearing-proposal.ts`。純関数）: 科目 id・税区分コード・補助軸の値がマスタか同じ提案の new* にあるか、仕訳の**貸借が一致**するか、ルールが `createJournalRule` を通るか、条件の `field` が facts のパスか。`accountName` はモデルの申告ではなくマスタの名前で埋め直す。壊れていれば 1 回だけ修復を求め、それでも駄目なら**提案の無いセッション**として保存し、理由を `warnings` と assistant の発話で返す（壊れた提案を保存すると「登録」が押せてしまう）。
+4. `POST /journal/hearings/:id/accept`: `registerAccountIds` / `registerDimensionValueIds` / `registerTaxCodes` に**利用者が明示した id だけ**をマスタへ登録（提案に無い id は 400）→ ルールを `provenance: { origin: hearing, hearingId, exampleDocumentIds }` で保存 → 対象 document を再判定 → 当たれば `decided` + 仕訳の下書き。`rule` / `entry` を渡せば利用者が編集した版で上書きでき、同じ検証を通る。**モデルがマスタを書き換える経路はこの 1 本だけで、しかも利用者の明示選択が要る。**
+5. `POST /journal/hearings/:id/cancel`: 中止すると文書は `undecided` へ戻る（判定キューから消えない）。
+6. LLM 非対応 / 無効時は「手動でルールを作る」導線（ルール編集フォームに facts から条件を事前入力）。可否は `GET /runtime/capabilities` の `journal.hearing.enabled`（structured output の有無に連動）。
 
 ## 8. 汎用 CSV
 
@@ -251,11 +270,11 @@ UI は理由ごとに「原因 → 次の一手 → 修正場所へのボタン�
 
 ## 13. フェーズ
 
-| フェーズ | 内容 |
-|---|---|
-| 1 | ドメイン・保存・API・画面（取込は構造化 / CSV / テキスト保存のみ）、Stage 1 判定、科目マスタ、汎用 CSV、サンプル CSV/JSON |
-| 2 | LLM 抽出（画像 / PDF / テキスト）、ヒアリング（Stage 2）、抽出整合チェック |
-| 3 | 組込みツール（判定 / 出力）、弥生・freee・MF プリセット、画像サンプル描画、e2e、docs/CHANGELOG |
+| フェーズ | 内容 | 状態 |
+|---|---|---|
+| 1 | ドメイン・保存・API・画面（取込は構造化 / CSV / テキスト保存のみ）、Stage 1 判定、科目マスタ、汎用 CSV、サンプル CSV/JSON | 完了 |
+| 2 | LLM 抽出（画像 / PDF / テキスト）、ヒアリング（Stage 2）、抽出整合チェック | 完了 |
+| 3 | 組込みツール（判定 / 出力）、弥生・freee・MF プリセット、画像サンプル描画、e2e、docs/CHANGELOG | 未着手 |
 
 ## 参考 URL
 
