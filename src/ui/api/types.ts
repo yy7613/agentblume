@@ -1330,8 +1330,9 @@ export interface JournalTaxCategoryDto {
   readonly deductionRate?: number; readonly enabled: boolean;
   readonly mapping?: { readonly yayoi?: string; readonly freee?: string; readonly mf?: string };
 }
-export interface JournalChartOfAccountsDto { readonly accounts: readonly JournalAccountDto[]; readonly dimensions: readonly JournalDimensionDto[]; readonly taxCategories: readonly JournalTaxCategoryDto[]; readonly updatedAt: string }
-export type SaveJournalChartOfAccountsDto = Omit<JournalChartOfAccountsDto, 'updatedAt'>;
+/** `saved` は「利用者が保存したものか」。false は標準セットのまま（未設定）で、保存本文には送らない。 */
+export interface JournalChartOfAccountsDto { readonly saved?: boolean; readonly accounts: readonly JournalAccountDto[]; readonly dimensions: readonly JournalDimensionDto[]; readonly taxCategories: readonly JournalTaxCategoryDto[]; readonly updatedAt: string }
+export type SaveJournalChartOfAccountsDto = Omit<JournalChartOfAccountsDto, 'updatedAt' | 'saved'>;
 
 /* ルール ----------------------------------------------------------------------- */
 export type JournalConditionOpDto = 'equals' | 'contains' | 'startsWith' | 'endsWith' | 'regex' | 'between' | 'gte' | 'lte' | 'in' | 'exists' | 'notExists' | 'isTrue' | 'isFalse';

@@ -110,7 +110,10 @@ export function JournalPage({ client }: { readonly client: ToolApiClient }) {
    */
   const steps: readonly { readonly id: JournalTab; readonly label: string; readonly caption: string; readonly badge?: string }[] = [
     { id: 'chart', label: text('Chart', '科目'), caption: text('Define accounts and tax categories', '科目と税区分を決める'),
-      ...(chart === undefined ? {} : { badge: text(`${chart.accounts.length} accounts`, `${chart.accounts.length} 科目`) }) },
+      // 未保存の標準セットで件数だけ出すと「設定済み」に見えるので、そこは言葉で区別する。
+      ...(chart === undefined ? {} : { badge: chart.saved === true
+        ? text(`${chart.accounts.length} accounts`, `${chart.accounts.length} 科目`)
+        : text('default set', '標準のまま') }) },
     { id: 'ingest', label: text('Ingest', '取込'), caption: text('Bring in CSV, images, PDF, or text', 'CSV・画像・PDF・テキストを取り込む') },
     { id: 'judge', label: text('Judge', '判定'), caption: text('Judge the documents against your rules', 'ルールで判定する') },
     { id: 'rules', label: text('Rules', 'ルール'), caption: text('Turn undecided documents into rules', '決まらないものをルールにする'),

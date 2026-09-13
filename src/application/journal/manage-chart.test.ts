@@ -18,14 +18,17 @@ describe('GetChartOfAccountsUseCase', () => {
   it('正常: 保存済みのマスタを返す', async () => {
     const charts = new InMemoryChartOfAccountsRepository();
     await new SaveChartOfAccountsUseCase(charts, clock).execute({ scope, ...minimalChart });
-    const chart = await new GetChartOfAccountsUseCase(charts).execute(scope);
+    const { chart, saved } = await new GetChartOfAccountsUseCase(charts).execute(scope);
+    expect(saved).toBe(true);
     expect(chart.accounts).toHaveLength(1);
     expect(chart.updatedAt).toBe(NOW.toISOString());
   });
 
   it('境界: 未保存なら標準セットを返すが、**保存はしない**（参照が書き込みを起こさない）', async () => {
     const charts = new InMemoryChartOfAccountsRepository();
-    const chart = await new GetChartOfAccountsUseCase(charts).execute(scope);
+    const { chart, saved } = await new GetChartOfAccountsUseCase(charts).execute(scope);
+    // 未保存は saved=false。画面はこれを見て「標準のまま」と出す。
+    expect(saved).toBe(false);
     expect(chart.accounts.length).toBeGreaterThan(50);
     expect(chart.updatedAt).toBe(DEFAULT_CHART_UPDATED_AT);
     expect(await charts.get(scope)).toBeNull();
@@ -34,9 +37,9 @@ describe('GetChartOfAccountsUseCase', () => {
   it('境界: 返した標準セットを呼び出し側が書き換えても、次の取得に影響しない', async () => {
     const charts = new InMemoryChartOfAccountsRepository();
     const usecase = new GetChartOfAccountsUseCase(charts);
-    const first = await usecase.execute(scope);
+    const first = (await usecase.execute(scope)).chart;
     (first.accounts as unknown as { name: string }[])[0]!.name = '書き換え';
-    const second = await usecase.execute(scope);
+    const second = (await usecase.execute(scope)).chart;
     expect(second.accounts[0]?.name).not.toBe('書き換え');
   });
 });

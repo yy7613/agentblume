@@ -148,7 +148,9 @@ export function registerJournalRoutes(app: FastifyInstance, deps: JournalRouteDe
 
   app.get('/journal/chart', async (request) => {
     parseWith(journalChartQuerySchema, request.query, 'invalid query');
-    return { chart: await deps.getJournalChart.execute(scopeOf(request)) };
+    // saved は「保存済みか標準セットのままか」。永続データではなく、この応答の由来を示す。
+    const { chart, saved } = await deps.getJournalChart.execute(scopeOf(request));
+    return { chart: { ...chart, saved } };
   });
 
   app.put('/journal/chart', async (request) => {

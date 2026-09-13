@@ -247,7 +247,8 @@ describe('JournalPage（手順の流れ図）', () => {
     expect(await screen.findByText('Define accounts and tax categories')).toBeTruthy();
     expect(screen.getByText('Turn undecided documents into rules')).toBeTruthy();
     // 科目数とルール件数はこの画面が既に持っている値なので出す（判定・出力の件数は各タブが持つ）。
-    expect(screen.getByText('2 accounts')).toBeTruthy();
+    // 既定の科目マスタは未保存（標準セット）なので、件数ではなくその旨を出す。
+    expect(screen.getByText('default set')).toBeTruthy();
     expect(screen.getByText('1 rules')).toBeTruthy();
   });
 
@@ -266,5 +267,27 @@ describe('JournalPage（手順の流れ図）', () => {
     await screen.findByText(/Could not load the chart of accounts/);
     expect(screen.getAllByRole('tab')).toHaveLength(5);
     expect(screen.queryByText(/accounts$/)).toBeNull();
+  });
+});
+
+describe('JournalPage（科目マスタが未設定か保存済みか）', () => {
+  it('正常: 保存済みの科目マスタなら件数を出す', async () => {
+    renderPage(stubClient({ getJournalChart: vi.fn().mockResolvedValue({ ...chart, saved: true }) }));
+
+    expect(await screen.findByText('2 accounts')).toBeTruthy();
+    expect(screen.queryByText('default set')).toBeNull();
+  });
+
+  it('境界: 標準セットのままなら件数を出さず「標準のまま」と示す（設定済みに見せない）', async () => {
+    renderPage(stubClient({ getJournalChart: vi.fn().mockResolvedValue({ ...chart, saved: false }) }));
+
+    expect(await screen.findByText('default set')).toBeTruthy();
+    expect(screen.queryByText('2 accounts')).toBeNull();
+  });
+
+  it('異常: 旗が無い応答（古いサーバー）は未保存として扱い、件数を装わない', async () => {
+    renderPage(stubClient({ getJournalChart: vi.fn().mockResolvedValue(chart) }));
+
+    expect(await screen.findByText('default set')).toBeTruthy();
   });
 });

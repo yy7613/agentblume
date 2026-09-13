@@ -16,12 +16,24 @@ import type { ChartOfAccountsRepository } from '../../domain/journal/repositorie
 import type { TenantScope } from '../../domain/shared/tenant-scope';
 
 /** 保存済みマスタ、無ければ標準セット（保存はしない）。 */
+/**
+ * 科目マスタの取得結果。saved は「利用者が保存したものか」を表す。
+ * 標準セットのまま（未保存）を「設定済み」と見せないために、画面がこの旗を見る。
+ */
+export interface ChartOfAccountsResult {
+  readonly chart: ChartOfAccounts;
+  readonly saved: boolean;
+}
+
 export class GetChartOfAccountsUseCase {
   constructor(private readonly charts: ChartOfAccountsRepository) {}
 
-  async execute(scope: TenantScope): Promise<ChartOfAccounts> {
+  async execute(scope: TenantScope): Promise<ChartOfAccountsResult> {
+    const stored = await this.charts.get(scope);
     // 標準セットは共有定数なので、呼び出し側が触っても壊れないよう毎回組み立て直す。
-    return (await this.charts.get(scope)) ?? defaultChartOfAccounts(DEFAULT_CHART_UPDATED_AT);
+    return stored === null
+      ? { chart: defaultChartOfAccounts(DEFAULT_CHART_UPDATED_AT), saved: false }
+      : { chart: stored, saved: true };
   }
 }
 

@@ -87,6 +87,8 @@ describe('journal routes', () => {
       expect(res.statusCode).toBe(200);
       const { chart } = res.json();
       expect(chart.accounts).toHaveLength(2);
+      // 保存済みのワークスペースは saved=true（画面はこれを見て件数を出す）。
+      expect(chart.saved).toBe(true);
       expect(chart.dimensions[0]).toMatchObject({ id: 'sub_account' });
       expect(typeof chart.updatedAt).toBe('string');
 
@@ -96,6 +98,8 @@ describe('journal routes', () => {
       try {
         const first = await freshServer.inject({ method: 'GET', url: `/journal/chart?${scopeQuery}` });
         expect(first.json().chart.accounts.length).toBeGreaterThan(50);
+        // 標準セットのままは saved=false。件数だけ出して「設定済み」に見せないための旗。
+        expect(first.json().chart.saved).toBe(false);
         expect(await fresh.journalChartRepo.get(SCOPE)).toBeNull();
       } finally {
         await freshServer.close();
