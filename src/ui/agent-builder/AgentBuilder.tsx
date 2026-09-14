@@ -317,6 +317,11 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
   // 保存せずに「組み込んだら呼び出せるか」を確かめる。保存と同じ DTO を送るので結果は保存後と一致する。
   // manual（ボタン）は結果のパネルを開く。auto（選択変更への追従）はバッジと要約行だけを更新する。
   async function checkIntegration(origin: 'manual' | 'auto'): Promise<void> {
+    // 自動診断は、利用者が読んでいる「手動 / 保存時の失敗表示」を上書きしない。
+    // beginDiagnose() は進行中の要求を中断するため、ここで抜けないと手動の結果ごと消える。
+    // 成功結果（done）は新しい内容へ差し替えてよいので、失敗のときだけ譲る。
+    const shown = diagnosticsRef.current;
+    if (origin === 'auto' && shown?.status === 'failed' && shown.origin !== 'auto') return;
     const controller = beginDiagnose();
     setDiagnostics({ status: 'loading', origin });
     if (origin === 'manual') setError(undefined);
@@ -333,13 +338,28 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
 
   // ツール・スキル・サブエージェント・MCP・実行オプション・構造化出力の選択が変わったら、少し待って自動で診断する。
   // 選択の同一性だけをキーにするので、プロンプトや名前の入力では再実行しない（サーバー負荷を抑える）。
+  /**
+   * 自動診断のタイマーから呼ぶ「常に最新の」checkIntegration。
+   *
+   * タイマーは必須項目が揃った瞬間（saveBlocked の変化）に仕掛かるが、その後の本文入力では
+   * 再スケジュールしない（入力のたびに診断を投げない、という設計）。素直に checkIntegration を
+   * 閉じ込めると、発火時に**仕掛けた時点の下書き**を送ってしまい、書き換えた後のプロンプトが
+   * 反映されない（実測: 1 文字だけ入力された時点の systemPrompt が送られた）。
+   * ref 経由にすれば、依存を増やさずに発火時点の状態で診断できる。
+   */
+  const checkIntegrationRef = useRef(checkIntegration);
+  /** 自動診断が割り込んでよいかの判断に使う、最新の診断状態。 */
+  const diagnosticsRef = useRef(diagnostics);
+  useEffect(() => { diagnosticsRef.current = diagnostics; });
+  useEffect(() => { checkIntegrationRef.current = checkIntegration; });
+
   const autoDiagnoseKey = useMemo(() => JSON.stringify({
     tools: [...selectedTools].sort(), skills: [...selectedSkills].sort(), subAgents: [...subAgents.keys()].sort(),
     mcp: [...selectedMcpServers].sort(), harness, output,
   }), [selectedTools, selectedSkills, subAgents, selectedMcpServers, harness, output]);
   useEffect(() => {
     if (view !== 'editor' || saveBlocked || typeof (client as Partial<ToolApiClient>).diagnoseAgentDraft !== 'function') return;
-    const timer = window.setTimeout(() => { void checkIntegration('auto'); }, AUTO_DIAGNOSE_DELAY_MS);
+    const timer = window.setTimeout(() => { void checkIntegrationRef.current('auto'); }, AUTO_DIAGNOSE_DELAY_MS);
     return () => window.clearTimeout(timer);
     // checkIntegration は毎描画で作り直されるため依存に入れない（キーが変わったときだけ走らせる）。
   }, [autoDiagnoseKey, view, saveBlocked, client]);

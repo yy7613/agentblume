@@ -420,11 +420,43 @@ describe('journal routes', () => {
       expect((await server.inject({ method: 'GET', url: `/journal/entries?${scopeQuery}&status=exported` })).json().entries).toHaveLength(1);
     });
 
-    it('異常: generic 以外の形式はまだ無いので 400 JOURNAL_EXPORT', async () => {
+    it('弥生は Shift-JIS のバイト列（contentBase64）と encoding / warnings を返す', async () => {
+      await server.inject({ method: 'POST', url: '/journal/rules', payload: ruleBody() });
+      await server.inject({ method: 'POST', url: '/journal/documents', payload: documentBody() });
+      await server.inject({ method: 'POST', url: '/journal/documents/judge', payload: { scope: SCOPE } });
+
       const res = await server.inject({ method: 'GET', url: `/journal/export?${scopeQuery}&format=yayoi` });
+      expect(res.statusCode).toBe(200);
+      const { result } = res.json();
+      expect(result.format).toBe('yayoi');
+      expect(result.fileName).toMatch(/^journal-yayoi-\d{4}-\d{2}-\d{2}\.csv$/u);
+      expect(result.encoding).toBe('shift_jis');
+      expect(Array.isArray(result.warnings)).toBe(true);
+      // content は読める UTF-8、contentBase64 は会計ソフトへ渡す Shift-JIS のバイト列。
+      expect(result.content.startsWith('2000,')).toBe(true);
+      expect(new TextDecoder('shift_jis').decode(Buffer.from(result.contentBase64, 'base64'))).toBe(result.content);
+    });
+
+    it('freee / MF は UTF-8 で contentBase64 を持たない', async () => {
+      await server.inject({ method: 'POST', url: '/journal/rules', payload: ruleBody() });
+      await server.inject({ method: 'POST', url: '/journal/documents', payload: documentBody() });
+      await server.inject({ method: 'POST', url: '/journal/documents/judge', payload: { scope: SCOPE } });
+
+      for (const format of ['freee', 'mf'] as const) {
+        const res = await server.inject({ method: 'GET', url: `/journal/export?${scopeQuery}&format=${format}` });
+        expect(res.statusCode).toBe(200);
+        const { result } = res.json();
+        expect(result.encoding).toBe('utf-8');
+        expect(result.contentBase64).toBeUndefined();
+        expect(result.content.startsWith('﻿')).toBe(true);
+        // このテストの科目マスタは税区分に各社の対応名を持たないので、黙って埋めずに警告が返る。
+        expect(result.warnings.some((warning: string) => warning.includes('対応名が無いため'))).toBe(true);
+      }
+    });
+
+    it('[回帰固定] 異常: 知らない形式は 400（zod のクエリ検証で弾く）', async () => {
+      const res = await server.inject({ method: 'GET', url: `/journal/export?${scopeQuery}&format=nope` });
       expect(res.statusCode).toBe(400);
-      expect(res.json().error).toMatchObject({ code: 'JOURNAL_EXPORT' });
-      expect(res.json().error.message).toContain('yayoi');
     });
   });
 

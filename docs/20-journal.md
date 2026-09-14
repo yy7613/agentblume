@@ -13,7 +13,7 @@
 | 判定 | **Stage 1**: 決定的なルール照合。一意に確定できれば仕訳ドラフトを作る。**Stage 2**: 確定できない理由（該当ルール無し / 複数ルール競合 / 必要項目不足 / 「迷うケース」該当）を出し、LLM ヒアリングで質問→回答→**新ルールと必要項目の提案**→利用者が確認して登録→再判定 |
 | 出力 | 汎用仕訳 CSV（UTF-8 BOM, CRLF）。列は弥生 25 項目を最大公約数に取引先・品目・インボイス区分・税額を加えた 25 列（§8）。弥生 / freee / MF 形式への写像はプリセットとして追加可能な構造 |
 | 保持 | SQLite（`journal_*` テーブル、migration v5）。証憑本体（画像 data URL / PDF 由来の画像 / テキスト）は `journal_documents.record_json` に同梱（1 件 8 MiB 上限） |
-| ツール化 | 判定・出力は組込みツール（`builtin-journal-judge` / `builtin-journal-export`）としてエージェントからも呼べる（フェーズ 3） |
+| ツール化 | **参照のみ**組込みツール（`builtin-journal-entries`）としてエージェントから呼べる（フェーズ 3、§14）。判定・出力は状態を変えるためツール化しない |
 
 **科目体系は固定しない**（利用者指示）。勘定科目・税区分・補助軸（補助科目 / 部門 / プロジェクト / タグ…）はワークスペース単位のマスタで、標準セットは初期値に過ぎない。追加・改名・無効化・並び替え・CSV 取込 / 出力ができ、ヒアリングが既存マスタに無い科目を提案したときは「新しい科目として登録するか」を確認してから登録する。ルールは科目を **id** で参照し、名称変更に追従する。
 
@@ -216,7 +216,42 @@ UI は理由ごとに「原因 → 次の一手 → 修正場所へのボタン�
 
 `entry_id, line_no, date, debit_account, debit_sub_account, debit_department, debit_partner, debit_tax_code, debit_amount, debit_tax_amount, credit_account, credit_sub_account, credit_department, credit_partner, credit_tax_code, credit_amount, credit_tax_amount, description, invoice_status, registration_number, item, tags, closing_flag, source_document_id, rule_id`
 
-`GET /journal/export?format=generic&status=confirmed&from&to` は `{ format, fileName, content }` を返し、UI は Blob でダウンロードする（従来の textarea 表示も残す）。弥生 / freee / MF プリセットは `format` を増やすだけで済むよう `src/application/journal/export-presets.ts` に列写像を置く。
+`GET /journal/export?format=generic|yayoi|freee|mf&status=confirmed&from&to&markExported=true` は
+`{ format, fileName, content, entryCount, encoding, contentBase64?, warnings[] }` を返し、UI は Blob でダウンロードする
+（従来の textarea 表示も残す）。会計ソフト別の列写像と値の組み立ては `src/application/journal/export-presets.ts` にあり、
+**汎用 25 列の純粋な写像**（平坦化は domain の `genericCsvRows` が済ませてある）。税区分の表示名は科目マスタの
+`taxCategories[].mapping.{yayoi,freee,mf}` から引くので、コード側に各社の税区分名を持たない。
+
+| 形式 | 列 | ヘッダ行 | 文字コード | 1 仕訳の束ね方 |
+|---|---|---|---|---|
+| `generic` | 25 列（上記） | あり | UTF-8 BOM | `entry_id` |
+| `yayoi` | 弥生 25 項目 | **なし** | **Shift-JIS** | 識別フラグ（単一行 `2000` / 複合 先頭 `2110`・中間 `2100`・末尾 `2101`） |
+| `freee` | 32 列 + 行頭マーカー | 1 行目 `[表題行]`、データ行 `[明細行]` | UTF-8 BOM | 伝票番号（`entry_id` の数字部 6 桁） |
+| `mf` | 27 列 | あり | UTF-8 BOM | 取引No（同上） |
+
+- **弥生**: 決算整理仕訳は `本決`、取引日付は `YYYY/MM/DD`、タイプ `0`、調整 `no`。科目の無い側（複合仕訳の片側行）は
+  税区分 `対象外`・金額 `0` にする（弥生は空欄を受け付けない）。摘要 64 字、仕訳メモ 180 字で切り詰め、仕訳メモには
+  `rule=<ruleId> doc=<documentId>` を入れる。
+- **freee**: 仕訳インポートの列。摘要は 1,024 字。科目コード・取引先コード・セグメント 1〜3 の列は用意するが今は空欄。
+  取引インポートの 20 列は借方・貸方を表現できないので使わない。
+- **MF**: 借方 / 貸方インボイス列を `invoice_status` から出す。`適格`（qualified）/ `80％控除`・`70％控除`・`50％控除`・
+  `30％控除`（transitional。割合は税区分の `deductionRate`）/ `控除なし`（none）/ 空欄（not_required）。
+
+**文字コードの運び方**: 弥生は Shift-JIS でないと取込画面で文字化けする。JSON は任意のバイト列を運べないので、
+`encoding: 'shift_jis'` のときだけ `contentBase64` に Shift-JIS のバイト列を入れ、`content` は読める UTF-8 のまま返す
+（テキストエリアのフォールバックが空にならないようにするため）。UI は `contentBase64` を復号し、`charset` を付けない
+`text/csv` の Blob にする。
+
+**warnings（黙って値を作らない）**: 次の場合に理由と直し方を `warnings[]` へ積み、画面は出力結果の直下に一覧で出す。
+推測で値を埋めることはしない。
+
+| 警告 | 直し方 |
+|---|---|
+| 税区分に会計ソフトの対応名が無い（内部コードのまま出力） | 「科目」タブの税区分でマッピングを設定する |
+| 摘要 / 仕訳メモを上限で切り詰めた | 摘要を短くする |
+| `entry_id` に伝票番号にできる数字が無い（空欄で出力） | 会計ソフト側で採番する |
+| 1 仕訳の行数が 1 伝票の上限（100 行）を超える | 仕訳を分けてから出力する |
+| Shift-JIS にできない文字がある（絵文字など。`?` になる） | 摘要・科目名からその文字を取り除く |
 
 ## 9. REST API（抜粋。詳細は 04-api-spec §3.4）
 
@@ -274,7 +309,28 @@ UI は理由ごとに「原因 → 次の一手 → 修正場所へのボタン�
 |---|---|---|
 | 1 | ドメイン・保存・API・画面（取込は構造化 / CSV / テキスト保存のみ）、Stage 1 判定、科目マスタ、汎用 CSV、サンプル CSV/JSON | 完了 |
 | 2 | LLM 抽出（画像 / PDF / テキスト）、ヒアリング（Stage 2）、抽出整合チェック | 完了 |
-| 3 | 組込みツール（判定 / 出力）、弥生・freee・MF プリセット、画像サンプル描画、e2e、docs/CHANGELOG | 未着手 |
+| 3 | 組込みツール（**参照のみ**。§14）、弥生・freee・MF プリセット、画像サンプル描画、e2e、docs/CHANGELOG | 進行中 |
+
+## 14. エージェントから呼べる仕訳参照ツール（フェーズ 3）
+
+組込みツール **`builtin-journal-entries`**（公開名 `journal_entries` / `sideEffect: read-only`）で、エージェントが**確定済みの仕訳を読める**。サーバー起動時に `seedBuiltinTools` が冪等にシードする（`src/builtin-tools.ts`）。
+
+| 項目 | 内容 |
+|---|---|
+| 返すもの | 確定済み（`confirmed`）の仕訳。1 行 = 1 仕訳行（借方 × 貸方の対）。列は `entry_id, line_no, date, debit_account, debit_tax_code, debit_amount, credit_account, credit_tax_code, credit_amount, description, invoice_status, status, document_id, rule_id`。金額は税込整数、日付は `YYYY-MM-DD`、複合仕訳は反対側が `null`（汎用 CSV §8 と同じ畳み方で、表現だけ機械可読にしたもの） |
+| 絞り込み | `period`（日付の前方一致。`2026` / `2026-09`）と `account`（科目名の部分一致。借方・貸方のどちらかに当たれば残す）。どちらも省略でき、省略した条件は実行時にスキップされる |
+| 科目名 | **現在のマスタ**から引き直す（改名に追従する）。マスタから消えた科目だけ、仕訳が持つ確定時の名称へ落とす |
+| 上限 | 1 回に読む仕訳は 500 件まで |
+
+実装は ETL ノード **`journal-entries`**（source / arity 0、`src/domain/etl/nodes/journal-entries-source.ts`）。domain はリポジトリへ到達できないため、`web-search-source` と同じく **実行直前に `ResolveDataSourceGraphUseCase` が `json-source` へ書き換える**（行は `application/journal/entry-rows.ts` の `JournalEntryRowsProvider` が供給し、0 件でも列が消えないよう固定スキーマを添える）。port が配線されていなければ空表ではなく `journal entries are not available` で**落とす** — 「仕訳 0 件」と読み違えさせないため。
+
+### 14.1 判定・出力は**わざと**ツール化しない
+
+エージェントから呼べるのは**参照だけ**。判定（`POST /journal/documents/judge`）と出力（`GET /journal/export`）はツールにしない。
+
+- **判定は状態を変える**（文書が `decided` になり仕訳の下書きが増える）。**出力はファイルを作り、`markExported` は仕訳を `exported` にする**。どちらも `read-only` では済まず `write` / `external-action` の副作用になり、承認ゲート（`run-agent-preview.ts` の `waiting-approval`）を通さなければならない。
+- 帳簿は「誰がいつ確定したか」が要る。モデルの判断で仕訳が増えたり出力済みの印が付いたりすると、利用者が画面で見ている状態と帳簿の実体がずれる。**判定・確定・出力は画面から人が押す**（§10 の判定タブ・出力タブ）。
+- 科目マスタを書き換える経路もヒアリングの `accept` 1 本のままで、そこは利用者の明示選択が要る（§7-4）。
 
 ## 参考 URL
 

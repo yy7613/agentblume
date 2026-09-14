@@ -524,8 +524,43 @@ export function csvDownloadName(result: { readonly fileName?: string; readonly f
  */
 export function triggerDownload(fileName: string, content: string, mime = 'text/csv'): boolean {
   try {
+    if (typeof Blob === 'undefined') return false;
+    return triggerBlobDownload(fileName, new Blob([content], { type: `${mime};charset=utf-8` }));
+  } catch {
+    return false;
+  }
+}
+
+/** base64 → バイト列。Shift-JIS の CSV は JSON では運べないので base64 で届く。 */
+export function decodeBase64(base64: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+/**
+ * 出力結果 → ダウンロードする Blob。
+ * Shift-JIS（弥生）は `contentBase64` のバイト列をそのまま入れ、`charset=utf-8` を**付けない**
+ * （付けるとブラウザや会計ソフトが UTF-8 と誤読して文字化けする）。それ以外は UTF-8 の本文。
+ */
+export function exportBlob(result: { readonly content: string; readonly contentBase64?: string; readonly encoding?: 'utf-8' | 'shift_jis' }): Blob {
+  if (result.encoding === 'shift_jis' && result.contentBase64 !== undefined && result.contentBase64 !== '') {
+    return new Blob([decodeBase64(result.contentBase64)], { type: 'text/csv' });
+  }
+  return new Blob([result.content], { type: 'text/csv;charset=utf-8' });
+}
+
+/** 文字コードの表示名（画面でどの文字コードを受け取ったか分かるように）。 */
+export function encodingLabel(encoding: 'utf-8' | 'shift_jis' | undefined): string {
+  return encoding === 'shift_jis' ? 'Shift-JIS' : 'UTF-8';
+}
+
+/** Blob でダウンロードを起こす。起こせなければ false（画面はテキストエリアへ退避する）。 */
+export function triggerBlobDownload(fileName: string, blob: Blob): boolean {
+  try {
     if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function' || typeof document === 'undefined') return false;
-    const url = URL.createObjectURL(new Blob([content], { type: `${mime};charset=utf-8` }));
+    const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = fileName;

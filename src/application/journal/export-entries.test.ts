@@ -92,16 +92,83 @@ describe('ExportJournalEntriesUseCase', () => {
     expect((await entries.findById(scope, 'e1'))?.status).toBe('draft');
   });
 
-  it('異常: 弥生 / freee / MF はまだ変換が無いので JournalExportError', async () => {
+  it('正常: 弥生は Shift-JIS のバイト列を contentBase64 で返し、content は読める UTF-8 のまま', async () => {
+    const { entries, usecase } = await setup();
+    await addEntry(entries, 'J2026-000123');
+
+    const result = await usecase.execute({ scope, format: 'yayoi' });
+    expect(result.format).toBe('yayoi');
+    expect(result.fileName).toBe('journal-yayoi-2026-09-13.csv');
+    expect(result.encoding).toBe('shift_jis');
+    // ヘッダ行を持たず、識別フラグから始まる 25 列。
+    expect(result.content.startsWith('2000,000123,,2026/09/10,消耗品費,')).toBe(true);
+    expect(result.content.split('\r\n')[0]?.split(',')).toHaveLength(25);
+    // base64 のバイト列は Shift-JIS。復号すると本文に戻る（会計ソフトはこれを読む）。
+    const bytes = Buffer.from(result.contentBase64!, 'base64');
+    expect(new TextDecoder('shift_jis').decode(bytes)).toBe(result.content);
+    expect(bytes[0]).toBe(0x32);                                  // BOM を付けない（先頭は識別フラグの '2'）
+    expect(bytes.length).toBeLessThan(Buffer.byteLength(result.content, 'utf8')); // 日本語が 2 バイトになっている
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('正常: freee / MF は UTF-8（BOM 付き）でバイト列を返さない', async () => {
+    const { entries, usecase } = await setup();
+    await addEntry(entries, 'J2026-000123');
+
+    const freee = await usecase.execute({ scope, format: 'freee' });
+    expect(freee.encoding).toBe('utf-8');
+    expect(freee.contentBase64).toBeUndefined();
+    expect(freee.content.startsWith('﻿[表題行],日付,伝票番号')).toBe(true);
+    expect(freee.content).toContain('[明細行],2026/09/10,000123,');
+
+    const mf = await usecase.execute({ scope, format: 'mf' });
+    expect(mf.encoding).toBe('utf-8');
+    expect(mf.fileName).toBe('journal-mf-2026-09-13.csv');
+    expect(mf.content.startsWith('﻿取引No,取引日,')).toBe(true);
+    expect(mf.content).toContain('適格');
+  });
+
+  it('異常: 税区分に会計ソフトの対応名が無いと warnings に出す（黙って別の区分にしない）', async () => {
+    const entries = new InMemoryJournalEntryRepository();
+    const charts = new InMemoryChartOfAccountsRepository();
+    await charts.save(scope, { ...DEFAULT_CHART_OF_ACCOUNTS, taxCategories: DEFAULT_CHART_OF_ACCOUNTS.taxCategories.map((item) => (item.code === 'JP-IN-10-S' ? { ...item, mapping: {} } : item)) });
+    const usecase = new ExportJournalEntriesUseCase(entries, charts, clock);
+    await addEntry(entries, 'J2026-000123');
+
+    const result = await usecase.execute({ scope, format: 'yayoi' });
+    expect(result.warnings.some((warning) => warning.includes('JP-IN-10-S'))).toBe(true);
+    expect(result.content).toContain('JP-IN-10-S');
+  });
+
+  it('異常: Shift-JIS にできない文字があれば警告する（黙って ? に化けさせない）', async () => {
+    const { entries, usecase } = await setup();
+    await addEntry(entries, 'J2026-000123', { description: '絵文字 🍣 入りの摘要' });
+
+    const result = await usecase.execute({ scope, format: 'yayoi' });
+    expect(result.warnings.some((warning) => warning.includes('Shift-JIS') && warning.includes('🍣'))).toBe(true);
+  });
+
+  it('境界: 0 件のとき弥生は空（ヘッダ行が無い形式）、freee / MF はヘッダ行だけ', async () => {
     const { usecase } = await setup();
-    for (const format of ['yayoi', 'freee', 'mf'] as const) {
-      await expect(usecase.execute({ scope, format })).rejects.toThrow(JournalExportError);
-      await expect(usecase.execute({ scope, format })).rejects.toThrow(/not available yet/);
-    }
+    const yayoi = await usecase.execute({ scope, format: 'yayoi' });
+    expect(yayoi.entryCount).toBe(0);
+    expect(yayoi.content).toBe('\r\n');
+    expect((await usecase.execute({ scope, format: 'freee' })).content.split('\r\n')).toHaveLength(2);
+    expect((await usecase.execute({ scope, format: 'mf' })).content.split('\r\n')).toHaveLength(2);
+  });
+
+  it('正常: generic の応答も encoding と warnings を持つ（画面が形式で分岐しない）', async () => {
+    const { entries, usecase } = await setup();
+    await addEntry(entries, 'e1');
+    const result = await usecase.execute({ scope, format: 'generic' });
+    expect(result.encoding).toBe('utf-8');
+    expect(result.contentBase64).toBeUndefined();
+    expect(result.warnings).toEqual([]);
   });
 
   it('異常: 知らない形式は「未対応」ではなく「未知」として断る', async () => {
     const { usecase } = await setup();
+    await expect(usecase.execute({ scope, format: 'nope' as never })).rejects.toThrow(JournalExportError);
     await expect(usecase.execute({ scope, format: 'nope' as never })).rejects.toThrow(/unknown format: nope/);
   });
 

@@ -220,6 +220,7 @@ import type {
 } from '../domain/journal/repositories';
 import { JOURNAL_CAPABILITIES_DISABLED, JournalCapabilitiesUseCase, type JournalCapabilities } from '../application/journal/capabilities';
 import { ExportChartCsvUseCase, ImportChartCsvUseCase } from '../application/journal/chart-transfer';
+import { JournalEntryRowsProvider } from '../application/journal/entry-rows';
 import { ExportJournalEntriesUseCase } from '../application/journal/export-entries';
 import { ImportJournalCsvUseCase } from '../application/journal/import-csv';
 import { JudgeJournalDocumentsUseCase } from '../application/journal/judge-documents';
@@ -788,7 +789,9 @@ export function createApp(options?: AppOptions): App {
   // ポリシーを緩めてから戻した環境で、既存の設定がそのまま起動・接続できてしまう。
   const mcpClient = options?.mcpClient ?? new SdkMcpClient({ policy: mcpPolicy });
   const webSearch = new WebSearchUseCase(options?.searchProviderCatalog ?? new EnvironmentSearchProviderCatalog());
-  const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections, webSearch);
+  // 仕訳の `journal-entries` ソースは domain からリポジトリへ届かないため、実行直前に行を差し込むポートを渡す。
+  const journalEntryRows = new JournalEntryRowsProvider(journalEntryAdapter.repo, journalChartAdapter.repo);
+  const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections, webSearch, journalEntryRows);
 
   const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot, logger: errorLogger, ...(resolveModelSnapshot === undefined ? {} : { resolveModel: resolveModelSnapshot }) }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient);
   const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);

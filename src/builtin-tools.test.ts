@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { BUILTIN_SCOPE, CURRENT_DATETIME_TOOL_ID, seedBuiltinTools } from './builtin-tools';
+import { BUILTIN_SCOPE, CURRENT_DATETIME_TOOL_ID, JOURNAL_ENTRIES_TOOL_ID, seedBuiltinTools } from './builtin-tools';
+import { graphWithArguments } from './application/tool/tool-execution';
 import { createApp, type App } from './composition/root';
 
 describe('seedBuiltinTools', () => {
@@ -18,7 +19,7 @@ describe('seedBuiltinTools', () => {
 
     const result = await seedBuiltinTools(app);
 
-    expect(result.toolIds).toEqual([CURRENT_DATETIME_TOOL_ID]);
+    expect(result.toolIds).toEqual([CURRENT_DATETIME_TOOL_ID, JOURNAL_ENTRIES_TOOL_ID]);
     const tool = await app.getTool.latest(BUILTIN_SCOPE, CURRENT_DATETIME_TOOL_ID);
     expect(tool.metadata.publishName).toBe('current_datetime');
     expect(tool.metadata.displayName).toBe('Current Datetime');
@@ -38,6 +39,8 @@ describe('seedBuiltinTools', () => {
 
     expect(second).toEqual(first);
     expect((await app.listTools.execute(BUILTIN_SCOPE)).filter((tool) => tool.internalId === CURRENT_DATETIME_TOOL_ID)).toHaveLength(1);
+    expect((await app.listTools.execute(BUILTIN_SCOPE)).filter((tool) => tool.internalId === JOURNAL_ENTRIES_TOOL_ID)).toHaveLength(1);
+    expect((await app.getTool.latest(BUILTIN_SCOPE, JOURNAL_ENTRIES_TOOL_ID)).metadata.version.toString()).toBe('1.0.0');
     expect((await app.getTool.latest(BUILTIN_SCOPE, CURRENT_DATETIME_TOOL_ID)).metadata.version.toString()).toBe('1.0.0');
   });
 
@@ -55,5 +58,141 @@ describe('seedBuiltinTools', () => {
     expect(row['yearMonth']).toMatch(/^\d{4}-\d{2}$/);
     expect(row['time']).toMatch(/^\d{2}:\d{2}:\d{2}$/);
     expect(row['weekday']).toMatch(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)$/);
+  });
+
+  it('仕訳ツールを read-only の組込みツールとしてシードする', async () => {
+    const app = newApp();
+
+    await seedBuiltinTools(app);
+
+    const tool = await app.getTool.latest(BUILTIN_SCOPE, JOURNAL_ENTRIES_TOOL_ID);
+    expect(tool.metadata.publishName).toBe('journal_entries');
+    expect(tool.metadata.displayName).toBe('Journal Entries');
+    expect(tool.metadata.owner).toBe('builtin');
+    expect(tool.metadata.version.toString()).toBe('1.0.0');
+    // 読むだけ（判定・出力はツール化しない）。
+    expect(tool.sideEffect).toBe('read-only');
+    expect(tool.agentTool?.name).toBe('journal_entries');
+    expect(tool.agentTool?.description).toContain('confirmed journal entries');
+    expect(tool.graph.nodes.map((node) => node.type)).toEqual(['journal-entries', 'agent-input', 'filter', 'filter', 'agent-output']);
+    // 確定済みだけを見せる。
+    expect(tool.graph.nodes[0]?.config).toMatchObject({ status: 'confirmed' });
+    expect(tool.inputSchema?.columns.map((column) => column.name)).toEqual(['period', 'account']);
+    // どちらの引数も省略できる（nullable）。
+    expect(tool.inputSchema?.columns.every((column) => column.nullable)).toBe(true);
+  });
+
+  it('引数は filter の valueBinding へ束縛され、省略した引数の条件は実行時にスキップされる', async () => {
+    const app = newApp();
+    await seedBuiltinTools(app);
+    const tool = await app.getTool.latest(BUILTIN_SCOPE, JOURNAL_ENTRIES_TOOL_ID);
+
+    const narrowed = graphWithArguments(tool, { period: '2026-09', account: '消耗品費' });
+    expect(narrowed.nodes.find((node) => node.id === 'by-period')?.config).toMatchObject({ column: 'date', op: 'contains', value: '2026-09' });
+    expect((narrowed.nodes.find((node) => node.id === 'by-account')?.config as { conditions: { value: unknown }[] }).conditions.map((condition) => condition.value))
+      .toEqual(['消耗品費', '消耗品費']);
+
+    // 省略（null）は条件そのものを無効化する = 絞り込まない。
+    const all = graphWithArguments(tool, { period: null, account: null });
+    expect(all.nodes.find((node) => node.id === 'by-period')?.config).toMatchObject({ disabled: true });
+    expect((all.nodes.find((node) => node.id === 'by-account')?.config as { conditions: { disabled?: boolean }[] }).conditions.every((condition) => condition.disabled === true)).toBe(true);
+  });
+
+  it('確定済みの仕訳だけを行として返す（下書きは返さない）', async () => {
+    const app = newApp();
+    await seedBuiltinTools(app);
+    const saved = await app.saveJournalEntry.execute({
+      scope: BUILTIN_SCOPE, date: '2026-09-10',
+      lines: [
+        { side: 'debit', accountId: 'expense.supplies', accountName: '消耗品費', taxCode: 'JP-IN-10-S', amount: 1100 },
+        { side: 'credit', accountId: 'asset.cash', accountName: '現金', taxCode: 'JP-NA', amount: 1100 },
+      ],
+      description: 'テスト仕入', invoiceStatus: 'qualified',
+    });
+
+    // 下書きのうちは見えない。
+    expect((await app.previewTool.preview(BUILTIN_SCOPE, JOURNAL_ENTRIES_TOOL_ID)).result.output.rows).toEqual([]);
+
+    await app.confirmJournalEntry.execute(BUILTIN_SCOPE, saved.id);
+    const { result } = await app.previewTool.preview(BUILTIN_SCOPE, JOURNAL_ENTRIES_TOOL_ID);
+    expect(result.output.schema.columns.map((column) => column.name)).toEqual([
+      'entry_id', 'line_no', 'date', 'debit_account', 'debit_tax_code', 'debit_amount',
+      'credit_account', 'credit_tax_code', 'credit_amount', 'description', 'invoice_status', 'status', 'document_id', 'rule_id',
+    ]);
+    expect(result.output.rows).toHaveLength(1);
+    expect(result.output.rows[0]).toMatchObject({ debit_account: '消耗品費', debit_amount: 1100, credit_account: '現金', status: 'confirmed' });
+  });
+
+  it('仕訳が 1 件も無くても空の表を返す（列は消えない）', async () => {
+    const app = newApp();
+    await seedBuiltinTools(app);
+
+    const { result } = await app.previewTool.preview(BUILTIN_SCOPE, JOURNAL_ENTRIES_TOOL_ID);
+    expect(result.output.rows).toEqual([]);
+    expect(result.output.schema.columns).toHaveLength(14);
+  });
+});
+
+describe('seedBuiltinTools（壊れた前提でも壊さない）', () => {
+  /** 最小の有効なツール（json-source → agent-output）。 */
+  function minimalGraph() {
+    return {
+      nodes: [
+        { id: 'rows', type: 'json-source', config: { rows: [{ value: 1 }] } },
+        { id: 'agent-result', type: 'agent-output', config: { shape: 'first-row', format: 'json', maxRows: 1, maxBytes: 4096, overflow: 'error' } },
+      ],
+      edges: [{ from: 'rows', to: 'agent-result' }],
+    };
+  }
+
+  it('異常: 同じ id のツールを利用者が先に作っていたら、上書きせずそのまま残す', async () => {
+    // シードは id での冪等。利用者が手を入れたツールを起動のたびに書き戻すと、編集が黙って消える。
+    const app = createApp({ profile: 'test' });
+    try {
+      await app.saveTool.execute({
+        scope: BUILTIN_SCOPE,
+        internalId: JOURNAL_ENTRIES_TOOL_ID,
+        workingName: '自作',
+        displayName: '自分で直した仕訳ツール',
+        publishName: 'my_journal_entries',
+        owner: 'me',
+        sideEffect: 'read-only',
+        graph: minimalGraph(),
+      });
+
+      const result = await seedBuiltinTools(app);
+
+      expect(result.toolIds).toContain(JOURNAL_ENTRIES_TOOL_ID);
+      const tool = await app.getTool.latest(BUILTIN_SCOPE, JOURNAL_ENTRIES_TOOL_ID);
+      expect(tool.metadata.displayName).toBe('自分で直した仕訳ツール');
+      expect(tool.metadata.owner).toBe('me');
+      expect(tool.metadata.version.toString()).toBe('1.0.0');
+    } finally { app.close(); }
+  });
+
+  it('例外: 同時に 2 回シードすると版の衝突として弾かれ、ツールは重複しない', async () => {
+    // シードは「読んでから書く」ので、同時に走らせると後発が VersionConflictError になる。
+    // 起動時に 1 回だけ呼ぶ前提なので作りは変えない。ここで固定したいのは
+    // **黙って 2 つ目を作らない**こと（重複したツールがエージェントの一覧に並ぶ方が害が大きい）。
+    const app = createApp({ profile: 'test' });
+    try {
+      const results = await Promise.allSettled([seedBuiltinTools(app), seedBuiltinTools(app)]);
+      expect(results.some((result) => result.status === 'fulfilled')).toBe(true);
+
+      const tools = await app.listTools.execute(BUILTIN_SCOPE);
+      const ids = tools.map((tool) => tool.internalId);
+      expect(ids.filter((id) => id === JOURNAL_ENTRIES_TOOL_ID)).toHaveLength(1);
+      expect(ids.filter((id) => id === CURRENT_DATETIME_TOOL_ID)).toHaveLength(1);
+
+      // 衝突した側は理由が分かる形で失敗する（黙って握り潰さない）。
+      const rejected = results.find((result) => result.status === 'rejected');
+      if (rejected !== undefined && rejected.status === 'rejected') {
+        expect(String(rejected.reason)).toMatch(/version|Version/);
+      }
+
+      // もう一度呼べば、既にあるので何も作らずに通る（復旧できる）。
+      await expect(seedBuiltinTools(app)).resolves.toBeDefined();
+      expect((await app.listTools.execute(BUILTIN_SCOPE)).length).toBe(tools.length);
+    } finally { app.close(); }
   });
 });

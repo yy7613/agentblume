@@ -6,7 +6,7 @@ import { InlineFeedback } from '../components/InlineFeedback';
 import { useI18n } from '../i18n';
 import { scope } from '../scope';
 import type { TabFocus } from './JournalPage';
-import { csvDownloadName, entryBalance, formatYen, triggerDownload } from './journal-model';
+import { csvDownloadName, encodingLabel, entryBalance, exportBlob, formatYen, triggerBlobDownload } from './journal-model';
 import { AccountSelect, FieldError, TaxSelect, messageOf } from './journal-shared';
 
 type EntryStatus = '' | JournalEntryDto['status'];
@@ -15,7 +15,9 @@ interface ManualLine { readonly side: 'debit' | 'credit'; readonly accountId: st
 
 /**
  * 出力タブ。仕訳一覧（状態・期間で絞り込み、行を開くと仕訳行）→ 確定 / 削除 → 手入力仕訳 → CSV 出力（Blob でダウンロード、textarea フォールバック）。
- * 形式は Phase 1 では generic だけ。弥生 / freee / MF は選択肢として見せるが無効（近日）。
+ * 形式は 汎用 / 弥生 / freee / マネーフォワード の 4 つ。弥生は Shift-JIS なので `contentBase64` のバイト列から Blob を作る
+ * （textarea には読める UTF-8 の `content` を出す）。サーバーが返した `warnings` は「値を作れなかったこと」の申告なので、
+ * 取り込む前に読めるよう結果の直下に出す。
  */
 export function ExportTab({ client, chart, focus }: { readonly client: ToolApiClient; readonly chart: JournalChartOfAccountsDto | undefined; readonly focus: TabFocus | undefined }) {
   const { text } = useI18n();
@@ -68,7 +70,7 @@ export function ExportTab({ client, chart, focus }: { readonly client: ToolApiCl
     try {
       const exported = await client.exportJournalEntries(scope, { format, status, from, to, markExported });
       setResult(exported);
-      if (!triggerDownload(csvDownloadName(exported), exported.content)) setDownloadFailed(true);
+      if (!triggerBlobDownload(csvDownloadName(exported), exportBlob(exported))) setDownloadFailed(true);
       if (markExported) await reload();
     } catch (cause: unknown) { setError(messageOf(cause)); }
     finally { setExporting(false); }
@@ -181,17 +183,21 @@ export function ExportTab({ client, chart, focus }: { readonly client: ToolApiCl
       <div className="journal-toolbar">
         <label>{text('Format', '形式')}<select aria-label={text('Export format', '出力形式')} value={format} onChange={(event) => setFormat(event.target.value as Format)}>
           <option value="generic">{text('Generic CSV', '汎用 CSV')}</option>
-          <option value="yayoi" disabled>{text('Yayoi (coming soon)', '弥生（近日）')}</option>
-          <option value="freee" disabled>{text('freee (coming soon)', 'freee（近日）')}</option>
-          <option value="mf" disabled>{text('Money Forward (coming soon)', 'マネーフォワード（近日）')}</option>
+          <option value="yayoi">{text('Yayoi (Shift-JIS)', '弥生会計（Shift-JIS）')}</option>
+          <option value="freee">{text('freee', 'freee 会計')}</option>
+          <option value="mf">{text('Money Forward', 'マネーフォワード クラウド会計')}</option>
         </select></label>
         <label className="journal-checkbox"><input type="checkbox" checked={markExported} onChange={(event) => setMarkExported(event.target.checked)} />{text('Mark exported entries as "exported"', '出力した仕訳を「出力済」にする')}</label>
         <button type="button" className="primary" disabled={exporting} onClick={() => void runExport()}>{exporting ? text('Exporting…', '出力中…') : text('Export', '出力する')}</button>
       </div>
       {result !== undefined && <div className="journal-export-result" role="status">
-        <InlineFeedback kind="success">{text(`${result.fileName} · ${result.entryCount} entries`, `${result.fileName} · ${result.entryCount} 件の仕訳`)}</InlineFeedback>
+        <InlineFeedback kind="success">{text(`${result.fileName} · ${result.entryCount} entries · ${encodingLabel(result.encoding)}`, `${result.fileName} · ${result.entryCount} 件の仕訳 · ${encodingLabel(result.encoding)}`)}</InlineFeedback>
+        {result.warnings.length > 0 && <div className="notice-card">
+          <p>{text('Check these before importing into your accounting software:', '会計ソフトへ取り込む前に確認してください:')}</p>
+          <ul>{result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+        </div>}
         {downloadFailed && <p className="notice-card">{text('The browser did not start a download. Use the button below, or copy the CSV from the box.', 'ブラウザがダウンロードを開始しませんでした。下のボタンを押すか、欄から CSV をコピーしてください。')}</p>}
-        <div className="run-failure-actions"><button type="button" className="secondary" onClick={() => { if (!triggerDownload(csvDownloadName(result), result.content)) setDownloadFailed(true); }}>{text('Download again', 'もう一度ダウンロード')}</button></div>
+        <div className="run-failure-actions"><button type="button" className="secondary" onClick={() => { if (!triggerBlobDownload(csvDownloadName(result), exportBlob(result))) setDownloadFailed(true); }}>{text('Download again', 'もう一度ダウンロード')}</button></div>
         <label>{text('CSV content', 'CSV の内容')}<textarea aria-label={text('Exported CSV', '出力した CSV')} readOnly rows={8} value={result.content} /></label>
       </div>}
     </section>

@@ -1376,7 +1376,8 @@ export interface ImportJournalCsvDto { readonly preset?: string; readonly conten
 export interface ImportJournalCsvResultDto { readonly preset: string; readonly imported: readonly JournalDocumentSummaryDto[]; readonly skippedRows: readonly { readonly row: number; readonly reason: string }[]; readonly warnings: readonly string[] }
 export interface ExtractJournalDocumentDto { readonly images?: readonly string[]; readonly text?: string; readonly fileName?: string; readonly hintKind?: JournalDocumentKindDto }
 export interface ExtractJournalDocumentResultDto { readonly kind: JournalDocumentKindDto; readonly facts: JournalDocumentFactsDto; readonly extraction: JournalExtractionDto }
-export interface JournalExportResultDto { readonly format: 'generic' | 'yayoi' | 'freee' | 'mf'; readonly fileName: string; readonly content: string; readonly entryCount: number }
+/** `content` は常に読める UTF-8 本文。`shift_jis`（弥生）のときだけ会計ソフトへ渡すバイト列が `contentBase64` に入る。 */
+export interface JournalExportResultDto { readonly format: 'generic' | 'yayoi' | 'freee' | 'mf'; readonly fileName: string; readonly content: string; readonly entryCount: number; readonly encoding: 'utf-8' | 'shift_jis'; readonly contentBase64?: string; readonly warnings: readonly string[] }
 export interface JournalCapabilitiesDto { readonly extraction: { readonly enabled: boolean; readonly vision: boolean }; readonly hearing: { readonly enabled: boolean } }
 
 /* ヒアリング（Stage 2） ---------------------------------------------------------- */

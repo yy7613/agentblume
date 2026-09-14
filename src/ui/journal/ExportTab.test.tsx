@@ -29,7 +29,7 @@ const draftEntry: JournalEntryDto = {
   createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z',
 };
 
-const exportResult = { format: 'generic' as const, fileName: 'journal-generic-2026-09.csv', content: '日付,借方科目,金額\r\n2026-09-01,会議費,1100\r\n', entryCount: 3 };
+const exportResult = { format: 'generic' as const, fileName: 'journal-generic-2026-09.csv', content: '日付,借方科目,金額\r\n2026-09-01,会議費,1100\r\n', entryCount: 3, encoding: 'utf-8' as const, warnings: [] as readonly string[] };
 
 function stubClient(overrides: Record<string, unknown> = {}): ToolApiClient {
   return {
@@ -163,7 +163,7 @@ describe('ExportTab', () => {
 
     await waitFor(() => expect(client.exportJournalEntries).toHaveBeenCalled());
     expect((client.exportJournalEntries as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toMatchObject({ format: 'generic', markExported: false });
-    expect(await screen.findByText('journal-generic-2026-09.csv · 3 entries')).toBeTruthy();
+    expect(await screen.findByText('journal-generic-2026-09.csv · 3 entries · UTF-8')).toBeTruthy();
     expect(createObjectURL).toHaveBeenCalled();
     expect(click).toHaveBeenCalled();
     expect(screen.queryByText(/did not start a download/)).toBeNull();
@@ -210,5 +210,56 @@ describe('ExportTab', () => {
     renderTab(stubClient({ exportJournalEntries: vi.fn().mockRejectedValue(new Error('JOURNAL_EXPORT_EMPTY: no entries in range')) }));
     await userEvent.click(await screen.findByRole('button', { name: 'Export' }));
     expect(await screen.findByText('JOURNAL_EXPORT_EMPTY: no entries in range')).toBeTruthy();
+  });
+
+  it('正常: 4 形式すべて選べ（無効な選択肢が無く）、選んだ形式をサーバーへ渡す', async () => {
+    stubDownload();
+    const client = stubClient();
+    renderTab(client);
+
+    const select = screen.getByLabelText('Export format') as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(['generic', 'yayoi', 'freee', 'mf']);
+    expect(Array.from(select.options).some((option) => option.disabled)).toBe(false);
+
+    await userEvent.selectOptions(select, 'yayoi');
+    await userEvent.click(screen.getByRole('button', { name: 'Export' }));
+    await waitFor(() => expect((client.exportJournalEntries as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toMatchObject({ format: 'yayoi' }));
+  });
+
+  it('正常: Shift-JIS の出力は contentBase64 のバイト列から Blob を作る（charset を付けない）', async () => {
+    const { createObjectURL, click } = stubDownload();
+    const yayoi = { format: 'yayoi' as const, fileName: 'journal-yayoi-2026-09-13.csv', content: '2000,000123', contentBase64: 'g2U=', encoding: 'shift_jis' as const, warnings: [] as readonly string[] };
+    renderTab(stubClient({ exportJournalEntries: vi.fn().mockResolvedValue(yayoi) }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Export' }));
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+    const blob = createObjectURL.mock.calls[0]?.[0] as Blob;
+    expect(blob.type).toBe('text/csv');
+    expect(blob.size).toBe(2);
+    expect(click).toHaveBeenCalled();
+    // 受け取った文字コードは画面にも出す。テキストエリアは読める本文（バイト列ではない）。
+    expect(await screen.findByText(/· Shift-JIS/)).toBeTruthy();
+    expect(((await screen.findByLabelText('Exported CSV')) as HTMLTextAreaElement).value).toBe('2000,000123');
+  });
+
+  it('異常: サーバーが返した警告は取り込む前の注意として並べる', async () => {
+    stubDownload();
+    const warned = { ...exportResult, warnings: ['税区分 JP-IN-10-S に弥生の対応名が無いため、内部コードのまま出力しました。', '仕訳 J-1 の摘要が 64 文字を超えたため末尾を切り詰めました。'] };
+    renderTab(stubClient({ exportJournalEntries: vi.fn().mockResolvedValue(warned) }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Export' }));
+
+    expect(await screen.findByText(/Check these before importing/)).toBeTruthy();
+    expect(screen.getAllByRole('listitem')).toHaveLength(2);
+    expect(screen.getByText(/内部コードのまま出力しました/)).toBeTruthy();
+  });
+
+  it('[回帰固定] 境界: 警告が無ければ注意書きを出さない', async () => {
+    stubDownload();
+    renderTab(stubClient());
+    await userEvent.click(await screen.findByRole('button', { name: 'Export' }));
+
+    expect(await screen.findByText(/journal-generic-2026-09\.csv/)).toBeTruthy();
+    expect(screen.queryByText(/Check these before importing/)).toBeNull();
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0);
   });
 });

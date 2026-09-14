@@ -1,21 +1,63 @@
 import type { Row } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
+import { JOURNAL_ENTRIES_SCHEMA, JOURNAL_ENTRIES_STATUSES, type JournalEntriesStatus } from '../../domain/etl/nodes/journal-entries-source';
 import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { DataSourceRepository } from '../../domain/data-source/data-source-repository';
 import { DataSourceValidationError } from './manage-data-sources';
 import type { DatabaseReadPort } from './manage-data-sources';
 import type { WebSearchUseCase } from '../search/web-search';
 
+/** 仕訳（`journal-entries` ソース）の絞り込み。ノードの config と同じ形。 */
+export interface JournalEntryReadOptions {
+  readonly status?: JournalEntriesStatus;
+  /** 仕訳日（`YYYY-MM-DD`）の範囲。両端を含む。 */
+  readonly from?: string;
+  readonly to?: string;
+  /** 読む仕訳の件数上限（出力行数ではない）。 */
+  readonly limit?: number;
+}
+
+/**
+ * 仕訳の行を供給するポート。domain の `journal-entries` ノードはリポジトリへ到達できないため、
+ * 実行直前にここで行を差し込む（`web-search-source` と同じ規律）。実装は仕訳 BC の
+ * `application/journal/entry-rows.ts`（`JournalEntryRowsProvider`）。
+ */
+export interface JournalEntryReadPort {
+  rows(scope: TenantScope, options?: JournalEntryReadOptions): Promise<readonly Row[]>;
+}
+
 /** Tool定義内のopaqueなdataSourceIdを、実行直前だけbackend payloadへ展開する。 */
 export class ResolveDataSourceGraphUseCase {
-  constructor(private readonly sources: DataSourceRepository, private readonly database?: DatabaseReadPort, private readonly webSearch?: WebSearchUseCase) {}
+  constructor(private readonly sources: DataSourceRepository, private readonly database?: DatabaseReadPort, private readonly webSearch?: WebSearchUseCase, private readonly journalEntries?: JournalEntryReadPort) {}
 
   async execute(scope: TenantScope, graph: ToolGraph): Promise<ToolGraph> {
     return {
       ...graph,
       nodes: await Promise.all(graph.nodes.map(async (node) => {
-        if (node.type !== 'csv-source' && node.type !== 'json-source' && node.type !== 'database-source' && node.type !== 'web-search-source') return node;
+        if (node.type !== 'csv-source' && node.type !== 'json-source' && node.type !== 'database-source' && node.type !== 'web-search-source' && node.type !== 'journal-entries') return node;
         const configured = node.config as Record<string, unknown>;
+        if (node.type === 'journal-entries') {
+          // ポート未配線でツールを実行させない（空表を返すと「仕訳が 0 件」と読めてしまう）。
+          if (this.journalEntries === undefined) throw new DataSourceValidationError('journal entries are not available');
+          const status = configured['status'];
+          const from = configured['from'];
+          const to = configured['to'];
+          const limit = configured['limit'];
+          if ((status !== undefined && (typeof status !== 'string' || !(JOURNAL_ENTRIES_STATUSES as readonly string[]).includes(status)))
+            || (from !== undefined && typeof from !== 'string')
+            || (to !== undefined && typeof to !== 'string')
+            || (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit)))) {
+            throw new DataSourceValidationError('journal entries source has invalid settings');
+          }
+          const rows = await this.journalEntries.rows(scope, {
+            ...(status === undefined ? {} : { status: status as JournalEntriesStatus }),
+            ...(from === undefined ? {} : { from }),
+            ...(to === undefined ? {} : { to }),
+            ...(limit === undefined ? {} : { limit }),
+          });
+          // スキーマを明示して渡す: 0 件でも列が消えず、下流の filter が列を見失わない。
+          return { ...node, type: 'json-source', config: { rows, schema: JOURNAL_ENTRIES_SCHEMA } };
+        }
         if (node.type === 'web-search-source') {
           const provider = configured['provider'];
           const query = configured['query'];

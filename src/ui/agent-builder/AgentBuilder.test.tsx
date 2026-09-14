@@ -9,6 +9,9 @@ import { I18nProvider } from '../i18n';
 import { NavigationProvider, consumePendingOpen, useOpenInScreen } from '../navigation';
 import { AgentBuilder } from './AgentBuilder';
 
+/** 画面側の自動診断は 600ms 後に走る。発火し切ったことを確かめるため、少し長く待つ。 */
+const AUTO_DIAGNOSE_WAIT_MS = 900;
+
 afterEach(() => { cleanup(); consumePendingOpen('Agent'); });
 // 下書きは localStorage に残るため、テスト間で持ち越さない。
 beforeEach(() => { localStorage.clear(); });
@@ -214,11 +217,70 @@ describe('AgentBuilder', () => {
 
       await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
       await waitFor(() => expect(client.saveAgent).toHaveBeenCalledOnce());
-      expect(diagnoseAgentDraft.mock.calls[0]?.[0]).toEqual((client.saveAgent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+      // 手動・自動のどちらの診断も、その時点の下書きを送る（自動が後から古い内容で上書きしない）。
+      // 発火順は環境の速さで変わるので、最後の診断と保存の DTO を比べる。
+      const lastDiagnose = diagnoseAgentDraft.mock.calls[diagnoseAgentDraft.mock.calls.length - 1];
+      expect(lastDiagnose?.[0]).toEqual((client.saveAgent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
       expect(diagnoseAgentDraft).toHaveBeenCalledWith(expect.anything(), expect.any(AbortSignal));
 
       await userEvent.click(screen.getByRole('button', { name: 'Close diagnostics' }));
       expect(screen.queryByText('Blocked')).toBeNull();
+    });
+
+    it('異常: 必須項目が揃った後に本文を書き換えても、自動診断は書き換え後の下書きを送る', async () => {
+      // 自動診断のタイマーは必須項目が揃った瞬間に仕掛かる。素直に閉じ込めると発火時に
+      // 「仕掛けた時点の下書き」を送ってしまい、入力途中の systemPrompt が飛んでいた。
+      const client = stubClient();
+      const diagnoseAgentDraft = vi.fn().mockResolvedValue(blocked);
+      (client as unknown as { diagnoseAgentDraft: unknown }).diagnoseAgentDraft = diagnoseAgentDraft;
+      await openNewAgentEditor(client);
+      await fillRequired();
+
+      // 必須項目が揃った後に本文を足す（ここでは再スケジュールされない）。
+      await userEvent.type(screen.getByRole('textbox', { name: 'System prompt' }), ' Answer in Japanese.');
+      await waitFor(() => expect(diagnoseAgentDraft).toHaveBeenCalled(), { timeout: 10_000 });
+
+      const sent = diagnoseAgentDraft.mock.calls[diagnoseAgentDraft.mock.calls.length - 1]?.[0] as { systemPrompt: string };
+      // このデバウンスは本文入力では再スケジュールしない設計なので、「入力し終えた最終形が送られる」ことまでは
+      // 保証しない（入力が 600ms を超えれば途中の状態で発火するのが正しい）。ここで固定したいのは
+      // **仕掛けた時点の古い下書きを送らない**こと。以前は 1 文字目の "Y" が飛んでいた。
+      expect(sent.systemPrompt).not.toBe('Y');
+      expect(sent.systemPrompt.startsWith('You are helpful.')).toBe(true);
+      expect('You are helpful. Answer in Japanese.'.startsWith(sent.systemPrompt)).toBe(true);
+    });
+
+    it('[回帰固定] 例外: Error でない値が投げられても落ちず、定型の文言で失敗を伝える', async () => {
+      // 通信層が壊れると Error ではない値（文字列や生のレスポンス）が飛ぶことがある。
+      // message() はそれを定型文へ落とす設計なので、cause.message を読んで落ちないことを固定する。
+      const client = stubClient();
+      (client as unknown as { diagnoseAgentDraft: unknown }).diagnoseAgentDraft = vi.fn().mockRejectedValue('gateway timeout');
+      await openNewAgentEditor(client);
+      await fillRequired();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Check integration' }));
+
+      expect((await screen.findByRole('alert')).textContent).toBe('Diagnostics failed: Request failed');
+      // 画面は生きたままで、続けて操作できる。
+      expect((screen.getByRole('button', { name: 'Check integration' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('異常: 手動診断の失敗表示を、後から発火した自動診断が消さない', async () => {
+      // 必須項目が揃うと 600ms 後に自動診断が仕掛かる。以前はそれが loading で状態を上書きし、
+      // 利用者が読んでいた失敗表示が消えていた（負荷が高いと再表示も間に合わない）。
+      const client = stubClient();
+      const diagnoseAgentDraft = vi.fn().mockRejectedValue(new Error('server unreachable'));
+      (client as unknown as { diagnoseAgentDraft: unknown }).diagnoseAgentDraft = diagnoseAgentDraft;
+      await openNewAgentEditor(client);
+      await fillRequired();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Check integration' }));
+      expect((await screen.findByRole('alert')).textContent).toBe('Diagnostics failed: server unreachable');
+      const callsAfterManual = diagnoseAgentDraft.mock.calls.length;
+
+      // 自動診断のタイマーが発火し切るまで待っても、失敗表示は残り、追加の要求も飛ばない。
+      await new Promise((resolve) => { setTimeout(resolve, AUTO_DIAGNOSE_WAIT_MS); });
+      expect(screen.getByRole('alert').textContent).toBe('Diagnostics failed: server unreachable');
+      expect(diagnoseAgentDraft.mock.calls.length).toBe(callsAfterManual);
     });
 
     it('ツール等の選択が変わると自動で診断し、選択行にバッジと一番目の問題を出す（パネルは勝手に開かない）', async () => {

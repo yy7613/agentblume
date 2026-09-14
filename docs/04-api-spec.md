@@ -511,10 +511,29 @@ LLM-as-Judge の採点は **基準別**（[ADR-0037](./adr/0037-criterion-level-
 
 ```jsonc
 // GET /journal/export?format=generic&status=confirmed&from&to&markExported=true → 200 { result }
-{ "format": "generic", "fileName": "journal-2026-09-13.csv", "content": "﻿entry_id,line_no,…", "entryCount": 12 }
+{ "format": "generic", "fileName": "journal-2026-09-13.csv", "content": "﻿entry_id,line_no,…", "entryCount": 12,
+  "encoding": "utf-8", "warnings": [] }
+
+// GET /journal/export?format=yayoi → 200 { result }（弥生は Shift-JIS）
+{ "format": "yayoi", "fileName": "journal-yayoi-2026-09-13.csv",
+  "content": "2000,000123,,2026/09/10,消耗品費,…",   // 画面のテキストエリア用の読める UTF-8 本文
+  "contentBase64": "MjAwMCww…",                      // 会計ソフトへ渡す Shift-JIS のバイト列（shift_jis のときだけ）
+  "entryCount": 12, "encoding": "shift_jis",
+  "warnings": ["税区分 JP-IN-10-S-D70 に弥生の対応名が無いため、内部コードのまま出力しました。…"] }
 ```
 
-汎用 CSV は 25 列・UTF-8 BOM・CRLF・`YYYY/MM/DD`・税込整数（列は docs/20 §8）。単純仕訳（借方 1 行 × 貸方 1 行）は 1 行に両側を出し、複合仕訳は行ごとに片側だけを出して同じ `entry_id` で束ねる。`markExported=true` は出力した仕訳を `exported` にする（既定 off。中身を確かめるだけのダウンロードで状態を動かさない）。弥生 / freee / MF は列写像を `src/application/journal/export-presets.ts` にデータとして置いてあるだけで**変換はまだ無く、`generic` 以外は 400 `JOURNAL_EXPORT`**（空の CSV を返して会計ソフトの取込画面で初めて失敗させない）。
+汎用 CSV は 25 列・UTF-8 BOM・CRLF・`YYYY/MM/DD`・税込整数（列は docs/20 §8）。単純仕訳（借方 1 行 × 貸方 1 行）は 1 行に両側を出し、複合仕訳は行ごとに片側だけを出して同じ `entry_id` で束ねる。`markExported=true` は出力した仕訳を `exported` にする（既定 off。中身を確かめるだけのダウンロードで状態を動かさない）。
+
+`format` は `generic` / `yayoi` / `freee` / `mf` の 4 つ（列写像と値の組み立ては `src/application/journal/export-presets.ts`。汎用 25 列の**純粋な写像**で、税区分名は科目マスタの `mapping` から引く）。知らない形式は 400 `JOURNAL_EXPORT`。応答の共通フィールド:
+
+| フィールド | 内容 |
+|---|---|
+| `encoding` | `utf-8`（汎用 / freee / MF）/ `shift_jis`（弥生。Shift-JIS でないと取込画面で文字化けする） |
+| `content` | 常に**読める UTF-8 本文**（画面のテキストエリアのフォールバック用） |
+| `contentBase64` | `shift_jis` のときだけ。会計ソフトへ渡すバイト列（base64）。UI はこれを復号して `type: 'text/csv'`（charset 無し）の Blob にする |
+| `warnings[]` | **値を作れなかったことの申告**（税区分に各社の対応名が無い / 摘要を上限で切り詰めた / `entry_id` に伝票番号にできる数字が無い / 1 仕訳の行数が 1 伝票の上限を超える / Shift-JIS に無い文字がある）。黙って別の値で埋めない |
+
+弥生は 25 項目・ヘッダ行なし・識別フラグ（単一行 `2000`、複合仕訳は `2110` / `2100` / `2101`）、freee は 1 行目 `[表題行]`・データ行 `[明細行]`、MF はヘッダ行つきで借方 / 貸方インボイス列（`適格` / `80％控除` / `70％控除` / `50％控除` / `30％控除` / `控除なし`）を持つ。
 
 #### 帳票の LLM 読取（`POST /journal/documents/extract`）
 

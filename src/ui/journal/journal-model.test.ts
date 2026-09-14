@@ -4,6 +4,7 @@ import {
   EMPTY_FACTS_LINE, EMPTY_FACTS_TOTAL, accountsByCategory, amountSpecChoice, amountSpecFromChoice, answeredHearingQuestions, describeOutcomeLine, draftFromFacts, emptyFactsDraft, factsFromDraft, chartValidation, conditionValueFromInput, conditionValueToInput, csvDownloadName, decodeCsvText, detectCsvPreset,
   editableRule, entryBalance, formatPixels, hearingAnswerLabel, hearingAnswerValue, lowConfidenceFields, moveAccount, newAccount, newRuleFromDocument, newTaxCategory, normalizeHeader, openJournalTarget, parseCsvRows, pdfRenderScale, pendingHearingQuestions, pickedFileKind, previewRows, resolveAccountName, resolveTaxName, ruleSpecificity,
   ruleValidation, scaledSize, sortRules, splitList, summarizeConditions, summarizeJudgment, summarizeScope, triggerDownload, validateFactsJson, withinDataUrlLimit,
+  decodeBase64, encodingLabel, exportBlob, triggerBlobDownload,
 } from './journal-model';
 
 const text = (_en: string, ja: string) => ja;
@@ -370,8 +371,40 @@ describe('entryBalance / csvDownloadName / triggerDownload', () => {
     const original = URL.createObjectURL;
     // @ts-expect-error テスト用に未定義にする
     URL.createObjectURL = undefined;
-    try { expect(triggerDownload('a.csv', 'x')).toBe(false); }
-    finally { URL.createObjectURL = original; }
+    try {
+      expect(triggerDownload('a.csv', 'x')).toBe(false);
+      expect(triggerBlobDownload('a.csv', new Blob(['x']))).toBe(false);
+    } finally { URL.createObjectURL = original; }
+  });
+
+  it('正常: decodeBase64 は base64 をバイト列へ戻す', () => {
+    expect(Array.from(decodeBase64('g2U='))).toEqual([0x83, 0x65]);
+  });
+
+  it('境界: 空の base64 は空のバイト列', () => {
+    expect(decodeBase64('').length).toBe(0);
+  });
+
+  it('正常: exportBlob は Shift-JIS ならバイト列で charset を付けず、UTF-8 なら本文を入れる', () => {
+    const sjis = exportBlob({ content: 'テ', contentBase64: 'g2U=', encoding: 'shift_jis' });
+    expect(sjis.type).toBe('text/csv');
+    expect(sjis.size).toBe(2);
+
+    const utf8 = exportBlob({ content: 'テ', encoding: 'utf-8' });
+    expect(utf8.type).toBe('text/csv;charset=utf-8');
+    expect(utf8.size).toBe(3);
+  });
+
+  it('異常: shift_jis でもバイト列が届かなければ読める本文に落とす（空のファイルを掴ませない）', () => {
+    const blob = exportBlob({ content: '2000,000123', encoding: 'shift_jis' });
+    expect(blob.type).toBe('text/csv;charset=utf-8');
+    expect(blob.size).toBe(11);
+  });
+
+  it('境界: encodingLabel は Shift-JIS / UTF-8（未指定は UTF-8）', () => {
+    expect(encodingLabel('shift_jis')).toBe('Shift-JIS');
+    expect(encodingLabel('utf-8')).toBe('UTF-8');
+    expect(encodingLabel(undefined)).toBe('UTF-8');
   });
 });
 

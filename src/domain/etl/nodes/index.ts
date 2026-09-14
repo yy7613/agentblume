@@ -10,6 +10,7 @@
 import { NodeRegistry } from '../registry';
 import { agentInputNode } from './agent-input';
 import { currentDatetimeNode } from './current-datetime';
+import { journalEntriesSourceNode } from './journal-entries-source';
 import { jsonSourceNode } from './json-source';
 import { csvSourceNode } from './csv-source';
 import { selectNode } from './select';
@@ -47,6 +48,9 @@ export { castNode } from './cast';
 export type { CastConfig } from './cast';
 export { agentInputNode } from './agent-input';
 export type { AgentInputConfig } from './agent-input';
+export { journalEntriesSourceNode } from './journal-entries-source';
+export type { JournalEntriesSourceConfig, JournalEntriesStatus, JournalEntriesColumn } from './journal-entries-source';
+export { JOURNAL_ENTRIES_COLUMNS, JOURNAL_ENTRIES_SCHEMA, JOURNAL_ENTRIES_STATUSES } from './journal-entries-source';
 export { currentDatetimeNode } from './current-datetime';
 export type { CurrentDatetimeConfig } from './current-datetime';
 export { joinNode } from './join';
@@ -88,6 +92,7 @@ export function createDefaultRegistry(): NodeRegistry {
   const registry = new NodeRegistry();
   registry.register(agentInputNode);
   registry.register(currentDatetimeNode);
+  registry.register(journalEntriesSourceNode);
   registry.register(jsonSourceNode);
   registry.register(csvSourceNode);
   registry.register(selectNode);

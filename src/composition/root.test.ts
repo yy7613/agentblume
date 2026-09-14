@@ -628,4 +628,36 @@ describe('仕訳（journal）の配線', () => {
       app.close();
     }
   });
+  it('仕訳ソースノードの port が ResolveDataSourceGraph へ配線されている', async () => {
+    const app = createApp({ profile: 'test' });
+    try {
+      const entry = await app.saveJournalEntry.execute({
+        scope, date: '2026-09-10',
+        lines: [
+          { side: 'debit', accountId: 'expense.supplies', accountName: '消耗品費', taxCode: 'JP-IN-10-S', amount: 1100 },
+          { side: 'credit', accountId: 'asset.cash', accountName: '現金', taxCode: 'JP-NA', amount: 1100 },
+        ],
+        description: 'テスト仕入', invoiceStatus: 'qualified',
+      });
+      await app.confirmJournalEntry.execute(scope, entry.id);
+      await app.saveTool.execute({
+        scope, internalId: 'journal-tool', workingName: 'Journal', displayName: 'Journal',
+        publishName: 'journal_rows', owner: 'test', sideEffect: 'read-only',
+        graph: {
+          nodes: [
+            { id: 'entries', type: 'journal-entries', config: { status: 'confirmed' } },
+            { id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65_536, overflow: 'error' } },
+          ],
+          edges: [{ from: 'entries', to: 'out' }],
+        },
+      });
+
+      // port が配線されていなければ 'journal entries are not available' で落ちる。
+      const { result } = await app.previewTool.preview(scope, 'journal-tool');
+      expect(result.output.rows).toHaveLength(1);
+      expect(result.output.rows[0]).toMatchObject({ debit_account: '消耗品費', credit_account: '現金', status: 'confirmed' });
+    } finally {
+      app.close();
+    }
+  });
 });
