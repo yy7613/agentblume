@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { BUILTIN_SCOPE, CURRENT_DATETIME_TOOL_ID, JOURNAL_ENTRIES_TOOL_ID, seedBuiltinTools } from './builtin-tools';
+import { BUILTIN_SCOPE, CURRENT_DATETIME_TOOL_ID, JOURNAL_ATTACHMENT_TOOL_ID, JOURNAL_DRAFT_ENTRY_TOOL_ID, JOURNAL_ENTRIES_TOOL_ID, seedBuiltinTools } from './builtin-tools';
 import { graphWithArguments } from './application/tool/tool-execution';
 import { createApp, type App } from './composition/root';
 
@@ -19,7 +19,7 @@ describe('seedBuiltinTools', () => {
 
     const result = await seedBuiltinTools(app);
 
-    expect(result.toolIds).toEqual([CURRENT_DATETIME_TOOL_ID, JOURNAL_ENTRIES_TOOL_ID]);
+    expect(result.toolIds).toEqual([CURRENT_DATETIME_TOOL_ID, JOURNAL_ENTRIES_TOOL_ID, JOURNAL_ATTACHMENT_TOOL_ID, JOURNAL_DRAFT_ENTRY_TOOL_ID]);
     const tool = await app.getTool.latest(BUILTIN_SCOPE, CURRENT_DATETIME_TOOL_ID);
     expect(tool.metadata.publishName).toBe('current_datetime');
     expect(tool.metadata.displayName).toBe('Current Datetime');
@@ -80,6 +80,39 @@ describe('seedBuiltinTools', () => {
     expect(tool.inputSchema?.columns.map((column) => column.name)).toEqual(['period', 'account']);
     // どちらの引数も省略できる（nullable）。
     expect(tool.inputSchema?.columns.every((column) => column.nullable)).toBe(true);
+  });
+
+  it('添付帳票の読み取りツールを、引数なしの read-only 組込みツールとしてシードする', async () => {
+    const app = newApp();
+
+    await seedBuiltinTools(app);
+
+    const tool = await app.getTool.latest(BUILTIN_SCOPE, JOURNAL_ATTACHMENT_TOOL_ID);
+    expect(tool.metadata.publishName).toBe('journal_read_attachment');
+    expect(tool.metadata.owner).toBe('builtin');
+    expect(tool.sideEffect).toBe('read-only');
+    expect(tool.agentTool?.name).toBe('journal_read_attachment');
+    expect(tool.agentTool?.description).toContain('attached to the current message');
+    expect(tool.graph.nodes.map((node) => node.type)).toEqual(['journal-attachment', 'agent-output']);
+    // 添付は引数では運べない（数 MB の base64 になる）ので実行文脈から供給する。だから引数を持たない。
+    expect(tool.graph.nodes.some((node) => node.type === 'agent-input')).toBe(false);
+    expect(tool.inputSchema?.columns ?? []).toHaveLength(0);
+  });
+
+  it('取込から判定までを 1 本で通すツールを、引数なしの read-only 組込みツールとしてシードする', async () => {
+    const app = newApp();
+
+    await seedBuiltinTools(app);
+
+    const tool = await app.getTool.latest(BUILTIN_SCOPE, JOURNAL_DRAFT_ENTRY_TOOL_ID);
+    expect(tool.metadata.publishName).toBe('journal_draft_entry');
+    expect(tool.metadata.owner).toBe('builtin');
+    // 判定は純粋関数で、仕訳も帳票も保存しない。
+    expect(tool.sideEffect).toBe('read-only');
+    expect(tool.agentTool?.description).toContain('judges it against the bookkeeping rules');
+    expect(tool.agentTool?.description).toContain('never saves');
+    expect(tool.graph.nodes.map((node) => node.type)).toEqual(['journal-draft-entry', 'agent-output']);
+    expect(tool.inputSchema?.columns ?? []).toHaveLength(0);
   });
 
   it('引数は filter の valueBinding へ束縛され、省略した引数の条件は実行時にスキップされる', async () => {

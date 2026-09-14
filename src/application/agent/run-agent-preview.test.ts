@@ -938,6 +938,35 @@ describe('RunAgentPreviewUseCase', () => {
     expect(missingRuns.records.get('run-1')?.failure).toEqual({ code: 'AGENT_RUN', message: 'tool declares inputSchema but has no agent-input node', tool: toolRef });
   });
 
+  it('正常: 添付した帳票を実行文脈へ載せ、データソース解決へ渡す', async () => {
+    // 添付はツールの引数では運べない（数 MB の base64 をモデルに書かせることになる）ので、
+    // 実行文脈を通してデータソース解決へ渡す。仕訳の添付読み取りツールはこの経路に乗る。
+    const attachment = { name: 'receipt.png', dataUrl: 'data:image/png;base64,AAA' };
+    const seen: unknown[] = [];
+    const resolver = { execute: async (_scope: unknown, graph: unknown, context: unknown) => { seen.push(context); return graph; } } as unknown as ResolveDataSourceGraphUseCase;
+    // ツール呼び出しの後、エージェントは最終応答をもう 1 件求める（既存テストと同じ積み方）。
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('done')], ['chat', 'tool-calling', 'vision']);
+    const usecase = new RunAgentPreviewUseCase(new StaticRepository(makeTool()), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-attach', undefined, undefined, undefined, undefined, undefined, undefined, undefined, resolver);
+
+    await usecase.execute({ ...input, images: [attachment] });
+
+    expect(seen).toEqual([{ attachments: [attachment] }]);
+  });
+
+  // 実行中は添付が無くても文脈を渡す。文脈の有無は「実行中か / 保存・スキーマ点検か」の区別に使うので、
+  // ここで undefined を渡すと、添付を要するソースが未解決のまま空表になり、エージェントが
+  // 「帳票に何も書いていない」と読み違える（実測で踏んだ: 模型が 2 回呼ばれ、案内が出なかった）。
+  it('境界: 添付が無い実行でも文脈は渡す（空の一覧として渡し、未解決の空表にしない）', async () => {
+    const seen: unknown[] = [];
+    const resolver = { execute: async (_scope: unknown, graph: unknown, context: unknown) => { seen.push(context); return graph; } } as unknown as ResolveDataSourceGraphUseCase;
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('done')]);
+    const usecase = new RunAgentPreviewUseCase(new StaticRepository(makeTool()), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-plain', undefined, undefined, undefined, undefined, undefined, undefined, undefined, resolver);
+
+    await usecase.execute(input);
+
+    expect(seen).toEqual([{ attachments: [] }]);
+  });
+
   it('ツール実行中に中断されたら tool で包まず RUN_CANCELLED として記録する', async () => {
     const controller = new AbortController();
     const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 })]);

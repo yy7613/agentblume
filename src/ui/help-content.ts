@@ -110,6 +110,14 @@ const HELP: Readonly<Record<ScreenName, ScreenHelp>> = {
     ],
     doc: 'docs/06-etl-tool-builder.md',
   },
+  Templates: {
+    title: { en: 'Business templates', ja: '業務テンプレート' },
+    summary: { en: 'The entry point for features built for a specific line of work. Pick one from the list to open it.', ja: '特定の業務向けにあらかじめ組んである機能の入口です。一覧から選ぶとその業務の画面に入ります。' },
+    steps: [
+      { en: 'Pick a template to open it. Each one is a full screen with its own steps; use the back link at the top to return here.', ja: '使う業務を選ぶと、その画面に入ります。各業務は独自の手順を持つ画面で、上部の戻るリンクでここへ戻れます。' },
+      { en: 'Only templates that are ready to use are listed. The studio-wide features (data sources, tools, agents) stay in the groups above.', ja: '一覧に出るのは今すぐ使えるものだけです。データソース・ツール・エージェントのような全体で使う機能は、上のグループのままです。' },
+    ],
+  },
   Journal: {
     title: { en: 'Journal', ja: '仕訳' },
     summary: { en: 'Ingest receipts, invoices, and bank/card CSV rows, judge each one against your own rules (stage 1), and export the resulting journal entries as a generic CSV.', ja: 'レシート・請求書・銀行/カード明細 CSV を取り込み、自分で決めたルールで判定（Stage 1）して仕訳を起こし、汎用 CSV に出力します。' },

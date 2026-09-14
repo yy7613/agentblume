@@ -88,6 +88,14 @@ describe('JournalPage', () => {
     expect(screen.getByRole('tab', { name: 'Export' }).getAttribute('aria-selected')).toBe('true');
   });
 
+  it('正常: 左上の戻る導線から業務テンプレートの一覧へ帰れる', async () => {
+    // 仕訳は業務テンプレートの一覧から入るので、帰り道を画面側に持たせる。
+    // hash を直接書き換えず遷移の仕組みを通すのは、未保存の編集があるときの確認を飛び越えないため。
+    const navigate = renderPage(stubClient());
+    await userEvent.click(screen.getByRole('button', { name: '← Business templates' }));
+    expect(navigate).toHaveBeenCalledWith('Templates');
+  });
+
   it('例外: 科目マスタとルールの初回読込が失敗してもエラーを出し、画面は使えたままにする', async () => {
     const client = stubClient({
       getJournalChart: vi.fn().mockRejectedValue(new Error('chart down')),

@@ -6,7 +6,7 @@ import { InlineFeedback } from '../components/InlineFeedback';
 import { useI18n } from '../i18n';
 import { scope } from '../scope';
 import type { TabFocus } from './JournalPage';
-import { csvDownloadName, encodingLabel, entryBalance, exportBlob, formatYen, triggerBlobDownload } from './journal-model';
+import { buildJournalToolPayload, csvDownloadName, encodingLabel, entryBalance, exportBlob, formatYen, journalToolIssue, journalToolName, triggerBlobDownload } from './journal-model';
 import { AccountSelect, FieldError, TaxSelect, messageOf } from './journal-shared';
 
 type EntryStatus = '' | JournalEntryDto['status'];
@@ -35,6 +35,11 @@ export function ExportTab({ client, chart, focus }: { readonly client: ToolApiCl
   const [exporting, setExporting] = useState(false);
   const [result, setResult] = useState<JournalExportResultDto>();
   const [downloadFailed, setDownloadFailed] = useState(false);
+  // 「この条件をツールにする」。出力タブの絞り込みをそのまま読み取り専用ツールとして保存する。
+  const [toolName, setToolName] = useState('');
+  const [toolSaving, setToolSaving] = useState(false);
+  const [toolSubmitted, setToolSubmitted] = useState(false);
+  const [toolFeedback, setToolFeedback] = useState<{ readonly kind: 'success' | 'error'; readonly text: string }>();
   const [manual, setManual] = useState<{ readonly date: string; readonly description: string; readonly invoiceStatus: JournalInvoiceStatusDto; readonly lines: readonly ManualLine[] }>({ date: '', description: '', invoiceStatus: 'not_required', lines: [{ side: 'debit', accountId: '', taxCode: '', amount: '' }, { side: 'credit', accountId: '', taxCode: '', amount: '' }] });
   const [manualSubmitted, setManualSubmitted] = useState(false);
   const [manualSaving, setManualSaving] = useState(false);
@@ -108,6 +113,27 @@ export function ExportTab({ client, chart, focus }: { readonly client: ToolApiCl
       await reload();
     } catch (cause: unknown) { setManualFeedback({ kind: 'error', text: messageOf(cause) }); }
     finally { setManualSaving(false); }
+  };
+
+  /**
+   * 「この条件をツールにする」。いまの絞り込みを読み取り専用ツールとして保存する。
+   * 条件はノードの設定に焼き込むので引数なしのツールになり、用途ごとに何本でも持てる。
+   */
+  const saveAsTool = async (): Promise<void> => {
+    setToolSubmitted(true);
+    setToolFeedback(undefined);
+    const draft = { name: toolName, status, from, to };
+    // 直せる入力の誤りは、保存を投げずに項目の下へ出す（FieldError が同じ判定を描く）。
+    if (journalToolIssue(draft, text) !== undefined) return;
+    setToolSaving(true);
+    try {
+      const published = journalToolName(toolName);
+      await client.saveTool({ scope, ...buildJournalToolPayload(draft) });
+      setToolFeedback({ kind: 'success', text: text(`Saved the tool ${published}. Attach it to an agent in the Agent screen to let it read these entries.`, `ツール ${published} を保存しました。エージェント画面で組み込むと、この条件の仕訳を読めるようになります。`) });
+      setToolName('');
+      setToolSubmitted(false);
+    } catch (cause: unknown) { setToolFeedback({ kind: 'error', text: messageOf(cause) }); }
+    finally { setToolSaving(false); }
   };
 
   const emptyChart = { accounts: [], taxCategories: [] };
@@ -201,6 +227,19 @@ export function ExportTab({ client, chart, focus }: { readonly client: ToolApiCl
         <label>{text('CSV content', 'CSV の内容')}<textarea aria-label={text('Exported CSV', '出力した CSV')} readOnly rows={8} value={result.content} /></label>
       </div>}
     </section>
+    <section className="workspace-card" aria-labelledby="journal-tool-heading">
+      <h2 id="journal-tool-heading">{text('Make a tool from this filter', 'この条件をツールにする')}</h2>
+      <p className="empty-state">{text('Saves the status and date filters above as a read-only tool an agent can call. Make one per purpose (monthly supplies, a department, and so on) and attach the ones you need in the Agent screen. It only reads: judging and exporting stay on this screen.', '上の状態・期間の絞り込みを、エージェントが呼べる読み取り専用ツールとして保存します。用途ごとに作り（月次の消耗品費、部門別など）、必要なものをエージェント画面で組み込みます。読むだけなので、判定と出力はこの画面のままです。')}</p>
+      <div className="journal-toolbar">
+        <label>{text('Tool name', 'ツール名')}<input aria-label={text('Tool name', 'ツール名')} value={toolName} placeholder="monthly_supplies" onChange={(event) => { setToolName(event.target.value); setToolFeedback(undefined); }} /></label>
+        <button type="button" className="secondary" disabled={toolSaving} onClick={() => void saveAsTool()}>{toolSaving ? text('Saving…', '保存中…') : text('Save as tool', 'ツールとして保存')}</button>
+      </div>
+      {toolSubmitted && <FieldError message={journalToolIssue({ name: toolName, status, from, to }, text)} />}
+      {/* 整形後が空（日本語や記号だけ）のときは案内にならないので出さない。その場合は上の FieldError が理由を言う。 */}
+      {journalToolName(toolName) !== '' && journalToolName(toolName) !== toolName.trim() && <small className="empty-state">{text(`The agent will call it as ${journalToolName(toolName)}.`, `エージェントからは ${journalToolName(toolName)} という名前で呼ばれます。`)}</small>}
+      {toolFeedback !== undefined && <InlineFeedback kind={toolFeedback.kind}>{toolFeedback.text}</InlineFeedback>}
+    </section>
+
     <ConfirmDialog open={pendingDelete !== undefined} danger busy={busyId !== undefined} title={text('Delete this entry?', 'この仕訳を削除しますか？')}
       message={pendingDelete === undefined ? '' : text(`Entry "${pendingDelete.description || pendingDelete.id}" (${pendingDelete.date}) will be removed. The source document stays and can be judged again.`, `仕訳「${pendingDelete.description || pendingDelete.id}」（${pendingDelete.date}）を削除します。元の帳票は残り、再判定できます。`)}
       confirmLabel={text('Delete', '削除')} cancelLabel={text('Cancel', 'キャンセル')} onConfirm={() => void remove()} onCancel={() => setPendingDelete(undefined)} />

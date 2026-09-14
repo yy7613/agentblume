@@ -66,6 +66,75 @@ async function fillManualEntry(amounts: { readonly debit: string; readonly credi
   await userEvent.type(screen.getByLabelText('Manual line 2 amount'), amounts.credit);
 }
 
+describe('ExportTab: この条件をツールにする', () => {
+  /** 一覧の初回読み込みを待ってから操作する（act 警告を避ける）。 */
+  async function renderReady(client: ToolApiClient) {
+    renderTab(client);
+    await waitFor(() => expect(client.listJournalEntries).toHaveBeenCalled());
+  }
+
+  it('正常: いまの絞り込みを焼き込んだ読み取り専用ツールとして保存する', async () => {
+    const saveTool = vi.fn().mockResolvedValue({});
+    const client = stubClient({ saveTool });
+    await renderReady(client);
+
+    await userEvent.selectOptions(screen.getByLabelText('Entry status filter'), 'confirmed');
+    await userEvent.type(screen.getByLabelText('From date'), '2026-09-01');
+    await userEvent.type(screen.getByLabelText('To date'), '2026-09-30');
+    await userEvent.type(screen.getByLabelText('Tool name'), 'monthly_supplies');
+    await userEvent.click(screen.getByRole('button', { name: 'Save as tool' }));
+
+    await waitFor(() => expect(saveTool).toHaveBeenCalled());
+    const sent = saveTool.mock.calls[0]?.[0] as { publishName: string; sideEffect: string; graph: { nodes: { type: string; config: unknown }[] }; agentTool: { name: string } };
+    expect(sent.publishName).toBe('monthly_supplies');
+    expect(sent.agentTool.name).toBe('monthly_supplies');
+    expect(sent.sideEffect).toBe('read-only');
+    expect(sent.graph.nodes[0]?.config).toMatchObject({ status: 'confirmed', from: '2026-09-01', to: '2026-09-30' });
+    // 保存できたことと、次にどこで使うかを伝える。
+    expect(await screen.findByText(/Saved the tool monthly_supplies/)).toBeTruthy();
+    expect((screen.getByLabelText('Tool name') as HTMLInputElement).value).toBe('');
+  });
+
+  it('境界: 関数名に使えない文字を含む名前は、呼ばれる名前を先に知らせる', async () => {
+    const client = stubClient({ saveTool: vi.fn().mockResolvedValue({}) });
+    await renderReady(client);
+    await userEvent.type(screen.getByLabelText('Tool name'), 'monthly 消耗品費');
+    expect(screen.getByText('The agent will call it as monthly.')).toBeTruthy();
+  });
+
+  it('異常: 名前が空のまま押しても保存せず、理由を出す', async () => {
+    const saveTool = vi.fn();
+    const client = stubClient({ saveTool });
+    await renderReady(client);
+    await userEvent.click(screen.getByRole('button', { name: 'Save as tool' }));
+    expect(saveTool).not.toHaveBeenCalled();
+    expect(screen.getByText(/Enter a name/)).toBeTruthy();
+  });
+
+  it('異常: 期間の形式が誤っていれば保存を投げない', async () => {
+    const saveTool = vi.fn();
+    const client = stubClient({ saveTool });
+    await renderReady(client);
+    await userEvent.type(screen.getByLabelText('From date'), '2026/09/01');
+    await userEvent.type(screen.getByLabelText('Tool name'), 'bad_range');
+    await userEvent.click(screen.getByRole('button', { name: 'Save as tool' }));
+    expect(saveTool).not.toHaveBeenCalled();
+    expect(screen.getByText(/YYYY-MM-DD/)).toBeTruthy();
+  });
+
+  it('例外: 保存が失敗しても落ちず、原因を出して操作を続けられる', async () => {
+    const saveTool = vi.fn().mockRejectedValue(new Error('tool name is already taken'));
+    const client = stubClient({ saveTool });
+    await renderReady(client);
+    await userEvent.type(screen.getByLabelText('Tool name'), 'dup_name');
+    await userEvent.click(screen.getByRole('button', { name: 'Save as tool' }));
+    expect(await screen.findByText('tool name is already taken')).toBeTruthy();
+    // 入力は残り、直して押し直せる。
+    expect((screen.getByLabelText('Tool name') as HTMLInputElement).value).toBe('dup_name');
+    expect(screen.getByRole('button', { name: 'Save as tool' })).toBeTruthy();
+  });
+});
+
 describe('ExportTab', () => {
   it('正常: 仕訳一覧を出し、状態の絞り込みをサーバーへ渡す', async () => {
     const client = stubClient();

@@ -276,10 +276,15 @@ test('Chat・MCP・Validation・仕訳・Memory・Settingsの全ナビが実操�
   await expect(page).toHaveURL(/#\/toolcheck$/);
   await expect(page.getByRole('heading', { name: 'Tool Check' })).toBeVisible();
 
-  // 仕訳も同じく、画面が開いて見出しが出ることだけを確かめる（/journal 系のAPIが無い環境でも落ちないように）。
-  await page.getByRole('button', { name: 'Journal', exact: true }).click();
+  // 仕訳は業務テンプレートの一覧から入る。画面が開いて見出しが出ることだけを確かめる（/journal 系のAPIが無い環境でも落ちないように）。
+  await page.getByRole('button', { name: 'Templates', exact: true }).click();
+  await expect(page).toHaveURL(/#\/templates$/);
+  await page.getByRole('button', { name: 'Journal entries', exact: true }).click();
   await expect(page).toHaveURL(/#\/journal$/);
   await expect(page.getByRole('heading', { name: 'Journal entries' })).toBeVisible();
+  // 戻る導線で一覧へ帰れる。
+  await page.getByRole('button', { name: '← Business templates', exact: true }).click();
+  await expect(page).toHaveURL(/#\/templates$/);
 
   await page.getByRole('button', { name: 'Memory', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Long-term memory' })).toBeVisible();

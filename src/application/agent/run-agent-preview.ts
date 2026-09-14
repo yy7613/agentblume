@@ -221,6 +221,12 @@ interface NodeContext {
   readonly mcpServers?: readonly string[];
   /** 対話相手がいる実行か。承認ゲートは interactive かつ depth === 0 のときだけ発火する。 */
   readonly interactive?: boolean;
+  /**
+   * この実行に添付された帳票（画像）。ツール実行時に `journal-attachment` ソースへ供給する。
+   * モデルへのメッセージにも同じものが載るが、ツールは引数経由で数 MB を運べないため、
+   * 実行文脈を通して渡す（引数に base64 を入れさせない）。
+   */
+  readonly attachments?: readonly ImageAttachment[];
 }
 
 interface RunTiming { modelMs: number; toolMs: number }
@@ -408,7 +414,7 @@ export class RunAgentPreviewUseCase {
       session?.id,
       { tool: { internalId: input.toolId, ...(input.version !== undefined ? { version: input.version.toString() } : {}) } },
       async (trace, timing, runId) => {
-        const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget: makeBudget(), depth: 0, subAgents: [], ...(session === undefined ? {} : { session }) };
+        const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget: makeBudget(), depth: 0, subAgents: [], ...(session === undefined ? {} : { session }), ...(input.images === undefined ? {} : { attachments: input.images }) };
         const result = await this.perform(input.systemPrompt, input.message, [tool], trace, timing, ctx, signal, undefined, undefined, undefined, input.images);
         return result.tool === undefined ? { ...result, tool: this.toolRef(tool) } : result;
       },
@@ -444,7 +450,7 @@ export class RunAgentPreviewUseCase {
           }
         }
         const resolved = await resolveAgentCapabilities(input.scope, agent.skills, agent.tools, this.repo, this.skills, [...agent.agents, ...additionalAgents], agentRepo);
-        const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget, depth: 0, subAgents: resolved.subAgents, ...(session === undefined ? {} : { session }), ...(agent.harness === undefined ? {} : { harness: agent.harness }), ...(agent.mcpServers === undefined ? {} : { mcpServers: agent.mcpServers }), ...(input.interactive === true ? { interactive: true } : {}) };
+        const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget, depth: 0, subAgents: resolved.subAgents, ...(session === undefined ? {} : { session }), ...(agent.harness === undefined ? {} : { harness: agent.harness }), ...(agent.mcpServers === undefined ? {} : { mcpServers: agent.mcpServers }), ...(input.interactive === true ? { interactive: true } : {}), ...(input.images === undefined ? {} : { attachments: input.images }) };
         const wikiContext = await this.buildWikiContext(input.scope, agent, input.message, input.memoryPageIds);
         const memoryContext = [wikiContext, input.memoryContext].filter((value): value is string => value !== undefined && value.trim() !== '').join('\n\n') || undefined;
         const systemPrompt = withMemoryContext(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), memoryContext);
@@ -1062,7 +1068,14 @@ export class RunAgentPreviewUseCase {
     trace.push({ sequence: trace.length + 1, kind: 'tool-call', name: call.name, arguments: call.arguments });
     const args = validateToolArguments(tool.inputSchema, call.arguments);
     const graph = graphWithArguments(tool, args);
-    const executableGraph = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(ctx.scope, graph);
+    // 添付は実行文脈で渡す（引数では数 MB の base64 を運べない）。子エージェント・再開実行には渡さない
+    // ＝ 添付はその turn の入力であって、委譲先や再開後が引き継ぐものではない。
+    //
+    // 添付が無くても**文脈そのものは必ず渡す**（空の一覧として渡す）。文脈の有無は
+    // 「実行中か / 保存・スキーマ点検か」の区別に使っており、ここで undefined を渡すと
+    // 添付を要するソースが未解決のまま空表を返し、エージェントが「帳票に何も書いていない」と
+    // 読み違える（「添付してください」と言えなくなる）。
+    const executableGraph = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(ctx.scope, graph, { attachments: ctx.attachments ?? [] });
     // 実行は常に全行。rowLimit は trace の outputPreview に使う表示用スナップショットにしか効かない。
     // かつては rowLimit で切った表をそのまま検証・配送しており、モデルが「先頭100行の合計」を
     // 全体の合計として自信を持って報告していた。

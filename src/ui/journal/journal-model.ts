@@ -199,6 +199,113 @@ export function previewRows(content: string, limit = 5): CsvPreview {
 }
 
 /* ---------------------------------------------------------------------------
+ * 仕訳をエージェントのツールにする
+ * ------------------------------------------------------------------------- */
+
+/** 出力タブの絞り込みから作るツールの下書き。 */
+export interface JournalToolDraft {
+  /** 利用者が付ける名前。そのまま function 名になるので英数字・`_`・`-` へ整形する。 */
+  readonly name: string;
+  /** 空文字は「すべての状態」。 */
+  readonly status: '' | 'draft' | 'confirmed' | 'exported';
+  /** `YYYY-MM-DD`。空文字は指定なし。 */
+  readonly from: string;
+  readonly to: string;
+  /** 1 回に読む仕訳の件数上限。 */
+  readonly limit?: number;
+}
+
+/** `client.saveTool` へ渡す形（`scope` だけ呼び出し側が足す）。 */
+export interface JournalToolPayload {
+  readonly internalId: string;
+  readonly workingName: string;
+  readonly displayName: string;
+  readonly publishName: string;
+  readonly owner: string;
+  readonly sideEffect: 'read-only';
+  readonly graph: { readonly nodes: readonly { readonly id: string; readonly type: string; readonly config: unknown }[]; readonly edges: readonly { readonly from: string; readonly to: string }[] };
+  readonly agentTool: { readonly name: string; readonly description: string };
+}
+
+/** function 名として使える形（`/^[A-Za-z0-9_-]{1,64}$/`）へ整形する。使えない文字は `_` に畳む。 */
+export function journalToolName(raw: string): string {
+  const folded = raw.normalize('NFKC').trim().replace(/[^A-Za-z0-9_-]+/gu, '_').replace(/^_+|_+$/gu, '');
+  return folded.slice(0, 64);
+}
+
+const JOURNAL_TOOL_ISO_DATE = /^\d{4}-\d{2}-\d{2}$/u;
+
+/**
+ * ツール化できない理由（無ければ undefined）。保存を押す前に画面で止めるためのもので、
+ * サーバー側の検証（SaveTool）と同じ規則を先に当てる。
+ */
+export function journalToolIssue(draft: JournalToolDraft, text: Translate): string | undefined {
+  if (journalToolName(draft.name) === '') {
+    return text('Enter a name. It becomes the function name the agent calls, so use letters, digits, _ or -.', '名前を入れてください。エージェントが呼ぶ関数名になるので、英数字・アンダースコア・ハイフンが使えます。');
+  }
+  for (const [value, label] of [[draft.from, text('From', '開始日')], [draft.to, text('To', '終了日')]] as const) {
+    if (value !== '' && !JOURNAL_TOOL_ISO_DATE.test(value)) {
+      return text(`${label} must be a date in YYYY-MM-DD.`, `${label}は YYYY-MM-DD の形式で入れてください。`);
+    }
+  }
+  if (draft.from !== '' && draft.to !== '' && draft.from > draft.to) {
+    return text('The start date is after the end date.', '開始日が終了日より後になっています。');
+  }
+  return undefined;
+}
+
+/** 固定した絞り込みを英語 1 文にする（`agentTool.description` に載せてモデルへ渡す）。 */
+function journalToolScopeSentence(draft: JournalToolDraft): string {
+  const parts: string[] = [];
+  parts.push(draft.status === '' ? 'entries in any state' : `${draft.status} entries`);
+  if (draft.from !== '' && draft.to !== '') parts.push(`dated ${draft.from} to ${draft.to}`);
+  else if (draft.from !== '') parts.push(`dated ${draft.from} or later`);
+  else if (draft.to !== '') parts.push(`dated ${draft.to} or earlier`);
+  return parts.join(', ');
+}
+
+/** 1 回に読む仕訳の既定上限（組込みツールと同じ）。 */
+export const JOURNAL_TOOL_DEFAULT_LIMIT = 500;
+
+/**
+ * 出力タブの絞り込みから、エージェントが呼べる読み取り専用ツールを組み立てる。
+ *
+ * 組込みツール（`journal_entries`）は期間と科目を**引数**で受けるが、こちらは画面で決めた条件を
+ * ノードの設定に焼き込む。用途ごとに 1 本ずつ作って使い分ける前提なので、引数を持たせない方が
+ * モデルにとって選びやすく、条件の取り違えも起きない。
+ */
+export function buildJournalToolPayload(draft: JournalToolDraft, makeId: () => string = () => Math.random().toString(36).slice(2, 10)): JournalToolPayload {
+  const name = journalToolName(draft.name);
+  const limit = draft.limit ?? JOURNAL_TOOL_DEFAULT_LIMIT;
+  const config = {
+    ...(draft.status === '' ? {} : { status: draft.status }),
+    ...(draft.from === '' ? {} : { from: draft.from }),
+    ...(draft.to === '' ? {} : { to: draft.to }),
+    limit,
+  };
+  return {
+    internalId: `journal-tool-${name.toLowerCase()}-${makeId()}`,
+    workingName: `${name} draft`,
+    displayName: name,
+    publishName: name,
+    // 組込み（builtin）と区別できるようにしておく。一覧で由来が分かる。
+    owner: 'journal',
+    sideEffect: 'read-only',
+    graph: {
+      nodes: [
+        { id: 'entries', type: 'journal-entries', config },
+        { id: 'agent-result', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: limit, maxBytes: 262_144, overflow: 'error' } },
+      ],
+      edges: [{ from: 'entries', to: 'agent-result' }],
+    },
+    agentTool: {
+      name,
+      description: `Returns the bookkeeping journal entries of this workspace, one row per debit/credit pairing (entry_id, line_no, date, debit_account, debit_tax_code, debit_amount, credit_account, credit_tax_code, credit_amount, description, invoice_status, status, document_id, rule_id). This tool is fixed to ${journalToolScopeSentence(draft)}, and takes no arguments. Amounts are tax-inclusive integers in JPY; a compound entry leaves the opposite side null. It only reads: it never judges documents, changes an entry, or writes a CSV file.`,
+    },
+  };
+}
+
+/* ---------------------------------------------------------------------------
  * ルール
  * ------------------------------------------------------------------------- */
 

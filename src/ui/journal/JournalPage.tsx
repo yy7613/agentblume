@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { JournalCapabilitiesDto, JournalChartOfAccountsDto, JournalDocumentSummaryDto, JournalRuleDto, SaveJournalRuleDto } from '../api/types';
 import { useI18n } from '../i18n';
-import { usePendingOpen } from '../navigation';
+import { ScreenLink, usePendingOpen } from '../navigation';
 import { scope } from '../scope';
 import { ChartTab } from './ChartTab';
 import { ExportTab } from './ExportTab';
@@ -130,6 +130,9 @@ export function JournalPage({ client }: { readonly client: ToolApiClient }) {
   const staleServer = loadFailures.some((failure) => failure.status === 404);
 
   return <main className="workspace-page journal-page">
+    {/* 仕訳は業務テンプレートの一つなので、入ってきた一覧へ戻れるようにする。
+        hash を直接書き換えず ScreenLink を使うのは、未保存確認を飛び越えないため。 */}
+    <ScreenLink to="Templates" className="template-back">{text('← Business templates', '← 業務テンプレート')}</ScreenLink>
     <header className="workspace-header"><div><span className="eyebrow">{text('Journal', '仕訳')}</span><h1>{text('Journal entries', '仕訳')}</h1><p>{text('Ingest receipts, invoices, and bank/card CSV rows, judge them against your own rules, and export the entries as a generic CSV. Accounts and tax categories are yours to define in the Chart tab.', 'レシート・請求書・銀行/カード明細を取り込み、自分で決めたルールで判定して仕訳を起こし、汎用 CSV に出力します。科目と税区分は「科目」タブで自由に定義できます。')}</p></div></header>
     {loadFailures.length > 0 && <div className="notice-card journal-load-notice" role="status">
       <strong>{text('Could not load part of this screen', 'この画面のデータを一部読み込めませんでした')}</strong>

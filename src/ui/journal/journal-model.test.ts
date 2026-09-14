@@ -5,6 +5,7 @@ import {
   editableRule, entryBalance, formatPixels, hearingAnswerLabel, hearingAnswerValue, lowConfidenceFields, moveAccount, newAccount, newRuleFromDocument, newTaxCategory, normalizeHeader, openJournalTarget, parseCsvRows, pdfRenderScale, pendingHearingQuestions, pickedFileKind, previewRows, resolveAccountName, resolveTaxName, ruleSpecificity,
   ruleValidation, scaledSize, sortRules, splitList, summarizeConditions, summarizeJudgment, summarizeScope, triggerDownload, validateFactsJson, withinDataUrlLimit,
   decodeBase64, encodingLabel, exportBlob, triggerBlobDownload,
+  JOURNAL_TOOL_DEFAULT_LIMIT, buildJournalToolPayload, journalToolIssue, journalToolName,
 } from './journal-model';
 
 const text = (_en: string, ja: string) => ja;
@@ -107,6 +108,65 @@ describe('parseCsvRows / previewRows', () => {
 
   it('境界: 空文字列は空のプレビュー', () => {
     expect(previewRows('')).toEqual({ headers: [], rows: [], totalRows: 0 });
+  });
+});
+
+describe('仕訳をエージェントのツールにする', () => {
+  const draft = { name: 'monthly_supplies', status: 'confirmed' as const, from: '2026-09-01', to: '2026-09-30' };
+
+  it('正常: 絞り込みをノードの設定に焼き込み、引数を持たないグラフにする', () => {
+    const payload = buildJournalToolPayload(draft, () => 'abcd1234');
+    expect(payload.graph.nodes.map((node) => node.type)).toEqual(['journal-entries', 'agent-output']);
+    expect(payload.graph.nodes[0]?.config).toEqual({ status: 'confirmed', from: '2026-09-01', to: '2026-09-30', limit: JOURNAL_TOOL_DEFAULT_LIMIT });
+    expect(payload.graph.edges).toEqual([{ from: 'entries', to: 'agent-result' }]);
+    // 引数を受けないので agent-input は置かない（用途ごとに 1 本作る前提）。
+    expect(payload.graph.nodes.some((node) => node.type === 'agent-input')).toBe(false);
+    expect(payload.sideEffect).toBe('read-only');
+    expect(payload.owner).toBe('journal');
+  });
+
+  it('正常: 公開名・関数名・表示名が同じ整形済みの名前になり、説明に固定した条件が載る', () => {
+    // 使えない文字はまとめて `_` へ畳み、前後の `_` は落とす（`monthly` だけが残る）。
+    const payload = buildJournalToolPayload({ ...draft, name: 'monthly 消耗品費!' }, () => 'x1');
+    expect(payload.publishName).toBe('monthly');
+    // 使える文字が 1 つも無ければ空になる（この場合は journalToolIssue が保存を止める）。
+    expect(journalToolName('月次 消耗品費')).toBe('');
+    expect(payload.agentTool.name).toBe(payload.publishName);
+    expect(payload.displayName).toBe(payload.publishName);
+    const english = buildJournalToolPayload(draft, () => 'x1').agentTool.description;
+    expect(english).toContain('confirmed entries');
+    expect(english).toContain('2026-09-01 to 2026-09-30');
+    expect(english).toContain('takes no arguments');
+  });
+
+  it('境界: 状態も期間も空なら設定は件数上限だけになり、説明は「どの状態でも」と言う', () => {
+    const payload = buildJournalToolPayload({ name: 'all_entries', status: '', from: '', to: '' }, () => 'x2');
+    expect(payload.graph.nodes[0]?.config).toEqual({ limit: JOURNAL_TOOL_DEFAULT_LIMIT });
+    expect(payload.agentTool.description).toContain('entries in any state');
+  });
+
+  it('境界: 片側だけの期間、64 文字を超える名前', () => {
+    expect(buildJournalToolPayload({ name: 'a', status: '', from: '2026-01-01', to: '' }, () => 'x3').agentTool.description).toContain('2026-01-01 or later');
+    expect(buildJournalToolPayload({ name: 'a', status: '', from: '', to: '2026-12-31' }, () => 'x4').agentTool.description).toContain('2026-12-31 or earlier');
+    expect(journalToolName('a'.repeat(80))).toHaveLength(64);
+  });
+
+  it('異常: 名前が実質空・日付の形式違い・開始が終了より後は、直し方を添えて止める', () => {
+    expect(journalToolIssue({ ...draft, name: '   ' }, text)).toContain('名前');
+    expect(journalToolIssue({ ...draft, name: '!!!' }, text)).toContain('名前');
+    expect(journalToolIssue({ ...draft, from: '2026/09/01' }, text)).toContain('YYYY-MM-DD');
+    expect(journalToolIssue({ ...draft, to: '9月30日' }, text)).toContain('YYYY-MM-DD');
+    expect(journalToolIssue({ ...draft, from: '2026-09-30', to: '2026-09-01' }, text)).toContain('開始日');
+    expect(journalToolIssue(draft, text)).toBeUndefined();
+  });
+
+  it('例外: 同じ条件でも作るたびに別のツールになる（用途別に複数持てる）', () => {
+    let counter = 0;
+    const first = buildJournalToolPayload(draft, () => `id${(counter += 1)}`);
+    const second = buildJournalToolPayload(draft, () => `id${(counter += 1)}`);
+    expect(first.internalId).not.toBe(second.internalId);
+    // 公開名は同じ（利用者が名前を変えるまで）。保存の可否はサーバーが決める。
+    expect(first.publishName).toBe(second.publishName);
   });
 });
 

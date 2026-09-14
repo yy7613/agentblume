@@ -220,6 +220,8 @@ import type {
 } from '../domain/journal/repositories';
 import { JOURNAL_CAPABILITIES_DISABLED, JournalCapabilitiesUseCase, type JournalCapabilities } from '../application/journal/capabilities';
 import { ExportChartCsvUseCase, ImportChartCsvUseCase } from '../application/journal/chart-transfer';
+import { JournalAttachmentRowsProvider } from '../application/journal/attachment-rows';
+import { JournalDraftEntryRowsProvider } from '../application/journal/draft-entry-rows';
 import { JournalEntryRowsProvider } from '../application/journal/entry-rows';
 import { ExportJournalEntriesUseCase } from '../application/journal/export-entries';
 import { ImportJournalCsvUseCase } from '../application/journal/import-csv';
@@ -789,9 +791,27 @@ export function createApp(options?: AppOptions): App {
   // ポリシーを緩めてから戻した環境で、既存の設定がそのまま起動・接続できてしまう。
   const mcpClient = options?.mcpClient ?? new SdkMcpClient({ policy: mcpPolicy });
   const webSearch = new WebSearchUseCase(options?.searchProviderCatalog ?? new EnvironmentSearchProviderCatalog());
+  /**
+   * 仕訳の LLM 機能を回してよいか（能力ではなく**設定の有無**）。分析アシスタントと同じ判定だが、
+   * `ANALYSIS_ASSISTANT_ENABLED` では切らない（仕訳の抽出は分析アシスタントとは別の機能である）。
+   *
+   * 添付読み取りのポートが解決処理より先に要るので、ここで宣言する。
+   */
+  const journalLlmEnabled = async (): Promise<boolean> => {
+    if (profile === 'test') return false;
+    if ((process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== '') return true;
+    try { return (await modelSettingsAdapter.repo.find(modelSettingsScope))?.main !== undefined; }
+    catch { return false; }
+  };
+  // 取込タブと添付読み取りで同じ 1 つを使う（読み取りの規則を 2 か所に分けない）。
+  const extractJournalDocument = new ExtractJournalDocumentUseCase(modelProvider, journalLlmEnabled, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot(), errorLogger);
   // 仕訳の `journal-entries` ソースは domain からリポジトリへ届かないため、実行直前に行を差し込むポートを渡す。
   const journalEntryRows = new JournalEntryRowsProvider(journalEntryAdapter.repo, journalChartAdapter.repo);
-  const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections, webSearch, journalEntryRows);
+  // `journal-attachment` ソースは実行中の添付を読む。domain からはモデルにも実行文脈にも届かない。
+  const journalAttachmentRows = new JournalAttachmentRowsProvider(extractJournalDocument);
+  // `journal-draft-entry` は 読み取り → 保存済みルールで判定 → 仕訳案 までを 1 本で通す（保存しない）。
+  const journalDraftEntryRows = new JournalDraftEntryRowsProvider(extractJournalDocument, journalRuleAdapter.repo, journalChartAdapter.repo);
+  const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections, webSearch, journalEntryRows, journalAttachmentRows, journalDraftEntryRows);
 
   const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot, logger: errorLogger, ...(resolveModelSnapshot === undefined ? {} : { resolveModel: resolveModelSnapshot }) }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient);
   const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);
@@ -841,16 +861,6 @@ export function createApp(options?: AppOptions): App {
       // 設定が読めない / 復号できない場合は「使えない」側へ倒す。
       return JOURNAL_CAPABILITIES_DISABLED;
     }
-  };
-  /**
-   * 仕訳の LLM 機能を回してよいか（能力ではなく**設定の有無**）。分析アシスタントと同じ判定だが、
-   * `ANALYSIS_ASSISTANT_ENABLED` では切らない（仕訳の抽出は分析アシスタントとは別の機能である）。
-   */
-  const journalLlmEnabled = async (): Promise<boolean> => {
-    if (profile === 'test') return false;
-    if ((process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== '') return true;
-    try { return (await modelSettingsAdapter.repo.find(modelSettingsScope))?.main !== undefined; }
-    catch { return false; }
   };
   // 判定は純粋関数なので profile 非依存。ヒアリングの受け入れ（再判定）もこの 1 つを共有する。
   const judgeJournalDocuments = new JudgeJournalDocumentsUseCase(journalDocumentAdapter.repo, journalRuleAdapter.repo, journalChartAdapter.repo, journalEntryAdapter.repo);
@@ -1117,7 +1127,7 @@ export function createApp(options?: AppOptions): App {
     deleteJournalEntry: new DeleteJournalEntryUseCase(journalEntryAdapter.repo, journalDocumentAdapter.repo),
     exportJournalEntries: new ExportJournalEntriesUseCase(journalEntryAdapter.repo, journalChartAdapter.repo),
     // フェーズ 2: 抽出とヒアリング。モデルは main スロット（切替可能な配線ならその実体）。
-    extractJournalDocument: new ExtractJournalDocumentUseCase(modelProvider, journalLlmEnabled, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot(), errorLogger),
+    extractJournalDocument,
     startJournalHearing: new StartJournalHearingUseCase(journalDocumentAdapter.repo, journalHearingAdapter.repo, journalChartAdapter.repo, modelProvider, journalLlmEnabled),
     answerJournalHearing: new AnswerJournalHearingUseCase(journalDocumentAdapter.repo, journalHearingAdapter.repo, journalChartAdapter.repo, modelProvider, journalLlmEnabled),
     acceptJournalHearing: new AcceptJournalHearingUseCase(journalDocumentAdapter.repo, journalHearingAdapter.repo, journalChartAdapter.repo, journalRuleAdapter.repo, journalEntryAdapter.repo, judgeJournalDocuments),

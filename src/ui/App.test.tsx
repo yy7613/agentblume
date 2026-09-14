@@ -15,6 +15,8 @@ vi.mock('./tool-check/ToolCheckPage', () => ({ ToolCheckPage: () => <main>Tool c
 vi.mock('./settings/SettingsPage', () => ({ SettingsPage: () => <main>Settings page</main> }));
 vi.mock('./data-sources/DataSourcesPage', () => ({ DataSourcesPage: () => <main>Data sources page</main> }));
 vi.mock('./harness-builder/HarnessBuilder', () => ({ HarnessBuilder: () => <main>Multi-agent builder</main> }));
+// 仕訳画面は業務テンプレートの一覧から開く導線を確かめるためだけに要る（中身は本体のテストで見る）。
+vi.mock('./journal/JournalPage', () => ({ JournalPage: () => <main>Journal page</main> }));
 // hashルーティングを使うため、テスト間でURLを持ち越さない。
 beforeEach(() => { window.history.replaceState(null, '', '/'); });
 afterEach(cleanup);
@@ -37,6 +39,29 @@ describe('App navigation', () => {
     const group = screen.getByText('Check').closest('.nav-group') as HTMLElement;
     expect(group).toBeTruthy();
     expect(Array.from(group.querySelectorAll('button')).map((button) => button.textContent)).toEqual(['Inspect', 'Tool Check', 'Validation']);
+  });
+
+  it('「作る」グループは業務テンプレートで終わり、仕訳は直接並ばない', () => {
+    // 仕訳のような特定業務向けの機能は、データソース・ツール・エージェントと粒度が揃わないので
+    // ナビに直接並べず、業務テンプレートの下にまとめる。業務が増えてもナビは伸びない。
+    render(<App client={{} as ToolApiClient} />);
+    const group = screen.getByText('Build').closest('.nav-group') as HTMLElement;
+    expect(group).toBeTruthy();
+    expect(Array.from(group.querySelectorAll('button')).map((button) => button.textContent))
+      .toEqual(['Data', 'Tool', 'Skill', 'Agent', 'Multi-Agent', 'Factory', 'Templates']);
+    expect(screen.queryByRole('button', { name: 'Journal' })).toBeNull();
+  });
+
+  it('業務テンプレートの一覧から仕訳を開ける（URL は従来どおり #/journal）', async () => {
+    render(<App client={{} as ToolApiClient} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Templates' }));
+    expect(window.location.hash).toBe('#/templates');
+    expect(screen.getByRole('heading', { name: 'Business templates' })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Journal entries' }));
+    expect(await screen.findByText('Journal page')).toBeTruthy();
+    // 直リンクや他画面からの導線を壊さないため、仕訳の URL は入れ物の下にせず据え置く。
+    expect(window.location.hash).toBe('#/journal');
   });
 
   it('チャットはナビ最上部の独立ボタンとして表示する', () => {
