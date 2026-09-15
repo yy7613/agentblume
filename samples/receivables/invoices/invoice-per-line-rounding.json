@@ -1,0 +1,19 @@
+{
+  "customerRef": "sample-shoji",
+  "customerNameHint": "株式会社サンプル商事",
+  "issueDate": "2026-09-30",
+  "transactionDate": "2026-09-30",
+  "dueDate": "2026-10-31",
+  "pricing": "exclusive",
+  "lines": [
+    { "description": "サーバー監視 基本料", "amount": 1234, "taxRate": 10 },
+    { "description": "バックアップ容量 追加", "amount": 2345, "taxRate": 10 },
+    { "description": "障害対応 夜間加算", "amount": 3456, "taxRate": 10 }
+  ],
+  "declared": {
+    "lineTaxAmounts": [123, 234, 345],
+    "taxByRate": [{ "rate": 10, "taxAmount": 702 }],
+    "grandTotal": 7737
+  },
+  "note": "外部で明細ごとに消費税を切り捨てた下書き（123 + 234 + 345 = 702 円）。税率ごとに 1 回なら 7,035 × 10% = 703 円"
+}

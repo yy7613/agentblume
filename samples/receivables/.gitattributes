@@ -1,0 +1,4 @@
+# Shift-JIS の CSV と描画済み画像は改行変換・diff の対象にしない。BOM / CRLF を保つ CSV もテキスト変換させない
+*.sjis.csv binary
+*.csv -text
+rendered/* binary

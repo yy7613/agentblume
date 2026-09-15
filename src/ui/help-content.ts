@@ -5,25 +5,17 @@
  * `docs/` は配信対象に入らない。dev の Vite でだけ偶然開けても、同じUIが本番でリンク切れになる）。
  * そのため「短い説明をダイアログで見せる」＋「もっと詳しく知りたい人向けにファイルパスを示す」構成にする。
  */
+import { businessOf } from './business/registry';
+import type { BusinessScreenName } from './business/screen-ids';
+import type { ScreenHelp } from './business/types';
 import type { ScreenName } from './screens';
 
-/** 日英ペア。表示側が `text(en, ja)` で解決する。 */
-export interface HelpText {
-  readonly en: string;
-  readonly ja: string;
-}
+export type { HelpText, ScreenHelp } from './business/types';
 
-export interface ScreenHelp {
-  readonly title: HelpText;
-  /** この画面が何をするところか（1-2文）。 */
-  readonly summary: HelpText;
-  /** ここで何をすればよいか。順番に並べる。 */
-  readonly steps: readonly HelpText[];
-  /** 参照ドキュメントのリポジトリ内パス（ブラウザからは開けないので文字列として示す）。 */
-  readonly doc?: string;
-}
+/** 業務ではない画面。業務の画面のヘルプは業務の記述子（`<業務>/<業務>-business.ts`）が持つ（ADR-0039）。 */
+type CoreScreenName = Exclude<ScreenName, BusinessScreenName>;
 
-const HELP: Readonly<Record<ScreenName, ScreenHelp>> = {
+const HELP: Readonly<Record<CoreScreenName, ScreenHelp>> = {
   Chat: {
     title: { en: 'Chat', ja: 'チャット' },
     summary: { en: 'Talk to a saved Agent (or Multi-Agent) with its version pinned, and see which tools it called.', ja: '保存済みのエージェント（またはマルチエージェント）をバージョン固定で実行し、どのツールを呼んだかを確認します。' },
@@ -118,18 +110,6 @@ const HELP: Readonly<Record<ScreenName, ScreenHelp>> = {
       { en: 'Only templates that are ready to use are listed. The studio-wide features (data sources, tools, agents) stay in the groups above.', ja: '一覧に出るのは今すぐ使えるものだけです。データソース・ツール・エージェントのような全体で使う機能は、上のグループのままです。' },
     ],
   },
-  Journal: {
-    title: { en: 'Journal', ja: '仕訳' },
-    summary: { en: 'Ingest receipts, invoices, and bank/card CSV rows, judge each one against your own rules (stage 1), and export the resulting journal entries as a generic CSV.', ja: 'レシート・請求書・銀行/カード明細 CSV を取り込み、自分で決めたルールで判定（Stage 1）して仕訳を起こし、汎用 CSV に出力します。' },
-    steps: [
-      { en: 'Accounts, tax categories, and dimensions are yours to define in the Chart tab — the standard set is only a starting point. Rules refer to accounts by id, so renaming is safe.', ja: '勘定科目・税区分・補助軸は「科目」タブで自由に定義できます。標準セットは初期値に過ぎません。ルールは科目を id で参照するので、名前を変えても壊れません。' },
-      { en: 'Ingest: import a bank/card CSV (the preset is detected from the header), fill the facts form, paste facts JSON, or store a text source for later extraction.', ja: '取込: 銀行/カード CSV（ヘッダーからプリセットを自動判定）、事実フォーム、JSON 貼り付け、またはテキストの保存（後で抽出）。' },
-      { en: 'Judge: "Judge pending" applies enabled rules. Undecided rows show the cause, the next step, and a button that opens the place to fix it (make a rule, edit facts, open the chart).', ja: '判定: 「未判定を判定」で有効なルールを照合します。未確定の行には原因 → 次の一手 → 直す場所へのボタン（ルールを作る / 項目を編集 / 科目マスタを開く）が出ます。' },
-      { en: 'Export: confirm the draft entries, then download the generic CSV (UTF-8 BOM, CRLF).', ja: '出力: ドラフトの仕訳を確定し、汎用 CSV（UTF-8 BOM・CRLF）をダウンロードします。' },
-      { en: 'LLM extraction from images/PDF/text and the hearing (stage 2) become available when the main model slot is configured and the server enables them.', ja: '画像 / PDF / テキストの LLM 抽出とヒアリング（Stage 2）は、main モデルを設定しサーバーが有効化すると使えるようになります。' },
-    ],
-    doc: 'docs/20-journal.md',
-  },
   Validation: {
     title: { en: 'Validation', ja: '検証' },
     summary: { en: 'Define personas and scenarios, run them against an Agent, and score the results before promoting a version.', ja: 'ペルソナとシナリオを定義してエージェントに実行させ、結果を採点してからバージョンを昇格します。' },
@@ -179,5 +159,5 @@ const HELP: Readonly<Record<ScreenName, ScreenHelp>> = {
 };
 
 export function screenHelp(screen: ScreenName): ScreenHelp {
-  return HELP[screen];
+  return businessOf(screen)?.help ?? HELP[screen as CoreScreenName];
 }

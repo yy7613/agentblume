@@ -1,0 +1,282 @@
+{
+  "description": "初期テンプレートの規程を保存し（policy-template.csv を取り込む）、判定日 2026-09-30（日本時間）・申請期間 2026-09-01〜2026-09-30 で取り込んでチェックしたときの、CSV の行ごとの期待結果。codes は順不同。claims-resubmit.csv は claims-generic.csv を取り込んでチェックした後に取り込む。",
+  "today": "2026-09-30",
+  "period": {
+    "from": "2026-09-01",
+    "to": "2026-09-30"
+  },
+  "files": {
+    "claims-generic.csv": [
+      {
+        "row": 2,
+        "claimant": "テスト太郎",
+        "verdict": "pass",
+        "codes": [],
+        "note": "何も出ない行（電車・バスは領収書不要、3 万円未満は登録番号不要）"
+      },
+      {
+        "row": 3,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing"
+        ],
+        "note": "交際費 4 名 38,000 円は 1 人 10,000 円以内（CSV には画像が無いので receipt-missing だけ）"
+      },
+      {
+        "row": 4,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "per-person-limit-exceeded"
+        ],
+        "note": "4 名 44,000 円は 1 人あたり 11,000 円"
+      },
+      {
+        "row": 5,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "attendees-missing"
+        ],
+        "note": "人数が空欄"
+      },
+      {
+        "row": 6,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "date-outside-period"
+        ],
+        "note": "申請期間（9 月）の前日"
+      },
+      {
+        "row": 7,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "per-unit-limit-exceeded"
+        ],
+        "note": "2 泊 26,000 円は 1 泊 13,000 円（上限 12,000 円）"
+      },
+      {
+        "row": 8,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "per-item-limit-exceeded"
+        ],
+        "note": "タクシー 1 件 10,000 円の上限超え"
+      },
+      {
+        "row": 9,
+        "claimant": "テスト太郎",
+        "verdict": "needs-review",
+        "codes": [
+          "payee-missing"
+        ],
+        "note": "支払先が空欄（要確認）"
+      },
+      {
+        "row": 10,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "payment-not-reimbursable"
+        ],
+        "note": "会社払い"
+      },
+      {
+        "row": 11,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "duplicate-in-claim"
+        ],
+        "note": "次の行と同じ（申請内の重複）"
+      },
+      {
+        "row": 12,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "duplicate-in-claim"
+        ],
+        "note": "前の行と同じ"
+      },
+      {
+        "row": 13,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "pre-approval-missing"
+        ],
+        "note": "交際費 55,000 円・稟議番号なし"
+      },
+      {
+        "row": 14,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "date-outside-period",
+          "submission-late"
+        ],
+        "note": "取込（9/30）まで 107 日（期限 90 日）"
+      },
+      {
+        "row": 15,
+        "claimant": "テスト花子",
+        "verdict": "pass",
+        "codes": [],
+        "note": "何も出ない行（日当 2 日 × 3,000 円）"
+      },
+      {
+        "row": 16,
+        "claimant": "テスト花子",
+        "verdict": "returned",
+        "codes": [
+          "date-in-future"
+        ],
+        "note": "判定日（9/30）より後"
+      },
+      {
+        "row": 17,
+        "claimant": "テスト花子",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "registration-number-missing"
+        ],
+        "note": "登録番号なし"
+      },
+      {
+        "row": 18,
+        "claimant": "テスト花子",
+        "verdict": "returned",
+        "codes": [
+          "purpose-missing",
+          "receipt-missing"
+        ],
+        "note": "目的が空欄"
+      },
+      {
+        "row": 19,
+        "claimant": "テスト花子",
+        "verdict": "returned",
+        "codes": [
+          "category-missing"
+        ],
+        "note": "費目「おやつ」に当たる費目・別名が無い"
+      },
+      {
+        "row": 20,
+        "claimant": "テスト花子",
+        "verdict": "returned",
+        "codes": [
+          "amount-missing",
+          "receipt-missing"
+        ],
+        "note": "金額が空欄（上限・重複は打ち切り）"
+      },
+      {
+        "row": 21,
+        "claimant": "テスト花子",
+        "verdict": "returned",
+        "codes": [
+          "date-missing",
+          "receipt-missing",
+          "receipt-extraction-warning"
+        ],
+        "note": "日付が読めない（空にして取込の警告を残す）"
+      },
+      {
+        "row": 22,
+        "claimant": "テスト花子",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "attendee-details-missing"
+        ],
+        "note": "参加者と関係が空欄"
+      },
+      {
+        "row": 23,
+        "claimant": "テスト花子",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "per-item-limit-exceeded",
+          "pre-approval-missing"
+        ],
+        "note": "1 件 100,000 円以上（固定資産の確認・事前承認）"
+      }
+    ],
+    "claims-english-headers.csv": [
+      {
+        "row": 2,
+        "claimant": "テスト次郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing"
+        ],
+        "note": "別名「タクシー代」→ タクシー"
+      },
+      {
+        "row": 3,
+        "claimant": "テスト次郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing"
+        ],
+        "note": "別名「接待」→ 交際費"
+      },
+      {
+        "row": 4,
+        "claimant": "テスト次郎",
+        "verdict": "returned",
+        "codes": [
+          "category-missing"
+        ],
+        "note": "当たらない費目名"
+      },
+      {
+        "row": 5,
+        "claimant": "テスト次郎",
+        "verdict": "pass",
+        "codes": [],
+        "note": "別名「電車」→ 電車・バス"
+      }
+    ],
+    "claims-resubmit.csv": [
+      {
+        "row": 2,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "duplicate-across-claims"
+        ],
+        "note": "claims-generic.csv の 3 行目と同じ（相手はチェック済み）"
+      },
+      {
+        "row": 3,
+        "claimant": "テスト太郎",
+        "verdict": "returned",
+        "codes": [
+          "receipt-missing",
+          "per-item-limit-exceeded",
+          "duplicate-across-claims"
+        ],
+        "note": "claims-generic.csv の 8 行目と同じ"
+      }
+    ]
+  }
+}

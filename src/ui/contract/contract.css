@@ -1,0 +1,45 @@
+/* 契約書レビューと期限台帳（docs/23 §7）。クラス名は contract- で始める（ADR-0039）。 */
+.contract-page .contract-legal-notice { margin: 0.5rem 0; padding: 0.5rem 0.75rem; border-left: 3px solid var(--color-warning, #b7791f); background: var(--color-surface-muted, rgba(183, 121, 31, 0.08)); font-size: 0.85rem; }
+.contract-step { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 1rem; }
+.contract-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.contract-hint, .contract-note { color: var(--color-text-muted, #666); font-size: 0.85rem; }
+.contract-saved { color: var(--color-success, #2f855a); }
+.contract-current { font-weight: 600; margin: 0.25rem 0; }
+.contract-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+.contract-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 6px; }
+.contract-list li.active { background: var(--color-surface-muted, rgba(0, 0, 0, 0.05)); }
+.contract-form-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
+.contract-field { display: flex; flex-direction: column; gap: 0.2rem; min-width: 12rem; flex: 1 1 12rem; }
+.contract-field small { color: var(--color-text-muted, #666); }
+.contract-check { display: inline-flex; align-items: center; gap: 0.3rem; margin-right: 0.75rem; }
+.contract-fieldset { border: 1px solid var(--color-border, #ddd); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.contract-fieldset.focused { outline: 2px solid var(--color-accent, #3b82f6); }
+.contract-tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.contract-tabs button.active { font-weight: 700; border-bottom: 2px solid var(--color-accent, #3b82f6); }
+.contract-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; align-items: start; }
+@media (max-width: 960px) { .contract-split { grid-template-columns: 1fr; } }
+.contract-text-view { display: flex; flex-direction: column; gap: 0.5rem; position: sticky; top: 0; max-height: 80vh; }
+.contract-toc { display: flex; flex-wrap: wrap; gap: 0.25rem; max-height: 6rem; overflow: auto; font-size: 0.8rem; }
+.contract-body { white-space: pre-wrap; overflow: auto; padding: 0.75rem; border: 1px solid var(--color-border, #ddd); border-radius: 6px; line-height: 1.7; font-size: 0.9rem; }
+.contract-body mark { background: rgba(250, 204, 21, 0.45); }
+.contract-cards { display: flex; flex-direction: column; gap: 0.75rem; }
+.contract-card header { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; }
+.contract-card.active { outline: 2px solid var(--color-accent, #3b82f6); }
+.contract-card blockquote { margin: 0.25rem 0; padding-left: 0.5rem; border-left: 3px solid var(--color-border, #ccc); font-size: 0.85rem; }
+.contract-card blockquote.contract-unverified { border-left-color: var(--color-danger, #c53030); }
+.contract-value-form { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.contract-reason { padding: 0.5rem; border-radius: 6px; border: 1px solid var(--color-border, #ddd); font-size: 0.85rem; }
+.contract-reason p { margin: 0.2rem 0; }
+.contract-reason-onFail { border-color: var(--color-danger, #c53030); }
+.contract-reason-unresolved, .contract-reason-warning { border-color: var(--color-warning, #b7791f); }
+.contract-verdict-accept, .contract-state-upcoming { background: rgba(47, 133, 90, 0.15); }
+.contract-verdict-negotiate, .contract-state-due-soon { background: rgba(183, 121, 31, 0.2); }
+.contract-verdict-reject, .contract-state-overdue { background: rgba(197, 48, 48, 0.2); }
+.contract-verdict-unresolved { background: rgba(107, 114, 128, 0.2); }
+.contract-summary { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
+.contract-recommended p { background: var(--color-surface-muted, rgba(0, 0, 0, 0.04)); padding: 0.4rem; border-radius: 4px; }
+.contract-llm q { display: block; font-size: 0.8rem; color: var(--color-text-muted, #666); }
+.contract-pages ol { display: flex; flex-direction: column; gap: 0.5rem; }
+.contract-pages textarea, .contract-step textarea { width: 100%; }
+.contract-sources { font-size: 0.85rem; }
+.contract-ledger-table td.run-failure-actions { white-space: nowrap; }

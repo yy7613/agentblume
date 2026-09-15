@@ -1,0 +1,7 @@
+﻿id,stations,fare_type,fare,bidirectional,valid_from,valid_to,note
+fare-nakano-shinjuku,中野 > 新宿,ic,170,true,,,運賃は架空
+fare-shinjuku-kasumigaseki,新宿 > 霞ケ関,ic,200,true,,,運賃は架空
+fare-nakano-kasumigaseki,中野 > 新宿 > 霞ケ関,ic,300,true,,,運賃は架空
+fare-nakano-kasumigaseki-ticket,中野 > 新宿 > 霞ケ関,ticket,320,false,2026-04-01,,運賃は架空（切符は片道だけ登録）
+fare-shinjuku-shibuya,新宿 > 渋谷,ic,160,true,,,運賃は架空
+fare-otemachi-tokyo,大手町 > 東京,ic,150,true,,,運賃は架空

@@ -1,0 +1,5 @@
+claimant,employee_code,date,payee,amount,category,purpose,attendees,attendee_names,relation,registration_number,description
+テスト次郎,E003,2026-09-03,サンプル交通,1800,タクシー代,客先訪問,,,,T1234567890123,Taxi
+テスト次郎,E003,2026-09-04,割烹サンプル,9000,接待,取引先との会食,2,サンプル一郎;テスト次郎,取引先,T1234567890123,Dinner
+テスト次郎,E003,2026-09-05,サンプル商店,700,お菓子代,,,,,T1234567890123,Snacks
+テスト次郎,E003,2026-09-06,東京メトロ,210,電車,客先訪問,,,,,Metro

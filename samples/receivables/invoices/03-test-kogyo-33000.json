@@ -1,0 +1,12 @@
+{
+  "customerRef": "test-kogyo",
+  "customerNameHint": "テスト工業株式会社",
+  "issueDate": "2026-09-03",
+  "transactionDate": "2026-08-31",
+  "dueDate": "2026-09-30",
+  "pricing": "exclusive",
+  "lines": [
+    { "description": "在庫管理画面 改修", "quantity": 1, "unit": "式", "unitPrice": 30000, "amount": 30000, "taxRate": 10 }
+  ],
+  "note": "期待結果: 04 と合わせた ﾌﾘｺﾐ ﾃｽﾄｺｳｷﾞﾖｳ 55,000 が combined-payment"
+}

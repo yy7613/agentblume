@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from './api/tool-api';
 import { App } from './App';
+import { ExperimentalFeaturesProvider } from './experimental-features';
 
 vi.mock('./tool-builder/ToolBuilder', () => ({ ToolBuilder: () => <main>Tool builder</main> }));
 vi.mock('./agent-builder/AgentBuilder', () => ({ AgentBuilder: () => <main>Agent builder</main> }));
@@ -20,6 +21,11 @@ vi.mock('./journal/JournalPage', () => ({ JournalPage: () => <main>Journal page<
 // hashルーティングを使うため、テスト間でURLを持ち越さない。
 beforeEach(() => { window.history.replaceState(null, '', '/'); });
 afterEach(cleanup);
+
+/** 業務テンプレート（実験的な機能）を表示する設定で描く。既定は非表示なので、業務の導線を見るテストはこれを使う。 */
+function renderWithExperimental(client: ToolApiClient = {} as ToolApiClient) {
+  return render(<ExperimentalFeaturesProvider initialEnabled><App client={client} /></ExperimentalFeaturesProvider>);
+}
 
 describe('App navigation', () => {
   it('初期画面はチャット(サンプルAgentですぐ試せる導線)', () => {
@@ -44,16 +50,52 @@ describe('App navigation', () => {
   it('「作る」グループは業務テンプレートで終わり、仕訳は直接並ばない', () => {
     // 仕訳のような特定業務向けの機能は、データソース・ツール・エージェントと粒度が揃わないので
     // ナビに直接並べず、業務テンプレートの下にまとめる。業務が増えてもナビは伸びない。
-    render(<App client={{} as ToolApiClient} />);
+    renderWithExperimental();
     const group = screen.getByText('Build').closest('.nav-group') as HTMLElement;
     expect(group).toBeTruthy();
-    expect(Array.from(group.querySelectorAll('button')).map((button) => button.textContent))
+    // ボタンの文字だけを比べる（業務テンプレートには「実験的」の印 β が添わる）。
+    const labelOf = (button: HTMLButtonElement) => Array.from(button.childNodes).filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent).join('');
+    expect(Array.from(group.querySelectorAll('button')).map(labelOf))
       .toEqual(['Data', 'Tool', 'Skill', 'Agent', 'Multi-Agent', 'Factory', 'Templates']);
     expect(screen.queryByRole('button', { name: 'Journal' })).toBeNull();
   });
 
-  it('業務テンプレートの一覧から仕訳を開ける（URL は従来どおり #/journal）', async () => {
+  it('初期状態では実験的な機能（業務テンプレート）を左ナビに出さず、直リンクでも開かずに設定へ案内する', async () => {
     render(<App client={{} as ToolApiClient} />);
+    const group = screen.getByText('Build').closest('.nav-group') as HTMLElement;
+    expect(Array.from(group.querySelectorAll('button')).map((button) => button.textContent)).not.toContain('Templates');
+
+    window.location.hash = '#/journal';
+    expect(await screen.findByRole('heading', { name: 'Experimental features are hidden' })).toBeTruthy();
+    expect(screen.queryByText('Journal page')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Open Settings' }));
+    expect(await screen.findByText('Settings page')).toBeTruthy();
+  });
+
+  it('設定で有効にすると、左ナビに業務テンプレートが出て一覧を開ける', async () => {
+    renderWithExperimental();
+    await userEvent.click(screen.getByRole('button', { name: 'Templates' }));
+    expect(screen.getByRole('heading', { name: 'Business templates' })).toBeTruthy();
+  });
+
+  it('業務テンプレートは実験的な機能だと、左ナビ・一覧・業務画面のどこから見ても分かる', async () => {
+    renderWithExperimental();
+    const nav = screen.getByRole('button', { name: 'Templates' });
+    expect(nav.querySelector('.experimental-badge')?.textContent).toBe('β');
+    expect(nav.getAttribute('title')).toContain('Experimental');
+
+    await userEvent.click(nav);
+    expect(screen.getByRole('note').textContent).toContain('experimental feature');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Journal entries' }));
+    expect(await screen.findByText('Journal page')).toBeTruthy();
+    // 業務画面は業務のファイルを触らず App が注意書きを添え、左ナビは入口の「業務テンプレート」を選択中にする。
+    expect(screen.getByRole('note').textContent).toContain('experimental feature');
+    expect(screen.getByRole('button', { name: 'Templates' }).className).toBe('active');
+  });
+
+  it('業務テンプレートの一覧から仕訳を開ける（URL は従来どおり #/journal）', async () => {
+    renderWithExperimental();
     await userEvent.click(screen.getByRole('button', { name: 'Templates' }));
     expect(window.location.hash).toBe('#/templates');
     expect(screen.getByRole('heading', { name: 'Business templates' })).toBeTruthy();

@@ -950,7 +950,7 @@ describe('RunAgentPreviewUseCase', () => {
 
     await usecase.execute({ ...input, images: [attachment] });
 
-    expect(seen).toEqual([{ attachments: [attachment] }]);
+    expect(seen).toEqual([{ attachments: [attachment], documents: [], arguments: { name: 'Alice', score: 42 } }]);
   });
 
   // 実行中は添付が無くても文脈を渡す。文脈の有無は「実行中か / 保存・スキーマ点検か」の区別に使うので、
@@ -964,7 +964,36 @@ describe('RunAgentPreviewUseCase', () => {
 
     await usecase.execute(input);
 
-    expect(seen).toEqual([{ attachments: [] }]);
+    expect(seen).toEqual([{ attachments: [], documents: [], arguments: { name: 'Alice', score: 42 } }]);
+  });
+
+  // テキスト添付（docs/23 §9.4 C3）: 本文はツールの実行文脈にだけ渡し、モデルへのメッセージには 1 行の目印だけを載せる。
+  it('正常: テキスト添付は実行文脈へ渡し、モデルには本文ではなく目印だけを見せる（vision は要らない）', async () => {
+    const body = '第1条（目的）甲は乙に本業務を委託する。'.repeat(20);
+    const document = { name: 'contract.pdf', text: body, pageCount: 3 };
+    const seen: unknown[] = [];
+    const resolver = { execute: async (_scope: unknown, graph: unknown, context: unknown) => { seen.push(context); return graph; } } as unknown as ResolveDataSourceGraphUseCase;
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('done')]);
+    const usecase = new RunAgentPreviewUseCase(new StaticRepository(makeTool()), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-document', undefined, undefined, undefined, undefined, undefined, undefined, undefined, resolver);
+
+    await usecase.execute({ ...input, documents: [document] });
+
+    expect(seen).toEqual([{ attachments: [], documents: [document], arguments: { name: 'Alice', score: 42 } }]);
+    const userMessage = model.requests[0]?.messages.find((message) => message.role === 'user');
+    expect(typeof userMessage?.content).toBe('string');
+    expect(userMessage?.content).toContain(`[Attached document: contract.pdf, 3 pages, ${body.length} characters — readable by tools]`);
+    expect(userMessage?.content).not.toContain(body);
+  });
+
+  it('境界: 画像とテキストを同時に添付すると、テキストの目印は画像つきメッセージの本文側に入る', async () => {
+    const attachment = { name: 'page.png', dataUrl: 'data:image/png;base64,AAA' };
+    const model = new QueueModel([stop('done')], ['chat', 'tool-calling', 'vision']);
+    const usecase = new RunAgentPreviewUseCase(new StaticRepository(makeTool()), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-both');
+
+    await usecase.execute({ ...input, images: [attachment], documents: [{ name: 'memo.txt', text: 'abc' }] });
+
+    const content = model.requests[0]?.messages.find((message) => message.role === 'user')?.content;
+    expect(content).toEqual([{ type: 'text', text: `${input.message}\n\n[Attached document: memo.txt, 3 characters — readable by tools]` }, { type: 'image_url', imageUrl: attachment.dataUrl }]);
   });
 
   it('ツール実行中に中断されたら tool で包まず RUN_CANCELLED として記録する', async () => {

@@ -6,8 +6,13 @@
  * 変換できなかった部分は原文をそのまま残す（詳細を握りつぶさない）。
  */
 
-export type ErrorLanguage = 'en' | 'ja';
-type Bilingual = readonly [en: string, ja: string];
+import type { Bilingual, BusinessErrorMessages, ErrorLanguage } from './business-error-types';
+import { JOURNAL_ERROR_MESSAGES } from './journal-error-messages';
+import { EXPENSE_ERROR_MESSAGES } from './expense-error-messages';
+import { RECEIVABLES_ERROR_MESSAGES } from './receivables-error-messages';
+import { CONTRACT_ERROR_MESSAGES } from './contract-error-messages';
+
+export type { ErrorLanguage } from './business-error-types';
 
 const LANGUAGE_KEY = 'agentcontext.language';
 
@@ -35,7 +40,7 @@ const JUDGE_MODEL_NOT_CONFIGURED_MESSAGE: Bilingual = [
  * error.code ごとの見出し。src/api/error-mapping.ts が返す code 体系に対応する。
  * HTTP_ERROR / 未知の code は status から見出しを決める（statusHeading）。
  */
-const HEADINGS: Record<string, Bilingual> = {
+const CORE_HEADINGS: Record<string, Bilingual> = {
   BAD_REQUEST: ['Please check your input', '入力内容を確認してください'],
   // 401。トークンを入れる場所（設定 → アクセス）まで案内する。
   UNAUTHENTICATED: [
@@ -118,20 +123,6 @@ const HEADINGS: Record<string, Bilingual> = {
   MCP_VALIDATION: ['Please check the MCP server settings', 'MCPサーバー設定の入力内容を確認してください'],
   MCP_NOT_FOUND: ['The MCP server was not found', 'MCPサーバーが見つかりませんでした'],
 
-  // 仕訳（docs/20）。src/domain/journal のエラー → src/api/error-mapping.ts の code 体系に対応する。
-  JOURNAL_DOMAIN: ['Please check the journal input', '仕訳の入力内容を確認してください'],
-  JOURNAL_DOCUMENT_NOT_FOUND: ['The journal document was not found', '帳票が見つかりませんでした'],
-  JOURNAL_RULE_NOT_FOUND: ['The journal rule was not found', '仕訳ルールが見つかりませんでした'],
-  JOURNAL_ENTRY_NOT_FOUND: ['The journal entry was not found', '仕訳が見つかりませんでした'],
-  JOURNAL_HEARING_NOT_FOUND: ['The hearing session was not found', 'ヒアリングが見つかりませんでした'],
-  // 409。原因（モデルが画像読取／構造化出力に非対応）→ 次の一手（設定画面でモデルを変える）まで 1 文で言う。
-  JOURNAL_EXTRACTION_UNAVAILABLE: [
-    'The model used for the journal does not support image reading or structured output. Change the main model in Settings to one with vision and structured output, then reopen this screen',
-    '判定に使うモデルが画像読取または構造化出力に対応していません。設定画面で main モデルを画像読取・構造化出力に対応したものへ変え、この画面を開き直してください',
-  ],
-  JOURNAL_CSV_IMPORT: ['The CSV could not be imported. Check the preset, the header row, and the character encoding', 'CSV を取り込めませんでした。プリセット・ヘッダー行・文字コードを確認してください'],
-  JOURNAL_EXPORT: ['The journal export failed. Check the status filter and date range, then retry', '仕訳の出力に失敗しました。状態の絞り込みと期間を確認して再試行してください'],
-
   // モデル設定の入力不正（400）。LM Studio 前提の実行エラー文言に混ぜない。
   MODEL_SETTINGS_VALIDATION: ['Please check the model settings', 'モデル設定の入力内容を確認してください'],
   // モデル一覧の取得失敗（502）。実行エラーではなく「一覧が引けない」だけ。
@@ -141,6 +132,12 @@ const HEADINGS: Record<string, Bilingual> = {
   ETL_CONFIG: ['Please check the node settings', 'ノードの設定を確認してください'],
   ETL_SCHEMA: ['The column names or types do not match. Check the upstream node output', '列名または型が一致していません。上流ノードの出力を確認してください'],
 };
+
+/** 業務（仕訳・経費精算・入金消込・契約）の見出し。業務ごとの `<業務>-error-messages.ts` が持つ（ADR-0039）。 */
+const BUSINESS_ERROR_MESSAGES: readonly BusinessErrorMessages[] = [JOURNAL_ERROR_MESSAGES, EXPENSE_ERROR_MESSAGES, RECEIVABLES_ERROR_MESSAGES, CONTRACT_ERROR_MESSAGES];
+
+/** 見出しの全体（共通 + 業務）。 */
+const HEADINGS: Readonly<Record<string, Bilingual>> = Object.assign({}, CORE_HEADINGS, ...BUSINESS_ERROR_MESSAGES.map((messages) => messages.headings));
 
 /** code が無い / 汎用 HTTP 失敗の見出し（status ベース）。 */
 const STATUS_HEADINGS: Record<number, Bilingual> = {
@@ -1262,12 +1259,17 @@ export interface ApiErrorPayload {
   readonly rubric?: { readonly id: string; readonly version: string };
   /** JOURNAL_CSV_IMPORT がエラー本文に載せる失敗行（1 始まり。ヘッダー行を含む行番号）。 */
   readonly row?: number;
+  /** サーバーが error 本文へ足した、共通で解釈しない項目（業務の見出しが読む。ADR-0039）。 */
+  readonly details?: Readonly<Record<string, unknown>>;
 }
 
 /** code（+ SECRET_CIPHER は status）から見出しを決める。 */
 function headingFor(payload: ApiErrorPayload, language: ErrorLanguage): string {
-  // CSV 取込の失敗は「何行目か」が直す場所そのものなので、見出しに行番号を埋める。
-  if (payload.code === 'JOURNAL_CSV_IMPORT' && payload.row !== undefined) return language === 'ja' ? `CSV の ${payload.row} 行目を取り込めませんでした。その行の列数・日付・金額を確認してください` : `Row ${payload.row} of the CSV could not be imported. Check the column count, date, and amount on that row`;
+  // 業務が本文の項目（CSV の行番号など）で作る見出しを先に使う（直す場所そのものなので）。
+  for (const messages of BUSINESS_ERROR_MESSAGES) {
+    const heading = messages.heading?.(payload, language);
+    if (heading !== undefined) return heading;
+  }
   if (payload.code === 'SECRET_CIPHER') return pick(payload.status === 500 ? SECRET_CIPHER_KEY_FILE : SECRET_CIPHER_DECRYPT, language);
   const known = HEADINGS[payload.code];
   return known === undefined ? statusHeading(payload.status, language) : pick(known, language);

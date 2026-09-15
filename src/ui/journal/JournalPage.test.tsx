@@ -242,9 +242,9 @@ describe('JournalPage（手順の流れ図）', () => {
 
     const steps = screen.getAllByRole('tab');
     expect(steps.map((step) => step.getAttribute('aria-label'))).toEqual(['Chart', 'Ingest', 'Judge', 'Rules', 'Export']);
-    expect(steps.map((step) => step.querySelector('.journal-step-no')?.textContent)).toEqual(['1', '2', '3', '4', '5']);
+    expect(steps.map((step) => step.querySelector('.business-step-no')?.textContent)).toEqual(['1', '2', '3', '4', '5']);
     // 矢印は四角の間だけ（4 本）。読み上げからは外す。
-    const arrows = document.querySelectorAll('.journal-step-arrow');
+    const arrows = document.querySelectorAll('.business-step-arrow');
     expect(arrows).toHaveLength(4);
     for (const arrow of arrows) expect(arrow.getAttribute('aria-hidden')).toBe('true');
   });

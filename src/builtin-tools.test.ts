@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { BUILTIN_SCOPE, CURRENT_DATETIME_TOOL_ID, JOURNAL_ATTACHMENT_TOOL_ID, JOURNAL_DRAFT_ENTRY_TOOL_ID, JOURNAL_ENTRIES_TOOL_ID, seedBuiltinTools } from './builtin-tools';
+import { CONTRACT_CLAUSES_TOOL_ID, CONTRACT_DEADLINES_TOOL_ID, CONTRACT_REVIEW_DRAFT_TOOL_ID } from './builtin-tools/contract';
+import { EXPENSE_CHECK_RECEIPT_TOOL_ID, EXPENSE_CLAIMS_TOOL_ID, EXPENSE_POLICY_TOOL_ID } from './builtin-tools/expense';
+import { EXPENSE_FARES_TOOL_ID } from './builtin-tools/expense-input';
+import { EXPENSE_ADVANCES_TOOL_ID, EXPENSE_CARD_TRANSACTIONS_TOOL_ID, EXPENSE_SUMMARY_TOOL_ID } from './builtin-tools/expense-money';
+import { RECEIVABLES_INVOICE_DRAFT_TOOL_ID, RECEIVABLES_MATCH_CANDIDATES_TOOL_ID, RECEIVABLES_OUTSTANDING_TOOL_ID } from './builtin-tools/receivables';
 import { graphWithArguments } from './application/tool/tool-execution';
 import { createApp, type App } from './composition/root';
 
@@ -19,7 +24,15 @@ describe('seedBuiltinTools', () => {
 
     const result = await seedBuiltinTools(app);
 
-    expect(result.toolIds).toEqual([CURRENT_DATETIME_TOOL_ID, JOURNAL_ENTRIES_TOOL_ID, JOURNAL_ATTACHMENT_TOOL_ID, JOURNAL_DRAFT_ENTRY_TOOL_ID]);
+    // 業務の並び順（共通 → 仕訳 → 経費精算 → 入金消込 → 契約）どおりに返る（ADR-0039）。
+    expect(result.toolIds).toEqual([
+      CURRENT_DATETIME_TOOL_ID, JOURNAL_ENTRIES_TOOL_ID, JOURNAL_ATTACHMENT_TOOL_ID, JOURNAL_DRAFT_ENTRY_TOOL_ID,
+      EXPENSE_CHECK_RECEIPT_TOOL_ID, EXPENSE_CLAIMS_TOOL_ID, EXPENSE_POLICY_TOOL_ID,
+      // 経費精算の系統のツール（B お金の流れ → C 入力と規程の順。EXPENSE_BUILTIN_TOOLS の並び）。
+      EXPENSE_SUMMARY_TOOL_ID, EXPENSE_ADVANCES_TOOL_ID, EXPENSE_CARD_TRANSACTIONS_TOOL_ID, EXPENSE_FARES_TOOL_ID,
+      RECEIVABLES_OUTSTANDING_TOOL_ID, RECEIVABLES_MATCH_CANDIDATES_TOOL_ID, RECEIVABLES_INVOICE_DRAFT_TOOL_ID,
+      CONTRACT_REVIEW_DRAFT_TOOL_ID, CONTRACT_DEADLINES_TOOL_ID, CONTRACT_CLAUSES_TOOL_ID,
+    ]);
     const tool = await app.getTool.latest(BUILTIN_SCOPE, CURRENT_DATETIME_TOOL_ID);
     expect(tool.metadata.publishName).toBe('current_datetime');
     expect(tool.metadata.displayName).toBe('Current Datetime');

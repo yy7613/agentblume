@@ -1051,18 +1051,19 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 .journal-load-notice li { margin: 2px 0; }
 .journal-load-notice p { margin: 0 0 8px; }
 
-.journal-steps { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; margin-bottom: 16px; }
-.journal-step { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "no head" "no caption"; align-items: center; gap: 2px 8px; text-align: left; min-width: 158px; border: 1px solid #ccd3e0; background: white; color: #354158; border-radius: 10px; padding: 8px 12px; }
-.journal-step:hover { border-color: #9aa8e8; }
-.journal-step.active { border-color: #5365ed; background: #eef1ff; }
-.journal-step-no { grid-area: no; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 99px; background: #e8ebf3; color: #4f5d76; font-size: 11px; font-weight: 800; }
-.journal-step.active .journal-step-no { background: #5365ed; color: white; }
-.journal-step-head { grid-area: head; display: flex; align-items: baseline; gap: 6px; }
-.journal-step-label { font-size: 12px; font-weight: 700; }
-.journal-step-badge { font-size: 10px; font-weight: 700; color: #5c6880; }
-.journal-step-caption { grid-area: caption; font-size: 10px; color: #7a869c; }
-.journal-step-arrow { align-self: center; color: #9aa4bb; font-size: 15px; }
-@media (max-width: 1100px) { .journal-step-arrow { display: none; } .journal-step { flex: 1 1 158px; } }
+/* 業務画面の手順（components/BusinessStepper.tsx）。業務を足してもここは触らない。 */
+.business-steps { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; margin-bottom: 16px; }
+.business-step { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "no head" "no caption"; align-items: center; gap: 2px 8px; text-align: left; min-width: 158px; border: 1px solid #ccd3e0; background: white; color: #354158; border-radius: 10px; padding: 8px 12px; }
+.business-step:hover { border-color: #9aa8e8; }
+.business-step.active { border-color: #5365ed; background: #eef1ff; }
+.business-step-no { grid-area: no; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 99px; background: #e8ebf3; color: #4f5d76; font-size: 11px; font-weight: 800; }
+.business-step.active .business-step-no { background: #5365ed; color: white; }
+.business-step-head { grid-area: head; display: flex; align-items: baseline; gap: 6px; }
+.business-step-label { font-size: 12px; font-weight: 700; }
+.business-step-badge { font-size: 10px; font-weight: 700; color: #5c6880; }
+.business-step-caption { grid-area: caption; font-size: 10px; color: #7a869c; }
+.business-step-arrow { align-self: center; color: #9aa4bb; font-size: 15px; }
+@media (max-width: 1100px) { .business-step-arrow { display: none; } .business-step { flex: 1 1 158px; } }
 
 /* 業務テンプレートの一覧カードと、業務画面からの戻り導線。 */
 .template-cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
@@ -1073,3 +1074,16 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 .template-card-open { font-size: 11px; font-weight: 700; color: #5365ed; }
 .template-back { justify-self: start; margin-bottom: 8px; padding: 0; border: none; background: none; color: #5365ed; font-size: 11px; font-weight: 700; }
 .template-back:hover { text-decoration: underline; }
+
+/* 業務テンプレートが実験的な機能であることの印（components/ExperimentalNotice.tsx）。一覧・左ナビ・業務画面で同じ見た目にする。 */
+.experimental-badge { display: inline-flex; align-items: center; vertical-align: middle; border-radius: 99px; padding: 2px 8px; background: #fff3df; color: #8a5a12; border: 1px solid #f0d6a8; font-size: 10px; font-weight: 800; letter-spacing: .04em; white-space: nowrap; }
+.experimental-badge.compact { margin-left: auto; padding: 0 6px; font-size: 10px; line-height: 16px; }
+.experimental-banner { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 16px; padding: 10px 14px; border: 1px solid #f0d6a8; border-radius: 10px; background: #fffaf0; color: #6b4a12; font-size: 12px; line-height: 1.6; }
+.experimental-banner .experimental-badge { margin-top: 1px; }
+/* 業務画面は App が注意書きを上に添える。画面自身の余白（workspace-page の padding）に揃えて並べる。 */
+.business-screen { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.business-screen > .experimental-banner { margin: 24px 24px 0; }
+.business-screen > .workspace-page { flex: 1; }
+/* 設定画面の「実験的な機能を表示する」。チェックボックスと文言を 1 行に並べる。 */
+.settings-toggle { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.settings-toggle input { width: auto; margin: 0; }

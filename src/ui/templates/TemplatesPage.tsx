@@ -1,6 +1,9 @@
 import { useNavigateScreen } from '../navigation';
 import type { ScreenName } from '../screens';
 import { useI18n } from '../i18n';
+import { ExperimentalBadge, ExperimentalBanner } from '../components/ExperimentalNotice';
+import { BUSINESSES } from '../business/registry';
+import type { Label } from '../business/types';
 
 /**
  * 業務テンプレートの入口。
@@ -12,12 +15,6 @@ import { useI18n } from '../i18n';
  * 各業務は独立した画面（ScreenName）として登録されているので、`#/journal` のような直リンクは従来どおり効く。
  * ここはその入口を一覧するだけで、業務側の実装には関与しない。
  */
-
-/** 日英ペア。表示側が `text(en, ja)` で解決する。 */
-interface Label {
-  readonly en: string;
-  readonly ja: string;
-}
 
 export interface BusinessTemplate {
   readonly id: string;
@@ -31,23 +28,14 @@ export interface BusinessTemplate {
 }
 
 /**
- * 業務テンプレートの一覧。
+ * 業務テンプレートの一覧。業務の記述子（`business/registry.ts`）から作る（ADR-0039）。
  *
- * 業務を増やすときは、画面を `SCREENS` に足したうえでここへ 1 件加える。
- * 実装が無いものを「準備中」として並べることはしない（使えない入口は利用者の時間を奪うだけなので）。
+ * 業務を増やすときは、業務の記述子を 1 つ足す（このファイルは触らない）。
+ * 実装が無いもの（`listed: false`）は「準備中」として並べない（使えない入口は利用者の時間を奪うだけなので）。
  */
-export const BUSINESS_TEMPLATES: readonly BusinessTemplate[] = [
-  {
-    id: 'journal',
-    screen: 'Journal',
-    title: { en: 'Journal entries', ja: '仕訳' },
-    summary: {
-      en: 'Ingest receipts, invoices, and bank/card CSV rows, judge them against your own rules, and export the entries for your accounting software.',
-      ja: 'レシート・請求書・銀行/カード明細を取り込み、自分で決めたルールで判定して仕訳を起こし、会計ソフト向けの CSV に出力します。',
-    },
-    order: 10,
-  },
-];
+export const BUSINESS_TEMPLATES: readonly BusinessTemplate[] = BUSINESSES
+  .filter((business) => business.listed)
+  .map((business) => ({ id: business.id, screen: business.screen, title: business.card.title, summary: business.card.summary, order: business.card.order }));
 
 export function TemplatesPage({ templates = BUSINESS_TEMPLATES }: {
   /** 差し替えられるのはテストのため。通常は既定のカタログを使う。 */
@@ -65,20 +53,21 @@ export function TemplatesPage({ templates = BUSINESS_TEMPLATES }: {
 
   return <main className="workspace-page templates-page">
     <header className="workspace-header"><div>
-      <span className="eyebrow">{text('Business templates', '業務テンプレート')}</span>
+      <span className="eyebrow">{text('Business templates', '業務テンプレート')}</span> <ExperimentalBadge />
       <h1>{text('Business templates', '業務テンプレート')}</h1>
       <p>{text(
         'Features built for a specific line of work. Pick one to open it. Everything here is built on the same tools, agents, and data sources as the rest of the studio.',
         '特定の業務向けにあらかじめ組んである機能です。選ぶとその業務の画面に入ります。中身は他の画面と同じツール・エージェント・データソースの上に作られています。',
       )}</p>
     </div></header>
+    <ExperimentalBanner />
 
     {ordered.length === 0
       ? <p className="empty-state">{text('No business templates are available yet.', 'まだ利用できる業務テンプレートはありません。')}</p>
       : <ul className="template-cards">
         {ordered.map((template) => <li key={template.id}>
           <button type="button" className="template-card" aria-label={text(template.title.en, template.title.ja)} onClick={() => open(template)}>
-            <span className="template-card-title">{text(template.title.en, template.title.ja)}</span>
+            <span className="template-card-title">{text(template.title.en, template.title.ja)} <ExperimentalBadge /></span>
             <span className="template-card-summary">{text(template.summary.en, template.summary.ja)}</span>
             <span className="template-card-open" aria-hidden="true">{text('Open →', '開く →')}</span>
           </button>

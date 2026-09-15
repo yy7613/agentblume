@@ -1,0 +1,13 @@
+﻿id,code,name,enabled,accountId,defaultTaxRate,taxCode10,taxCode8,taxCode0,receiptRequired,receiptExemptBelow,invoiceRequired,invoiceExemptBelow,requiresPurpose,requiresAttendees,requiresAttendeeDetails,perItemLimit,perClaimLimit,perPersonLimit,perPersonBasis,perUnitLabel,perUnitLimit,aliases,note
+transport.public,,電車・バス,true,expense.travel,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,false,,true,30000,true,false,false,,,,tax-included,,,電車;バス;電車代;バス代;地下鉄;交通費,3 万円未満の公共交通機関は帳簿のみ保存で仕入税額控除ができます
+transport.taxi,,タクシー,true,expense.travel,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,true,,true,,true,false,false,10000,,,tax-included,,,タクシー代;ハイヤー,
+travel.long,,新幹線・航空券,true,expense.travel,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,true,,true,,true,false,false,,,,tax-included,,,新幹線;航空券;飛行機,
+travel.lodging,,宿泊費,true,expense.travel,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,true,,true,,true,false,false,,,,tax-included,泊,12000,宿泊;ホテル,
+travel.per_diem,,日当,true,expense.travel,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,false,,false,,true,false,false,,,,tax-included,日,3000,出張日当,出張旅費規程に基づく支給は帳簿のみ保存で仕入税額控除ができます
+meal.meeting,,会議費（打合せの飲食）,true,expense.meetings,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,true,,true,,true,true,false,,,,tax-included,,,会議費;打合せ;会議用弁当,1 人あたりの基準を決めている会社は上限を入れてください
+meal.entertainment,,交際費（接待の飲食）,true,expense.entertainment,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,true,,true,,true,true,true,,,10000,tax-included,,,交際費;接待;接待交際費,"1 人 10,000 円以下の飲食費は交際費から除外できます（2024-04-01 以後。税抜経理なら基準を税抜に変えてください）"
+supplies,,消耗品・事務用品,true,expense.supplies,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,true,,true,,false,false,false,100000,,,tax-included,,,消耗品;事務用品;文具;文房具,10 万円以上は固定資産の確認が要ります
+books,,書籍・資料,true,expense.books,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,true,,true,,false,false,false,,,,tax-included,,,書籍;図書;新聞図書費,
+communication,,通信費・切手,true,expense.communication,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,true,,true,,false,false,false,,,,tax-included,,,通信費;切手;郵便,
+shipping,,送料・宅配,true,expense.shipping,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,true,,true,,false,false,false,,,,tax-included,,,送料;宅配;宅配便;運賃,
+misc,,その他,true,expense.misc,10,JP-IN-10-S,JP-IN-8R-S,JP-IN-NA,true,,true,,true,false,false,30000,,,tax-included,,,雑費,

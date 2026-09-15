@@ -38,25 +38,13 @@ import { SecretCipherError } from '../application/model-settings/secret-cipher';
 import { ModelCatalogError } from '../application/model-settings/model-catalog';
 import { SharedValidationError } from '../domain/shared/errors';
 import { ToolCheckNotFoundError, ToolCheckValidationError } from '../domain/tool-check/errors';
-import {
-  JournalCsvImportError, JournalDocumentNotFoundError, JournalDomainError, JournalEntryNotFoundError,
-  JournalExportError, JournalHearingNotFoundError, JournalRuleNotFoundError,
-} from '../domain/journal/errors';
-import { JournalExtractionSchemaError, JournalExtractionUnavailableError } from '../application/journal/errors';
+import { httpError, type HttpError } from './http-error';
+import { journalHttpError } from './journal-error-mapping';
+import { expenseHttpError } from './expense-error-mapping';
+import { receivablesHttpError } from './receivables-error-mapping';
+import { contractHttpError } from './contract-error-mapping';
 
-/**
- * HTTP エラーレスポンス表現。
- * `tool` / `nodeId` はツール実行由来の失敗（ToolExecutionError）だけが持ち、
- * 利用者がどのToolのどのノードを直せばよいかをUIが示すために使う。
- * `rubric` は judge の tracePolicy と事例種別の矛盾（JudgeTraceUnavailableError）だけが持ち、
- * どのルーブリックを直せばよいかを UI が示すために使う。
- * `row` は仕訳 CSV 取込の失敗（JournalCsvImportError）だけが持ち、CSV の何行目を直せばよいかを示す
- * （1 始まり・ヘッダ行込みなので表計算ソフトの行番号と一致する）。
- */
-export interface HttpError {
-  readonly status: number;
-  readonly body: { error: { code: string; message: string; runId?: string; tool?: RunFailureToolRef; nodeId?: string; rubric?: { id: string; version: string }; row?: number } };
-}
+export type { HttpError } from './http-error';
 
 /**
  * api層ローカルの 400 用エラー（Zod 検証失敗・不正 version 文字列など）。
@@ -69,11 +57,6 @@ export class BadRequestError extends Error {
     super(message);
     this.name = 'BadRequestError';
   }
-}
-
-/** status と例外から HttpError を組み立てる（code は例外の code プロパティ）。 */
-function httpError(status: number, code: string, message: string): HttpError {
-  return { status, body: { error: { code, message } } };
 }
 
 /**
@@ -95,11 +78,7 @@ function httpError(status: number, code: string, message: string): HttpError {
  * | RunNotFoundError | 404 | RUN_NOT_FOUND |
  * | JudgeModelNotConfiguredError | 409 | JUDGE_MODEL_NOT_CONFIGURED |
  * | JudgeTraceUnavailableError | 409 | JUDGE_TRACE_UNAVAILABLE + rubric |
- * | Journal*NotFoundError | 404 | JOURNAL_*_NOT_FOUND |
- * | JournalCsvImportError | 400 | JOURNAL_CSV_IMPORT + row |
- * | JournalExportError / JournalDomainError | 400 | JOURNAL_EXPORT / JOURNAL_DOMAIN |
- * | JournalExtractionUnavailableError | 409 | JOURNAL_EXTRACTION_UNAVAILABLE |
- * | JournalExtractionSchemaError | 502 | JOURNAL_EXTRACTION_SCHEMA |
+ * | 業務のエラー（仕訳など） | `<業務>-error-mapping.ts` の表（ADR-0039） |
  * | RunFailedError | 元例外のstatus/code + runId |
  * | ToolExecutionError | 元例外のstatus/code + tool（+ nodeId） |
  * | その他 | 500 | INTERNAL（message 'internal error' 固定） |
@@ -203,22 +182,10 @@ export function toHttpError(err: unknown): HttpError {
   if (err instanceof ToolCheckNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof ToolCheckValidationError) return httpError(400, err.code, err.message);
 
-  // 仕訳: 参照切れは404、入力・保存済みレコードの不変条件違反と出力の前提違反は400。
-  // CSV 取込だけは「何行目が悪いか」を本文へ載せる（UI が行番号つきの日本語メッセージにする）。
-  // 判定が「確定できなかった」ことはエラーではなく結果（undecided）なので、ここには現れない。
-  if (err instanceof JournalDocumentNotFoundError) return httpError(404, err.code, err.message);
-  if (err instanceof JournalRuleNotFoundError) return httpError(404, err.code, err.message);
-  if (err instanceof JournalEntryNotFoundError) return httpError(404, err.code, err.message);
-  if (err instanceof JournalHearingNotFoundError) return httpError(404, err.code, err.message);
-  if (err instanceof JournalCsvImportError) {
-    return { status: 400, body: { error: { code: err.code, message: err.message, ...(err.row === undefined ? {} : { row: err.row }) } } };
-  }
-  if (err instanceof JournalExportError) return httpError(400, err.code, err.message);
-  if (err instanceof JournalDomainError) return httpError(400, err.code, err.message);
-  // 仕訳の LLM 抽出（フェーズ 2）: モデル未設定・能力不足は**利用者が設定画面で直せる**ので 409、
-  // 応答が修復後もスキーマに合わないのはモデル側の問題なので ModelProviderError と同じ 502。
-  if (err instanceof JournalExtractionUnavailableError) return httpError(409, err.code, err.message);
-  if (err instanceof JournalExtractionSchemaError) return httpError(502, err.code, err.message);
+  // 業務（仕訳・経費精算・入金消込・契約）のエラーは業務ごとの写像が持つ（ADR-0039）。
+  // 業務のエラー型は他と継承関係を持たないので、この位置で順に尋ねれば足りる。
+  const business = journalHttpError(err) ?? expenseHttpError(err) ?? receivablesHttpError(err) ?? contractHttpError(err);
+  if (business !== undefined) return business;
 
   // MCPクライアント: 設定の不変条件違反は400、未登録サーバーは404。
   // 接続失敗（McpClientError）は外部依存の失敗なので ModelProviderError と同じ502。

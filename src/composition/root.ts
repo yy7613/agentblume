@@ -206,41 +206,11 @@ import { RunToolCheckUseCase } from '../application/tool-check/run-tool-check';
 import { DeleteToolCheckCaseUseCase, ListToolCheckCasesUseCase, SaveToolCheckCaseUseCase } from '../application/tool-check/manage-tool-check-cases';
 import { RunToolCheckCaseUseCase } from '../application/tool-check/run-tool-check-case';
 import { SuggestToolCheckCasesUseCase } from '../application/tool-check/suggest-tool-check-cases';
-import {
-  InMemoryChartOfAccountsRepository, InMemoryJournalDocumentRepository, InMemoryJournalEntryRepository,
-  InMemoryJournalHearingRepository, InMemoryJournalRuleRepository,
-} from '../adapters/storage/in-memory-journal-repositories';
-import {
-  SqliteChartOfAccountsRepository, SqliteJournalDocumentRepository, SqliteJournalEntryRepository,
-  SqliteJournalHearingRepository, SqliteJournalRuleRepository,
-} from '../adapters/storage/sqlite-journal-repositories';
-import type {
-  ChartOfAccountsRepository, JournalDocumentRepository, JournalEntryRepository,
-  JournalHearingRepository, JournalRuleRepository,
-} from '../domain/journal/repositories';
-import { JOURNAL_CAPABILITIES_DISABLED, JournalCapabilitiesUseCase, type JournalCapabilities } from '../application/journal/capabilities';
-import { ExportChartCsvUseCase, ImportChartCsvUseCase } from '../application/journal/chart-transfer';
-import { JournalAttachmentRowsProvider } from '../application/journal/attachment-rows';
-import { JournalDraftEntryRowsProvider } from '../application/journal/draft-entry-rows';
-import { JournalEntryRowsProvider } from '../application/journal/entry-rows';
-import { ExportJournalEntriesUseCase } from '../application/journal/export-entries';
-import { ImportJournalCsvUseCase } from '../application/journal/import-csv';
-import { JudgeJournalDocumentsUseCase } from '../application/journal/judge-documents';
-import { GetChartOfAccountsUseCase, ResetChartOfAccountsUseCase, SaveChartOfAccountsUseCase } from '../application/journal/manage-chart';
-import {
-  DeleteJournalDocumentUseCase, GetJournalDocumentUseCase, ListJournalDocumentsUseCase, SaveJournalDocumentUseCase,
-} from '../application/journal/manage-documents';
-import {
-  ConfirmJournalEntryUseCase, DeleteJournalEntryUseCase, ListJournalEntriesUseCase, SaveJournalEntryUseCase,
-} from '../application/journal/manage-entries';
-import {
-  DeleteJournalRuleUseCase, ListJournalRulesUseCase, SaveJournalRuleUseCase, TestJournalRuleUseCase,
-} from '../application/journal/manage-rules';
-import { ExtractJournalDocumentUseCase } from '../application/journal/extract-document';
-import {
-  AcceptJournalHearingUseCase, AnswerJournalHearingUseCase, CancelJournalHearingUseCase,
-  GetJournalHearingUseCase, ListJournalHearingsUseCase, StartJournalHearingUseCase,
-} from '../application/journal/hearing';
+import type { BusinessCompositionContext } from './business';
+import { composeJournal, type JournalAppFeature } from './journal';
+import { composeExpense, type ExpenseAppFeature } from './expense';
+import { composeReceivables, type ReceivablesAppFeature } from './receivables';
+import { composeContract, type ContractAppFeature } from './contract';
 import { TestModelSettingsUseCase } from '../application/model-settings/test-model-settings';
 import { QueryModelCatalogUseCase } from '../application/model-settings/query-model-catalog';
 import type { ModelSlotName } from '../domain/model-settings/model-settings';
@@ -313,8 +283,11 @@ export interface AppOptions {
   readonly backupRoot?: string;
 }
 
-/** 配線済みアプリケーション。 */
-export interface App {
+/**
+ * 配線済みアプリケーション。業務（仕訳・経費精算・入金消込・契約）の部分は業務ごとの
+ * `composition/<業務>.ts` の `<業務>AppFeature` が持つ（ADR-0039）。
+ */
+export interface App extends JournalAppFeature, ExpenseAppFeature, ReceivablesAppFeature, ContractAppFeature {
   readonly profile: Profile;
   /** 実際に使っている保存先（'local' のみ）。`:memory:` は揮発を意味する。 */
   readonly dbPath?: string;
@@ -410,43 +383,6 @@ export interface App {
   readonly deleteToolCheckCase: DeleteToolCheckCaseUseCase;
   readonly runToolCheckCase: RunToolCheckCaseUseCase;
   readonly suggestToolCheckCases: SuggestToolCheckCasesUseCase;
-  /* 仕訳（docs/20-journal.md）。 */
-  readonly journalChartRepo: ChartOfAccountsRepository;
-  readonly journalDocumentRepo: JournalDocumentRepository;
-  readonly journalRuleRepo: JournalRuleRepository;
-  readonly journalEntryRepo: JournalEntryRepository;
-  /** フェーズ 1 では読み書きするユースケースがまだ無い（Stage 2 が載るまで置いておく）。 */
-  readonly journalHearingRepo: JournalHearingRepository;
-  readonly getJournalChart: GetChartOfAccountsUseCase;
-  readonly saveJournalChart: SaveChartOfAccountsUseCase;
-  readonly resetJournalChart: ResetChartOfAccountsUseCase;
-  readonly exportJournalChartCsv: ExportChartCsvUseCase;
-  readonly importJournalChartCsv: ImportChartCsvUseCase;
-  readonly saveJournalRule: SaveJournalRuleUseCase;
-  readonly listJournalRules: ListJournalRulesUseCase;
-  readonly deleteJournalRule: DeleteJournalRuleUseCase;
-  readonly testJournalRule: TestJournalRuleUseCase;
-  readonly saveJournalDocument: SaveJournalDocumentUseCase;
-  readonly listJournalDocuments: ListJournalDocumentsUseCase;
-  readonly getJournalDocument: GetJournalDocumentUseCase;
-  readonly deleteJournalDocument: DeleteJournalDocumentUseCase;
-  readonly importJournalCsv: ImportJournalCsvUseCase;
-  readonly judgeJournalDocuments: JudgeJournalDocumentsUseCase;
-  readonly saveJournalEntry: SaveJournalEntryUseCase;
-  readonly listJournalEntries: ListJournalEntriesUseCase;
-  readonly confirmJournalEntry: ConfirmJournalEntryUseCase;
-  readonly deleteJournalEntry: DeleteJournalEntryUseCase;
-  readonly exportJournalEntries: ExportJournalEntriesUseCase;
-  /* フェーズ 2（LLM 抽出と Stage 2 ヒアリング）。 */
-  readonly extractJournalDocument: ExtractJournalDocumentUseCase;
-  readonly startJournalHearing: StartJournalHearingUseCase;
-  readonly answerJournalHearing: AnswerJournalHearingUseCase;
-  readonly acceptJournalHearing: AcceptJournalHearingUseCase;
-  readonly cancelJournalHearing: CancelJournalHearingUseCase;
-  readonly getJournalHearing: GetJournalHearingUseCase;
-  readonly listJournalHearings: ListJournalHearingsUseCase;
-  /** 仕訳の LLM 抽出・ヒアリングの可否（`GET /runtime/capabilities` の `journal`）。 */
-  readonly journalCapabilities: JournalCapabilitiesUseCase;
   readonly saveSkill: SaveSkillUseCase;
   readonly querySkills: QuerySkillsUseCase;
   readonly deleteSkill: DeleteSkillUseCase;
@@ -670,12 +606,6 @@ export function createApp(options?: AppOptions): App {
   const evaluationDatasetAdapter = { repo: pickRepository<EvaluationDatasetRepository>(undefined, database, (db) => new SqliteEvaluationDatasetRepository(db), () => new InMemoryEvaluationDatasetRepository()) };
   const evaluatorProfileAdapter = { repo: pickRepository<EvaluatorProfileRepository>(undefined, database, (db) => new SqliteEvaluatorProfileRepository(db), () => new InMemoryEvaluatorProfileRepository()) };
   const toolCheckCaseAdapter = { repo: pickRepository<ToolCheckCaseRepository>(undefined, database, (db) => new SqliteToolCheckCaseRepository(db), () => new InMemoryToolCheckCaseRepository()) };
-  // 仕訳（v5）: 5つの集約。証憑本体は record_json に同梱するので payload 置き場は要らない。
-  const journalChartAdapter = { repo: pickRepository<ChartOfAccountsRepository>(undefined, database, (db) => new SqliteChartOfAccountsRepository(db), () => new InMemoryChartOfAccountsRepository()) };
-  const journalDocumentAdapter = { repo: pickRepository<JournalDocumentRepository>(undefined, database, (db) => new SqliteJournalDocumentRepository(db), () => new InMemoryJournalDocumentRepository()) };
-  const journalRuleAdapter = { repo: pickRepository<JournalRuleRepository>(undefined, database, (db) => new SqliteJournalRuleRepository(db), () => new InMemoryJournalRuleRepository()) };
-  const journalEntryAdapter = { repo: pickRepository<JournalEntryRepository>(undefined, database, (db) => new SqliteJournalEntryRepository(db), () => new InMemoryJournalEntryRepository()) };
-  const journalHearingAdapter = { repo: pickRepository<JournalHearingRepository>(undefined, database, (db) => new SqliteJournalHearingRepository(db), () => new InMemoryJournalHearingRepository()) };
   const experimentAdapter = { repo: pickRepository<ExperimentRepository>(options?.experimentRepository, database, (db) => new SqliteExperimentRepository(db), () => new InMemoryExperimentRepository()) };
   const qualityGateAdapter = { repo: pickRepository<QualityGateRepository>(options?.qualityGateRepository, database, (db) => new SqliteQualityGateRepository(db), () => new InMemoryQualityGateRepository()) };
   const judgeRubricAdapter = { repo: pickRepository<JudgeRubricRepository>(options?.judgeRubricRepository, database, (db) => new SqliteJudgeRubricRepository(db), () => new InMemoryJudgeRubricRepository()) };
@@ -792,26 +722,39 @@ export function createApp(options?: AppOptions): App {
   const mcpClient = options?.mcpClient ?? new SdkMcpClient({ policy: mcpPolicy });
   const webSearch = new WebSearchUseCase(options?.searchProviderCatalog ?? new EnvironmentSearchProviderCatalog());
   /**
-   * 仕訳の LLM 機能を回してよいか（能力ではなく**設定の有無**）。分析アシスタントと同じ判定だが、
-   * `ANALYSIS_ASSISTANT_ENABLED` では切らない（仕訳の抽出は分析アシスタントとは別の機能である）。
-   *
-   * 添付読み取りのポートが解決処理より先に要るので、ここで宣言する。
+   * main スロットにモデルが設定されているか（能力ではなく**設定の有無**）。業務の LLM 機能が使う。
+   * `ANALYSIS_ASSISTANT_ENABLED` では切らない（業務の抽出は分析アシスタントとは別の機能である）。
    */
-  const journalLlmEnabled = async (): Promise<boolean> => {
+  const mainModelConfigured = async (): Promise<boolean> => {
     if (profile === 'test') return false;
     if ((process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== '') return true;
     try { return (await modelSettingsAdapter.repo.find(modelSettingsScope))?.main !== undefined; }
     catch { return false; }
   };
-  // 取込タブと添付読み取りで同じ 1 つを使う（読み取りの規則を 2 か所に分けない）。
-  const extractJournalDocument = new ExtractJournalDocumentUseCase(modelProvider, journalLlmEnabled, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot(), errorLogger);
-  // 仕訳の `journal-entries` ソースは domain からリポジトリへ届かないため、実行直前に行を差し込むポートを渡す。
-  const journalEntryRows = new JournalEntryRowsProvider(journalEntryAdapter.repo, journalChartAdapter.repo);
-  // `journal-attachment` ソースは実行中の添付を読む。domain からはモデルにも実行文脈にも届かない。
-  const journalAttachmentRows = new JournalAttachmentRowsProvider(extractJournalDocument);
-  // `journal-draft-entry` は 読み取り → 保存済みルールで判定 → 仕訳案 までを 1 本で通す（保存しない）。
-  const journalDraftEntryRows = new JournalDraftEntryRowsProvider(extractJournalDocument, journalRuleAdapter.repo, journalChartAdapter.repo);
-  const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections, webSearch, journalEntryRows, journalAttachmentRows, journalDraftEntryRows);
+  /**
+   * 業務（ADR-0039）。行ソースをデータソース解決へ登録するので、解決より先に組み立てる。
+   * 業務の組み立ては `composition/<業務>.ts` に閉じ、ここは並べて呼ぶだけにする。
+   */
+  const businessContext: BusinessCompositionContext = {
+    profile,
+    pickRepository: <T>(sqlite: (db: SqliteDatabase) => T, memory: () => T): T => pickRepository<T>(undefined, database, sqlite, memory),
+    unitOfWork,
+    modelProvider,
+    mainModelConfigured,
+    // 切替可能な配線では保存済み設定を解決してから能力を読む（diagnoseAgentTools と同じ手順）。
+    mainModelCapabilities: async () => { await mainSwitchable?.currentSnapshot(); return modelProvider.capabilities(); },
+    ...(resolveModelSnapshot === undefined ? {} : { resolveModelSnapshot }),
+    errorLogger,
+    // 業務の個人情報（経費精算の口座番号）もモデル設定と同じ鍵で封緘する（鍵を 2 つにすると運用で片方を失いやすい）。
+    secretCipher,
+  };
+  const journal = composeJournal(businessContext);
+  const expense = composeExpense(businessContext, { journal: journal.feature });
+  const receivables = composeReceivables(businessContext, { journal: journal.feature });
+  const contract = composeContract(businessContext);
+  const resolveDataSources = new ResolveDataSourceGraphUseCase(dataSourceAdapter.repo, databaseConnections, webSearch, [
+    ...journal.rowSources, ...expense.rowSources, ...receivables.rowSources, ...contract.rowSources,
+  ]);
 
   const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot, logger: errorLogger, ...(resolveModelSnapshot === undefined ? {} : { resolveModel: resolveModelSnapshot }) }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient);
   const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);
@@ -837,33 +780,6 @@ export function createApp(options?: AppOptions): App {
     try { return (await modelSettingsAdapter.repo.find(modelSettingsScope))?.main !== undefined; }
     catch { return false; } // 設定が読めない/復号できない場合は「使えない」側へ倒す。
   };
-  /**
-   * 仕訳の LLM 機能（抽出・ヒアリング）が使えるか。
-   *
-   * 画面が「使えない理由」を出し分けられるよう、モデル側の能力をそのまま答える:
-   * テキストからの抽出も Stage 2 のヒアリングも structured output があれば足り、
-   * 画像（PDF はブラウザで画像化する）は vision も要る。判定は毎回行う（モデル設定は UI から変わる）。
-   */
-  const journalCapabilitiesResolver = async (): Promise<JournalCapabilities> => {
-    if (profile === 'test') return JOURNAL_CAPABILITIES_DISABLED;
-    try {
-      // 切替可能な配線では保存済み設定を解決してから能力を読む（diagnoseAgentTools と同じ手順）。
-      await mainSwitchable?.currentSnapshot();
-      const capabilities = modelProvider.capabilities();
-      const structured = capabilities.includes('structured-output');
-      const vision = capabilities.includes('vision');
-      return {
-        extraction: { enabled: structured, vision: structured && vision },
-        // Stage 2 は構造化出力だけで足りる（質問も提案も JSON で受け取る。画像は見ない）。
-        hearing: { enabled: structured },
-      };
-    } catch {
-      // 設定が読めない / 復号できない場合は「使えない」側へ倒す。
-      return JOURNAL_CAPABILITIES_DISABLED;
-    }
-  };
-  // 判定は純粋関数なので profile 非依存。ヒアリングの受け入れ（再判定）もこの 1 つを共有する。
-  const judgeJournalDocuments = new JudgeJournalDocumentsUseCase(journalDocumentAdapter.repo, journalRuleAdapter.repo, journalChartAdapter.repo, journalEntryAdapter.repo);
 
   // Tool 単位のプリフライト診断。未保存 draft のルートと Agent 診断の両方が同じインスタンスを使う。
   const diagnoseTool = new DiagnoseToolUseCase(engine, resolveDataSources);
@@ -1100,41 +1016,11 @@ export function createApp(options?: AppOptions): App {
     listToolCheckCases: new ListToolCheckCasesUseCase(toolCheckCaseAdapter.repo),
     deleteToolCheckCase: new DeleteToolCheckCaseUseCase(toolCheckCaseAdapter.repo),
     runToolCheckCase: new RunToolCheckCaseUseCase(toolCheckCaseAdapter.repo, runToolCheck),
-    // 仕訳（docs/20-journal.md）。判定は純粋関数なのでモデル配線に依らず profile 非依存に組む。
-    journalChartRepo: journalChartAdapter.repo,
-    journalDocumentRepo: journalDocumentAdapter.repo,
-    journalRuleRepo: journalRuleAdapter.repo,
-    journalEntryRepo: journalEntryAdapter.repo,
-    journalHearingRepo: journalHearingAdapter.repo,
-    getJournalChart: new GetChartOfAccountsUseCase(journalChartAdapter.repo),
-    saveJournalChart: new SaveChartOfAccountsUseCase(journalChartAdapter.repo),
-    resetJournalChart: new ResetChartOfAccountsUseCase(journalChartAdapter.repo),
-    exportJournalChartCsv: new ExportChartCsvUseCase(journalChartAdapter.repo),
-    importJournalChartCsv: new ImportChartCsvUseCase(journalChartAdapter.repo),
-    saveJournalRule: new SaveJournalRuleUseCase(journalRuleAdapter.repo, journalChartAdapter.repo),
-    listJournalRules: new ListJournalRulesUseCase(journalRuleAdapter.repo),
-    deleteJournalRule: new DeleteJournalRuleUseCase(journalRuleAdapter.repo),
-    testJournalRule: new TestJournalRuleUseCase(journalDocumentAdapter.repo, journalChartAdapter.repo),
-    saveJournalDocument: new SaveJournalDocumentUseCase(journalDocumentAdapter.repo),
-    listJournalDocuments: new ListJournalDocumentsUseCase(journalDocumentAdapter.repo),
-    getJournalDocument: new GetJournalDocumentUseCase(journalDocumentAdapter.repo),
-    deleteJournalDocument: new DeleteJournalDocumentUseCase(journalDocumentAdapter.repo, journalEntryAdapter.repo),
-    importJournalCsv: new ImportJournalCsvUseCase(journalDocumentAdapter.repo),
-    judgeJournalDocuments,
-    saveJournalEntry: new SaveJournalEntryUseCase(journalEntryAdapter.repo, journalChartAdapter.repo),
-    listJournalEntries: new ListJournalEntriesUseCase(journalEntryAdapter.repo),
-    confirmJournalEntry: new ConfirmJournalEntryUseCase(journalEntryAdapter.repo),
-    deleteJournalEntry: new DeleteJournalEntryUseCase(journalEntryAdapter.repo, journalDocumentAdapter.repo),
-    exportJournalEntries: new ExportJournalEntriesUseCase(journalEntryAdapter.repo, journalChartAdapter.repo),
-    // フェーズ 2: 抽出とヒアリング。モデルは main スロット（切替可能な配線ならその実体）。
-    extractJournalDocument,
-    startJournalHearing: new StartJournalHearingUseCase(journalDocumentAdapter.repo, journalHearingAdapter.repo, journalChartAdapter.repo, modelProvider, journalLlmEnabled),
-    answerJournalHearing: new AnswerJournalHearingUseCase(journalDocumentAdapter.repo, journalHearingAdapter.repo, journalChartAdapter.repo, modelProvider, journalLlmEnabled),
-    acceptJournalHearing: new AcceptJournalHearingUseCase(journalDocumentAdapter.repo, journalHearingAdapter.repo, journalChartAdapter.repo, journalRuleAdapter.repo, journalEntryAdapter.repo, judgeJournalDocuments),
-    cancelJournalHearing: new CancelJournalHearingUseCase(journalDocumentAdapter.repo, journalHearingAdapter.repo),
-    getJournalHearing: new GetJournalHearingUseCase(journalHearingAdapter.repo),
-    listJournalHearings: new ListJournalHearingsUseCase(journalHearingAdapter.repo),
-    journalCapabilities: new JournalCapabilitiesUseCase(journalCapabilitiesResolver),
+    // 業務（ADR-0039）。各業務の use case は `composition/<業務>.ts` が組む。
+    ...journal.feature,
+    ...expense.feature,
+    ...receivables.feature,
+    ...contract.feature,
     // 2つのワーカーは互いに独立なので同時に待つ（直列にすると猶予が最大2倍かかる）。
     drainWorkers: async (graceMs: number) => {
       const drained = await Promise.all([experimentWorker.drainInFlight(graceMs), factoryWorker.drainInFlight(graceMs)]);

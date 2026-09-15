@@ -1,0 +1,86 @@
+{
+  "routes": [
+    {
+      "id": "entertainment-large",
+      "name": "5 万円以上の交際費",
+      "enabled": true,
+      "when": {
+        "categoryIds": [
+          "meal.entertainment"
+        ],
+        "minClaimAmount": 50000,
+        "departmentIds": []
+      },
+      "steps": [
+        {
+          "id": "manager",
+          "name": "上長",
+          "approver": {
+            "kind": "claimant-manager"
+          },
+          "skipWhenSameAsPrevious": false
+        },
+        {
+          "id": "head",
+          "name": "部門長",
+          "approver": {
+            "kind": "department-head"
+          },
+          "skipWhenSameAsPrevious": true
+        },
+        {
+          "id": "accounting",
+          "name": "経理",
+          "approver": {
+            "kind": "group",
+            "groupId": "group-accounting"
+          },
+          "skipWhenSameAsPrevious": false
+        }
+      ]
+    },
+    {
+      "id": "sales",
+      "name": "営業部の申請",
+      "enabled": true,
+      "when": {
+        "categoryIds": [],
+        "departmentIds": [
+          "dept-sales"
+        ]
+      },
+      "steps": [
+        {
+          "id": "manager",
+          "name": "上長",
+          "approver": {
+            "kind": "claimant-manager"
+          },
+          "skipWhenSameAsPrevious": false
+        },
+        {
+          "id": "accounting",
+          "name": "経理",
+          "approver": {
+            "kind": "group",
+            "groupId": "group-accounting"
+          },
+          "skipWhenSameAsPrevious": false
+        }
+      ]
+    }
+  ],
+  "defaultSteps": [
+    {
+      "id": "approve",
+      "name": "承認",
+      "approver": {
+        "kind": "any-approver"
+      },
+      "skipWhenSameAsPrevious": false
+    }
+  ],
+  "forbidClaimantApproval": true,
+  "requireDistinctApprovers": false,
+  "proxyGroupId": "group-accounting"
+}

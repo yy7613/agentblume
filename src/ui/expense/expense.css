@@ -1,0 +1,77 @@
+/* 経費精算画面（docs/21-expense.md §11）。共有の styles.css は触らず、クラスは expense- で始める。 */
+
+.expense-layout { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr); gap: 16px; align-items: start; margin-top: 16px; }
+@media (max-width: 900px) { .expense-layout { grid-template-columns: 1fr; } }
+
+.expense-row-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.expense-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+
+.expense-claim-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.expense-claim-list button.expense-claim-row { width: 100%; text-align: left; display: grid; gap: 3px; padding: 8px 10px; border: 1px solid #dce1eb; border-radius: 8px; background: #fafbfe; cursor: pointer; }
+.expense-claim-list button.expense-claim-row[aria-current="true"] { border-color: #6d7ff0; background: #eef1ff; }
+.expense-claim-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; color: #5c6880; }
+
+.expense-verdict-pass { background: #e4f5ef; border-color: #cbe9de; color: #137058; }
+.expense-verdict-needs-review { background: #fff1d7; border-color: #f4dfb0; color: #97640c; }
+.expense-verdict-returned { background: #fce8ea; border-color: #f2c9ce; color: #a62f3e; }
+.expense-verdict-none, .expense-status { background: #f4f6fb; color: #3e4a63; }
+.expense-stale { border-style: dashed; }
+.expense-status-approved, .expense-status-settled { background: #e9eefc; color: #33499c; }
+
+.expense-reason { margin: 8px 0; padding: 10px 12px; border-radius: 9px; border: 1px solid #dce1eb; background: #fafbfe; font-size: 12px; line-height: 1.55; }
+.expense-reason p { margin: 0 0 4px; }
+.expense-reason-review { border-color: #f4dfb0; background: #fff8e8; color: #6e5218; }
+.expense-reason-return { border-color: #f2c9ce; background: #fdf1f2; color: #7d2733; }
+.expense-reason-info { border-color: #d5dbff; background: #f3f5ff; color: #33499c; }
+.expense-reason .run-failure-actions { margin-top: 6px; }
+
+.expense-item-card { border: 1px solid #dce1eb; border-radius: 10px; padding: 10px 12px; margin: 10px 0; background: white; }
+.expense-item-card h4 { margin: 0 0 4px; font-size: 13px; }
+.expense-search-keys { display: inline-flex; gap: 8px; font-size: 11px; }
+.expense-search-keys .ok { color: #137058; }
+.expense-search-keys .missing { color: #a62f3e; font-weight: 700; }
+
+.expense-subtabs { display: flex; gap: 4px; margin: 12px 0; border-bottom: 1px solid #dce1eb; }
+.expense-subtabs button { border: none; border-bottom: 2px solid transparent; background: none; padding: 6px 12px; cursor: pointer; }
+.expense-subtabs button[aria-selected="true"] { border-bottom-color: #4a5fe0; font-weight: 700; }
+
+.expense-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 12px; margin: 10px 0; }
+.expense-form label { display: grid; gap: 3px; font-size: 12px; }
+.expense-form .expense-wide { grid-column: 1 / -1; }
+.expense-with-receipt { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 14px; align-items: start; }
+@media (max-width: 900px) { .expense-with-receipt { grid-template-columns: 1fr; } }
+.expense-required::after { content: " *"; color: #a62f3e; }
+.expense-warned input, .expense-warned select, .expense-warned textarea { border-color: #e0a93a; background: #fff8e8; }
+.expense-limit-hint { font-size: 11px; color: #5b6785; }
+.expense-chip-button { display: inline-flex; gap: 4px; align-items: center; padding: 2px 9px; border-radius: 99px; border: 1px solid #d5dbff; background: #eef1ff; color: #3545b7; font-size: 11px; cursor: pointer; }
+
+.expense-receipt-image { max-width: 100%; max-height: 70vh; object-fit: contain; border: 1px solid #dce1eb; border-radius: 8px; background: #f4f6fb; }
+.expense-thumbs { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; margin: 8px 0; }
+.expense-thumbs li { display: grid; gap: 3px; width: 130px; font-size: 11px; }
+.expense-thumbs img { width: 130px; height: 100px; object-fit: cover; border-radius: 6px; border: 1px solid #dce1eb; }
+.expense-pre { white-space: pre-wrap; font-size: 11px; max-height: 240px; overflow: auto; }
+
+.expense-policy-table input[type="text"], .expense-policy-table input:not([type]), .expense-policy-table input[type="number"] { width: 100%; min-width: 64px; }
+.expense-policy-table select { max-width: 180px; }
+.expense-policy-table td { vertical-align: top; }
+.expense-cell-issue input, .expense-cell-issue select { border-color: #b73343; }
+.expense-focused { outline: 2px solid #6d7ff0; outline-offset: 2px; }
+.expense-not-in-chart { display: block; font-size: 10px; color: #a62f3e; }
+.expense-checks { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; }
+.expense-checks label { display: inline-flex; gap: 3px; align-items: center; }
+.expense-empty { display: grid; gap: 8px; justify-items: start; }
+.expense-textarea { width: 100%; min-height: 160px; font-family: inherit; }
+.expense-total { font-weight: 700; }
+
+/* 実用化（docs/21 §20.10）: 2 段目の「台帳とマスタ」タブ列と、規程タブ先頭の準備状況。未設定は失敗ではないので赤系の色を使わない。 */
+.expense-ledger-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 8px 0 12px; padding: 6px 8px; border: 1px solid #dce1eb; border-radius: 9px; background: #fafbfe; }
+.expense-ledger-tabs-label { font-size: 11px; color: #5c6880; margin-right: 6px; }
+.expense-ledger-tabs button { border: 1px solid transparent; border-radius: 99px; background: none; padding: 3px 11px; font-size: 12px; cursor: pointer; color: #3e4a63; }
+.expense-ledger-tabs button[aria-selected="true"] { border-color: #6d7ff0; background: #eef1ff; color: #33499c; font-weight: 700; }
+.expense-readiness-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.expense-readiness-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px 8px; border: 1px solid #dce1eb; border-radius: 8px; background: white; font-size: 12px; }
+.expense-readiness-body { display: grid; gap: 2px; }
+.expense-readiness-body small { color: #5b6785; }
+.expense-readiness-mark { text-align: center; color: #5c6880; }
+.expense-readiness-set .expense-readiness-mark, .expense-readiness-set .expense-readiness-state { color: #137058; }
+.expense-readiness-unset .expense-readiness-state { color: #5c6880; }

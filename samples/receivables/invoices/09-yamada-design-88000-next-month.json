@@ -1,0 +1,12 @@
+{
+  "customerRef": "yamada-design",
+  "customerNameHint": "山田デザイン事務所",
+  "issueDate": "2026-10-01",
+  "transactionDate": "2026-09-30",
+  "dueDate": "2026-10-31",
+  "pricing": "exclusive",
+  "lines": [
+    { "description": "Web サイト運用保守 9月分", "quantity": 1, "unit": "月", "unitPrice": 80000, "amount": 80000, "taxRate": 10 }
+  ],
+  "note": "05 の翌月分。期待結果: 05 の入金を確定して名義を覚えた後、ﾌﾘｺﾐ ﾔﾏﾀﾞ ﾀﾛｳ 88,000（10/30）が decided"
+}

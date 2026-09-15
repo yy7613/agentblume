@@ -38,6 +38,11 @@
 | 18 | [18-quickstart.md](./18-quickstart.md) | **クイックスタート**（インストール → 起動 → モデル設定 → サンプル → 自分のデータ） |
 | 19 | [19-troubleshooting.md](./19-troubleshooting.md) | **トラブルシューティング**（症状別の対処） |
 | 20 | [20-journal.md](./20-journal.md) | 仕訳（伝票・帳票の取込 → 2段階判定 → ヒアリングでルール化 → 汎用CSV出力） |
+| 21 | [21-expense.md](./21-expense.md) | 経費精算（領収書の取込 → 規程との自動チェック → 承認 → 仕訳連携・精算CSV出力） |
+| 22 | [22-receivables.md](./22-receivables.md) | 請求書発行と入金消込（発行 → 銀行明細の取込 → 消込候補の自動判定 → 仕訳連携） |
+| 23 | [23-contract.md](./23-contract.md) | 契約書レビューと期限台帳（審査基準の登録 → 条項抽出 → レビュー → 締結後の期限台帳） |
+
+> 仕訳・経費精算・入金消込・契約の4業務は、業務ごとのファイルを追加するだけで機能を完成できる登録点の上に乗っている（[ADR-0039](./adr/0039-business-feature-registration.md)。各業務のドメイン判定は [ADR-0038](./adr/0038-journal-two-stage-judgment.md) / [ADR-0040](./adr/0040-expense-policy-check.md) / [ADR-0041](./adr/0041-receivables-payment-matching.md) / [ADR-0042](./adr/0042-contract-playbook-review.md)）。
 
 > **凡例**: 本ドキュメント群では、アイデアに明記された内容を「✅ 記載あり」、本仕様書が補う未決定の提案を「🔷 提案」、採用を決定した提案を「🔶 採用決定」として区別する。
 

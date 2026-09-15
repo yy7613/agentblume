@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { describeMcpServerSkipped, localizeRunTraceError, type ErrorLanguage } from '../api/error-messages';
 import { ApiError, isAbortError, type ToolApiClient } from '../api/tool-api';
-import type { AgentPreviewRunDto, AgentSummaryDto, HarnessRunDto, HarnessSummaryDto, RunImageAttachmentDto, RunTraceEventDto, SessionArtifactDto } from '../api/types';
+import type { AgentPreviewRunDto, AgentSummaryDto, HarnessRunDto, HarnessSummaryDto, RunImageAttachmentDto, RunTextAttachmentDto, RunTraceEventDto, SessionArtifactDto } from '../api/types';
 import { RunFailureNotice, type RunFailureNoticeProps } from '../components/RunFailureNotice';
 import { useModalBehavior } from '../hooks/useModalBehavior';
 import { useI18n } from '../i18n';
+import { useOpenInScreen } from '../navigation';
 import { useElapsedSeconds } from './useElapsedSeconds';
 import { buildHistory } from './agent-history';
 import { appendTurn, emptyThread, type TurnThread } from './turn-limit';
@@ -13,7 +14,7 @@ import { scope } from '../scope';
 type Translate = (english: string, japanese: string) => string;
 
 type ChatTurn =
-  | { readonly role: 'user'; readonly text: string; readonly images: readonly RunImageAttachmentDto[] }
+  | { readonly role: 'user'; readonly text: string; readonly images: readonly RunImageAttachmentDto[]; readonly documents?: readonly RunTextAttachmentDto[] }
   | { readonly role: 'assistant'; readonly run: AgentPreviewRunDto | HarnessRunDto }
   // cancelled は「利用者が中断した」印。失敗ではないので赤いエラー表示ではなく控えめな通知として描く
   // （buildHistory は role だけを見るため、error turn と同じく履歴からは除かれる）。
@@ -48,6 +49,16 @@ const attachIcon = (
 
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const MAX_IMAGES = 2;
+/**
+ * PDF はブラウザでテキスト層を抜いて**テキスト添付**として送る（docs/23 §9.4 C5）。本文はモデルへ載らず、
+ * ツール（契約書レビューなど）の実行文脈にだけ渡る。上限はサーバーの受け付けと同じ（2 件・1 件 30 万文字・合計 40 万文字）。
+ */
+const MAX_DOCUMENTS = 2;
+const MAX_PDF_BYTES = 30 * 1024 * 1024;
+const DOCUMENT_MAX_CHARS = 300_000;
+const DOCUMENTS_TOTAL_MAX_CHARS = 400_000;
+
+type Attachments = { readonly content: string; readonly images: readonly RunImageAttachmentDto[]; readonly documents: readonly RunTextAttachmentDto[] };
 
 export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const [agents, setAgents] = useState<readonly AgentSummaryDto[]>([]);
@@ -55,6 +66,9 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const [selectedId, setSelectedId] = useState('');
   const [message, setMessage] = useState('');
   const [images, setImages] = useState<readonly RunImageAttachmentDto[]>([]);
+  const [documents, setDocuments] = useState<readonly RunTextAttachmentDto[]>([]);
+  /** PDF を添付できなかった理由（スキャン PDF は契約画面での文字起こしへ案内する）。 */
+  const [pdfNotice, setPdfNotice] = useState<{ readonly scanned: boolean; readonly message: string }>();
   // 会話は上限付きで保持する（超過分は古い順に落とし、落とした件数を画面へ出す）。
   const [thread, setThread] = useState<TurnThread<ChatTurn>>(emptyThread);
   const turns = thread.turns;
@@ -77,6 +91,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const { text } = useI18n();
+  const openInScreen = useOpenInScreen();
   const elapsedSeconds = useElapsedSeconds(busy);
 
   useEffect(() => {
@@ -108,14 +123,15 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
   // コンポーザーを入力量に合わせて自動で高さ調整する（Copilot風の伸縮入力欄）。
   useEffect(() => { const el = inputRef.current; if (el === null) return; el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 168)}px`; }, [message]);
 
-  async function send(retry?: { readonly content: string; readonly images: readonly RunImageAttachmentDto[] }): Promise<void> {
+  async function send(retry?: Attachments): Promise<void> {
     const content = retry === undefined ? message.trim() : retry.content;
     if (target === undefined || content === '' || busy) return;
     const controller = new AbortController();
     setBusy(true); setAborter(controller);
     const attachedImages = retry === undefined ? images : retry.images;
-    pushTurn({ role: 'user', text: content, images: attachedImages });
-    if (retry === undefined) { setMessage(''); setImages([]); }
+    const attachedDocuments = retry === undefined ? documents : retry.documents;
+    pushTurn({ role: 'user', text: content, images: attachedImages, ...(attachedDocuments.length > 0 ? { documents: attachedDocuments } : {}) });
+    if (retry === undefined) { setMessage(''); setImages([]); setDocuments([]); setPdfNotice(undefined); }
     try {
       let activeSessionId = target.kind === 'agent' ? sessionId : undefined;
       const sessions = client as Partial<ToolApiClient>;
@@ -125,9 +141,10 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
         setSessionId(activeSessionId);
       }
       if (target.kind === 'harness' && attachedImages.length > 0) throw new Error(text('Image input is not available for Multi-Agent preview yet.', 'マルチエージェントpreviewではまだ画像入力を利用できません。'));
+      if (target.kind === 'harness' && attachedDocuments.length > 0) throw new Error(text('PDF attachments are not available for Multi-Agent preview yet.', 'マルチエージェントpreviewではまだPDFの添付を利用できません。'));
       const history = target.kind === 'agent' ? buildHistory(turns, content) : [];
       const run = target.kind === 'agent'
-        ? await client.runSavedAgent({ scope, agent: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview', sessionId: activeSessionId, ...(history.length > 0 ? { history } : {}), ...(attachedImages.length > 0 ? { images: attachedImages } : {}) }, controller.signal)
+        ? await client.runSavedAgent({ scope, agent: { internalId: target.item.internalId, version: target.item.latestVersion }, message: content, mode: 'preview', sessionId: activeSessionId, ...(history.length > 0 ? { history } : {}), ...(attachedImages.length > 0 ? { images: attachedImages } : {}), ...(attachedDocuments.length > 0 ? { documents: attachedDocuments } : {}) }, controller.signal)
         : activeHarnessRun?.status === 'waiting-input'
           ? await client.respondToHarnessRun(activeHarnessRun.runId, { scope, response: { kind: 'input', message: content } }, controller.signal)
           : activeHarnessRun?.status === 'waiting-approval'
@@ -138,10 +155,10 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
       else setApprovalRunId(run.status === 'waiting-approval' ? run.runId : undefined);
       if (activeSessionId !== undefined && typeof sessions.listSessionArtifacts === 'function') void sessions.listSessionArtifacts(activeSessionId, scope).then(setArtifacts).catch(() => {});
     } catch (cause) {
-      if (isAbortError(cause)) restoreCancelled(content, attachedImages);
+      if (isAbortError(cause)) restoreCancelled({ content, images: attachedImages, documents: attachedDocuments });
       else {
         const failure = cause instanceof ApiError ? await describeFailure(cause, target.kind === 'agent' ? target.item.internalId : undefined) : undefined;
-        pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void send({ content, images: attachedImages }), ...(failure === undefined ? {} : { failure }) });
+        pushTurn({ role: 'error', text: messageOf(cause), onRetry: () => void send({ content, images: attachedImages, documents: attachedDocuments }), ...(failure === undefined ? {} : { failure }) });
       }
     } finally {
       setBusy(false); setAborter(undefined);
@@ -172,9 +189,10 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
    * 中断の後始末。送信内容をコンポーザーへ戻して、そのまま送り直せるようにする
    * （利用者が書き直したあとに上書きしないよう、空のときだけ復元する）。
    */
-  function restoreCancelled(content: string, attachedImages: readonly RunImageAttachmentDto[]): void {
+  function restoreCancelled({ content, images: attachedImages, documents: attachedDocuments }: Attachments): void {
     setMessage((current) => current.trim() === '' ? content : current);
     setImages((current) => current.length === 0 ? attachedImages : current);
+    setDocuments((current) => current.length === 0 ? attachedDocuments : current);
     pushTurn({ role: 'error', cancelled: true, text: text('Run cancelled. Your message is back in the composer.', '実行を中断しました。入力内容はそのまま残しています。') });
   }
 
@@ -182,13 +200,13 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
 
   function newChat(): void {
     const closing = sessionId;
-    setThread(emptyThread()); setSessionId(undefined); setArtifacts([]); setImages([]); setActiveHarnessRun(undefined); setApprovalRunId(undefined);
+    setThread(emptyThread()); setSessionId(undefined); setArtifacts([]); setImages([]); setDocuments([]); setPdfNotice(undefined); setActiveHarnessRun(undefined); setApprovalRunId(undefined);
     if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
   }
 
   function selectAgent(next: string): void {
     const closing = sessionId;
-    setSelectedId(next); setSessionId(undefined); setArtifacts([]); setThread(emptyThread()); setImages([]); setActiveHarnessRun(undefined); setApprovalRunId(undefined);
+    setSelectedId(next); setSessionId(undefined); setArtifacts([]); setThread(emptyThread()); setImages([]); setDocuments([]); setPdfNotice(undefined); setActiveHarnessRun(undefined); setApprovalRunId(undefined);
     if (closing !== undefined && typeof (client as Partial<ToolApiClient>).closeAgentSession === 'function') void client.closeAgentSession(closing, scope).catch(() => {});
   }
 
@@ -202,7 +220,11 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
 
   async function selectImages(files: FileList | null): Promise<void> {
     if (files === null) return;
-    const selected = Array.from(files);
+    const all = Array.from(files);
+    const pdfs = all.filter(isPdf);
+    if (pdfs.length > 0) await selectPdfs(pdfs);
+    const selected = all.filter((file) => !isPdf(file));
+    if (selected.length === 0) return;
     if (images.length + selected.length > MAX_IMAGES) {
       setLoadError(text('You can attach up to two images.', '画像は2枚まで添付できます。'));
       return;
@@ -219,6 +241,42 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
     } catch {
       setLoadError(text('The image could not be read.', '画像を読み込めませんでした。'));
     }
+  }
+
+  /**
+   * PDF → テキスト添付。テキスト層が無い（スキャン）PDF は送らず、契約画面での文字起こしへ案内する
+   * （ここで画像にしてもチャットの画像は 2 枚までで、契約書を読むには足りない）。
+   */
+  async function selectPdfs(files: readonly File[]): Promise<void> {
+    if (documents.length + files.length > MAX_DOCUMENTS) { setLoadError(text('You can attach up to two PDFs.', 'PDFは2件まで添付できます。')); return; }
+    const tooBig = files.find((file) => file.size > MAX_PDF_BYTES);
+    if (tooBig !== undefined) { setLoadError(text(`${tooBig.name} is larger than 30 MiB. Split the PDF and attach it again.`, `${tooBig.name} は 30 MiB を超えています。PDF を分けてから添付してください。`)); return; }
+    const next: RunTextAttachmentDto[] = [];
+    for (const file of files) {
+      try {
+        const { extractPdfText, joinPages } = await import('../contract/pdf-text');
+        const result = await extractPdfText(new Uint8Array(await file.arrayBuffer()));
+        const readable = result.pages.filter((page) => page.hasTextLayer);
+        if (readable.length === 0) {
+          setPdfNotice({ scanned: true, message: text(`${file.name} has no text layer (it looks like a scanned PDF). Transcribe scanned PDFs on the contract review screen, then use them.`, `${file.name} にはテキスト層がありません（スキャン PDF のようです）。スキャン PDF は契約画面で文字起こししてから使ってください。`) });
+          continue;
+        }
+        const { body } = joinPages(result.pages.map((page) => ({ page: page.page, text: page.text, method: 'text-layer' as const })));
+        if (body.length > DOCUMENT_MAX_CHARS) { setLoadError(text(`${file.name} has more than 300,000 characters. Split the PDF and attach it again.`, `${file.name} は 30 万文字を超えています。PDF を分けてから添付してください。`)); continue; }
+        if (readable.length < result.pages.length) {
+          setPdfNotice({ scanned: true, message: text(`${result.pages.length - readable.length} of ${result.pages.length} pages of ${file.name} have no text layer, so only the text pages are attached. Transcribe the scanned pages on the contract review screen if you need them.`, `${file.name} の ${result.pages.length} ページのうち ${result.pages.length - readable.length} ページはテキスト層が無いため、文字のあるページだけを添付しました。必要なら契約画面でそのページを文字起こししてください。`) });
+        }
+        next.push({ name: file.name, text: body, pageCount: result.totalPages });
+      } catch (cause) {
+        const kind = typeof cause === 'object' && cause !== null ? Reflect.get(cause, 'kind') : undefined;
+        setPdfNotice({ scanned: false, message: kind === 'password'
+          ? text(`${file.name} is password-protected. Choose a PDF without a password, or paste the text instead.`, `${file.name} はパスワードで保護されています。パスワードを外した PDF を選ぶか、テキストを貼り付けてください。`)
+          : text(`${file.name} could not be read as a PDF. Choose another file, or paste the text instead.`, `${file.name} を PDF として読めませんでした。別のファイルを選ぶか、テキストを貼り付けてください。`) });
+      }
+    }
+    const total = [...documents, ...next].reduce((sum, entry) => sum + entry.text.length, 0);
+    if (total > DOCUMENTS_TOTAL_MAX_CHARS) { setLoadError(text('The attached PDFs exceed 400,000 characters in total. Attach fewer documents.', '添付した PDF の合計が 40 万文字を超えています。添付する件数を減らしてください。')); return; }
+    if (next.length > 0) { setDocuments((current) => [...current, ...next]); setLoadError(undefined); }
   }
 
   // 単一Agent実行のツール承認。応答は通常のrun応答と同じ経路で積み、再びwaiting-approvalなら承認UIを出し直す。
@@ -342,6 +400,17 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
           <button type="button" className="cc-new" disabled={busy} onClick={() => void cancelInteractiveHarness()}>{text('Cancel run', '実行を中止')}</button>
         </div>}
         <div className="cc-input">
+          {pdfNotice !== undefined && <div className="cc-alert notice" role="status">
+            <span>{pdfNotice.message}</span>
+            {pdfNotice.scanned && <button type="button" className="cc-new" onClick={() => openInScreen('Contract', { internalId: '', section: 'import' })}>{text('Open contract review', '契約画面を開く')}</button>}
+            <button type="button" className="cc-new" onClick={() => setPdfNotice(undefined)}>{text('Dismiss', '閉じる')}</button>
+          </div>}
+          {documents.length > 0 && <div className="cc-image-list" aria-label={text('Attached documents', '添付文書')}>
+            {documents.map((document) => <div className="cc-image-chip" key={`${document.name}:${document.text.length}`} title={document.name}>
+              <span>{text(`PDF ${document.name} · ${document.pageCount ?? '?'} pages · ${document.text.length} chars`, `PDF ${document.name}・${document.pageCount ?? '?'} ページ・${document.text.length} 文字`)}</span>
+              <button type="button" aria-label={text(`Remove ${document.name}`, `${document.name}を削除`)} onClick={() => setDocuments((current) => current.filter((item) => item !== document))}>×</button>
+            </div>)}
+          </div>}
           {images.length > 0 && <div className="cc-image-list" aria-label={text('Attached images', '添付画像')}>
             {images.map((image) => <div className="cc-image-chip" key={`${image.name}:${image.dataUrl.length}`}>
               <img src={image.dataUrl} alt={image.name} />
@@ -357,10 +426,10 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }}
           />
-          <input ref={imageInputRef} className="cc-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void selectImages(event.target.files); event.currentTarget.value = ''; }} />
+          <input ref={imageInputRef} className="cc-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" multiple onChange={(event) => { void selectImages(event.target.files); event.currentTarget.value = ''; }} />
           <div className="cc-tools">
             <div className="cc-tools-start">
-              <button type="button" className="cc-attach" aria-label={text('Attach images', '画像を添付')} title={text('Attach images', '画像を添付')} disabled={busy || images.length >= MAX_IMAGES || target?.kind === 'harness'} onClick={() => imageInputRef.current?.click()}>{attachIcon}</button>
+              <button type="button" className="cc-attach" aria-label={text('Attach images', '画像を添付')} title={text('Attach images', '画像を添付')} disabled={busy || (images.length >= MAX_IMAGES && documents.length >= MAX_DOCUMENTS) || target?.kind === 'harness'} onClick={() => imageInputRef.current?.click()}>{attachIcon}</button>
               <select
                 className="cc-agent"
                 aria-label={text('Chat agent', 'チャット対象エージェント')}
@@ -385,7 +454,7 @@ export function ChatPage({ client }: { readonly client: ToolApiClient }) {
               </button>}
           </div>
         </div>
-        <p className="cc-hint">{text('Enter to send · Shift+Enter for a new line · attach up to 2 images · preview mode', 'Enterで送信 · Shift+Enterで改行 · 画像は2枚まで添付 · プレビュー実行')}</p>
+        <p className="cc-hint">{text('Enter to send · Shift+Enter for a new line · attach up to 2 images and 2 PDFs (PDF text is read by tools only) · preview mode', 'Enterで送信 · Shift+Enterで改行 · 画像2枚・PDF2件まで添付（PDFの本文はツールだけが読みます） · プレビュー実行')}</p>
       </form>
       {sessionId !== undefined && <aside className="session-workspace" aria-label={text('Session workspace', 'セッションワークスペース')}>
         <strong>{text('Session workspace', 'セッションワークスペース')}</strong><small>{text(`${artifacts.length} temporary artifacts`, `一時Artifact ${artifacts.length}件`)}</small>
@@ -409,7 +478,7 @@ function Turn({ turn, agentName, text, busy, approvalRunId, onResolveApproval }:
     return (
       <div className="cc-msg user">
         <span className="cc-avatar user" aria-hidden="true">{userIcon}</span>
-        <div className="cc-bubble"><span className="cc-name">{text('You', 'あなた')}</span><p>{turn.text}</p>{turn.images.length > 0 && <div className="cc-turn-images">{turn.images.map((image) => <img key={`${image.name}:${image.dataUrl.length}`} src={image.dataUrl} alt={image.name} />)}</div>}</div>
+        <div className="cc-bubble"><span className="cc-name">{text('You', 'あなた')}</span><p>{turn.text}</p>{turn.images.length > 0 && <div className="cc-turn-images">{turn.images.map((image) => <img key={`${image.name}:${image.dataUrl.length}`} src={image.dataUrl} alt={image.name} />)}</div>}{(turn.documents?.length ?? 0) > 0 && <div className="cc-turn-images">{turn.documents!.map((document) => <span key={`${document.name}:${document.text.length}`} className="cc-meta">{text(`Attached PDF: ${document.name} (${document.pageCount ?? '?'} pages)`, `添付PDF: ${document.name}（${document.pageCount ?? '?'} ページ）`)}</span>)}</div>}</div>
       </div>
     );
   }
@@ -540,6 +609,7 @@ function usageLabel(run: AgentPreviewRunDto): string {
 
 function messageOf(cause: unknown) { return cause instanceof Error ? cause.message : 'Request failed'; }
 
+function isPdf(file: File): boolean { return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'); }
 function isSupportedImage(file: File): boolean { return ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type); }
 function readAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {

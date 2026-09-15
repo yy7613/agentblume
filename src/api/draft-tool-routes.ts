@@ -6,23 +6,27 @@ import type { DiagnoseToolUseCase } from '../application/tool/diagnose-tool';
 import type { DraftToolUseCase } from '../application/tool/draft-tool';
 import type { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
 import type { SuggestToolCheckCasesUseCase } from '../application/tool-check/suggest-tool-check-cases';
-import type { JournalCapabilitiesUseCase } from '../application/journal/capabilities';
 import { SemVer } from '../domain/tool/semver';
 import { createTool } from '../domain/tool/tool';
 import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
 import { analysisSuggestionBodySchema, draftInspectBodySchema, draftPreviewBodySchema, saveToolBodySchema } from './schemas';
 import { previewResponse } from './tool-routes';
+import { journalRuntimeCapabilities, type JournalRuntimeCapabilityDeps } from './journal-routes';
+import { expenseRuntimeCapabilities, type ExpenseRuntimeCapabilityDeps } from './expense-routes';
+import { receivablesRuntimeCapabilities, type ReceivablesRuntimeCapabilityDeps } from './receivables-routes';
+import { contractRuntimeCapabilities, type ContractRuntimeCapabilityDeps } from './contract-routes';
 
-export interface DraftToolRouteDeps {
+/** 業務の機能フラグ（`/runtime/capabilities` へ業務ごとのキーを足す。ADR-0039）に要る依存。 */
+export interface BusinessRuntimeCapabilityDeps extends JournalRuntimeCapabilityDeps, ExpenseRuntimeCapabilityDeps, ReceivablesRuntimeCapabilityDeps, ContractRuntimeCapabilityDeps {}
+
+export interface DraftToolRouteDeps extends BusinessRuntimeCapabilityDeps {
   readonly draftTool: DraftToolUseCase;
   readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
   readonly suggestToolCheckCases: SuggestToolCheckCasesUseCase;
   readonly diagnoseTool: DiagnoseToolUseCase;
   /** judge スロットの設定状態（実験画面が「judge 未設定」を起票前に示すため）。毎回現在の設定を見る。 */
   readonly judgeReadiness: () => Promise<JudgeReadiness>;
-  /** 仕訳の LLM 抽出・ヒアリングの可否（仕訳画面が取込タブの選択肢を出し分ける）。 */
-  readonly journalCapabilities: JournalCapabilitiesUseCase;
 }
 
 /** 未保存 draft を表す版。採番は保存時に決まるので、診断結果にはこの値が「未保存」の印として載る。 */
@@ -80,7 +84,11 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
     analysisAssistant: { enabled: await deps.suggestAnalysisConfig.available() },
     toolCheckSuggestions: { enabled: await deps.suggestToolCheckCases.available() },
     judge: await deps.judgeReadiness(),
-    journal: await deps.journalCapabilities.execute(),
+    // 業務ごとのキー（仕訳は `journal`）。業務は自分のキーだけを返し、ほかのキーを上書きしない。
+    ...(await journalRuntimeCapabilities(deps)),
+    ...(await expenseRuntimeCapabilities(deps)),
+    ...(await receivablesRuntimeCapabilities(deps)),
+    ...(await contractRuntimeCapabilities(deps)),
   }));
   app.post('/tool-drafts/suggest-analysis-config', async (request) => {
     const body = parseWith(analysisSuggestionBodySchema, request.body);

@@ -188,7 +188,7 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/tool-checks/cases/{id}/run` | 保存済みケースを実行し `lastResult` を更新 | `tool:execute` |
 | `POST` | `/tool-checks/cases/run-all` | 全ケース（または `toolId` のケース）を逐次実行 | `tool:execute` |
 | `POST` | `/tool-checks/suggest` | LLM による 正常 / 境界 / 異常 のケース案（保存しない。モデル未設定は 502。§3.2） | `tool:execute` |
-| `GET` | `/runtime/capabilities` | UI の機能フラグ: `{ analysisAssistant: { enabled }, toolCheckSuggestions: { enabled }, judge: { configured, provider?, model? }, journal: { extraction: { enabled, vision }, hearing: { enabled } } }`（現在のモデル設定を毎回見る。`judge` は judge スロットが判定に使える状態か、`journal` は仕訳の LLM 抽出・ヒアリングの可否） | `workspace:read` |
+| `GET` | `/runtime/capabilities` | UI の機能フラグ: `{ analysisAssistant: { enabled }, toolCheckSuggestions: { enabled }, judge: { configured, provider?, model? }, journal: { extraction: { enabled, vision }, hearing: { enabled } }, expense: { extraction: { enabled, vision } }, receivables: { invoiceDraft: { enabled, vision } }, contract: { extraction: { enabled, vision }, review: { llm } } }`（現在のモデル設定を毎回見る。業務ごとのキーは業務が自分のキーだけを返す。§3.5〜§3.7、ADR-0039 §5） | `workspace:read` |
 | `GET` | `/journal/chart` | 科目マスタの取得（未保存なら標準セット。保存はしない。§3.4） | `workspace:read` |
 | `PUT` | `/journal/chart` | 科目マスタの全体保存 | `workspace:edit` |
 | `POST` | `/journal/chart/reset` | 科目マスタを標準セットへ戻す | `workspace:edit` |
@@ -219,6 +219,77 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/journal/hearings/{id}/answers` | 回答 → 次の質問か提案 | `workspace:edit` |
 | `POST` | `/journal/hearings/{id}/accept` | 提案の受け入れ（**選んだ id だけ**登録 → ルール保存 → 再判定） | `workspace:edit` |
 | `POST` | `/journal/hearings/{id}/cancel` | ヒアリングの中止（文書は未判定へ戻る） | `workspace:edit` |
+| `GET` | `/expense/policy` | 規程の取得（未保存なら初期テンプレート。保存はしない。§3.5） | `workspace:read` |
+| `PUT` | `/expense/policy` | 規程の全体保存 | `workspace:edit`（監査） |
+| `POST` | `/expense/policy/reset` | 規程を初期テンプレートへ戻す | `workspace:edit`（監査） |
+| `GET` | `/expense/policy/export` | 費目 CSV の出力 | `workspace:read` |
+| `POST` | `/expense/policy/import` | 費目 CSV の取込 | `workspace:edit`（監査） |
+| `GET` | `/expense/claims` | 申請一覧（`status` / `verdict` / `claimant` / `from` / `to` / `limit`） | `workspace:read` |
+| `POST` | `/expense/claims` | 申請の作成（`draft`） | `workspace:edit` |
+| `POST` | `/expense/claims/import-csv` | 経費明細 CSV の取込（申請者ごとに申請を作る） | `workspace:edit` |
+| `POST` | `/expense/claims/check` | Stage 1 判定（`claimIds` 省略で `draft` / 判定が古いもの全件） | `workspace:edit` |
+| `POST` | `/expense/claims/settle` | 精算済みの一括登録（`approved` 以外が混ざれば 409） | `workspace:edit`（監査） |
+| `GET` / `PUT` / `DELETE` | `/expense/claims/{id}` | 申請の取得 / 更新（判定済みなら `draft` へ戻る）/ 削除（証憑本体も削除） | read / edit / edit（監査） |
+| `POST` | `/expense/claims/{id}/items` | 明細の保存（`itemId` 省略で新規） | `workspace:edit` |
+| `DELETE` | `/expense/claims/{id}/items/{itemId}` | 明細の削除 | `workspace:edit` |
+| `GET` | `/expense/claims/{id}/items/{itemId}/receipt` | 証憑本体（data URL）の取得 | `workspace:read` |
+| `POST` | `/expense/receipts/extract` | 画像 / PDF / テキストから明細の下書きを LLM 抽出（**保存しない**。§3.5） | `workspace:edit` |
+| `POST` | `/expense/claims/{id}/acknowledge` | 要確認の理由 1 件の確認済み登録（根拠コメント必須） | `workspace:edit`（監査） |
+| `GET` | `/expense/claims/{id}/return-draft` | 差し戻し文言の下書き（保存しない） | `workspace:read` |
+| `POST` | `/expense/claims/{id}/return` | 差し戻し | `workspace:edit`（監査） |
+| `POST` | `/expense/claims/{id}/approve` | 承認（自己承認・要確認未消化などは 409） | `workspace:approve`（監査） |
+| `POST` | `/expense/claims/{id}/unapprove` | 承認取消 | `workspace:approve`（監査） |
+| `POST` | `/expense/claims/{id}/journal-drafts` | 仕訳下書きの作成（仕訳 BC へ） | `workspace:edit`（監査） |
+| `GET` | `/expense/export` | 精算 CSV の出力（`format=payout\|detail`。状態を変えない） | `workspace:read`（監査） |
+| `GET` | `/receivables/settings` | 設定の取得（未保存なら初期値。§3.6） | `workspace:read` |
+| `PUT` | `/receivables/settings` | 設定の全体保存 | `workspace:edit`（監査） |
+| `GET` | `/receivables/customers` | 取引先一覧（`enabled` で絞り込み。未回収額つき） | `workspace:read` |
+| `POST` | `/receivables/customers` | 取引先の作成 | `workspace:edit` |
+| `GET` / `PUT` | `/receivables/customers/{id}` | 取引先の取得（別名つき）/ 更新 | read / edit |
+| `DELETE` | `/receivables/customers/{id}` | 削除（参照が無いときだけ物理削除。あれば 409） | `workspace:edit`（監査） |
+| `GET` | `/receivables/invoices` | 請求書一覧（`status` / `customerId` / `overdue` / `from` / `to`。要約） | `workspace:read` |
+| `POST` | `/receivables/invoices/check` | 保存しない検査と税額集計 | `workspace:read` |
+| `POST` | `/receivables/invoices` | 下書き作成（`check` の結果を同梱） | `workspace:edit` |
+| `GET` / `PUT` / `DELETE` | `/receivables/invoices/{id}` | 取得（入金の配分履歴つき）/ 下書きの更新 / 削除（発行済みは 409） | read / edit / edit |
+| `POST` | `/receivables/invoices/{id}/issue` | 発行 | `workspace:edit`（監査） |
+| `POST` | `/receivables/invoices/{id}/void` | 取消（`reason` 必須） | `workspace:edit`（監査） |
+| `POST` | `/receivables/invoices/{id}/duplicate` | 複製して下書きを作る | `workspace:edit` |
+| `GET` | `/receivables/bank-csv-profiles` | 明細 CSV プロファイル一覧（組込み + 利用者） | `workspace:read` |
+| `POST` | `/receivables/bank-csv-profiles` | プロファイルの保存（組込みへの上書きは 400） | `workspace:edit` |
+| `DELETE` | `/receivables/bank-csv-profiles/{id}` | プロファイルの削除 | `workspace:edit` |
+| `POST` | `/receivables/bank-transactions/preview` | 入金明細 CSV の文字コード・プリセット判定・先頭行プレビュー（保存しない） | `workspace:read` |
+| `POST` | `/receivables/bank-transactions/import` | 入金明細の取込 | `workspace:edit` |
+| `GET` | `/receivables/bank-transactions` | 入金明細一覧（`status` / `from` / `to` / `accountKey`） | `workspace:read` |
+| `DELETE` | `/receivables/bank-transactions/{id}` | 明細の削除（`unmatched` / `ignored` のみ） | `workspace:edit`（監査） |
+| `POST` | `/receivables/bank-transactions/{id}/ignore` / `/unignore` | 対象外にする / 戻す | `workspace:edit` |
+| `POST` | `/receivables/matching/judge` | 消込候補の判定（`transactionIds` 省略で全未消込） | `workspace:edit` |
+| `GET` | `/receivables/matching/candidates` | 1 明細の消込候補を保存せず計算 | `workspace:read` |
+| `POST` | `/receivables/matchings` | 消込の確定（配分・手数料・別名学習） | `workspace:edit`（監査） |
+| `POST` | `/receivables/matchings/confirm-decided` | `decided` の一括確定 | `workspace:edit`（監査） |
+| `GET` | `/receivables/matchings` | 消込一覧（`status` / `invoiceId` / `transactionId`） | `workspace:read` |
+| `POST` | `/receivables/matchings/{id}/cancel` | 消込の取消 | `workspace:edit`（監査） |
+| `GET` / `POST` | `/contracts/playbooks` | 審査基準の一覧（0 件は既定テンプレートを保存せず返す。§3.7）/ 保存 | read / edit（監査） |
+| `GET` | `/contracts/playbooks/{id}` | 審査基準の取得 | `workspace:read` |
+| `DELETE` | `/contracts/playbooks/{id}` | 審査基準の削除 | `workspace:edit`（監査） |
+| `GET` | `/contracts/playbook-templates` | 同梱テンプレートの一覧 | `workspace:read` |
+| `POST` | `/contracts/playbooks/from-template` | テンプレートから審査基準を作成 | `workspace:edit`（監査） |
+| `GET` | `/contracts/documents` | 契約文書一覧（**要約**。本文を含まない） | `workspace:read` |
+| `POST` | `/contracts/documents/transcribe` | 画像 1〜4 枚を vision で文字起こし（**保存しない**） | `workspace:edit` |
+| `POST` | `/contracts/documents` | 契約文書の取込（本文・ページ境界・当事者。条文分割もここで行う） | `workspace:edit` |
+| `GET` / `PUT` / `DELETE` | `/contracts/documents/{id}` | 取得（本文つき）/ 更新（本文が変われば抽出・Review を破棄）/ 削除（`signed` は 409） | read / edit / edit（監査） |
+| `POST` | `/contracts/documents/{id}/extract` | 条項抽出（LLM。結果を文書へ保存） | `workspace:edit` |
+| `PUT` | `/contracts/documents/{id}/clauses` | 人が確認・修正した条項で確定 | `workspace:edit` |
+| `POST` | `/contracts/documents/{id}/reviews` | レビュー実行（決定的判定 + LLM 基準） | `workspace:edit` |
+| `GET` | `/contracts/reviews/{id}` | レビューの取得 | `workspace:read` |
+| `PUT` | `/contracts/reviews/{id}/decisions` | 人の判断・メモの保存 | `workspace:edit` |
+| `POST` | `/contracts/reviews/{id}/finalize` | レビューの確定（未判断が残れば 400） | `workspace:edit`（監査） |
+| `POST` | `/contracts/deadlines/preview` | 締結日から期限を試算（保存しない） | `workspace:read` |
+| `POST` | `/contracts/signed` | 締結登録 | `workspace:edit`（監査） |
+| `GET` | `/contracts/signed` | 締結済み契約の一覧（`status` / `counterparty`） | `workspace:read` |
+| `GET` / `PUT` / `DELETE` | `/contracts/signed/{id}` | 取得 / 条項・期限の手修正・終了日以外の更新 / 削除 | read / edit（監査） / edit（監査） |
+| `POST` | `/contracts/signed/{id}/terminate` | 契約の終了 | `workspace:edit`（監査） |
+| `GET` | `/contracts/deadlines` | 期限台帳（`withinDays` / `includeOverdue` / `kind` / `limit`） | `workspace:read` |
+| `POST` | `/contracts/signed/{id}/deadlines/{deadlineId}/complete` | 期限の完了（通知済み）登録 | `workspace:edit`（監査） |
 | `POST` | `/tools/{id}/publish` | 公開（エイリアス/互換性管理） | `tool:publish` |
 | `POST` | `/tools/{id}/expose-mcp` | MCPサーバとして公開 | `deployment:publish` |
 | `POST` | `/skills` | Skill作成 | `skill:create` |
@@ -587,6 +658,192 @@ LLM-as-Judge の採点は **基準別**（[ADR-0037](./adr/0037-criterion-level-
 | `JournalCsvImportError` | 400 | `JOURNAL_CSV_IMPORT`（**本文に `row`**。行が特定できるときだけ） |
 | `JournalExportError` | 400 | `JOURNAL_EXPORT` |
 
+### 3.5 経費精算（expense）
+
+領収書・経費明細を取り込み、規程との**決定的チェック**（Stage 1 のみ。ヒアリングは無い）で申請の合否を判定し、承認を経て精算 CSV へ出す（[docs/21-expense.md](./21-expense.md) / [ADR-0040](./adr/0040-expense-policy-check.md)）。登録点は仕訳と同じ形（[ADR-0039](./adr/0039-business-feature-registration.md)）で、ルートは `src/api/expense-routes.ts`、スキーマは `expense-schemas.ts`、認可は `expense-authorization.ts` の `EXPENSE_ROUTE_RULES`、エラー写像は `expense-error-mapping.ts` の `expenseHttpError`。応答は永続化用の形から `tenant` を除いたもの（journal と同じ）。
+
+**規程（`/expense/policy`）**: 費目・上限額・必須項目（証憑・登録番号・参加者）・事前承認ルールはすべてワークスペースのデータで、コードに固定表を持たない。未保存のワークスペースは `GET` で初期テンプレートを返すが保存はしない（`{ policy, saved: false }`）。CSV の入出力は `POST /expense/policy/import` / `GET /expense/policy/export`（`workingName`/税区分名などの列は docs/21 §5.4）。
+
+**申請とチェック（`/expense/claims`）**: 状態は `draft → checked → approved → settled`（差し戻しは `returned` を経て `draft` へ）。`checkClaim` は申請・規程・重複候補・時刻だけを引数に取る純粋関数で、同じ入力からは必ず同じ `verdict`（`pass` / `needs-review` / `returned`）が出る。明細・規程を変えると `stale: true` になり、承認前に再チェックが要る。理由コードは `src/domain/expense/reason-codes.ts` の `REASON_CODES`（43 件。MVP 27 件 + 実用化 16 件）が正本で、コードごとに対象（明細/申請）・重さ・検索要件・導線先を持つ。
+
+```jsonc
+// POST /expense/receipts/extract { scope, images（≤4・画像 data URL）, text?, fileName? }
+// → 200 { result: { drafts: [ExpenseItemDraft], claimantHint?, warnings } }（**保存しない**）
+// POST /expense/claims/:id/items { scope, itemId?, categoryId?, categoryText?, facts, source, extraction?, receipt? }
+// → 200 { claim }（申請の応答は tenant 抜き・証憑本体なし・hasReceipt と stale / approvalBlockers つき）
+// POST /expense/claims/:id/approve { scope, comment? } → 200 { claim }
+// 拒否（要確認未消化・stale・自己承認・規程違反の残存）は 409 EXPENSE_TRANSITION（blockingReasons）
+```
+
+**承認と職務分掌**: 承認・承認取消だけ認可アクションが `approve`（Publisher 以上）。自己承認の禁止はロールではなく規程（`claimRules.forbidSelfApproval`）で扱う。`approvalBlockers` は応答に含まれる「承認できない理由」の一覧（画面が承認ボタンの脇に出す）。
+
+**仕訳連携（`POST /expense/claims/:id/journal-drafts`）**: 承認済みの申請から仕訳の下書きを作る（仕訳 BC へ書く。経費 domain は仕訳 domain の純関数・値型だけを import する一方向依存）。一部の明細が科目未設定などで下書きにできないときは、作れた分は残しつつ 409 `EXPENSE_JOURNAL_LINK`（`problems` / `createdEntryIds`）で伝える。
+
+**出力（`GET /expense/export`）**: `format=payout|detail`。GET は状態を変えない（精算済みの印は別の `POST /expense/claims/settle`）。CSV は UTF-8 BOM・CRLF・`YYYY/MM/DD`・税込整数（仕訳と同じ流儀）。
+
+#### 実用化のルート（docs/21 §20。系統 A / B / C）
+
+従業員マスタ・多段承認・全銀協の振込データ・仮払金・法人カード明細・集計・経費専用の読取・交通費・規程のヒアリングの 9 ユースケース（[docs/21-expense.md](./21-expense.md) §20 / [ADR-0043](./adr/0043-expense-practical-extensions.md)）。系統ごとにルート・スキーマ・認可を分けている（`src/api/expense-{people,money,input}-{routes,schemas,authorization}.ts`。認可は `EXPENSE_PEOPLE_ROUTE_RULES` / `EXPENSE_MONEY_ROUTE_RULES` / `EXPENSE_INPUT_ROUTE_RULES`、エラー写像は既存の `expense-error-mapping.ts` が全部持つ）。本文にはどれも `scope`、GET はクエリに `tenantId` / `workspaceId` を付ける。認可のリソース種別はすべて `workspace`。下の表の「監査」は監査ログに残るルート。
+
+**口座番号は応答に含めない**（`bankAccount.accountNumberLast4` の末尾 4 桁だけ）。平文を返すのは、口座番号つき従業員 CSV（`/expense/employees/export-bank-accounts`）と振込ファイル（`POST /expense/payouts` / `GET /expense/payouts/:id/file`）だけで、どれも `approve` 権限 + 監査。保存は `SecretCipherPort` で封緘する。
+
+**既存ルートの拡張**: `POST` / `PUT /expense/claims(/:id)` の `claimant.employeeId?`（指定するとサーバーが氏名・社員番号・部門の写しを埋める）、`GET /expense/claims` の `employeeId` / `departmentId` / `advanceId` / `awaiting=me` / `unlinked=true` と状態 `in-approval`、申請の応答の `reimbursableAmount` / `approvalPlan`（`checked` なら予定・`in-approval` なら保存済みの流れ）/ `approvalBlockers`、`POST /expense/claims/:id/approve` の `stepId`（画面が見ていた段。食い違えば 409 `approval-step-changed`）、`PUT /expense/policy` の `approval` / `transport` / `card` / `advance` 節、`POST /expense/receipts/extract` の `detail?`、`GET /runtime/capabilities` の `expense.detailExtraction` / `expense.policyHearing`。理由コードは 43 件（MVP 27 + 実用化 16）。
+
+**A: 人と承認（15 本）**
+
+| Method | Path | 入力の要点 | 出力 | 認可 | 監査 |
+|---|---|---|---|---|---|
+| GET | `/expense/me` | — | `{ me: { subject, displayName?, singleUser, canApprove, employee? } }` | read | |
+| GET | `/expense/people/readiness` | — | `{ readiness: { employees: { configured, enabledCount }, organization: { saved, departmentCount, approverGroupCount }, payout: { configured, saved } } }` | read | |
+| GET | `/expense/employees` | `query?`（≤100 字）, `departmentId?`, `enabled?`（`true`/`false`）, `limit?`（≤1,000） | `{ employees }`（口座は末尾 4 桁、`departmentName?` / `managerName?` / `payoutReadiness`） | read | |
+| POST | `/expense/employees` | `id?, code?, name, nameKana?, departmentId?, managerEmployeeId?, loginSubjects?, bankAccount?: { bankCode, bankNameKana?, branchCode, branchNameKana?, accountType, accountNumber?（平文）, holderKana }, commuterPasses?, enabled?, note?` | `{ employee }` | edit | ✅ |
+| GET | `/expense/employees/export` | — | `{ content, fileName }`（口座番号の列は空） | read | ✅ |
+| GET | `/expense/employees/export-bank-accounts` | — | `{ content, fileName }`（口座番号つき） | **approve** | ✅ |
+| POST | `/expense/employees/import` | `content`（UTF-8 CSV） | `{ result: { created, updated, skippedRows, warnings } }`（ヘッダに無い列は既存の値を保つ） | edit | ✅ |
+| GET | `/expense/employees/:id` | — | `{ employee }`（`history` 付き） | read | |
+| PUT | `/expense/employees/:id` | POST と同じ（`bankAccount` 省略 = 保つ、`null` = 外す、`accountNumber` 省略 = 番号を保つ） | `{ employee }` | edit | ✅ |
+| GET | `/expense/organization` | — | `{ organization, saved }` | read | |
+| PUT | `/expense/organization` | `departments[]（≤500）, approverGroups[]（≤50）` | `{ organization }` | edit | ✅ |
+| GET | `/expense/claims/employee-links` | `status?` | `{ links }`（紐付け候補） | read | |
+| POST | `/expense/claims/employee-links` | `links: [{ claimId, employeeId }]`（1 件以上） | `{ result: { linked, movedToDraft, skipped } }`（`in-approval` が 1 件でもあれば何も書かずに 409） | edit | ✅ |
+| GET | `/expense/claims/:id/approval-flow` | — | `{ plan, flow?, current?, canAct, proxy, blockers }` | read | |
+| POST | `/expense/approval-routes/preview` | `approval`（規程の承認設定の下書き）, `policyCategoryIds`, `subject: { categoryIds, totalAmount, departmentId?, claimantEmployeeId? }` | `{ result: { plan, firstStepId? } }`（保存しない） | read | |
+
+**B: お金の流れ（37 本）**
+
+| Method | Path | 入力の要点 | 出力 | 認可 | 監査 |
+|---|---|---|---|---|---|
+| GET | `/expense/money-readiness` | — | `{ readiness: { cards, cardCount, cardImportCount, lastCardImportAt?, cardCoverage, payout } }` | read | |
+| GET | `/expense/payout-settings` | — | `{ settings, saved }`（振込元の口座は末尾 4 桁） | read | |
+| PUT | `/expense/payout-settings` | `source?: { bankCode, bankNameKana?, branchCode, branchNameKana?, accountType, accountNumber?（平文。省略 = 保つ） } \| null`, `requesterCode?`, `requesterNameKana?`, `format?`（改行・EOF・銀行名・顧客コード 1・文字種・件数上限など）, `journal?: { createPaymentEntry?, sourceAccountId? }` | `{ settings }` | edit | ✅ |
+| POST | `/expense/payouts/preview` | `claimIds?`, `advanceIds?`（各 ≤500）, `transferDate` | `{ result: { candidates, lines, totalAmount, recordCount, problems, warnings } }`（状態を変えない） | read | |
+| POST | `/expense/payouts` | preview と同じ + `acknowledgedWarnings[]` | `{ batch, file: { fileName, contentBase64, byteLength, sha256 } }`（止める理由・未確認の警告があれば 409 `EXPENSE_PAYOUT_BLOCKED`） | **approve** | ✅ |
+| GET | `/expense/payouts` | `status?`（`exported` / `confirmed` / `cancelled`）, `limit?`（≤500） | `{ batches }` | read | |
+| GET | `/expense/payouts/:id/file` | — | `{ file }`（作り直して SHA-256 が作成時と一致したときだけ。違えば・取消済みなら 409） | **approve** | ✅ |
+| POST | `/expense/payouts/:id/confirm` | `note?` | `{ batch, claims, advances, warnings }`（申請 → 精算済み・仮払の支払と追加支給 → 支払済み。支払の仕訳下書きは設定が on のときだけ、拒否されても確定は止めず `warnings`） | edit | ✅ |
+| POST | `/expense/payouts/:id/cancel` | `note` | `{ batch }`（`exported` だけ。申請と追加支給の印を戻す） | edit | ✅ |
+| GET | `/expense/advances` | `status?`, `employeeId?`, `limit?`（≤500） | `{ advances }`（`linkedClaimCount` / `linkedClaimTotal` / `overdue`） | read | |
+| POST | `/expense/advances` | `employeeId, purpose, amount, neededOn, plannedSettleBy` | `{ advance }` | edit | |
+| GET | `/expense/advances/:id` | — | `{ advance, claims }` | read | |
+| PUT | `/expense/advances/:id` | `purpose, amount, neededOn, plannedSettleBy` | `{ advance }` | edit | |
+| POST | `/expense/advances/:id/approve` | `comment?` | `{ advance }` | **approve** | ✅ |
+| POST | `/expense/advances/:id/cancel` | `note` | `{ advance }` | edit | ✅ |
+| POST | `/expense/advances/:id/mark-paid` | `paidOn, method: 'cash' \| 'transfer'` | `{ advance }` | edit | ✅ |
+| POST | `/expense/advances/:id/unpay` | `note` | `{ advance }` | edit | ✅ |
+| GET | `/expense/advances/:id/settlement-preview` | — | `{ preview: { claims, claimsTotal, difference, direction, blockers } }` | read | |
+| POST | `/expense/advances/:id/settle` | — | `{ advance, claims }` | edit | ✅ |
+| POST | `/expense/advances/:id/refund-received` | `receivedOn` | `{ advance }` | edit | ✅ |
+| POST | `/expense/advances/:id/additional-paid` | `paidOn, method` | `{ advance }` | edit | ✅ |
+| POST | `/expense/advances/:id/journal-drafts` | `stage: 'payment' \| 'settlement'` | `{ advance, entryIds, warnings }` | edit | ✅ |
+| PUT | `/expense/claims/:id/advance` | `advanceId: string \| null` | `{ claim }` | edit | |
+| GET | `/expense/card-settings` | — | `{ settings, saved }` | read | |
+| PUT | `/expense/card-settings` | `cards[]: { id, label, issuerName?, last4, holderEmployeeId?, enabled }`, `profiles[]`（列の対応） | `{ settings }` | edit | ✅ |
+| POST | `/expense/card-statements/preview` | `content, profileId?, mapping?, cardId?` | `{ result: { headers, detectedProfileId?, suggestedMapping, rows, rowCount, skippedRows, periodFrom?, periodTo?, problems } }`（保存しない） | read | |
+| POST | `/expense/card-statements` | preview と同じ + `fileName, saveProfileAs?` | `{ result: { importId, imported, duplicates, skippedRows, warnings, periodFrom, periodTo, profileId? } }`（同じファイルは 409 `EXPENSE_CARD_DUPLICATE_IMPORT`） | edit | ✅ |
+| GET | `/expense/card-statements` | `limit?`（≤1,000） | `{ imports }` | read | |
+| DELETE | `/expense/card-statements/:id` | — | 204（その取込の利用行も消す） | edit | ✅ |
+| GET | `/expense/card-transactions` | `status?, cardId?, from?, to?, claimId?, limit?`（≤2,000） | `{ transactions }` | read | |
+| POST | `/expense/card-transactions/match` | `from?, to?` | `{ result: { matched, reimbursementMatches, unmatched, kept } }` | edit | |
+| POST | `/expense/card-transactions/:id/exclude` | `reason`（1〜200 字） | `{ transaction }` | edit | ✅ |
+| POST | `/expense/card-transactions/:id/include` | — | `{ transaction }` | edit | ✅ |
+| POST | `/expense/card-transactions/:id/link` | `claimId, itemId` | `{ transaction }` | edit | ✅ |
+| POST | `/expense/card-transactions/:id/unlink` | — | `{ transaction }` | edit | ✅ |
+| GET | `/expense/summary` | `from, to`（`YYYY-MM`）, `groupBy?` / `status?`（カンマ区切り）, `basis?` | `{ result: { rows, totals, warnings, … } }` | read | |
+| GET | `/expense/summary/export` | 同上 | `{ content, fileName }` | read | ✅ |
+
+**C: 入力と規程（13 本）**
+
+| Method | Path | 入力の要点 | 出力 | 認可 | 監査 |
+|---|---|---|---|---|---|
+| POST | `/expense/receipts/extract-detail` | `images`（1 枚以上）, `draft: { categoryId?, categoryText?, facts, source?, extraction }` | `{ result }`（印・食い違い付きの下書き。保存しない。モデルが使えなければ 409 `EXPENSE_DETAIL_EXTRACTION_UNAVAILABLE`） | edit | |
+| GET | `/expense/fares` | — | `{ table, saved }` | read | |
+| PUT | `/expense/fares` | `routes[]: { id, stations, fareType, fare, bidirectional, validFrom?, validTo?, note? }`, `stationAliases[]: { name, aliases }` | `{ table }` | edit | ✅ |
+| GET | `/expense/fares/export` | — | `{ content, fileName }` | read | |
+| POST | `/expense/fares/import` | `content` | `{ table }` | edit | ✅ |
+| POST | `/expense/fares/lookup` | `stations, fareType?, date?, trips?, employeeId?` | `{ result: { fareType, candidates, maxFare?, routeCount, commuterHint? } }` | read | |
+| POST | `/expense/policy-hearings` | `mode, documentText?, fileName?` | `{ hearing }`（409 `EXPENSE_HEARING_UNAVAILABLE` / 502 `EXPENSE_HEARING_SCHEMA`） | edit | |
+| GET | `/expense/policy-hearings` | `status?` | `{ hearings }`（原文を含めない要約） | read | |
+| GET | `/expense/policy-hearings/:id` | — | `{ hearing }` | read | |
+| POST | `/expense/policy-hearings/:id/answers` | `answers: [{ questionId, value }]`（1 件以上） | `{ hearing }` | edit | |
+| GET | `/expense/policy-hearings/:id/diff` | — | `{ changes, basePolicyUpdatedAt, stale }`（現在の規程に対する差分。提案が無ければ 409） | read | |
+| POST | `/expense/policy-hearings/:id/accept` | `changeIds`（1〜500）, `basePolicyUpdatedAt` | `{ hearing, policy }`（規程の版が違えば 409 `EXPENSE_POLICY_CONFLICT`） | edit | ✅ |
+| POST | `/expense/policy-hearings/:id/cancel` | — | `{ hearing }` | edit | |
+
+#### エラー（`expense-error-mapping.ts`）
+
+| 例外 | status | code | 付加情報 |
+|---|---|---|---|
+| `Expense{Claim,Item,Receipt}NotFoundError` | 404 | `EXPENSE_{CLAIM,ITEM,RECEIPT}_NOT_FOUND` | |
+| `ExpenseCsvImportError` / `ExpenseDomainError` | 400 | `EXPENSE_CSV_IMPORT` / `EXPENSE_DOMAIN` | `row?` |
+| `ExpenseTransitionError` | 409 | `EXPENSE_TRANSITION` | `blockingReasons`, `nextStep?`, `claims?` |
+| `ExpenseJournalLinkError` / `JournalDraftRejectedError` | 409 | `EXPENSE_JOURNAL_LINK` | `problems`, `createdEntryIds` |
+| `JournalExtraction*Error`（読取。仕訳と共通） | 409 / 502 | `JOURNAL_EXTRACTION_UNAVAILABLE` / `JOURNAL_EXTRACTION_SCHEMA` | §3.4 と同じ |
+| `Expense{Employee,Advance,Payout,CardTransaction,CardImport,Hearing}NotFoundError` | 404 | `EXPENSE_*_NOT_FOUND` | |
+| `ExpenseEmployeeCsvImportError` / `ExpenseCardImportError` | 400 | `EXPENSE_EMPLOYEE_CSV_IMPORT` / `EXPENSE_CARD_IMPORT` | `row?`, `missingColumns?`（カードは `suggestedMapping?`） |
+| `ExpenseCardDuplicateImportError` | 409 | `EXPENSE_CARD_DUPLICATE_IMPORT` | `importId`, `importedAt` |
+| `ExpensePayoutBlockedError` | 409 | `EXPENSE_PAYOUT_BLOCKED` | `problems[{ code, employeeId?, claimId?, advanceId?, field?, message, fixTarget }]`, `warnings[]` |
+| `ExpensePolicyConflictError` | 409 | `EXPENSE_POLICY_CONFLICT` | `currentUpdatedAt` |
+| `ExpenseDetailExtractionUnavailableError` / `ExpenseHearingUnavailableError` | 409 | `EXPENSE_DETAIL_EXTRACTION_UNAVAILABLE` / `EXPENSE_HEARING_UNAVAILABLE` | `missing` |
+| `ExpenseHearingSchemaError` | 502 | `EXPENSE_HEARING_SCHEMA` | `issues[]` |
+
+実用化で `ExpenseDomainError` の付加情報に `field?` / `employeeId?` / `conflictEmployeeId?` / `converted?` が、`ExpenseTransitionError` の `blockingReasons` に承認・仮払・カードの擬似コード（`approval-step-changed` / `advance-status` / `card-item-matched` など。理由コードではない。docs/21 §20.5.1 / §20.9.3）が増えた。
+
+### 3.6 請求書発行と入金消込（receivables）
+
+請求書を発行し、銀行明細を取り込んで自動で消込候補を判定する（[docs/22-receivables.md](./22-receivables.md) / [ADR-0041](./adr/0041-receivables-payment-matching.md)）。登録点は `receivables-routes.ts` / `receivables-schemas.ts` / `receivables-authorization.ts`（`RECEIVABLES_ROUTE_RULES`）/ `receivables-error-mapping.ts`（`receivablesHttpError`）。
+
+**請求書（`/receivables/invoices`）**: 状態は `draft → issued`（取消は `void`）。`POST /receivables/invoices/check` は**保存せずに**税額（明細ごとの端数処理・税率別集計）を検査し集計するので、下書き保存前にも同じ規則で試算できる。発行後は明細を直接編集できず、`PUT` は 409 になる。
+
+**入金明細と消込（`/receivables/bank-transactions`・`/receivables/matching*`）**: CSV の文字コード判定・プリセット判定・列マッピングは `POST /receivables/bank-transactions/preview`（保存しない）で試してから `import`。`POST /receivables/matching/judge` が消込候補を計算し、明細ごとに `stage`（`decided` / `candidate` / `unmatched`）を付ける。`decided` は金額と支払人名が一意に一致したもので、`POST /receivables/matchings/confirm-decided` で一括確定できる。`candidate` は振込手数料差引・複数請求書の合算・部分入金・部分一致名などが理由で、人が `GET /receivables/matching/candidates?transactionId=` で候補を見てから `POST /receivables/matchings` で配分を確定する。確定時に `expectedOutstanding`（画面が見ていた未回収額）を渡すと、その間に他で消し込まれていた場合の競合を検出できる。
+
+```jsonc
+// POST /receivables/matchings { scope, transactionId, allocations: [{ invoiceId, amount }], feeAmount, expectedOutstanding?, learnAlias?: { customerId } }
+// → 200 { result: { matching, invoicesUpdated, journalEntryIds? } }
+```
+
+**仕訳連携**: 設定（`/receivables/settings` の `journal`）に科目・税区分・売上計上日の基準を持ち、発行・消込確定のたびに仕訳下書きを作る。科目が未設定なら 409 `RECEIVABLES_JOURNAL_ACCOUNT_MISSING`（`missing` に足りない科目キー）。
+
+**注文書・見積書からの請求書案**: 添付画像を vision で読んで請求書下書きを作る組込みツール（`receivables_invoice_draft`）向けの機能フラグは `GET /runtime/capabilities` の `receivables.invoiceDraft`。
+
+#### エラー（`receivables-error-mapping.ts`）
+
+| 例外 | status | code | 付加情報 |
+|---|---|---|---|
+| `ReceivablesDomainError` | 400 | `RECEIVABLES_DOMAIN` | |
+| `InvoiceComplianceError` | 400 | `RECEIVABLES_INVOICE_COMPLIANCE` | `violations` |
+| `ReceivablesCsvImportError` | 400 | `RECEIVABLES_CSV_IMPORT` | `row?` |
+| `{Customer,Invoice,BankTransaction,Matching,BankCsvProfile}NotFoundError` | 404 | `RECEIVABLES_*_NOT_FOUND` | |
+| `ReceivablesStateError` | 409（配分・プロファイル系の理由は 400） | `RECEIVABLES_STATE` | `reason`, `params` |
+| `JournalLinkError` | 409 | `RECEIVABLES_JOURNAL_ACCOUNT_MISSING` | `missing` |
+| `ReceivablesExtractionUnavailableError` | 409 | `RECEIVABLES_EXTRACTION_UNAVAILABLE` | |
+
+### 3.7 契約書レビューと期限台帳（contract）
+
+契約書を取り込み、審査基準（playbook）と突き合わせて条項ごとの評価（`accept` / `negotiate` / `reject` / `unresolved`）を出し、締結後は更新・満了・通知期限を期限台帳で追跡する（[docs/23-contract.md](./23-contract.md) / [ADR-0042](./adr/0042-contract-playbook-review.md)）。登録点は `contract-routes.ts` / `contract-schemas.ts` / `contract-authorization.ts`（`CONTRACT_ROUTE_RULES`）/ `contract-error-mapping.ts`（`contractHttpError`）。**レビュー結果は審査基準との照合であり法的判断ではない** — 応答は必ず定型の注意文言（`notice`。`LEGAL_DISCLAIMER_JA`）を添えて返す（`contractReviewResponse`）。
+
+**文書の取込（`/contracts/documents`）**: PDF はブラウザ側でテキスト層抽出 or ページ画像化してから本文・ページ境界を送る（サーバーは PDF を扱わない。仕訳・経費と同じ方針）。スキャン PDF や画像は先に `POST /contracts/documents/transcribe`（vision。**保存しない**）で文字起こしする。取込・更新の本文上限は 2 MiB（`CONTRACT_IMPORT_BODY_LIMIT_BYTES`）。
+
+**条項抽出とレビュー**: `POST /contracts/documents/:id/extract` が LLM で条項を抽出し文書へ保存する（`scanAllArticles` / `articleRefs` で一部だけ読み直せる）。人が `PUT /contracts/documents/:id/clauses` で確認・修正して確定（`confirmed`）させたのち、`POST /contracts/documents/:id/reviews` が審査基準の決定的な判定 + はい/いいえ型の LLM 基準でレビューを起こす。`PUT /contracts/reviews/:id/decisions` で人がトピックごとに `accept` / `negotiate` / `reject` を選び、`POST /contracts/reviews/:id/finalize` で確定する（未判断のトピックが残っていれば 400 に一覧が付く）。
+
+**締結登録と期限台帳**: `POST /contracts/deadlines/preview` は締結日・締結方法から更新/満了/通知期限を**保存せず**試算する（画面の即時表示用）。`POST /contracts/signed` で締結登録すると期限台帳（`GET /contracts/deadlines`）に載る。`kind` は `renewal_notice` / `expiry` / `renewal` / `custom`。印紙税の候補（`stampDuty`）も文書全体の突き合わせ結果として付く。
+
+```jsonc
+// POST /contracts/documents/:id/reviews { scope, playbookId? } → 200 { review, notice }
+// review.topics[]: { topicId, verdict, articleRef?, quote?, quoteVerified, reasons[], recommendedText? }
+```
+
+**LLM 機能フラグ**: `GET /runtime/capabilities` の `contract`（`extraction: { enabled, vision }` は文字起こし・条項抽出、`review.llm` ははい/いいえ型基準の LLM 判定。使えなくても決定的な判定は出る）。
+
+#### エラー（`contract-error-mapping.ts`）
+
+| 例外 | status | code | 付加情報 |
+|---|---|---|---|
+| `Contract{Playbook,Document,Review}NotFoundError` / `SignedContractNotFoundError` | 404 | `CONTRACT_*_NOT_FOUND` | |
+| `ContractDomainError` | 400 | `CONTRACT_DOMAIN` | `details`（例: `undecidedTopicIds`） |
+| `ContractStateError` | 409 | `CONTRACT_STATE` | `documentId` / `contractId` / `reviewId` |
+| `ContractExtractionUnavailableError`（モデル未設定・能力不足） | 409 | `CONTRACT_EXTRACTION_UNAVAILABLE` | |
+| `ContractExtractionSchemaError`（修復後もスキーマ違反） | 502 | `CONTRACT_EXTRACTION_SCHEMA` | |
+
 ### プロンプト自動生成（目玉機能）のリクエスト/レスポンス例
 
 ```jsonc
@@ -623,6 +880,13 @@ v1の実行上限はTool call 4回、model round 5回であり、実際の呼び
   "mode": "preview"
 }
 ```
+
+`POST /runs`（`agent` / `tool` どちらの本文にも共通）は添付を 2 種類受ける。
+
+- `images`（最大 2 枚）: `{ name, dataUrl }`。SVG と外部 URL は不可（データ URL に限定）。
+- `documents`（テキスト添付。最大 2 件・合計 400,000 文字、1 件 300,000 文字まで）: `{ name, text, pageCount? }`。ブラウザで PDF のテキスト層から抜いた本文などを、画像とは別の一覧で渡す。**本文はモデルへのメッセージには載せず、ツールの実行文脈にだけ渡す**（12B 級モデルの文脈をメッセージ本文で埋めないため）。契約書レビューの vision を使わない経路（docs/23-contract.md §9.4 C2）はこれで本文を渡す。
+
+いずれも `runAgentBodySchema`（`src/api/schemas.ts`）が検証する。
 
 ---
 

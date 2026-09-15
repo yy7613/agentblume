@@ -1,6 +1,7 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { JournalCapabilitiesDto, JournalChartOfAccountsDto, JournalDocumentSummaryDto, JournalRuleDto, SaveJournalRuleDto } from '../api/types';
+import { BusinessStepper, type BusinessStep } from '../components/BusinessStepper';
 import { useI18n } from '../i18n';
 import { ScreenLink, usePendingOpen } from '../navigation';
 import { scope } from '../scope';
@@ -104,11 +105,10 @@ export function JournalPage({ client }: { readonly client: ToolApiClient }) {
 
   /**
    * 画面の手順（docs/20 §10）。**設定する順**に並べる: 科目 → 取込 → 判定 → ルール → 出力。
-   * 四角と矢印がそのままタブなので、順序を示すものと操作するものが二重にならない。
-   * 読み上げ用の名前は素のラベル（aria-label）にして、番号と説明は見た目だけに留める。
+   * 四角と矢印がそのままタブ（業務共通の `BusinessStepper`）。
    * 最初に開くのは「取込」のまま: 科目には既定値があるので、いきなり設定表へ着地させない。
    */
-  const steps: readonly { readonly id: JournalTab; readonly label: string; readonly caption: string; readonly badge?: string }[] = [
+  const steps: readonly BusinessStep<JournalTab>[] = [
     { id: 'chart', label: text('Chart', '科目'), caption: text('Define accounts and tax categories', '科目と税区分を決める'),
       // 未保存の標準セットで件数だけ出すと「設定済み」に見えるので、そこは言葉で区別する。
       ...(chart === undefined ? {} : { badge: chart.saved === true
@@ -144,20 +144,7 @@ export function JournalPage({ client }: { readonly client: ToolApiClient }) {
         <button type="button" className="secondary" onClick={() => { for (const failure of loadFailures) void failure.retry(); }}>{text('Retry', '再試行')}</button>
       </div>
     </div>}
-    <div className="journal-steps" role="tablist" aria-label={text('Journal steps', '仕訳の手順')}>
-      {steps.map((step, index) => <Fragment key={step.id}>
-        <button type="button" role="tab" aria-selected={tab === step.id} aria-label={step.label}
-          className={`journal-step${tab === step.id ? ' active' : ''}`} onClick={() => setTab(step.id)}>
-          <span className="journal-step-no" aria-hidden="true">{index + 1}</span>
-          <span className="journal-step-head">
-            <span className="journal-step-label">{step.label}</span>
-            {step.badge !== undefined && <span className="journal-step-badge">{step.badge}</span>}
-          </span>
-          <span className="journal-step-caption">{step.caption}</span>
-        </button>
-        {index < steps.length - 1 && <span className="journal-step-arrow" aria-hidden="true">→</span>}
-      </Fragment>)}
-    </div>
+    <BusinessStepper steps={steps} active={tab} onSelect={setTab} label={text('Journal steps', '仕訳の手順')} />
     {tab === 'ingest' ? <IngestTab client={client} chart={chart} capabilities={capabilities} editDocument={editDocument} onSaved={() => { void reloadRules(); }} />
       : tab === 'judge' ? <JudgeTab client={client} chart={chart} rules={rules} capabilities={capabilities} focus={documentFocus} onAction={handleAction} reloadChart={reloadChart} reloadRules={reloadRules} />
       : tab === 'rules' ? <RulesTab client={client} chart={chart} rules={rules} reloadRules={reloadRules} focus={ruleFocus} draft={ruleDraft} />

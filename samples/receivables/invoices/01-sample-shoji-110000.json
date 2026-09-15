@@ -1,0 +1,13 @@
+{
+  "customerRef": "sample-shoji",
+  "customerNameHint": "株式会社サンプル商事",
+  "issueDate": "2026-09-02",
+  "transactionDate": "2026-08-31",
+  "transactionPeriod": { "from": "2026-08-01", "to": "2026-08-31" },
+  "dueDate": "2026-09-30",
+  "pricing": "exclusive",
+  "lines": [
+    { "description": "受発注システム 開発支援 8月分", "quantity": 1, "unit": "式", "unitPrice": 100000, "amount": 100000, "taxRate": 10 }
+  ],
+  "note": "期待結果: ﾌﾘｺﾐ ｻﾝﾌﾟﾙｼﾖｳｼﾞ 110,000 が decided / exact-amount-and-name"
+}

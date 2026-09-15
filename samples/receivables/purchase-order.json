@@ -1,0 +1,76 @@
+{
+  "kind": "other",
+  "source": {
+    "type": "structured",
+    "fileName": "purchase-order.json"
+  },
+  "facts": {
+    "direction": "in",
+    "issuerName": "テスト工業株式会社",
+    "recipientName": "株式会社サンプルソフト",
+    "registrationNumber": "T1357913579135",
+    "issueDate": "2026-09-20",
+    "grandTotal": 201140,
+    "totalsByRate": [
+      {
+        "rate": 10,
+        "taxableAmount": 175000,
+        "taxAmount": 17500,
+        "amountIncludesTax": false
+      },
+      {
+        "rate": 8,
+        "taxableAmount": 8000,
+        "taxAmount": 640,
+        "amountIncludesTax": false
+      }
+    ],
+    "lines": [
+      {
+        "description": "販売管理システム 改修 一式",
+        "quantity": 1,
+        "unitPrice": 120000,
+        "amount": 120000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "帳票レイアウト 追加",
+        "quantity": 2,
+        "unitPrice": 15000,
+        "amount": 30000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "操作説明会 講師派遣",
+        "quantity": 1,
+        "unitPrice": 25000,
+        "amount": 25000,
+        "taxRate": 10,
+        "reducedRateMark": false
+      },
+      {
+        "description": "説明会用 茶菓子",
+        "quantity": 20,
+        "unitPrice": 400,
+        "amount": 8000,
+        "taxRate": 8,
+        "reducedRateMark": true
+      }
+    ],
+    "description": "注文書 販売管理システム改修 ほか",
+    "descriptionNorm": "注文書 販売管理システム改修 ほか",
+    "counterpartyHint": "テスト工業",
+    "extra": {
+      "documentTitle": "注文書",
+      "orderNumber": "PO-2026-0920",
+      "deliveryDate": "2026-10-15",
+      "paymentTerms": "月末締め翌月末払い"
+    }
+  },
+  "extraction": {
+    "method": "structured",
+    "warnings": []
+  }
+}

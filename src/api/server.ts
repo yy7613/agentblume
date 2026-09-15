@@ -42,6 +42,9 @@ import { registerModelSettingsRoutes, type ModelSettingsRouteDeps } from './mode
 import { registerSampleDataRoutes, type SampleDataRouteDeps } from './sample-data-routes';
 import { registerToolCheckRoutes, type ToolCheckRouteDeps } from './tool-check-routes';
 import { registerJournalRoutes, type JournalRouteDeps } from './journal-routes';
+import { registerExpenseRoutes, type ExpenseRouteDeps } from './expense-routes';
+import { registerReceivablesRoutes, type ReceivablesRouteDeps } from './receivables-routes';
+import { registerContractRoutes, type ContractRouteDeps } from './contract-routes';
 
 /**
  * チャットの画像（最大2枚・各3 MiB）はBase64化で合計約8 MiBになる。
@@ -165,7 +168,7 @@ function messageOf(error: unknown): string {
 
 /** ルート・エラーハンドラ設定済みの Fastify インスタンスを組み立てる（listen しない）。 */
 export function buildServer(
-  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & HarnessRouteDeps & HarnessRunRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps & FactoryRouteDeps & McpRouteDeps & ModelSettingsRouteDeps & SampleDataRouteDeps & ToolCheckRouteDeps & JournalRouteDeps,
+  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & HarnessRouteDeps & HarnessRunRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps & FactoryRouteDeps & McpRouteDeps & ModelSettingsRouteDeps & SampleDataRouteDeps & ToolCheckRouteDeps & JournalRouteDeps & ExpenseRouteDeps & ReceivablesRouteDeps & ContractRouteDeps,
   options?: ServerOptions,
 ): FastifyInstance {
   const app = Fastify({
@@ -266,7 +269,11 @@ export function buildServer(
   registerModelSettingsRoutes(app, deps);
   registerSampleDataRoutes(app, deps);
   registerToolCheckRoutes(app, deps);
+  // 業務（ADR-0039）。ルート・認可・エラー写像・機能フラグは業務ごとのファイルが持つ。
   registerJournalRoutes(app, deps);
+  registerExpenseRoutes(app, deps);
+  registerReceivablesRoutes(app, deps);
+  registerContractRoutes(app, deps);
 
   const revision = options?.revision;
   const buildInfo = { node: process.version, ...(revision === undefined ? {} : { revision }) };

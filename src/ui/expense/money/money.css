@@ -1,0 +1,40 @@
+/* 経費精算「お金の流れ（系統 B）」の部品（docs/21 §20.10）。クラスは expense-money- で始める。空状態・未設定は赤系の色を使わない。 */
+
+.expense-money { display: grid; gap: 12px; }
+.expense-money-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin: 8px 0; }
+.expense-money-toolbar label { display: grid; gap: 3px; font-size: 12px; }
+.expense-money-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 1000px) { .expense-money-layout { grid-template-columns: 1fr; } }
+
+.expense-money-chip { display: inline-flex; align-items: center; gap: 3px; padding: 1px 8px; border-radius: 99px; border: 1px solid #dce1eb; background: #f4f6fb; color: #3e4a63; font-size: 11px; white-space: nowrap; }
+.expense-money-chip-overdue { border-color: #f4dfb0; background: #fff1d7; color: #97640c; }
+.expense-money-chip-suspect { border-color: #f2c9ce; background: #fce8ea; color: #a62f3e; font-weight: 700; }
+.expense-money-chip-done { border-color: #cbe9de; background: #e4f5ef; color: #137058; }
+
+.expense-money-row-selected { background: #eef1ff; }
+.expense-money-row-suspect { background: #fdf1f2; }
+.expense-money-amount { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.expense-money-plus { color: #33499c; }
+.expense-money-minus { color: #97640c; }
+
+.expense-money-detail dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 8px 0; font-size: 12px; }
+.expense-money-detail dt { color: #5c6880; }
+.expense-money-detail dd { margin: 0; }
+
+.expense-money-inline-form { display: grid; gap: 6px; margin: 8px 0; padding: 8px 10px; border: 1px solid #dce1eb; border-radius: 8px; background: #fafbfe; }
+.expense-money-inline-form label { display: grid; gap: 3px; font-size: 12px; }
+.expense-money-inline-form textarea { min-height: 56px; font-family: inherit; }
+
+.expense-money-preview { margin: 8px 0; padding: 10px 12px; border: 1px solid #d5dbff; border-radius: 9px; background: #f3f5ff; color: #25346f; font-size: 12px; }
+.expense-money-preview p { margin: 4px 0; }
+.expense-money-direction { font-size: 14px; font-weight: 700; }
+
+.expense-money-reasons { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 6px; font-size: 12px; }
+.expense-money-reasons li { display: grid; gap: 4px; }
+.expense-money-error .run-failure-actions { margin-top: 2px; }
+
+.expense-money-mapping { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px 12px; margin: 8px 0; }
+.expense-money-mapping label { display: grid; gap: 3px; font-size: 12px; }
+
+.expense-money-link-field { display: grid; gap: 6px; margin: 8px 0; font-size: 12px; }
+.expense-money-link-focused { outline: 2px solid #6d7ff0; outline-offset: 3px; border-radius: 6px; }

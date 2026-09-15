@@ -1,0 +1,43 @@
+{
+  "description": "交通費（docs/21 §20.3.4。UC8）の照合の見本と期待する理由コード。運賃マスタは fares.csv、駅名の別名は stationAliases、申請者の通勤定期は employee.commuterPasses。人名・運賃は架空（駅名は実在）。規程は初期テンプレート（電車・バスは区間が必須・定期と運賃を照合）を保存した状態。codes は明細に出る理由コードのすべて（並びは評価順）。",
+  "today": "2026-09-30",
+  "period": { "from": "2026-09-01", "to": "2026-09-30" },
+  "stationAliases": [{ "name": "霞ケ関", "aliases": ["霞が関", "霞ヶ関"] }],
+  "employee": {
+    "id": "emp-sample-taro",
+    "name": "テスト太郎",
+    "commuterPasses": [{ "id": "pass-sample", "stations": ["中野", "新宿", "霞ケ関"], "validFrom": "2026-04-01", "validTo": "2027-03-31" }]
+  },
+  "items": [
+    {
+      "label": "定期の範囲内（向きは逆・駅名は別名）→ 差し戻し",
+      "facts": { "transactionDate": "2026-09-02", "payeeName": "東京メトロ", "amount": 200, "purpose": "客先訪問", "route": { "stations": ["霞が関", "新宿"], "trips": 1 } },
+      "codes": ["commuter-pass-overlap"]
+    },
+    {
+      "label": "定期と一部重複（中野〜新宿が定期内）。中野 > 渋谷 の運賃は未登録",
+      "facts": { "transactionDate": "2026-09-03", "payeeName": "JR 東日本", "amount": 330, "purpose": "客先訪問", "route": { "stations": ["中野", "新宿", "渋谷"], "trips": 1 } },
+      "codes": ["commuter-pass-partial-overlap", "fare-route-unknown"]
+    },
+    {
+      "label": "定期の外で登録運賃どおり → 理由なし",
+      "facts": { "transactionDate": "2026-09-04", "payeeName": "東京メトロ", "amount": 150, "purpose": "客先訪問", "route": { "stations": ["大手町", "東京"], "trips": 1 } },
+      "codes": []
+    },
+    {
+      "label": "往復 2 回で登録運賃 150 円 × 2 = 300 円を超える",
+      "facts": { "transactionDate": "2026-09-05", "payeeName": "東京メトロ", "amount": 400, "purpose": "客先訪問", "route": { "stations": ["東京", "大手町"], "trips": 2 } },
+      "codes": ["fare-exceeds-table"]
+    },
+    {
+      "label": "運賃マスタに無い区間",
+      "facts": { "transactionDate": "2026-09-08", "payeeName": "JR 東日本", "amount": 210, "purpose": "客先訪問", "route": { "stations": ["渋谷", "品川"], "trips": 1 } },
+      "codes": ["fare-route-unknown"]
+    },
+    {
+      "label": "区間の記入なし",
+      "facts": { "transactionDate": "2026-09-09", "payeeName": "東京メトロ", "amount": 420, "purpose": "客先訪問" },
+      "codes": ["route-missing"]
+    }
+  ]
+}

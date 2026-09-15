@@ -28,6 +28,13 @@ import { decideAuthorization, type AuthorizationAction, type AuthorizationResour
 import { principalScope } from '../domain/security/principal';
 import type { TenantScope } from '../domain/shared/tenant-scope';
 import { pathOf } from './authentication';
+import { rule, type RouteAuthorization, type RouteRule } from './route-rule';
+import { JOURNAL_ROUTE_RULES } from './journal-authorization';
+import { EXPENSE_ROUTE_RULES } from './expense-authorization';
+import { RECEIVABLES_ROUTE_RULES } from './receivables-authorization';
+import { CONTRACT_ROUTE_RULES } from './contract-authorization';
+
+export type { RouteAuthorization, RouteRule } from './route-rule';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -62,20 +69,6 @@ export class ForbiddenError extends Error {
   }
 }
 
-/** 1ルートに割り当てる認可要件。 */
-export interface RouteAuthorization {
-  readonly action: AuthorizationAction;
-  readonly kind: AuthorizationResourceKind;
-  /** true なら結果（成功・失敗）を監査ログへ残す。拒否は `audit` に関係なく必ず残す。 */
-  readonly audit?: boolean;
-}
-
-/** 表の1行。 */
-interface RouteRule extends RouteAuthorization {
-  readonly method: string;
-  readonly url: string;
-}
-
 /**
  * 認可判定を行わないルート。
  *
@@ -84,9 +77,6 @@ interface RouteRule extends RouteAuthorization {
  *   **自分に何の権限が無いのかを画面で確認できなくなる**（403の理由を読む手段が消える）。
  */
 export const AUTHORIZATION_EXEMPT_PATHS: ReadonlySet<string> = new Set(['/health', '/ready', '/auth/session']);
-
-const rule = (method: string, url: string, action: AuthorizationAction, kind: AuthorizationResourceKind, audit = false): RouteRule =>
-  ({ method, url, action, kind, audit });
 
 /**
  * ルート → 必要な権限の対応表（`docs/04-api-spec.md` §3 の「認可アクション」列に対応）。
@@ -119,7 +109,7 @@ const rule = (method: string, url: string, action: AuthorizationAction, kind: Au
  * **接続テスト**（子プロセスの起動・保存済み資格情報の外部送出を伴うため、保存を伴わなくても残す）。
  * 参照と、資産の作成・更新はバージョン履歴が別に残るので対象外。
  */
-export const ROUTE_RULES: readonly RouteRule[] = [
+const CORE_ROUTE_RULES: readonly RouteRule[] = [
   // --- tools ---
   rule('GET', '/tools', 'read', 'tool'),
   rule('POST', '/tools', 'create', 'tool'),
@@ -339,52 +329,18 @@ export const ROUTE_RULES: readonly RouteRule[] = [
 
   // --- サンプルデータ（ワークスペースへ一括で書き込む） ---
   rule('POST', '/sample-data', 'operate', 'workspace', true),
+];
 
-  /**
-   * --- 仕訳（docs/20-journal.md §9） ---
-   *
-   * リソース種別は `workspace`（仕訳は専用の種別を持たない。参照は全ロール、変更は Editor 以上）。
-   * 監査（`audit: true`）は「後から必ず問われる操作」だけに付ける:
-   * 科目マスタの全体保存・標準へ戻す・CSV 取込（**帳簿の土台を差し替える**）、ルールの保存と削除
-   * （以後の自動仕訳の内容が変わる）、仕訳の確定と削除（会計上の記録の確定・抹消）、CSV 出力
-   * （帳簿の持ち出し。`markExported` は仕訳の状態も変える）。
-   * 文書の保存・判定の実行・CSV 取込による文書の作成は、結果が仕訳側の監査に現れるので対象外。
-   */
-  rule('GET', '/journal/chart', 'read', 'workspace'),
-  rule('PUT', '/journal/chart', 'edit', 'workspace', true),
-  rule('POST', '/journal/chart/reset', 'edit', 'workspace', true),
-  rule('GET', '/journal/chart/export', 'read', 'workspace'),
-  rule('POST', '/journal/chart/import', 'edit', 'workspace', true),
-  rule('GET', '/journal/rules', 'read', 'workspace'),
-  rule('POST', '/journal/rules', 'edit', 'workspace', true),
-  rule('DELETE', '/journal/rules/:id', 'edit', 'workspace', true),
-  rule('POST', '/journal/rules/test', 'read', 'workspace'),
-  rule('GET', '/journal/documents', 'read', 'workspace'),
-  rule('POST', '/journal/documents', 'edit', 'workspace'),
-  rule('GET', '/journal/documents/:id', 'read', 'workspace'),
-  rule('PUT', '/journal/documents/:id', 'edit', 'workspace'),
-  rule('DELETE', '/journal/documents/:id', 'edit', 'workspace', true),
-  rule('POST', '/journal/documents/import-csv', 'edit', 'workspace'),
-  rule('POST', '/journal/documents/judge', 'edit', 'workspace'),
-  rule('GET', '/journal/csv-presets', 'read', 'workspace'),
-  rule('GET', '/journal/entries', 'read', 'workspace'),
-  rule('POST', '/journal/entries', 'edit', 'workspace'),
-  rule('PUT', '/journal/entries/:id', 'edit', 'workspace'),
-  rule('POST', '/journal/entries/:id/confirm', 'edit', 'workspace', true),
-  rule('DELETE', '/journal/entries/:id', 'edit', 'workspace', true),
-  rule('GET', '/journal/export', 'read', 'workspace', true),
-  /**
-   * フェーズ 2（LLM 抽出とヒアリング）。抽出は保存しないが**モデルを回す**ので edit に置く
-   * （参照権限しか無い利用者が課金の伴う処理を走らせられるのは違う）。
-   * 受け入れだけ監査する: 科目マスタへの登録・ルールの保存・再判定を一度に行う「後から必ず問われる操作」だから。
-   */
-  rule('POST', '/journal/documents/extract', 'edit', 'workspace'),
-  rule('POST', '/journal/hearings', 'edit', 'workspace'),
-  rule('GET', '/journal/hearings', 'read', 'workspace'),
-  rule('GET', '/journal/hearings/:id', 'read', 'workspace'),
-  rule('POST', '/journal/hearings/:id/answers', 'edit', 'workspace'),
-  rule('POST', '/journal/hearings/:id/accept', 'edit', 'workspace', true),
-  rule('POST', '/journal/hearings/:id/cancel', 'edit', 'workspace'),
+/**
+ * 全ルートの表。業務（仕訳・経費精算・入金消込・契約）のルートは業務ごとの `<業務>-authorization.ts` が持ち、
+ * ここで連結する（ADR-0039）。割り当ての方針と監査の基準は上の表と同じものに従うこと。
+ */
+export const ROUTE_RULES: readonly RouteRule[] = [
+  ...CORE_ROUTE_RULES,
+  ...JOURNAL_ROUTE_RULES,
+  ...EXPENSE_ROUTE_RULES,
+  ...RECEIVABLES_ROUTE_RULES,
+  ...CONTRACT_ROUTE_RULES,
 ];
 
 const ruleKey = (method: string, url: string): string => `${method.toUpperCase()} ${url}`;

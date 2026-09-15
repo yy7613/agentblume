@@ -3,6 +3,7 @@ import type { ToolApiClient } from '../api/tool-api';
 import type { AuthSessionDto, ModelCatalogProviderDto, ModelSettingsDto, ModelSlotNameDto, ModelSlotSettingsDto } from '../api/types';
 import { clearAuthToken, writeAuthToken } from '../api/auth-token';
 import { useI18n } from '../i18n';
+import { useExperimentalFeatures } from '../experimental-features';
 import { usePendingOpen } from '../navigation';
 import {
   EMPTY_MODEL_SLOT_FORM, apiKeyPlaceholder, applyFetchedModels, baseUrlPlaceholderNote, modelDocLinkLabel,
@@ -260,6 +261,7 @@ function ModelSettingsSection({ client }: { readonly client: ToolApiClient }) {
 export function SettingsPage({ client }: { readonly client: ToolApiClient }) {
   const [health, setHealth] = useState<'checking' | 'ok' | 'offline'>('checking');
   const { language, setLanguage, text } = useI18n();
+  const experimental = useExperimentalFeatures();
   const refresh = useCallback(async () => {
     setHealth('checking');
     try { await client.health(); setHealth('ok'); }
@@ -286,6 +288,17 @@ export function SettingsPage({ client }: { readonly client: ToolApiClient }) {
           </select>
         </label>
         <p className="empty-state">{text('The selection is saved in this browser.', '選択内容はこのブラウザに保存されます。')}</p>
+      </section>
+      <section className="workspace-card">
+        <h2>{text('Experimental features', '実験的な機能')}</h2>
+        <label className="settings-toggle">
+          <input type="checkbox" checked={experimental.enabled} onChange={(event) => experimental.setEnabled(event.target.checked)} />
+          {text('Show experimental features', '実験的な機能を表示する')}
+        </label>
+        <p className="empty-state">{text(
+          'Shows the business templates (journal, expense claims, receivables, contract review) in the navigation. Their screens, saved data formats, and judgment rules may change. Hidden by default; the selection is saved in this browser.',
+          '左ナビに業務テンプレート（仕訳・経費精算・入金消込・契約書レビュー）を表示します。画面・保存データの形式・判定のルールは変わることがあります。初期値は非表示で、選択内容はこのブラウザに保存されます。',
+        )}</p>
       </section>
       <section className="workspace-card">
         <h2>{text('Connection', '接続')}</h2>

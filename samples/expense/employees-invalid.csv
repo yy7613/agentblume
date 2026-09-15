@@ -1,0 +1,5 @@
+﻿id,code,name,name_kana,department_id,manager_code,login_subjects,bank_code,bank_name_kana,branch_code,branch_name_kana,account_type,account_number,account_holder_kana,commuter_pass_1,commuter_pass_1_valid_to,commuter_pass_2,commuter_pass_2_valid_to,commuter_pass_3,commuter_pass_3_valid_to,enabled,note
+,X001,テスト長名義,,,,,9999,,999,,ordinary,0000011,テスト ガギグゲゴザジズゼゾダヂヅデドバ,,,,,,,,名義カナが変換後 31 バイト（上限 30 バイト。切り詰めずに止める）
+,X002,テスト中点,,,,,9999,,999,,ordinary,0000012,テスト・ナカテン,,,,,,,,中点は変換しない（スペースかピリオドかを人が決める）
+,X003,テスト口座番号,,,,,9999,,999,,ordinary,0000-013,テスト コウザ,,,,,,,,口座番号のハイフンは黙って外さない
+,X004,テスト上長不明,,,Z999,,,,,,,,,,,,,,,,上長の社員番号が見つからない

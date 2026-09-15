@@ -1,0 +1,49 @@
+[
+  {
+    "ref": "yamada-shoji",
+    "name": "山田商事株式会社",
+    "honorific": "御中",
+    "paymentTermDays": 30,
+    "address": "東京都千代田区霞が関1-1-2",
+    "note": "振込名義カナは未設定（期待結果の 2 行目で kana「ヤマダシヨウジ」を入れて再判定する）"
+  },
+  {
+    "ref": "sample-shoji",
+    "name": "株式会社サンプル商事",
+    "honorific": "御中",
+    "kana": "サンプルシヨウジ",
+    "registrationNumber": "T1234567890123",
+    "paymentTermDays": 30,
+    "address": "東京都千代田区霞が関1-1-1 サンプルビル3F"
+  },
+  {
+    "ref": "test-kogyo",
+    "name": "テスト工業株式会社",
+    "honorific": "御中",
+    "kana": "テストコウギヨウ",
+    "registrationNumber": "T1357913579135",
+    "paymentTermDays": 45,
+    "address": "東京都千代田区霞が関1-1-3"
+  },
+  {
+    "ref": "yamada-design",
+    "name": "山田デザイン事務所",
+    "honorific": "様",
+    "paymentTermDays": 30,
+    "note": "個人事業。振込名義の別名は未登録（入金を確定するときに名義を覚えさせる）"
+  },
+  {
+    "ref": "test-bussan",
+    "name": "テスト物産株式会社",
+    "honorific": "御中",
+    "paymentTermDays": 30,
+    "note": "同額請求（44,000 円）の確認用"
+  },
+  {
+    "ref": "sample-hanbai",
+    "name": "株式会社サンプル販売",
+    "honorific": "御中",
+    "paymentTermDays": 30,
+    "note": "同額請求（44,000 円）の確認用"
+  }
+]

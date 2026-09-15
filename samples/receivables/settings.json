@@ -1,0 +1,46 @@
+{
+  "settings": {
+    "issuer": {
+      "name": "株式会社サンプルソフト",
+      "registered": true,
+      "registrationNumber": "T9876543210987",
+      "address": "〒100-0013 東京都千代田区霞が関1-1-1 サンプルビル5F",
+      "tel": "03-0000-1111",
+      "transferAccounts": [
+        {
+          "bankName": "サンプル銀行",
+          "branchName": "本店営業部",
+          "accountType": "普通",
+          "accountNumber": "1234567",
+          "holderKana": "カ）サンプルソフト"
+        }
+      ],
+      "note": "お振込手数料は貴社にてご負担ください。"
+    },
+    "rounding": {
+      "mode": "floor",
+      "defaultPricing": "exclusive"
+    },
+    "matching": {
+      "feeTolerance": { "min": 1, "max": 880 },
+      "maxCombinationSize": 3,
+      "partialNameMinLength": 4
+    },
+    "journal": {
+      "enabled": true,
+      "accounts": {
+        "sales": "revenue.sales",
+        "receivable": "asset.receivables",
+        "deposit": "asset.ordinary_deposit",
+        "fee": "expense.fees"
+      },
+      "salesTaxCodes": { "10": "JP-OUT-10-S", "8": "JP-OUT-8R-S", "0": "JP-OUT-EXEMPT" },
+      "feeTaxCode": "JP-IN-10-S",
+      "nonTaxableTaxCode": "JP-NA",
+      "salesEntryDate": "transaction-date"
+    },
+    "numbering": {
+      "format": "INV-{YYYY}-{SEQ4}"
+    }
+  }
+}

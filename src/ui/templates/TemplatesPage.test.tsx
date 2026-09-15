@@ -29,6 +29,14 @@ describe('TemplatesPage', () => {
     expect(card.textContent).toContain('Ingest receipts');
   });
 
+  it('正常: 実験的な機能であることを、一覧の注意書きと各カードの印で示す', () => {
+    renderPage({ templates: sample });
+    expect(screen.getByRole('note').textContent).toContain('experimental feature');
+    for (const card of screen.getAllByRole('button')) {
+      expect(card.querySelector('.experimental-badge')?.textContent).toBe('Experimental');
+    }
+  });
+
   it('正常: カードを押すと、その業務の画面へ遷移を要求する', async () => {
     const navigate = renderPage();
     await userEvent.click(screen.getByRole('button', { name: 'Journal entries' }));

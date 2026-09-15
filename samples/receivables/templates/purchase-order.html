@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>注文書 PO-2026-0920</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #fff; color: #111; font-family: "Yu Gothic", "Meiryo", "Hiragino Sans", "Noto Sans CJK JP", sans-serif; font-size: 13px; }
+  .sheet { width: 820px; margin: 0 auto; padding: 40px 40px 48px; box-sizing: border-box; }
+  h1 { text-align: center; font-size: 26px; letter-spacing: 0.6em; margin: 0 0 24px; }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+  .to { font-size: 16px; }
+  .to .name { font-size: 18px; border-bottom: 1px solid #111; padding-bottom: 4px; margin-bottom: 8px; }
+  .from { font-size: 12px; line-height: 1.6; text-align: left; position: relative; padding-right: 84px; flex-shrink: 0; }
+  .from .co { font-size: 15px; font-weight: bold; }
+  .stamp { position: absolute; right: 0; top: 10px; width: 54px; height: 54px; border: 2px solid #c0392b; border-radius: 50%; color: #c0392b; font-size: 11px; display: flex; align-items: center; justify-content: center; text-align: center; opacity: .85; transform: rotate(-8deg); }
+  .meta { margin: 18px 0; display: flex; flex-wrap: wrap; gap: 8px 28px; font-size: 12px; white-space: nowrap; }
+  .meta div span { display: inline-block; min-width: 72px; color: #555; }
+  .total-box { margin: 12px 0 20px; border: 2px solid #111; padding: 10px 16px; display: inline-block; font-size: 16px; }
+  .total-box b { font-size: 22px; margin-left: 16px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { border: 1px solid #333; padding: 6px 8px; }
+  th { background: #eef1f5; font-weight: normal; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.c { text-align: center; }
+  .sum { width: 60%; margin-left: auto; margin-top: 14px; }
+  .sum td { border: 1px solid #333; }
+  .sum td.lbl { background: #eef1f5; }
+  .note { margin-top: 16px; font-size: 11.5px; color: #333; line-height: 1.7; }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <h1>注文書</h1>
+  <div class="head">
+    <div class="to">
+      <div class="name">株式会社サンプルソフト 御中</div>
+      <div>下記のとおり注文いたします。</div>
+    </div>
+    <div class="from">
+      <div class="co">テスト工業株式会社</div>
+      <div>〒100-0013 東京都千代田区霞が関1-1-3</div>
+      <div>TEL 03-0000-2222</div>
+      <div>登録番号 T1357913579135</div>
+      <div>購買部 テスト花子</div>
+      <div class="stamp">テスト<br>工業<br>購買印</div>
+    </div>
+  </div>
+
+  <div class="meta">
+    <div><span>注文番号</span> PO-2026-0920</div>
+    <div><span>注文日</span> 2026年9月20日</div>
+    <div><span>納期</span> 2026年10月15日</div>
+    <div><span>支払条件</span> 月末締め翌月末払い</div>
+  </div>
+
+  <div class="total-box">注文金額合計（税込）<b>¥201,140</b></div>
+
+  <table>
+    <thead>
+      <tr><th style="width:44px">No.</th><th>品名・内容</th><th style="width:60px">数量</th><th style="width:96px">単価（税抜）</th><th style="width:110px">金額（税抜）</th><th style="width:56px">税率</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="c">1</td><td>販売管理システム 改修 一式</td><td class="num">1</td><td class="num">120,000</td><td class="num">120,000</td><td class="c">10%</td></tr>
+      <tr><td class="c">2</td><td>帳票レイアウト 追加</td><td class="num">2</td><td class="num">15,000</td><td class="num">30,000</td><td class="c">10%</td></tr>
+      <tr><td class="c">3</td><td>操作説明会 講師派遣</td><td class="num">1</td><td class="num">25,000</td><td class="num">25,000</td><td class="c">10%</td></tr>
+      <tr><td class="c">4</td><td>説明会用 茶菓子 ※</td><td class="num">20</td><td class="num">400</td><td class="num">8,000</td><td class="c">8%</td></tr>
+    </tbody>
+  </table>
+
+  <table class="sum">
+    <tr><td class="lbl">10% 対象（税抜）</td><td class="num">175,000</td><td class="lbl">消費税</td><td class="num">17,500</td></tr>
+    <tr><td class="lbl">8% 対象（税抜）※</td><td class="num">8,000</td><td class="lbl">消費税</td><td class="num">640</td></tr>
+    <tr><td class="lbl">小計（税抜）</td><td class="num">183,000</td><td class="lbl">消費税計</td><td class="num">18,140</td></tr>
+    <tr><td class="lbl" colspan="3"><b>合計（税込）</b></td><td class="num"><b>201,140</b></td></tr>
+  </table>
+
+  <div class="note">
+    ※は軽減税率（8%）対象です。<br>
+    納品後、貴社の請求書（適格請求書）をお送りください。検収後、支払条件に従いお振込いたします（振込名義: ﾃｽﾄｺｳｷﾞﾖｳ）。
+  </div>
+</div>
+</body>
+</html>

@@ -244,8 +244,11 @@ describe('AgentBuilder', () => {
       // このデバウンスは本文入力では再スケジュールしない設計なので、「入力し終えた最終形が送られる」ことまでは
       // 保証しない（入力が 600ms を超えれば途中の状態で発火するのが正しい）。ここで固定したいのは
       // **仕掛けた時点の古い下書きを送らない**こと。以前は 1 文字目の "Y" が飛んでいた。
+      // タイマーは本文の 1 文字目で仕掛かるので、負荷が高く fillRequired の入力自体が 600ms を超えると
+      // 'You are h' のような途中で発火する（テスト件数が増えた全体実行で実際に起きた）。それも正しい動作なので、
+      // 「仕掛けた時点より先へ進んだ、最終形の途中までの下書き」であることだけを見る。
       expect(sent.systemPrompt).not.toBe('Y');
-      expect(sent.systemPrompt.startsWith('You are helpful.')).toBe(true);
+      expect(sent.systemPrompt.length).toBeGreaterThan(1);
       expect('You are helpful. Answer in Japanese.'.startsWith(sent.systemPrompt)).toBe(true);
     });
 

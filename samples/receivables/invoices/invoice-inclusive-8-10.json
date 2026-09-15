@@ -1,0 +1,21 @@
+{
+  "customerRef": "test-kogyo",
+  "customerNameHint": "テスト工業株式会社",
+  "issueDate": "2026-09-30",
+  "transactionDate": "2026-09-26",
+  "dueDate": "2026-10-31",
+  "pricing": "inclusive",
+  "lines": [
+    { "description": "操作説明セミナー 参加費", "amount": 3980, "taxRate": 10 },
+    { "description": "配布資料 印刷代", "amount": 2200, "taxRate": 10 },
+    { "description": "昼食弁当（軽減税率対象）", "quantity": 1, "unitPrice": 1250, "amount": 1250, "taxRate": 8 }
+  ],
+  "declared": {
+    "taxByRate": [
+      { "rate": 10, "taxAmount": 562 },
+      { "rate": 8, "taxAmount": 93 }
+    ],
+    "grandTotal": 7430
+  },
+  "note": "税込。持ち込み元は四捨五入: 10% 6,180 × 10/110 = 561.8 → 562 円、8% 1,250 × 8/108 = 92.6 → 93 円。設定の切り捨てでは 561 円 / 92 円"
+}

@@ -1,0 +1,7 @@
+﻿id,code,name,name_kana,department_id,manager_code,login_subjects,bank_code,bank_name_kana,branch_code,branch_name_kana,account_type,account_number,account_holder_kana,commuter_pass_1,commuter_pass_1_valid_to,commuter_pass_2,commuter_pass_2_valid_to,commuter_pass_3,commuter_pass_3_valid_to,enabled,note
+emp-taro,E001,テスト太郎,テストタロウ,dept-sales,E002,taro@example.com,9999,,999,,ordinary,0000001,テスト タロウ,中野 > 新宿 > 霞ケ関,2027-03-31,,,,,true,架空の従業員（銀行コード 9999・支店 999 は未割当の架空値）
+emp-hanako,E002,テスト花子,テストハナコ,dept-sales,E003,hanako@example.com,9999,,999,,ordinary,0000002,テスト ハナコ,,,,,,,true,営業部長
+emp-jiro,E003,テスト次郎,テストジロウ,dept-admin,,jiro@example.com,9999,,999,,ordinary,0000003,テスト ジロウ,,,,,,,true,管理本部長
+emp-saburo,,テスト三郎,テストサブロウ,dept-accounting,E003,saburo@example.com;saburo-sso,9999,,999,,savings,0000004,テスト サブロウ,新宿 > 霞ケ関,,,,,,true,社員番号なしの例（id で照合）
+emp-shiro,E005,テスト四郎,テストシロウ,dept-sales,E002,,9999,,999,,ordinary,0000005,テスト シロウ,,,,,,,false,退職（無効）の例
+emp-goro,E006,テスト五郎,テストゴロウ,dept-sales,E002,goro@example.com,9900,,018,,ordinary,0000001,テスト ゴロウ,,,,,,,true,ゆうちょ銀行の例（架空の記号 10180・番号 00000011 を変換した値）

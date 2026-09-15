@@ -5,14 +5,16 @@
  * rename / cast）と v15 の 6 ノード（join / union / sort / distinct /
  * fill-null / replace）、および出力・分析系ノード（group-by / limit を含む）を
  * register 済みの NodeRegistry を生成する。
+ * 業務（仕訳・経費精算…）のノードは `<業務>-nodes.ts` の `register<業務>Nodes` が登録する（ADR-0039）。
  * 依存の向き: registry ← nodes（registry.ts は本ファイルを import しない）。
  */
 import { NodeRegistry } from '../registry';
 import { agentInputNode } from './agent-input';
 import { currentDatetimeNode } from './current-datetime';
-import { journalAttachmentSourceNode } from './journal-attachment';
-import { journalDraftEntrySourceNode } from './journal-draft-entry';
-import { journalEntriesSourceNode } from './journal-entries-source';
+import { registerJournalNodes } from './journal-nodes';
+import { registerExpenseNodes } from './expense-nodes';
+import { registerReceivablesNodes } from './receivables-nodes';
+import { registerContractNodes } from './contract-nodes';
 import { jsonSourceNode } from './json-source';
 import { csvSourceNode } from './csv-source';
 import { selectNode } from './select';
@@ -100,9 +102,8 @@ export function createDefaultRegistry(): NodeRegistry {
   const registry = new NodeRegistry();
   registry.register(agentInputNode);
   registry.register(currentDatetimeNode);
-  registry.register(journalAttachmentSourceNode);
-  registry.register(journalDraftEntrySourceNode);
-  registry.register(journalEntriesSourceNode);
+  // 業務のノードは業務ごとの登録関数が持つ（ADR-0039）。仕訳は従来の登録位置のまま呼ぶ。
+  registerJournalNodes(registry);
   registry.register(jsonSourceNode);
   registry.register(csvSourceNode);
   registry.register(selectNode);
@@ -125,5 +126,8 @@ export function createDefaultRegistry(): NodeRegistry {
   registry.register(timeSeriesAnalysisNode);
   registry.register(outlierFilterNode);
   registry.register(chartOutputNode);
+  registerExpenseNodes(registry);
+  registerReceivablesNodes(registry);
+  registerContractNodes(registry);
   return registry;
 }

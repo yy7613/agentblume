@@ -61,12 +61,24 @@ export interface RunAgentPreviewInput {
   readonly purpose?: RunPurpose;
   readonly sessionId?: string;
   readonly images?: readonly ImageAttachment[];
+  readonly documents?: readonly TextAttachment[];
 }
 
 /** チャットから渡す画像。data URLだけを許可し、外部URLの取得は行わない。 */
 export interface ImageAttachment {
   readonly name: string;
   readonly dataUrl: string;
+}
+
+/**
+ * チャットから渡すテキスト（ブラウザで PDF のテキスト層から抜いた契約書の本文など。docs/23 §9.4 C3）。
+ * 画像と違い**モデルへのメッセージには本文を載せない**（12B 級の文脈を本文で使い切ると、ツールの結果を読む余地が無くなる）。
+ * モデルには「添付がある」という 1 行の目印だけを見せ、本文はツールの実行文脈からだけ読める。
+ */
+export interface TextAttachment {
+  readonly name: string;
+  readonly text: string;
+  readonly pageCount?: number;
 }
 
 /** 直前までの会話履歴（system直後へ注入される。v16: シナリオ検証の複数ターン会話用）。 */
@@ -87,6 +99,7 @@ export interface RunSavedAgentPreviewInput {
   /** 呼び出し元がこのRunだけへ追加する、version固定の委譲先。HarnessのCoordinatorで使用する。 */
   readonly additionalAgents?: readonly AgentSubAgentRef[];
   readonly images?: readonly ImageAttachment[];
+  readonly documents?: readonly TextAttachment[];
   /** サブエージェント委譲のツリー共有バジェット（既定値で補完・上限超は既定へクランプ）。 */
   readonly budget?: Partial<RunBudget>;
   /** 手動アタッチした長期記憶（Wiki）の要約。指定時のみ system prompt 先頭へ最小注入する（v21 M1）。 */
@@ -227,6 +240,8 @@ interface NodeContext {
    * 実行文脈を通して渡す（引数に base64 を入れさせない）。
    */
   readonly attachments?: readonly ImageAttachment[];
+  /** この実行に添付されたテキスト。画像と同じく子エージェント・再開実行には渡さない（その turn の入力）。 */
+  readonly documents?: readonly TextAttachment[];
 }
 
 interface RunTiming { modelMs: number; toolMs: number }
@@ -414,8 +429,8 @@ export class RunAgentPreviewUseCase {
       session?.id,
       { tool: { internalId: input.toolId, ...(input.version !== undefined ? { version: input.version.toString() } : {}) } },
       async (trace, timing, runId) => {
-        const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget: makeBudget(), depth: 0, subAgents: [], ...(session === undefined ? {} : { session }), ...(input.images === undefined ? {} : { attachments: input.images }) };
-        const result = await this.perform(input.systemPrompt, input.message, [tool], trace, timing, ctx, signal, undefined, undefined, undefined, input.images);
+        const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget: makeBudget(), depth: 0, subAgents: [], ...(session === undefined ? {} : { session }), ...(input.images === undefined ? {} : { attachments: input.images }), ...(input.documents === undefined ? {} : { documents: input.documents }) };
+        const result = await this.perform(input.systemPrompt, input.message, [tool], trace, timing, ctx, signal, undefined, undefined, undefined, input.images, input.documents);
         return result.tool === undefined ? { ...result, tool: this.toolRef(tool) } : result;
       },
       signal,
@@ -450,11 +465,11 @@ export class RunAgentPreviewUseCase {
           }
         }
         const resolved = await resolveAgentCapabilities(input.scope, agent.skills, agent.tools, this.repo, this.skills, [...agent.agents, ...additionalAgents], agentRepo);
-        const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget, depth: 0, subAgents: resolved.subAgents, ...(session === undefined ? {} : { session }), ...(agent.harness === undefined ? {} : { harness: agent.harness }), ...(agent.mcpServers === undefined ? {} : { mcpServers: agent.mcpServers }), ...(input.interactive === true ? { interactive: true } : {}), ...(input.images === undefined ? {} : { attachments: input.images }) };
+        const ctx: NodeContext = { runId, scope: input.scope, mode: input.mode, budget, depth: 0, subAgents: resolved.subAgents, ...(session === undefined ? {} : { session }), ...(agent.harness === undefined ? {} : { harness: agent.harness }), ...(agent.mcpServers === undefined ? {} : { mcpServers: agent.mcpServers }), ...(input.interactive === true ? { interactive: true } : {}), ...(input.images === undefined ? {} : { attachments: input.images }), ...(input.documents === undefined ? {} : { documents: input.documents }) };
         const wikiContext = await this.buildWikiContext(input.scope, agent, input.message, input.memoryPageIds);
         const memoryContext = [wikiContext, input.memoryContext].filter((value): value is string => value !== undefined && value.trim() !== '').join('\n\n') || undefined;
         const systemPrompt = withMemoryContext(composeAgentSystemPrompt(agent.systemPrompt, resolved.skills), memoryContext);
-        return this.perform(systemPrompt, input.message, resolved.tools, trace, timing, ctx, signal, this.agentRef(agent), agent.output, input.history, input.images);
+        return this.perform(systemPrompt, input.message, resolved.tools, trace, timing, ctx, signal, this.agentRef(agent), agent.output, input.history, input.images, input.documents);
       },
       signal,
     );
@@ -595,6 +610,7 @@ export class RunAgentPreviewUseCase {
     output?: StructuredOutputDefinition,
     history?: readonly AgentHistoryMessage[],
     images?: readonly ImageAttachment[],
+    documents?: readonly TextAttachment[],
   ): Promise<RunResult> {
     if ((images?.length ?? 0) > 0 && !this.model.capabilities().includes('vision')) {
       throw new AgentRunError('configured model provider does not support image input');
@@ -604,7 +620,7 @@ export class RunAgentPreviewUseCase {
       { role: 'system', content: systemPrompt },
       // v16: 会話履歴（シナリオ検証の複数ターン）を system 直後へ注入する（後方互換: 省略時は従来どおり）。
       ...(history ?? []).map((entry): ModelMessage => ({ role: entry.role, content: entry.content })),
-      { role: 'user', content: userContent(userMessage, images) },
+      { role: 'user', content: userContent(userMessage, images, documents) },
     ];
     return this.runLoop(loop, {
       messages,
@@ -1075,7 +1091,7 @@ export class RunAgentPreviewUseCase {
     // 「実行中か / 保存・スキーマ点検か」の区別に使っており、ここで undefined を渡すと
     // 添付を要するソースが未解決のまま空表を返し、エージェントが「帳票に何も書いていない」と
     // 読み違える（「添付してください」と言えなくなる）。
-    const executableGraph = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(ctx.scope, graph, { attachments: ctx.attachments ?? [] });
+    const executableGraph = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(ctx.scope, graph, { attachments: ctx.attachments ?? [], documents: ctx.documents ?? [], arguments: args });
     // 実行は常に全行。rowLimit は trace の outputPreview に使う表示用スナップショットにしか効かない。
     // かつては rowLimit で切った表をそのまま検証・配送しており、モデルが「先頭100行の合計」を
     // 全体の合計として自信を持って報告していた。
@@ -1275,10 +1291,17 @@ function structuredRepairInstruction(output: StructuredOutputDefinition, detail:
   ].join('\n');
 }
 
-function userContent(message: string, images?: readonly ImageAttachment[]): string | readonly ModelContentPart[] {
-  if (images === undefined || images.length === 0) return message;
+/** テキスト添付の目印（本文は載せない。ツールが読めることだけをモデルに伝える）。 */
+export function textAttachmentMarker(document: TextAttachment): string {
+  const pages = document.pageCount === undefined ? '' : `${document.pageCount} pages, `;
+  return `[Attached document: ${document.name}, ${pages}${document.text.length} characters — readable by tools]`;
+}
+
+function userContent(message: string, images?: readonly ImageAttachment[], documents?: readonly TextAttachment[]): string | readonly ModelContentPart[] {
+  const text = documents === undefined || documents.length === 0 ? message : `${message}\n\n${documents.map(textAttachmentMarker).join('\n')}`;
+  if (images === undefined || images.length === 0) return text;
   return [
-    { type: 'text', text: message },
+    { type: 'text', text },
     ...images.map((image): ModelContentPart => ({ type: 'image_url', imageUrl: image.dataUrl })),
   ];
 }

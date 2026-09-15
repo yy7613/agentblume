@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useState, type ComponentType, type LazyExoticComponent } from 'react';
 import type { ToolApiClient } from './api/tool-api';
 import type { AuthSessionDto } from './api/types';
 import { ToolBuilder } from './tool-builder/ToolBuilder';
@@ -23,10 +23,17 @@ import { ToolCheckPage } from './tool-check/ToolCheckPage';
 import { TemplatesPage } from './templates/TemplatesPage';
 import { UnsavedChangesProvider, useUnsavedChangesRegistry } from './unsaved-changes';
 import { useI18n } from './i18n';
+import { BUSINESSES, businessOf } from './business/registry';
+import type { BusinessPageProps } from './business/types';
+import { ExperimentalBadge, ExperimentalBanner, ExperimentalDisabledPage, useExperimentalHint } from './components/ExperimentalNotice';
+import { useExperimentalFeatures } from './experimental-features';
 
 const ValidationPage = lazy(async () => ({ default: (await import('./validation/ValidationPage')).ValidationPage }));
-// 仕訳画面は 5 サブタブ（取込 / 判定 / ルール / 科目 / 出力）を持つ大きな画面なので、検証画面と同じく遅延読込にする。
-const JournalPage = lazy(async () => ({ default: (await import('./journal/JournalPage')).JournalPage }));
+// 業務（仕訳など）の画面は業務の記述子から引き、すべて遅延読込にする（ADR-0039）。
+// lazy はモジュールの読み込み時に 1 回だけ作る（描画のたびに作ると毎回読み込み直して状態が消える）。
+const BUSINESS_PAGES: ReadonlyMap<string, LazyExoticComponent<ComponentType<BusinessPageProps>>> = new Map(
+  BUSINESSES.map((business) => [business.screen, lazy(async () => ({ default: await business.loadPage() }))]),
+);
 
 // チャットは主役画面として単独で最上部、以降は作成フロー(Data→Tool→Skill→Agent→Harness→Factory)の順にグルーピングして提示する(UXレビュー反映)
 const CHAT_ITEM = { id: 'Chat', ja: 'チャット' } as const;
@@ -61,6 +68,10 @@ export function App({ client, session }: { readonly client: ToolApiClient; reado
   const [helpOpen, setHelpOpen] = useState(false);
   const unsavedChanges = useUnsavedChangesRegistry();
   const { text } = useI18n();
+  const experimentalHint = useExperimentalHint();
+  const experimental = useExperimentalFeatures();
+  const business = businessOf(screen);
+  const BusinessPage = business === undefined ? undefined : BUSINESS_PAGES.get(business.screen);
 
   // 左ナビのクリックも画面内の遷移リンクも「未保存なら確認を挟む」この経路へ集約する。
   function requestScreen(next: Screen): void {
@@ -75,14 +86,16 @@ export function App({ client, session }: { readonly client: ToolApiClient; reado
   }
 
   return <div className="app-shell">
-    <nav className="app-nav"><div className="brand"><span>AB</span><strong>AgentBlume</strong></div><button type="button" className={`nav-chat${CHAT_ITEM.id === screen ? ' active' : ''}`} onClick={() => requestScreen(CHAT_ITEM.id)}><span className="nav-dot" />{text(navLabel(CHAT_ITEM.id), CHAT_ITEM.ja)}</button>{NAV_GROUPS.map((group) => <div key={group.en} className="nav-group"><small className="nav-group-label">{text(group.en, group.ja)}</small>{group.items.map((item) => <button key={item.id} type="button" className={item.id === screen ? 'active' : ''} onClick={() => requestScreen(item.id)}><span className="nav-dot" />{text(navLabel(item.id), item.ja)}</button>)}</div>)}
+    <nav className="app-nav"><div className="brand"><span>AB</span><strong>AgentBlume</strong></div><button type="button" className={`nav-chat${CHAT_ITEM.id === screen ? ' active' : ''}`} onClick={() => requestScreen(CHAT_ITEM.id)}><span className="nav-dot" />{text(navLabel(CHAT_ITEM.id), CHAT_ITEM.ja)}</button>{NAV_GROUPS.map((group) => <div key={group.en} className="nav-group"><small className="nav-group-label">{text(group.en, group.ja)}</small>{group.items.filter((item) => item.id !== 'Templates' || experimental.enabled).map((item) => <button key={item.id} type="button" className={item.id === screen || (item.id === 'Templates' && business !== undefined) ? 'active' : ''} {...(item.id === 'Templates' ? { title: experimentalHint } : {})} onClick={() => requestScreen(item.id)}><span className="nav-dot" />{text(navLabel(item.id), item.ja)}{item.id === 'Templates' && <ExperimentalBadge compact />}</button>)}</div>)}
       {/* ヘルプは画面ごとにヘッダーへ13個置かず、表示中の画面に追従する1つのボタンにまとめる
           (ChatPage / AgentInspectorPage を含む全画面を、それらのファイルを触らずに網羅できる)。 */}
       <button type="button" className="nav-help" aria-label={text('Help for this screen', 'この画面のヘルプ')} onClick={() => setHelpOpen(true)}><span aria-hidden="true">?</span>{text('Help', 'ヘルプ')}</button>
       <ModeBadge {...(session === undefined ? {} : { session })} /></nav>
     <NavigationProvider navigate={requestScreen}>
       <UnsavedChangesProvider value={unsavedChanges.value}>
-        {screen === 'Tool' ? <ToolBuilder client={client} /> : screen === 'Agent' ? <AgentBuilder client={client} /> : screen === 'Harness' ? <HarnessBuilder client={client} /> : screen === 'Skill' ? <SkillBuilder client={client} /> : screen === 'Chat' ? <ChatPage client={client} /> : screen === 'Inspect' ? <AgentInspectorPage client={client} /> : screen === 'ToolCheck' ? <ToolCheckPage client={client} /> : screen === 'Data' ? <DataSourcesPage client={client} /> : screen === 'MCP' ? <McpPage client={client} /> : screen === 'Validation' ? <Suspense fallback={<main className="workspace-page"><p className="empty-state">{text('Loading validation…', '検証画面を読み込み中…')}</p></main>}><ValidationPage client={client} /></Suspense> : screen === 'Factory' ? <FactoryPage client={client} /> : screen === 'Templates' ? <TemplatesPage /> : screen === 'Journal' ? <Suspense fallback={<main className="workspace-page"><p className="empty-state">{text('Loading journal…', '仕訳画面を読み込み中…')}</p></main>}><JournalPage client={client} /></Suspense> : screen === 'Memory' ? <MemoryPage client={client} /> : screen === 'Settings' ? <SettingsPage client={client} /> : <StatusPage client={client} />}
+        {/* 業務の画面は業務ごとのファイルを触らずに、ここで一律に「実験的」の注意書きを添える（ADR-0039 の登録点の外に置かない）。 */}
+        {/* 実験的な機能が非表示なら、一覧も業務画面も直リンクで開かず、有効にする場所を案内する。 */}
+        {!experimental.enabled && (screen === 'Templates' || business !== undefined) ? <ExperimentalDisabledPage /> : business !== undefined && BusinessPage !== undefined ? <div className="business-screen"><ExperimentalBanner /><Suspense fallback={<main className="workspace-page"><p className="empty-state">{text(business.loading.en, business.loading.ja)}</p></main>}><BusinessPage client={client} /></Suspense></div> : screen === 'Tool' ? <ToolBuilder client={client} /> : screen === 'Agent' ? <AgentBuilder client={client} /> : screen === 'Harness' ? <HarnessBuilder client={client} /> : screen === 'Skill' ? <SkillBuilder client={client} /> : screen === 'Chat' ? <ChatPage client={client} /> : screen === 'Inspect' ? <AgentInspectorPage client={client} /> : screen === 'ToolCheck' ? <ToolCheckPage client={client} /> : screen === 'Data' ? <DataSourcesPage client={client} /> : screen === 'MCP' ? <McpPage client={client} /> : screen === 'Validation' ? <Suspense fallback={<main className="workspace-page"><p className="empty-state">{text('Loading validation…', '検証画面を読み込み中…')}</p></main>}><ValidationPage client={client} /></Suspense> : screen === 'Factory' ? <FactoryPage client={client} /> : screen === 'Templates' ? <TemplatesPage /> : screen === 'Memory' ? <MemoryPage client={client} /> : screen === 'Settings' ? <SettingsPage client={client} /> : <StatusPage client={client} />}
       </UnsavedChangesProvider>
       {screen === 'Chat' && <WelcomeCard client={client} />}
     </NavigationProvider>

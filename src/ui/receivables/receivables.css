@@ -1,0 +1,47 @@
+/* 請求書発行と入金消込（docs/22 §8）。クラス名は receivables- で始める（共有の styles.css は触らない。ADR-0039）。 */
+.receivables-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.receivables-step { display: grid; gap: 12px; margin-top: 16px; }
+.receivables-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.receivables-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 16px; }
+.receivables-grid label, .receivables-panel label, .receivables-settings label { display: grid; gap: 4px; }
+.receivables-inline { display: flex !important; align-items: center; gap: 6px; }
+.receivables-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 960px) { .receivables-split { grid-template-columns: 1fr; } }
+.receivables-panel { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border, #d0d7de); border-radius: 8px; }
+.receivables-table { width: 100%; border-collapse: collapse; }
+.receivables-table th, .receivables-table td { padding: 4px 6px; border-bottom: 1px solid var(--border, #e5e7eb); text-align: left; vertical-align: top; }
+.receivables-table tr.selected, .receivables-card.selected { background: var(--highlight, #fff7d6); }
+.receivables-table input, .receivables-table select { width: 100%; min-width: 60px; }
+.receivables-scroll { overflow-x: auto; }
+.receivables-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.receivables-card { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--border, #d0d7de); border-radius: 8px; }
+.receivables-card header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.receivables-next { font-weight: 600; }
+.receivables-issues { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.receivables-issue { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 6px; }
+.receivables-issue-violation { background: var(--danger-soft, #fdecea); }
+.receivables-issue-warning { background: var(--warning-soft, #fff4e5); }
+.receivables-issue-kind { font-weight: 700; white-space: nowrap; }
+.receivables-issue-actions { display: flex; gap: 4px; }
+.receivables-warning { color: var(--warning, #8a5300); }
+.receivables-ok { color: var(--success, #1a7f37); }
+.receivables-invalid select { border-color: var(--danger, #cf222e); }
+.receivables-settings { max-height: 85vh; overflow-y: auto; width: min(760px, 95vw); }
+.receivables-settings fieldset { display: grid; gap: 8px; margin-bottom: 12px; }
+.receivables-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.receivables-mapping { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+.receivables-yen { font-variant-numeric: tabular-nums; }
+.receivables-print { position: fixed; inset: 0; z-index: 50; overflow-y: auto; background: #fff; padding: 16px; }
+.receivables-print-sheet { max-width: 210mm; margin: 0 auto; padding: 16mm; color: #000; background: #fff; font-size: 12px; }
+.receivables-print-sheet h1 { text-align: center; letter-spacing: 0.5em; }
+.receivables-print-head { display: flex; justify-content: space-between; gap: 24px; }
+.receivables-print-recipient { font-size: 16px; border-bottom: 1px solid #000; }
+.receivables-print-issuer { text-align: right; }
+.receivables-print-total { font-size: 16px; font-weight: 700; margin: 12px 0; }
+.receivables-print-rates { width: 60%; margin-left: auto; }
+@media print {
+  body * { visibility: hidden; }
+  .receivables-print, .receivables-print * { visibility: visible; }
+  .receivables-print { position: absolute; inset: 0; padding: 0; }
+  .receivables-no-print { display: none !important; }
+}

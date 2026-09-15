@@ -1,0 +1,38 @@
+{
+  "departments": [
+    {
+      "id": "dept-admin",
+      "code": "D100",
+      "name": "管理本部",
+      "headEmployeeId": "emp-jiro",
+      "enabled": true
+    },
+    {
+      "id": "dept-sales",
+      "code": "D200",
+      "name": "営業部",
+      "parentId": "dept-admin",
+      "headEmployeeId": "emp-hanako",
+      "journalDimensionValueId": "dept-sales",
+      "enabled": true
+    },
+    {
+      "id": "dept-accounting",
+      "code": "D110",
+      "name": "経理部",
+      "parentId": "dept-admin",
+      "enabled": true
+    }
+  ],
+  "approverGroups": [
+    {
+      "id": "group-accounting",
+      "name": "経理",
+      "memberEmployeeIds": [
+        "emp-saburo",
+        "emp-jiro"
+      ],
+      "enabled": true
+    }
+  ]
+}

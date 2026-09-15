@@ -378,11 +378,22 @@ export interface RunAgentDto {
   readonly mode: 'preview' | 'test';
   readonly sessionId?: string;
   readonly images?: readonly RunImageAttachmentDto[];
+  readonly documents?: readonly RunTextAttachmentDto[];
 }
 
 export interface RunImageAttachmentDto {
   readonly name: string;
   readonly dataUrl: string;
+}
+
+/**
+ * テキスト添付（ブラウザで PDF のテキスト層から抜いた本文。docs/23 §9.4 C5）。
+ * モデルへのメッセージには本文を載せず、ツールの実行文脈にだけ渡る。
+ */
+export interface RunTextAttachmentDto {
+  readonly name: string;
+  readonly text: string;
+  readonly pageCount?: number;
 }
 
 /** 直前までの会話履歴の1件（マルチターン会話用）。 */
@@ -402,6 +413,7 @@ export interface RunSavedAgentDto {
   /** 直前までの会話履歴。system直後へ注入され、文脈参照(「さっきの件」等)を可能にする。 */
   readonly history?: readonly AgentHistoryMessageDto[];
   readonly images?: readonly RunImageAttachmentDto[];
+  readonly documents?: readonly RunTextAttachmentDto[];
 }
 
 /** POST /runs/:runId/resume の body。 */

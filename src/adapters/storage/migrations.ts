@@ -24,7 +24,9 @@
  *
  * ## version 2 以降
  *
- * 以降は `statements` を並べるだけでよい（冪等性は不要。適用済みかは user_version が判定する）。
+ * 以降は `statements` を並べるだけでよい（適用済みかは user_version が判定する）。
+ * 業務（version 5 以降）は `<業務>-migrations.ts` が `statementMigration` で版を宣言する（ADR-0039）。
+ * 業務の statements は、予約版が途中に残る期間の流し直しに備えて `IF NOT EXISTS` で冪等に書く。
  *
  * ## 未来バージョンの拒否
  *
@@ -32,9 +34,14 @@
  * 新しいコードが書いたデータを古いコードが壊すのを防ぐため、黙って続行してはならない。
  */
 import type { DatabaseSync } from 'node:sqlite';
+import { JOURNAL_MIGRATION } from './journal-migrations';
+import { EXPENSE_MIGRATION } from './expense-migrations';
+import { RECEIVABLES_MIGRATION } from './receivables-migrations';
+import { CONTRACT_MIGRATION } from './contract-migrations';
+import { EXPENSE_V9_MIGRATION } from './expense-v9-migrations';
+import type { SchemaMigration } from './schema-migration';
 
-/** このコードが理解できるスキーマの最新版。 */
-export const LATEST_SCHEMA_VERSION = 5;
+export type { SchemaMigration } from './schema-migration';
 
 /** version 1 で作られるテーブル（列定義は「ALTER適用後の最終形」）。 */
 const BASELINE_TABLES: readonly string[] = [
@@ -230,13 +237,6 @@ const BASELINE_INDEXES: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_data_sources_scope_updated ON data_sources (tenant_id, workspace_id, updated_at DESC)`,
 ];
 
-/** 1つのスキーマ版。`apply` は呼ばれた時点で必ずトランザクション内にある。 */
-export interface SchemaMigration {
-  readonly version: number;
-  readonly description: string;
-  apply(db: DatabaseSync): void;
-}
-
 /** 列が無ければ追加する（旧DBの取り込み専用。既存の行には既定値が入る）。 */
 function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): boolean {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
@@ -295,56 +295,6 @@ const TOOL_CHECK_CASE_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_tool_check_cases_scope_tool ON tool_check_cases (tenant_id, workspace_id, tool_id)`,
 ];
 
-/**
- * version 5: 仕訳（`docs/20-journal.md` §11）。
- *
- * 5つの集約（科目マスタ・文書・ルール・仕訳・ヒアリング）を1テーブルずつ。本体は `record_json`
- * （domain の Serialized 型）で、**絞り込みと並びに使う値だけを列へ出す**。
- *
- * - `journal_chart` はワークスペースに1つなので (tenant_id, workspace_id) が主キー（id を持たない）。
- * - 文書は状態フィルタ（未判定だけ表示）と取引日の範囲が一覧の主な使われ方なので、その2つに索引を張る。
- * - ルールは判定のたびに全件を priority 順で読むため priority の索引を張る。
- * - 仕訳は状態（draft/confirmed）・仕訳日の範囲・文書からの逆引きの3経路があるので3本張る。
- * - ヒアリングは「その文書のヒアリング」だけを引くので document_id に張る。
- */
-const JOURNAL_STATEMENTS: readonly string[] = [
-  `CREATE TABLE IF NOT EXISTS journal_chart (
-    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, record_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id)
-  )`,
-  `CREATE TABLE IF NOT EXISTS journal_documents (
-    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, id TEXT NOT NULL,
-    kind TEXT NOT NULL, status TEXT NOT NULL, transaction_date TEXT, created_at TEXT NOT NULL,
-    record_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id, id)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_journal_documents_scope_status ON journal_documents (tenant_id, workspace_id, status)`,
-  `CREATE INDEX IF NOT EXISTS idx_journal_documents_scope_date ON journal_documents (tenant_id, workspace_id, transaction_date)`,
-  `CREATE TABLE IF NOT EXISTS journal_rules (
-    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, id TEXT NOT NULL,
-    enabled INTEGER NOT NULL, priority INTEGER NOT NULL, created_at TEXT NOT NULL,
-    record_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id, id)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_journal_rules_scope_priority ON journal_rules (tenant_id, workspace_id, priority)`,
-  `CREATE TABLE IF NOT EXISTS journal_entries (
-    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, id TEXT NOT NULL,
-    document_id TEXT, status TEXT NOT NULL, entry_date TEXT NOT NULL, created_at TEXT NOT NULL,
-    record_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id, id)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_journal_entries_scope_status ON journal_entries (tenant_id, workspace_id, status)`,
-  `CREATE INDEX IF NOT EXISTS idx_journal_entries_scope_date ON journal_entries (tenant_id, workspace_id, entry_date)`,
-  `CREATE INDEX IF NOT EXISTS idx_journal_entries_scope_document ON journal_entries (tenant_id, workspace_id, document_id)`,
-  `CREATE TABLE IF NOT EXISTS journal_hearings (
-    tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, id TEXT NOT NULL,
-    document_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL,
-    record_json TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, workspace_id, id)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_journal_hearings_scope_document ON journal_hearings (tenant_id, workspace_id, document_id)`,
-];
-
 /** 適用順のマイグレーション一覧（version は 1 から連番）。 */
 export const MIGRATIONS: readonly SchemaMigration[] = [
   {
@@ -377,14 +327,33 @@ export const MIGRATIONS: readonly SchemaMigration[] = [
       for (const statement of TOOL_CHECK_CASE_STATEMENTS) db.exec(statement);
     },
   },
-  {
-    version: 5,
-    description: 'journal (chart of accounts, documents, rules, entries, hearings)',
-    apply(db) {
-      for (const statement of JOURNAL_STATEMENTS) db.exec(statement);
-    },
-  },
+  // 業務のスキーマは業務ごとのファイルが持つ（ADR-0039）。版は業務ごとに予約済み。
+  JOURNAL_MIGRATION,
+  EXPENSE_MIGRATION,
+  RECEIVABLES_MIGRATION,
+  CONTRACT_MIGRATION,
+  // 経費精算の実用化（docs/21 §20.8）。v6 は適用済みの DB があるので変えず、次の連番で追加だけを流す。
+  EXPENSE_V9_MIGRATION,
 ];
+
+/**
+ * このコードが「刻める」スキーマの最新版 = 先頭から途切れずに中身のある版の最後。
+ *
+ * 業務の版は並行して実装するため、中身の無い予約版（`placeholder`）が途中に残ることがある。
+ * 予約版の先まで `user_version` を刻むと、後から予約版に中身が入ったとき「適用済み」と見なされて
+ * そのテーブルが永久に作られない。そこで刻むのは途切れる手前までにする（`applyMigrations`）。
+ */
+export function latestSchemaVersion(migrations: readonly SchemaMigration[]): number {
+  let latest = 0;
+  for (const migration of migrations) {
+    if (migration.placeholder === true) break;
+    latest = migration.version;
+  }
+  return latest;
+}
+
+/** このコードが理解できるスキーマの最新版。 */
+export const LATEST_SCHEMA_VERSION = latestSchemaVersion(MIGRATIONS);
 
 /** DBに刻まれているスキーマ版を読む（未初期化なら 0）。 */
 export function readSchemaVersion(db: DatabaseSync): number {
@@ -413,28 +382,34 @@ export class SchemaVersionError extends Error {
  * - 1バージョン = 1トランザクション。途中で失敗したらそのバージョンは丸ごと巻き戻る。
  * - 既に最新なら何もしない（冪等）。
  * - DBの方が新しければ `SchemaVersionError` で**起動を止める**（古いコードにデータを触らせない）。
+ * - 中身の無い予約版（`placeholder`）より後ろの版は**適用するが版は刻まない**（`latestSchemaVersion` の理由）。
+ *   次に開いたときにも流し直すので、業務の statements は `IF NOT EXISTS` で冪等に書くこと。
+ *   流し直しは `applied` に数えない（版として記録できていないため）。予約版が全部埋まれば通常の経路に戻る。
  */
-export function applyMigrations(db: DatabaseSync): MigrationResult {
+export function applyMigrations(db: DatabaseSync, migrations: readonly SchemaMigration[] = MIGRATIONS): MigrationResult {
+  const latest = latestSchemaVersion(migrations);
   const from = readSchemaVersion(db);
-  if (from > LATEST_SCHEMA_VERSION) {
+  if (from > latest) {
     throw new SchemaVersionError(
-      `database schema version ${from} is newer than this build supports (${LATEST_SCHEMA_VERSION}); upgrade agentblume instead of downgrading the database`,
+      `database schema version ${from} is newer than this build supports (${latest}); upgrade agentblume instead of downgrading the database`,
     );
   }
   const applied: number[] = [];
-  for (const migration of MIGRATIONS) {
+  let stamping = true;
+  for (const migration of migrations) {
     if (migration.version <= from) continue;
+    if (migration.placeholder === true) { stamping = false; continue; }
     db.exec('BEGIN IMMEDIATE');
     try {
       migration.apply(db);
       // user_version はバインドできないため定数を埋め込む（値はコード内の連番のみ）。
-      db.exec(`PRAGMA user_version = ${migration.version}`);
+      if (stamping) db.exec(`PRAGMA user_version = ${migration.version}`);
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
       throw error;
     }
-    applied.push(migration.version);
+    if (stamping) applied.push(migration.version);
   }
   return { from, to: readSchemaVersion(db), applied };
 }

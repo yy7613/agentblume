@@ -1,0 +1,40 @@
+{
+  "description": "経費専用の追加読取（docs/21 §20.3.6 / §20.7.1。UC7）の応答の見本と、mergeExpenseDetail が付ける印。read はモデルの応答（expense-detail/v1。印字どおりの文字列）、draft は仕訳の読取から作った下書き。値はすべて架空。",
+  "cases": [
+    {
+      "name": "利用日の印字が無く、発行日で代用した取引日",
+      "routeWanted": false,
+      "draft": { "facts": { "transactionDate": "2026-09-10", "issueDate": "2026-09-10", "payeeName": "サンプルマート 霞が関店", "amount": 3300 }, "extraction": { "documentKind": "simplified_invoice" } },
+      "read": { "registrationNumberText": null, "payeeNameText": "サンプルマート", "transactionDateText": null, "issueDateText": "2026/09/10", "attendees": { "countText": null, "names": [] }, "purposeClues": ["お品代"], "route": { "from": null, "to": null, "via": [], "fareType": null }, "notes": [] },
+      "expected": { "flags": ["transaction-date-substituted"], "disagreements": [] }
+    },
+    {
+      "name": "登録番号の桁誤り（数字 12 桁）は埋めずに生の文字列を残す",
+      "routeWanted": false,
+      "draft": { "facts": { "transactionDate": "2026-09-11", "payeeName": "割烹サンプル", "amount": 38000 }, "extraction": { "documentKind": "invoice" } },
+      "read": { "registrationNumberText": "T123456789012", "payeeNameText": "割烹サンプル", "transactionDateText": "2026年9月11日", "issueDateText": null, "attendees": { "countText": null, "names": [] }, "purposeClues": [], "route": { "from": null, "to": null, "via": [], "fareType": null }, "notes": [] },
+      "expected": { "flags": ["registration-number-rejected"], "rejectedRegistrationNumber": "T123456789012", "disagreements": [] }
+    },
+    {
+      "name": "2 回の読取で取引日が食い違う（どちらも採用しない）",
+      "routeWanted": false,
+      "draft": { "facts": { "transactionDate": "2026-09-10", "issueDate": "2026-09-12", "payeeName": "サンプル交通", "amount": 3200 }, "extraction": { "documentKind": "receipt" } },
+      "read": { "registrationNumberText": null, "payeeNameText": null, "transactionDateText": "令和8年9月11日", "issueDateText": "2026-09-12", "attendees": { "countText": null, "names": [] }, "purposeClues": [], "route": { "from": null, "to": null, "via": [], "fareType": null }, "notes": ["日付がかすれている"] },
+      "expected": { "flags": ["reads-disagree"], "disagreements": [{ "field": "transactionDate", "journalValue": "2026-09-10", "detailValue": "令和8年9月11日（2026-09-11）" }] }
+    },
+    {
+      "name": "経費精算書の支払先（利用した店）を候補で埋める",
+      "routeWanted": false,
+      "draft": { "facts": { "transactionDate": "2026-09-12", "amount": 2400 }, "extraction": { "documentKind": "expense_report" } },
+      "read": { "registrationNumberText": null, "payeeNameText": "サンプル交通", "transactionDateText": "2026/9/12", "issueDateText": null, "attendees": { "countText": null, "names": [] }, "purposeClues": ["客先訪問"], "route": { "from": null, "to": null, "via": [], "fareType": null }, "notes": [] },
+      "expected": { "flags": ["payee-from-report", "payee-read"], "facts": { "payeeName": "サンプル交通" }, "disagreements": [] }
+    },
+    {
+      "name": "参加人数と交通費の区間を候補で埋める（人が確認するまで read-values-unconfirmed）",
+      "routeWanted": true,
+      "draft": { "facts": { "transactionDate": "2026-09-13", "amount": 300 }, "extraction": { "documentKind": "receipt" } },
+      "read": { "registrationNumberText": null, "payeeNameText": null, "transactionDateText": "2026-09-13", "issueDateText": null, "attendees": { "countText": "4名", "names": [] }, "purposeClues": [], "route": { "from": "中野", "to": "霞ケ関", "via": ["新宿"], "fareType": "ic" }, "notes": [] },
+      "expected": { "flags": ["attendees-read", "route-read"], "facts": { "attendees": { "count": 4 }, "route": { "stations": ["中野", "新宿", "霞ケ関"], "trips": 1, "fareType": "ic" } }, "disagreements": [] }
+    }
+  ]
+}

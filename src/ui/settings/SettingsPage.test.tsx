@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { ApiError, type ToolApiClient } from '../api/tool-api';
 import { SettingsPage } from './SettingsPage';
 import { I18nProvider } from '../i18n';
+import { ExperimentalFeaturesProvider } from '../experimental-features';
 import { consumePendingOpen, requestOpenInScreen } from '../navigation';
 
 afterEach(() => { cleanup(); localStorage.clear(); });
@@ -63,6 +64,16 @@ describe('SettingsPage', () => {
     expect(screen.getByText(/MCP publication locked/)).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
     await waitFor(() => expect(api.health).toHaveBeenCalledTimes(2));
+  });
+
+  it('実験的な機能の表示は初期値オフで、オンにするとブラウザに保存する', async () => {
+    const api = createApi();
+    render(<I18nProvider initialLanguage="en"><ExperimentalFeaturesProvider><SettingsPage client={api as unknown as ToolApiClient} /></ExperimentalFeaturesProvider></I18nProvider>);
+    const toggle = screen.getByRole('checkbox', { name: 'Show experimental features' }) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    await userEvent.click(toggle);
+    expect(toggle.checked).toBe(true);
+    expect(localStorage.getItem('agentcontext.experimentalFeatures')).toBe('on');
   });
 
   it('表示言語を日本語へ切り替えてブラウザに保存する', async () => {

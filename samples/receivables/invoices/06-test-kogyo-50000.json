@@ -1,0 +1,12 @@
+{
+  "customerRef": "test-kogyo",
+  "customerNameHint": "テスト工業株式会社",
+  "issueDate": "2026-09-15",
+  "transactionDate": "2026-09-15",
+  "dueDate": "2026-10-31",
+  "pricing": "exclusive",
+  "lines": [
+    { "description": "受注データ移行 一式", "quantity": 1, "unit": "式", "unitPrice": 45455, "amount": 45455, "taxRate": 10 }
+  ],
+  "note": "税抜 45,455 円 × 10% = 4,545 円（切り捨て）で税込 50,000 円。期待結果: 03・04 の合算確定後、ﾌﾘｺﾐ ﾃｽﾄｺｳｷﾞﾖｳ 30,000 が partial-payment"
+}

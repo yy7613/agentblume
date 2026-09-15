@@ -1,107 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
-import { JOURNAL_ATTACHMENT_SCHEMA } from '../../domain/etl/nodes/journal-attachment';
-import { JOURNAL_DRAFT_ENTRY_SCHEMA } from '../../domain/etl/nodes/journal-draft-entry';
+import { describe, expect, it } from 'vitest';
 import { InMemoryDataSourceRepository } from '../../adapters/storage/in-memory-data-source-repository';
 import type { ToolGraph } from '../../domain/etl/graph';
-import { JOURNAL_ENTRIES_SCHEMA } from '../../domain/etl/nodes/journal-entries-source';
-import { ResolveDataSourceGraphUseCase, type JournalDraftEntryReadPort } from './resolve-data-source-graph';
+import { ResolveDataSourceGraphUseCase } from './resolve-data-source-graph';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
 
-describe('ResolveDataSourceGraphUseCase: journal-draft-entry', () => {
-  const graph: ToolGraph = { nodes: [{ id: 'draft', type: 'journal-draft-entry', config: {} }], edges: [] };
-  const attachment = { name: 'receipt.png', dataUrl: 'data:image/png;base64,AAA' };
-  const rows = [{ file_name: 'receipt.png', decided: true }];
-
-  function resolverWith(port?: { rows: ReturnType<typeof vi.fn> }) {
-    // vi.fn() の型は呼び出し署名を持たないので、ポートとしては明示的に見なす（呼び出し検証は mock のまま行う）。
-    return new ResolveDataSourceGraphUseCase(new InMemoryDataSourceRepository(), undefined, undefined, undefined, undefined, port as JournalDraftEntryReadPort | undefined);
-  }
-
-  it('正常: 添付をポートへ渡し、固定スキーマ付きの json-source へ書き換える', async () => {
-    const port = { rows: vi.fn().mockResolvedValue(rows) };
-    const resolved = await resolverWith(port).execute(scope, graph, { attachments: [attachment] });
-    expect(resolved.nodes[0]).toEqual({ id: 'draft', type: 'json-source', config: { rows, schema: JOURNAL_DRAFT_ENTRY_SCHEMA } });
-    expect(port.rows).toHaveBeenCalledWith(scope, [attachment], undefined);
-  });
-
-  it('境界: limit はポートへそのまま渡す', async () => {
-    const port = { rows: vi.fn().mockResolvedValue(rows) };
-    await resolverWith(port).execute(scope, { nodes: [{ id: 'd', type: 'journal-draft-entry', config: { limit: 1 } }], edges: [] }, { attachments: [attachment] });
-    expect(port.rows).toHaveBeenCalledWith(scope, [attachment], { limit: 1 });
-  });
-
-  it('境界: 実行文脈が無い呼び出し（保存・スキーマ点検）では書き換えず、そのまま返す', async () => {
-    const port = { rows: vi.fn() };
-    await expect(resolverWith(port).execute(scope, graph)).resolves.toEqual(graph);
-    expect(port.rows).not.toHaveBeenCalled();
-  });
-
-  it('異常: ポート未配線・添付なしは、それぞれの理由で落とす', async () => {
-    await expect(resolverWith().execute(scope, graph, { attachments: [attachment] })).rejects.toThrow('journal draft entry is not available');
-    await expect(resolverWith({ rows: vi.fn() }).execute(scope, graph, { attachments: [] })).rejects.toThrow('no document is attached');
-  });
-
-  it('例外: limit が整数でない設定は読み取りを投げる前に落とす', async () => {
-    const port = { rows: vi.fn() };
-    await expect(resolverWith(port).execute(scope, { nodes: [{ id: 'd', type: 'journal-draft-entry', config: { limit: 1.5 } }], edges: [] }, { attachments: [attachment] }))
-      .rejects.toThrow('invalid settings');
-    expect(port.rows).not.toHaveBeenCalled();
-  });
-});
-
-describe('ResolveDataSourceGraphUseCase: journal-attachment', () => {
-  const graph: ToolGraph = { nodes: [{ id: 'attachment', type: 'journal-attachment', config: {} }], edges: [] };
-  const attachment = { name: 'receipt.png', dataUrl: 'data:image/png;base64,AAA' };
-  const rows = [{ file_name: 'receipt.png', kind: 'receipt' }];
-
-  it('正常: 実行文脈の添付をポートへ渡し、固定スキーマ付きの json-source へ書き換える', async () => {
-    const port = { rows: vi.fn().mockResolvedValue(rows) };
-    const resolver = new ResolveDataSourceGraphUseCase(new InMemoryDataSourceRepository(), undefined, undefined, undefined, port);
-    const resolved = await resolver.execute(scope, graph, { attachments: [attachment] });
-    // 0 件でも列が消えないよう、スキーマを明示して渡す。
-    expect(resolved.nodes[0]).toEqual({ id: 'attachment', type: 'json-source', config: { rows, schema: JOURNAL_ATTACHMENT_SCHEMA } });
-    expect(port.rows).toHaveBeenCalledWith(scope, [attachment], undefined);
-    // 元のグラフは書き換えない（保存済み定義は不変）。
-    expect(graph.nodes[0]?.type).toBe('journal-attachment');
-  });
-
-  it('境界: limit はポートへそのまま渡す', async () => {
-    const port = { rows: vi.fn().mockResolvedValue(rows) };
-    const resolver = new ResolveDataSourceGraphUseCase(new InMemoryDataSourceRepository(), undefined, undefined, undefined, port);
-    await resolver.execute(scope, { nodes: [{ id: 'a', type: 'journal-attachment', config: { limit: 1 } }], edges: [] }, { attachments: [attachment, attachment] });
-    expect(port.rows).toHaveBeenCalledWith(scope, [attachment, attachment], { limit: 1 });
-  });
-
-  it('異常: ポートが配線されていなければ実行させない（空表を返すと「何も書いていない」と読める）', async () => {
-    const resolver = new ResolveDataSourceGraphUseCase(new InMemoryDataSourceRepository());
-    await expect(resolver.execute(scope, graph, { attachments: [attachment] })).rejects.toThrow('journal attachment reading is not available');
-  });
-
-  it('異常: 実行中に添付が無ければ、利用者が直せる形の理由で落とす', async () => {
-    const port = { rows: vi.fn() };
-    const resolver = new ResolveDataSourceGraphUseCase(new InMemoryDataSourceRepository(), undefined, undefined, undefined, port);
-    await expect(resolver.execute(scope, graph, { attachments: [] })).rejects.toThrow('no document is attached');
-    expect(port.rows).not.toHaveBeenCalled();
-  });
-
-  it('境界: 実行文脈が無い呼び出し（保存・スキーマ点検）では書き換えず、そのまま返す', async () => {
-    // ここで落とすと、このノードを使う組込みツールの登録が起動時に失敗する。
-    const port = { rows: vi.fn() };
-    const resolver = new ResolveDataSourceGraphUseCase(new InMemoryDataSourceRepository(), undefined, undefined, undefined, port);
-    await expect(resolver.execute(scope, graph)).resolves.toEqual(graph);
-    expect(port.rows).not.toHaveBeenCalled();
-  });
-
-  it('例外: limit が整数でない設定は読み取りを投げる前に落とす', async () => {
-    const port = { rows: vi.fn() };
-    const resolver = new ResolveDataSourceGraphUseCase(new InMemoryDataSourceRepository(), undefined, undefined, undefined, port);
-    await expect(resolver.execute(scope, { nodes: [{ id: 'a', type: 'journal-attachment', config: { limit: 1.5 } }], edges: [] }, { attachments: [attachment] }))
-      .rejects.toThrow('invalid settings');
-    expect(port.rows).not.toHaveBeenCalled();
-  });
-});
-
+// 仕訳ノード（journal-*）の解決は行ソースの登録点へ移した: application/journal/row-sources.test.ts（ADR-0039）。
 describe('ResolveDataSourceGraphUseCase', () => {
   it('CSV/JSONのopaque dataSourceIdを実行直前にだけインライン値へ展開する', async () => {
     const repository = new InMemoryDataSourceRepository();
@@ -142,44 +46,5 @@ describe('ResolveDataSourceGraphUseCase', () => {
     const graph: ToolGraph = { nodes: [{ id: 'db', type: 'database-source', config: { dataSourceId: 'db-1', table: 'public.sales_daily' } }], edges: [] };
     await expect(new ResolveDataSourceGraphUseCase(repository).execute(scope, graph)).rejects.toThrow('not configured');
     await expect(new ResolveDataSourceGraphUseCase(repository, { readTable: async () => { throw new Error('connection detail'); } }).execute(scope, graph)).rejects.toThrow("cannot read allowed table");
-  });
-
-  it('仕訳sourceは実行直前にportの行へ差し替え、固定スキーマ付きのjson-sourceとして渡す', async () => {
-    const repository = new InMemoryDataSourceRepository();
-    const calls: unknown[] = [];
-    const rows = [{ entry_id: 'e1', line_no: 1, date: '2026-09-10', debit_account: '消耗品費', debit_tax_code: 'JP-IN-10-S', debit_amount: 1100, credit_account: '現金', credit_tax_code: 'JP-NA', credit_amount: 1100, description: 'テスト', invoice_status: 'qualified', status: 'confirmed', document_id: null, rule_id: null }];
-    const port = { rows: async (givenScope: unknown, options: unknown) => { calls.push({ givenScope, options }); return rows; } };
-    const resolver = new ResolveDataSourceGraphUseCase(repository, undefined, undefined, port);
-    const graph: ToolGraph = { nodes: [{ id: 'journal', type: 'journal-entries', config: { status: 'confirmed', from: '2026-09-01', to: '2026-09-30', limit: 50 } }], edges: [] };
-
-    await expect(resolver.execute(scope, graph)).resolves.toEqual({ nodes: [{ id: 'journal', type: 'json-source', config: { rows, schema: JOURNAL_ENTRIES_SCHEMA } }], edges: [] });
-    // 絞り込みはそのままポートへ渡り、元のグラフは書き換えない。
-    expect(calls).toEqual([{ givenScope: scope, options: { status: 'confirmed', from: '2026-09-01', to: '2026-09-30', limit: 50 } }]);
-    expect(graph.nodes[0]?.type).toBe('journal-entries');
-  });
-
-  it('仕訳sourceは0件でも列が消えないよう固定スキーマを添える（下流のfilterが列を見失わない）', async () => {
-    const port = { rows: async () => [] };
-    const resolver = new ResolveDataSourceGraphUseCase(new InMemoryDataSourceRepository(), undefined, undefined, port);
-
-    const resolved = await resolver.execute(scope, { nodes: [{ id: 'journal', type: 'journal-entries', config: {} }], edges: [] });
-    expect(resolved.nodes[0]?.config).toEqual({ rows: [], schema: JOURNAL_ENTRIES_SCHEMA });
-  });
-
-  it('仕訳portが未配線ならfail closed（空表を「仕訳0件」と読ませない）', async () => {
-    const resolver = new ResolveDataSourceGraphUseCase(new InMemoryDataSourceRepository());
-    await expect(resolver.execute(scope, { nodes: [{ id: 'journal', type: 'journal-entries', config: {} }], edges: [] }))
-      .rejects.toThrow('journal entries are not available');
-  });
-
-  it('仕訳sourceの設定が壊れていればportを呼ばずに拒否する', async () => {
-    let called = 0;
-    const port = { rows: async () => { called += 1; return []; } };
-    const resolver = new ResolveDataSourceGraphUseCase(new InMemoryDataSourceRepository(), undefined, undefined, port);
-    for (const config of [{ status: 'posted' }, { from: 20260101 }, { to: {} }, { limit: 1.5 }]) {
-      await expect(resolver.execute(scope, { nodes: [{ id: 'journal', type: 'journal-entries', config }], edges: [] }))
-        .rejects.toThrow('journal entries source has invalid settings');
-    }
-    expect(called).toBe(0);
   });
 });

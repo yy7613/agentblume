@@ -1,0 +1,12 @@
+{
+  "customerRef": "yamada-shoji",
+  "customerNameHint": "山田商事株式会社",
+  "issueDate": "2026-09-02",
+  "transactionDate": "2026-08-31",
+  "dueDate": "2026-09-30",
+  "pricing": "exclusive",
+  "lines": [
+    { "description": "保守サポート 8月分", "quantity": 1, "unit": "月", "unitPrice": 50000, "amount": 50000, "taxRate": 10 }
+  ],
+  "note": "期待結果: ﾌﾘｺﾐ ｶ)ﾔﾏﾀﾞｼﾖｳｼﾞ 54,560 が no-candidate → kana 設定後に fee-difference（440 円）"
+}

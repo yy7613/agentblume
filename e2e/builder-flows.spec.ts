@@ -276,6 +276,10 @@ test('Chat・MCP・Validation・仕訳・Memory・Settingsの全ナビが実操�
   await expect(page).toHaveURL(/#\/toolcheck$/);
   await expect(page.getByRole('heading', { name: 'Tool Check' })).toBeVisible();
 
+  // 業務テンプレートは実験的な機能で、初期状態では左ナビに無い。利用者と同じく設定で表示をオンにしてから入る。
+  await expect(page.getByRole('button', { name: 'Templates', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Show experimental features' }).check();
   // 仕訳は業務テンプレートの一覧から入る。画面が開いて見出しが出ることだけを確かめる（/journal 系のAPIが無い環境でも落ちないように）。
   await page.getByRole('button', { name: 'Templates', exact: true }).click();
   await expect(page).toHaveURL(/#\/templates$/);

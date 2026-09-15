@@ -6,6 +6,7 @@ import { readAuthToken } from './api/auth-token';
 import { SignInGate } from './auth/SignInGate';
 import './styles.css';
 import { I18nProvider } from './i18n';
+import { ExperimentalFeaturesProvider } from './experimental-features';
 
 const root = document.getElementById('root');
 if (root === null) throw new Error('UI root element is missing');
@@ -17,8 +18,10 @@ client.setAuthTokenProvider(readAuthToken);
 createRoot(root).render(
   <StrictMode>
     <I18nProvider>
-      {/* 認証を通してから本体を描く。単一ユーザーモードなら素通りする。 */}
-      <SignInGate client={client}>{(session) => <App client={client} session={session} />}</SignInGate>
+      <ExperimentalFeaturesProvider>
+        {/* 認証を通してから本体を描く。単一ユーザーモードなら素通りする。 */}
+        <SignInGate client={client}>{(session) => <App client={client} session={session} />}</SignInGate>
+      </ExperimentalFeaturesProvider>
     </I18nProvider>
   </StrictMode>,
 );

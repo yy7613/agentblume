@@ -1,0 +1,12 @@
+{
+  "customerRef": "sample-hanbai",
+  "customerNameHint": "株式会社サンプル販売",
+  "issueDate": "2026-09-25",
+  "transactionDate": "2026-09-25",
+  "dueDate": "2026-10-31",
+  "pricing": "exclusive",
+  "lines": [
+    { "description": "業務アプリ ライセンス 年額", "quantity": 1, "unit": "式", "unitPrice": 40000, "amount": 40000, "taxRate": 10 }
+  ],
+  "note": "07 と同額。期待結果: ﾌﾘｺﾐ ｼﾖｳﾋﾝ ﾀﾞｲｷﾝ 44,000 が multiple-candidates"
+}

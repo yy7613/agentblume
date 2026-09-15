@@ -136,6 +136,7 @@ import type {
   SaveJournalEntryDto,
   JournalExportResultDto,
 } from './types';
+import { scopeQuery } from './business-api';
 import { localizeApiErrorMessage } from './error-messages';
 
 /**
@@ -153,20 +154,26 @@ export class ApiError extends Error {
   declare readonly rubric?: { readonly id: string; readonly version: string };
   /** JOURNAL_CSV_IMPORT が特定した失敗行（1 始まり）。取込画面がその行を示す。 */
   declare readonly row?: number;
+  /**
+   * サーバーが error 本文へ足した、上のどれにも当たらない項目（業務が「直す場所」を示すために載せる。ADR-0039）。
+   * 該当が無ければキー自体を作らない。
+   */
+  declare readonly details?: Readonly<Record<string, unknown>>;
 
   constructor(
     readonly status: number,
     readonly code: string,
     readonly serverMessage: string,
     readonly runId?: string,
-    context?: { readonly tool?: RunFailureToolRefDto; readonly nodeId?: string; readonly rubric?: { readonly id: string; readonly version: string }; readonly row?: number },
+    context?: { readonly tool?: RunFailureToolRefDto; readonly nodeId?: string; readonly rubric?: { readonly id: string; readonly version: string }; readonly row?: number; readonly details?: Readonly<Record<string, unknown>> },
   ) {
-    super(localizeApiErrorMessage({ status, code, serverMessage, ...(context?.rubric === undefined ? {} : { rubric: context.rubric }), ...(context?.row === undefined ? {} : { row: context.row }) }));
+    super(localizeApiErrorMessage({ status, code, serverMessage, ...(context?.rubric === undefined ? {} : { rubric: context.rubric }), ...(context?.row === undefined ? {} : { row: context.row }), ...(context?.details === undefined ? {} : { details: context.details }) }));
     this.name = 'ApiError';
     if (context?.tool !== undefined) this.tool = context.tool;
     if (context?.nodeId !== undefined) this.nodeId = context.nodeId;
     if (context?.rubric !== undefined) this.rubric = context.rubric;
     if (context?.row !== undefined) this.row = context.row;
+    if (context?.details !== undefined) this.details = context.details;
   }
 }
 
@@ -1143,7 +1150,11 @@ export class ToolApiClient {
     return (await this.request<{ result: JournalExportResultDto }>(`/journal/export?${query}`, { signal })).result;
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  /**
+   * 低レベルの送信口。認証ヘッダ・JSON 解析・`ApiError` への変換をここに集める。
+   * 業務の API クライアント（`api/<業務>-api.ts`）はこれを `ApiTransport` として使う（ADR-0039）。
+   */
+  async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const token = this.authToken();
     // body 無し（DELETE 等）に content-type を付けると Fastify が空JSON本文として 400/500 にする。
     const response = await this.fetcher(`${this.baseUrl}${path}`, {
@@ -1174,19 +1185,19 @@ export class ToolApiClient {
       const rubric = error.error?.rubric;
       // rubric は JUDGE_TRACE_UNAVAILABLE だけが載せる。形が崩れていれば（id が文字列でない等）載せない。
       const rubricRef = rubric !== undefined && typeof rubric.id === 'string' && typeof rubric.version === 'string' ? { id: rubric.id, version: rubric.version } : undefined;
+      // 共通で解釈する項目以外は details としてそのまま渡す（業務の画面が読む。無ければ付けない）。
+      const details = Object.fromEntries(Object.entries(error.error ?? {}).filter(([key]) => !KNOWN_ERROR_FIELDS.has(key)));
       throw new ApiError(
         response.status,
         error.error?.code ?? 'HTTP_ERROR',
         error.error?.message ?? response.statusText,
         error.error?.runId,
-        { ...(error.error?.tool === undefined ? {} : { tool: error.error.tool }), ...(error.error?.nodeId === undefined ? {} : { nodeId: error.error.nodeId }), ...(rubricRef === undefined ? {} : { rubric: rubricRef }), ...(row === undefined ? {} : { row }) },
+        { ...(error.error?.tool === undefined ? {} : { tool: error.error.tool }), ...(error.error?.nodeId === undefined ? {} : { nodeId: error.error.nodeId }), ...(rubricRef === undefined ? {} : { rubric: rubricRef }), ...(row === undefined ? {} : { row }), ...(Object.keys(details).length === 0 ? {} : { details }) },
       );
     }
     return body as T;
   }
 }
 
-/** scope をクエリ文字列にする（GET / DELETE 用）。 */
-function scopeQuery(scope: TenantScopeDto): URLSearchParams {
-  return new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
-}
+/** error 本文のうち、`ApiError` が個別の項目として受け取るもの（それ以外は details へ）。 */
+const KNOWN_ERROR_FIELDS: ReadonlySet<string> = new Set(['code', 'message', 'runId', 'tool', 'nodeId', 'rubric', 'row']);

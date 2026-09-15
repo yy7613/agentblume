@@ -43,6 +43,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
+import type { JournalCapabilities, JournalCapabilitiesUseCase } from '../application/journal/capabilities';
 import type { ExportChartCsvUseCase, ImportChartCsvUseCase } from '../application/journal/chart-transfer';
 import type { ExportJournalEntriesUseCase } from '../application/journal/export-entries';
 import type { ExtractJournalDocumentUseCase } from '../application/journal/extract-document';
@@ -83,7 +84,7 @@ import {
   journalRuleListQuerySchema, journalRuleTestBodySchema, saveJournalChartBodySchema,
   saveJournalDocumentBodySchema, saveJournalEntryBodySchema, saveJournalRuleBodySchema,
   startJournalHearingBodySchema,
-} from './schemas';
+} from './journal-schemas';
 
 export interface JournalRouteDeps {
   readonly getJournalChart: GetChartOfAccountsUseCase;
@@ -114,6 +115,17 @@ export interface JournalRouteDeps {
   readonly cancelJournalHearing: CancelJournalHearingUseCase;
   readonly getJournalHearing: GetJournalHearingUseCase;
   readonly listJournalHearings: ListJournalHearingsUseCase;
+}
+
+/** `GET /runtime/capabilities` の `journal` に要る依存（`draft-tool-routes.ts` が業務ごとに集める）。 */
+export interface JournalRuntimeCapabilityDeps {
+  /** 仕訳の LLM 抽出・ヒアリングの可否（仕訳画面が取込タブの選択肢を出し分ける）。 */
+  readonly journalCapabilities: JournalCapabilitiesUseCase;
+}
+
+/** `GET /runtime/capabilities` へ足すキー。画面は `journal` を見て、使えない機能の導線を出さない。 */
+export async function journalRuntimeCapabilities(deps: JournalRuntimeCapabilityDeps): Promise<{ readonly journal: JournalCapabilities }> {
+  return { journal: await deps.journalCapabilities.execute() };
 }
 
 function parseWith<S extends z.ZodType>(schema: S, value: unknown, label: string): z.infer<S> {

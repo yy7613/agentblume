@@ -257,7 +257,7 @@ describe('version 5（仕訳）', () => {
 
     const upgraded = openSqliteDatabase(dbPath);
     try {
-      expect(upgraded.schemaVersion).toBe(5);
+      expect(upgraded.schemaVersion).toBe(LATEST_SCHEMA_VERSION);
       const tables = tablesOf(upgraded.handle);
       for (const expected of ['journal_chart', 'journal_documents', 'journal_rules', 'journal_entries', 'journal_hearings']) {
         expect(tables.has(expected)).toBe(true);

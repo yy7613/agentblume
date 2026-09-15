@@ -1,0 +1,22 @@
+/* 系統 C（入力と規程）の部品。クラスは expense-input- で始める。 */
+.expense-input-limit { font-size: 12px; color: #5b6275; margin: 6px 0; }
+.expense-input-table input, .expense-input-table select { min-width: 0; width: 100%; box-sizing: border-box; }
+.expense-input-table td { vertical-align: top; }
+.expense-input-stations { min-width: 14em; }
+.expense-input-hint { display: block; font-size: 11px; color: #5b6275; }
+.expense-input-warn { display: block; font-size: 11px; color: #8a5a00; }
+.expense-input-route { display: grid; gap: 6px; }
+.expense-input-route-row { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: flex-end; }
+.expense-input-route-row label { display: grid; gap: 3px; font-size: 12px; }
+.expense-input-via { display: flex; gap: 4px; align-items: center; }
+.expense-input-lookup { font-size: 12px; margin: 2px 0; padding: 6px 8px; border-radius: 6px; background: #f5f7fb; }
+.expense-input-lookup-pass { background: #fff6e0; }
+.expense-input-detail { display: grid; gap: 4px; margin: 4px 0; font-size: 12px; }
+.expense-input-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.expense-input-chip-selected { border-color: #3545b7; background: #dfe4ff; }
+.expense-input-hearing textarea { width: 100%; min-height: 180px; font-family: inherit; box-sizing: border-box; }
+.expense-input-question { border: 1px solid #e2e6f0; border-radius: 6px; padding: 8px; margin: 6px 0; }
+.expense-input-found { color: #1d7a3e; font-size: 11px; }
+.expense-input-not-found { color: #8a5a00; font-size: 11px; }
+.expense-input-value { font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all; }
+.expense-input-capability { margin: 6px 0; }

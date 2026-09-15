@@ -1,0 +1,34 @@
+{
+  "categories": [
+    { "id": "meal.entertainment", "limits": { "perPerson": 8000, "perPersonBasis": "tax-included" } },
+    { "id": "transport.taxi", "limits": { "perItem": 5000 } }
+  ],
+  "claimRules": { "submissionDeadlineDays": 60 },
+  "preApprovalRules": [{ "id": "entertainment-50000", "minAmount": 50000 }],
+  "approvalRoutes": [
+    {
+      "id": "manager-then-accounting",
+      "name": "上長 → 経理",
+      "when": { "categoryIds": [] },
+      "steps": [
+        { "id": "manager", "name": "上長", "approver": { "kind": "claimant-manager" } },
+        { "id": "accounting", "name": "経理", "approver": { "kind": "group", "groupId": "group-accounting" } }
+      ]
+    },
+    {
+      "id": "director-approval",
+      "name": "役員の承認",
+      "when": { "categoryIds": ["meal.entertainment"] },
+      "steps": [{ "id": "director", "name": "役員", "approver": { "kind": "employee", "employeeId": "emp-sample-director" } }]
+    }
+  ],
+  "severityOverrides": null,
+  "rationales": [
+    { "path": "categories.meal.entertainment.limits.perPerson", "quote": "取引先との飲食は、1人あたり8,000円（税込）までとする。", "note": null },
+    { "path": "categories.transport.taxi.limits.perItem", "quote": "タクシーの利用は1回5,000円までとし", "note": null },
+    { "path": "claimRules.submissionDeadlineDays", "quote": "利用日から60日以内に精算を申請しなければならない", "note": null },
+    { "path": "approval.routes.manager-then-accounting", "quote": "申請者の上長が承認した後、経理部が承認する。", "note": null },
+    { "path": "preApprovalRules.entertainment-50000", "quote": "1件50,000円以上の飲食は事前に承認を得る。", "note": "現在の規程と同じ値" }
+  ],
+  "questions": null
+}
