@@ -98,6 +98,7 @@ const HELP: Readonly<Record<CoreScreenName, ScreenHelp>> = {
     steps: [
       { en: 'Pick a Tool, fill the arguments, run. The output is computed on the full data exactly as in an Agent run, without side effects.', ja: 'ツールを選び、引数を入れて実行します。エージェント実行と同じく全行で計算し、副作用は起こしません。' },
       { en: 'Add expectations and save the case. "Run all" re-checks every saved case.', ja: '期待を追加してケースを保存します。「すべて実行」で保存済みケースをまとめて再確認できます。' },
+      { en: 'A row expectation finds one row by "column == value" and checks that it is there, that it is gone, or what its cells hold. For a tool with an AI judgment node you can also expect the verdict for one of its input rows — tick every verdict you would accept, since AI verdicts vary.', ja: '「行の期待」は「列 == 値」で行を1つ特定し、残るか・消えるか・値がどうかを確かめます。AI判定ノードを含むツールでは、その入力行の判定値も期待にできます（AIの判定は揺れるので、許容できる判定値を複数選べます）。' },
       { en: '"Suggest cases with the model" drafts normal / boundary / abnormal cases from the tool definition. Run each to confirm, then save the ones you keep. Needs a model with structured output (see Settings).', ja: '「LLMでケースを提案」は、ツール定義から 正常 / 境界 / 異常 のケース案を作ります。実行して確認し、残すものを保存します。構造化出力に対応したモデルが必要です（設定画面）。' },
     ],
     doc: 'docs/06-etl-tool-builder.md',

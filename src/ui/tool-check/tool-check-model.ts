@@ -1,6 +1,6 @@
 import type {
   ColumnDto, DataType, JsonCell, RunToolCheckDto, SchemaDto, SuggestToolCheckCasesDto, ToolCheckAssertionResultDto, ToolCheckCaseCategoryDto, ToolCheckCaseDto,
-  ToolCheckCellOpDto, ToolCheckExpectationsDto, ToolCheckRunResultDto, ToolCheckSuggestionDto,
+  ToolCheckCellOpDto, ToolCheckExpectationsDto, ToolCheckJudgmentExpectationDto, ToolCheckRowExpectationDto, ToolCheckRunResultDto, ToolCheckSuggestionDto, ToolGraphDto,
 } from '../api/types';
 
 /**
@@ -103,21 +103,48 @@ export type CellMode = 'any' | 'all';
 /** 実行の結末の選択。'' = 指定なし（DTO に載せない）。'error' は「失敗すること」が期待（異常系ケース）。 */
 export type OutcomeChoice = '' | 'success' | 'error';
 export interface CellDraft { readonly column: string; readonly op: ToolCheckCellOpDto; readonly value: string; readonly mode: CellMode }
+/** 特定した 1 行のセル条件（mode は無い: その行だけを見る）。 */
+export interface RowCellDraft { readonly column: string; readonly op: ToolCheckCellOpDto; readonly value: string }
+/** 行の期待 1 件。column / value で行を特定し、present で「存在する / 存在しない」を選ぶ。 */
+export interface RowExpectationDraft {
+  readonly column: string;
+  readonly value: string;
+  readonly present: boolean;
+  readonly cells: readonly RowCellDraft[];
+}
+/** AI 判定の期待 1 件。verdicts は「いずれかに一致すれば合格」（AI の揺れを許容する）。 */
+export interface JudgmentExpectationDraft {
+  readonly nodeId: string;
+  readonly column: string;
+  readonly value: string;
+  readonly verdicts: readonly string[];
+  /** 空欄 = 理由は問わない。 */
+  readonly reasonContains: string;
+}
 export interface ExpectationDraft {
   readonly rowCountOp: RowCountOp;
   /** 空欄 = 期待しない。'0' は 0 行を期待する（空欄と区別する）。 */
   readonly rowCountValue: string;
   readonly columns: readonly string[];
   readonly cells: readonly CellDraft[];
+  readonly rows: readonly RowExpectationDraft[];
+  readonly judgments: readonly JudgmentExpectationDraft[];
   readonly maxDurationMs: string;
   readonly outcome: OutcomeChoice;
 }
 
-export const EMPTY_EXPECTATIONS: ExpectationDraft = { rowCountOp: 'eq', rowCountValue: '', columns: [], cells: [], maxDurationMs: '', outcome: '' };
+export const EMPTY_EXPECTATIONS: ExpectationDraft = { rowCountOp: 'eq', rowCountValue: '', columns: [], cells: [], rows: [], judgments: [], maxDurationMs: '', outcome: '' };
 export const EMPTY_CELL: CellDraft = { column: '', op: 'eq', value: '', mode: 'any' };
+export const EMPTY_ROW: RowExpectationDraft = { column: '', value: '', present: true, cells: [] };
+export const EMPTY_ROW_CELL: RowCellDraft = { column: '', op: 'eq', value: '' };
+export const EMPTY_JUDGMENT: JudgmentExpectationDraft = { nodeId: '', column: '', value: '', verdicts: [], reasonContains: '' };
 
 export const CELL_OPS: readonly ToolCheckCellOpDto[] = ['eq', 'neq', 'gte', 'lte', 'contains'];
 export const ROW_COUNT_OPS: readonly RowCountOp[] = ['eq', 'gte', 'lte'];
+/** サーバー（src/domain/tool-check/tool-check-case.ts）の上限と同値。超える分は編集欄で追加させない。 */
+export const MAX_ROW_EXPECTATIONS = 50;
+export const MAX_ROW_CELLS = 20;
+export const MAX_JUDGMENT_EXPECTATIONS = 100;
 
 /**
  * 入力欄の下書きから送信用の期待を作る。埋まっている項目だけを含め、何も無ければ undefined
@@ -133,11 +160,46 @@ export function buildExpectations(draft: ExpectationDraft, outputSchema: SchemaD
     .filter((cell) => cell.column.trim() !== '')
     .map((cell) => ({ column: cell.column.trim(), op: cell.op, value: coerceCell(cell.value, columnType(outputSchema, cell.column.trim())), mode: cell.mode }));
   if (cells.length > 0) result.cells = cells;
+  const rows = draft.rows.filter((row) => row.column.trim() !== '').map((row) => buildRowExpectation(row, outputSchema));
+  if (rows.length > 0) result.rows = rows;
+  const judgments = draft.judgments
+    .filter((judgment) => judgment.nodeId.trim() !== '' && judgment.column.trim() !== '' && judgment.verdicts.length > 0)
+    .map((judgment) => buildJudgmentExpectation(judgment));
+  if (judgments.length > 0) result.judgments = judgments;
   const maxDuration = parseNonNegativeInteger(draft.maxDurationMs);
   if (maxDuration !== undefined) result.maxDurationMs = maxDuration;
   // 「指定なし」は省略する。'success' も明示された選択なので送る（サーバーは省略時と同じ扱いだが、保存したケースに意図が残る）。
   if (draft.outcome !== '') result.outcome = draft.outcome;
   return Object.keys(result).length === 0 ? undefined : result;
+}
+
+/**
+ * 行の期待 1 件を DTO にする。
+ * - `present` は既定（true）のときは載せない。
+ * - `cells` は「存在する」ときだけ意味を持つので、`present: false` や空のときは載せない。
+ */
+function buildRowExpectation(row: RowExpectationDraft, outputSchema: SchemaDto | undefined): ToolCheckRowExpectationDto {
+  const column = row.column.trim();
+  const where = { column, value: coerceCell(row.value, columnType(outputSchema, column)) };
+  if (!row.present) return { where, present: false };
+  const cells = row.cells
+    .filter((cell) => cell.column.trim() !== '')
+    .map((cell) => ({ column: cell.column.trim(), op: cell.op, value: coerceCell(cell.value, columnType(outputSchema, cell.column.trim())) }));
+  return cells.length === 0 ? { where } : { where, cells };
+}
+
+/**
+ * AI 判定の期待 1 件を DTO にする。特定する列はノードの**入力**の列で、終端出力のスキーマとは
+ * 別物なので型は分からない。値は型なしの変換（数値に見えれば数値）に任せる。
+ */
+function buildJudgmentExpectation(judgment: JudgmentExpectationDraft): ToolCheckJudgmentExpectationDto {
+  const reasonContains = judgment.reasonContains.trim();
+  return {
+    nodeId: judgment.nodeId.trim(),
+    where: { column: judgment.column.trim(), value: coerceCell(judgment.value, undefined) },
+    verdict: [...judgment.verdicts],
+    ...(reasonContains === '' ? {} : { reasonContains }),
+  };
 }
 
 /** 保存済みケースの期待を入力欄の状態へ戻す。 */
@@ -146,10 +208,28 @@ export function draftFromExpectations(expectations: ToolCheckExpectationsDto): E
     rowCountOp: expectations.rowCount?.op ?? 'eq',
     rowCountValue: expectations.rowCount === undefined ? '' : String(expectations.rowCount.value),
     columns: [...(expectations.columns ?? [])],
-    cells: (expectations.cells ?? []).map((cell) => ({ column: cell.column, op: cell.op, value: cell.value === null ? 'null' : String(cell.value), mode: cell.mode })),
+    cells: (expectations.cells ?? []).map((cell) => ({ column: cell.column, op: cell.op, value: cellText(cell.value), mode: cell.mode })),
+    rows: (expectations.rows ?? []).map((row) => ({
+      column: row.where.column,
+      value: cellText(row.where.value),
+      present: row.present !== false,
+      cells: (row.cells ?? []).map((cell) => ({ column: cell.column, op: cell.op, value: cellText(cell.value) })),
+    })),
+    judgments: (expectations.judgments ?? []).map((judgment) => ({
+      nodeId: judgment.nodeId,
+      column: judgment.where.column,
+      value: cellText(judgment.where.value),
+      verdicts: [...judgment.verdict],
+      reasonContains: judgment.reasonContains ?? '',
+    })),
     maxDurationMs: expectations.maxDurationMs === undefined ? '' : String(expectations.maxDurationMs),
     outcome: expectations.outcome ?? '',
   };
+}
+
+/** 保存済みの値を入力欄の文字列へ戻す（null は 'null' と書いて空欄と区別する）。 */
+function cellText(value: JsonCell): string {
+  return value === null ? 'null' : String(value);
 }
 
 function parseNonNegativeInteger(raw: string): number | undefined {
@@ -222,8 +302,55 @@ export function assertionKindLabel(kind: ToolCheckAssertionResultDto['kind']): r
   if (kind === 'rowCount') return ['Row count', '行数'];
   if (kind === 'column') return ['Column', '列'];
   if (kind === 'cell') return ['Cell value', 'セル条件'];
+  if (kind === 'row') return ['Row', '行'];
+  if (kind === 'judgment') return ['AI judgment', 'AI判定'];
   if (kind === 'outcome') return ['Outcome', '実行の結末'];
   return ['Duration', '所要時間'];
+}
+
+// ---------------------------------------------------------------------------
+// AI 判定ノード（ai-judge）の読み取り
+// ---------------------------------------------------------------------------
+
+/** グラフから読み取った AI 判定ノード 1 つ分（期待の編集欄が使う）。 */
+export interface AiJudgeNodeInfo {
+  readonly nodeId: string;
+  /** 判定基準（質問文）。選択肢のラベルに抜粋を添える。 */
+  readonly question: string;
+  /** この設定で出うる判定値（はい/いいえなら yes / no / unclear、分類ならカテゴリ名 + unclear）。 */
+  readonly verdicts: readonly string[];
+  /** モデルに見せる列（設定が空なら不明＝自由入力にする）。 */
+  readonly columns: readonly string[];
+}
+
+export const AI_JUDGE_NODE_TYPE = 'ai-judge';
+/** 判断できなかった行の判定値。src/domain/etl/nodes/ai-judge.ts の AI_JUDGE_UNCLEAR と同値（UI は domain を import できない）。 */
+export const AI_JUDGE_UNCLEAR = 'unclear';
+const AI_JUDGE_YES_NO_VALUES: readonly string[] = ['yes', 'no', AI_JUDGE_UNCLEAR];
+
+function stringList(value: unknown): readonly string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item !== '') : [];
+}
+
+/**
+ * グラフの AI 判定ノードを、期待の編集欄が使う形で取り出す。規則は domain（aiJudgeAllowedValues）と同値で、
+ * UI から domain は import できないため意図的に複製している（NodeInspector も同じ複製を持つ）。
+ * config は unknown なので、形が違うものは「はい/いいえ」として扱い、落とさない。
+ */
+export function aiJudgeNodes(graph: ToolGraphDto | undefined): readonly AiJudgeNodeInfo[] {
+  return (graph?.nodes ?? []).filter((node) => node.type === AI_JUDGE_NODE_TYPE).map((node) => {
+    const config = (node.config ?? {}) as Readonly<Record<string, unknown>>;
+    const categories = Array.isArray(config['categories']) ? config['categories'] as readonly unknown[] : [];
+    const names = categories
+      .map((category) => (category !== null && typeof category === 'object' ? (category as { readonly name?: unknown }).name : undefined))
+      .filter((name): name is string => typeof name === 'string' && name !== '');
+    return {
+      nodeId: node.id,
+      question: typeof config['question'] === 'string' ? config['question'] : '',
+      verdicts: names.length === 0 ? AI_JUDGE_YES_NO_VALUES : [...names, AI_JUDGE_UNCLEAR],
+      columns: stringList(config['columns']),
+    };
+  });
 }
 
 /**
@@ -315,6 +442,18 @@ export function summarizeExpectations(expectations: ToolCheckExpectationsDto): r
   for (const cell of expectations.cells ?? []) {
     const value = typeof cell.value === 'string' ? JSON.stringify(cell.value) : String(cell.value);
     lines.push(`${cell.mode === 'all' ? 'every row has' : 'some row has'} ${cell.column} ${cellOpLabel(cell.op)} ${value}`);
+  }
+  for (const row of expectations.rows ?? []) {
+    const locator = `${row.where.column} == ${JSON.stringify(row.where.value)}`;
+    if (row.present === false) { lines.push(`row[${locator}] absent`); continue; }
+    const cells = row.cells ?? [];
+    if (cells.length === 0) { lines.push(`row[${locator}] present`); continue; }
+    for (const cell of cells) lines.push(`row[${locator}].${cell.column} ${cellOpLabel(cell.op)} ${JSON.stringify(cell.value)}`);
+  }
+  for (const judgment of expectations.judgments ?? []) {
+    const locator = `judgment[${judgment.nodeId}][${judgment.where.column} == ${JSON.stringify(judgment.where.value)}]`;
+    lines.push(`${locator} in [${judgment.verdict.map((value) => JSON.stringify(value)).join(', ')}]`);
+    if (judgment.reasonContains !== undefined) lines.push(`${locator} reason contains ${JSON.stringify(judgment.reasonContains)}`);
   }
   if (expectations.maxDurationMs !== undefined) lines.push(`duration <= ${expectations.maxDurationMs}ms`);
   return lines;

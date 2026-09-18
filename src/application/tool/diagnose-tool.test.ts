@@ -4,17 +4,18 @@
  * 実 EtlEngine で、メモリ上の（未保存でもよい）Tool に対し、実行時に失敗する構成が
  * 「実行せずに」対応する検査項目のエラーとして報告されることを検証する。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { createDefaultRegistry } from '../../domain/etl/nodes/index';
 import type { PublishState } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import { createTool, type CreateToolProps, type Tool } from '../../domain/tool/tool';
-import { SchemaError } from '../../domain/etl/errors';
+import { ConfigError, SchemaError } from '../../domain/etl/errors';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import { EtlEngine, type PropagationResult } from '../etl/engine';
 import { DiagnoseToolUseCase, nodeIdOf, worst, type DiagnosticCheck, type ToolDiagnostics } from './diagnose-tool';
+import type { ResolveAiJudgmentsUseCase } from './resolve-ai-judgments';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
 const inputSchema: Schema = { columns: [{ name: 'minimumScore', type: 'number', nullable: false }] };
@@ -351,5 +352,52 @@ describe('DiagnoseToolUseCase 境界・異常系', () => {
       ], edges: [] } }));
       expect(check(diagnostics, 'agent-input')).toEqual({ id: 'agent-input', status: 'error', detail: "tool inputSchema does not match agent-input node 'stale'" });
     });
+  });
+});
+
+describe('DiagnoseToolUseCase: AI 判定の解決', () => {
+  function diagnoseWith(resolver: { execute: ReturnType<typeof vi.fn> }, tool: Tool = makeTool()): Promise<ToolDiagnostics> {
+    const usecase = new DiagnoseToolUseCase(new EtlEngine(createDefaultRegistry()), undefined, resolver as unknown as ResolveAiJudgmentsUseCase);
+    return usecase.execute(scope, tool);
+  }
+
+  it('ドライランの前に AI 判定を解く（解けたグラフで execution を検査する）', async () => {
+    const resolver = { execute: vi.fn(async (graph: ToolGraph) => graph) };
+    const diagnostics = await diagnoseWith(resolver);
+    expect(resolver.execute).toHaveBeenCalledTimes(1);
+    expect(check(diagnostics, 'execution')).toEqual({ id: 'execution', status: 'ok' });
+  });
+
+  it('解決器の ConfigError は execution 検査の error として nodeId つきで載る', async () => {
+    const failure = Object.assign(new ConfigError('ai-judge: the model is not configured; set the main model slot in Settings > Models'), { nodeId: 'judge' });
+    const diagnostics = await diagnoseWith({ execute: vi.fn(async () => { throw failure; }) });
+    expect(check(diagnostics, 'execution')).toEqual({
+      id: 'execution', status: 'error', nodeId: 'judge',
+      detail: 'ai-judge: the model is not configured; set the main model slot in Settings > Models',
+    });
+    // グラフ（スキーマ伝播）の検査自体は通る: 壊れているのは実行であってスキーマではない。
+    expect(check(diagnostics, 'graph')).toEqual({ id: 'graph', status: 'ok' });
+    expect(diagnostics.status).toBe('error');
+  });
+
+  it('解決器が落ちても他の検査は続く（出力スキーマ・演算子引数まで報告する）', async () => {
+    const diagnostics = await diagnoseWith({ execute: vi.fn(async () => { throw new ConfigError('ai-judge: 200 distinct rows to judge exceed the limit of 50'); }) });
+    expect(check(diagnostics, 'execution')?.detail).toContain('exceed the limit of 50');
+    expect(check(diagnostics, 'execution')?.nodeId).toBeUndefined();
+    expect(check(diagnostics, 'agent-input')).toEqual({ id: 'agent-input', status: 'ok' });
+    expect(check(diagnostics, 'function-definition')).toEqual({ id: 'function-definition', status: 'ok' });
+  });
+
+  it('スキーマ伝播が壊れていれば graph 検査で止まり、execution 検査は出さない', async () => {
+    // 解決自体はグラフ検査より前に済ませる（checkGraph が同期のため）が、伝播エラーならドライランは検査しない。
+    const resolver = { execute: vi.fn(async (graph: ToolGraph) => graph) };
+    const broken = makeTool({ graph: { nodes: [
+      { id: 'data', type: 'json-source', config: { rows: [{ name: 'Alice' }] } },
+      { id: 'filter', type: 'filter', config: { column: 'missing', op: 'eq', value: 1 } },
+    ], edges: [{ from: 'data', to: 'filter' }] }, inputSchema: { columns: [] } });
+    const diagnostics = await diagnoseWith(resolver, broken);
+    expect(resolver.execute).toHaveBeenCalledTimes(1);
+    expect(check(diagnostics, 'graph')).toMatchObject({ status: 'error', nodeId: 'filter' });
+    expect(check(diagnostics, 'execution')).toBeUndefined();
   });
 });

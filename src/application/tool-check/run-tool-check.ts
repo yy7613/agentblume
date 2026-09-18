@@ -34,8 +34,10 @@ import { AgentRunError } from '../agent/errors';
 import { validateToolArguments } from '../agent/tool-schema';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import { DEFAULT_ROW_LIMIT, type EtlEngine } from '../etl/engine';
+import type { ResolveAiJudgmentsUseCase } from '../tool/resolve-ai-judgments';
 import { graphWithArguments } from '../tool/tool-execution';
-import { EMPTY_TABLE, evaluateFailedRun, evaluateSuccessfulRun, type ToolCheckRunError, type ToolCheckRunResult, type ToolCheckToolRef } from './tool-check-result';
+import { extractJudgments, type ToolCheckJudgmentTable } from './judgments';
+import { EMPTY_TABLE, evaluateFailedRun, evaluateSuccessfulRun, type ToolCheckJudgmentSnapshot, type ToolCheckRunError, type ToolCheckRunResult, type ToolCheckToolRef } from './tool-check-result';
 
 export interface RunToolCheckInput {
   readonly scope: TenantScope;
@@ -64,6 +66,8 @@ export class RunToolCheckUseCase {
     private readonly engine: EtlEngine,
     private readonly resolveDataSources?: ResolveDataSourceGraphUseCase,
     clock: ToolCheckClock = {},
+    /** データソース解決の後・実行の前に AI 判定を解く（Agent 経路と同じ順序）。 */
+    private readonly resolveAiJudgments?: ResolveAiJudgmentsUseCase,
   ) {
     this.now = clock.now ?? (() => new Date());
     this.monotonicNow = clock.monotonicNow ?? (() => performance.now());
@@ -92,15 +96,21 @@ export class RunToolCheckUseCase {
     let output: Table;
     let fullOutput: Table;
     let nodes: ToolCheckRunResult['nodes'];
+    let judgments: readonly ToolCheckJudgmentTable[] = [];
+    let judgedBy: string | undefined;
     try {
       const row = validateToolArguments(tool.inputSchema, input.arguments);
       const graph = graphWithArguments(tool, row);
-      const executable = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(input.scope, graph);
+      const withSources = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(input.scope, graph);
+      const executable = this.resolveAiJudgments === undefined ? withSources : await this.resolveAiJudgments.execute(withSources);
       // sink ノードは preview の中では表を通すだけで外部へ書かない。ここで出力ディスパッチャは呼ばない。
       const preview = this.engine.preview(executable, { rowLimit });
       output = preview.output;
       fullOutput = preview.fullOutput;
       nodes = Object.values(preview.nodes).map((node) => ({ nodeId: node.nodeId, rowCount: node.rowCount }));
+      // AI 判定の期待は終端ではなくノードの判定表に対して評価する（keep / exclude で消えた行も見える）。
+      judgments = extractJudgments(this.engine, executable);
+      if (judgments.length > 0 && this.resolveAiJudgments !== undefined) judgedBy = await this.resolveAiJudgments.describeModel();
     } catch (error) {
       const failure = toRunError(error);
       if (failure === undefined) throw error;
@@ -108,7 +118,8 @@ export class RunToolCheckUseCase {
       return { tool: ref, status, assertions, output: EMPTY_TABLE, rowCount: 0, nodes: [], durationMs: elapsed(), error: failure, checkedAt: this.now().toISOString() };
     }
     const durationMs = elapsed();
-    const { status, assertions } = evaluateSuccessfulRun(input.expectations, fullOutput, durationMs);
+    const { status, assertions } = evaluateSuccessfulRun(input.expectations, fullOutput, durationMs, judgments);
+    const snapshots: ToolCheckJudgmentSnapshot[] = judgments.map((judgment) => ({ nodeId: judgment.nodeId, verdictColumn: judgment.verdictColumn, reasonColumn: judgment.reasonColumn, table: { schema: judgment.table.schema, rows: judgment.table.rows.slice(0, rowLimit) }, rowCount: judgment.table.rows.length }));
     return {
       tool: ref,
       status,
@@ -116,6 +127,8 @@ export class RunToolCheckUseCase {
       output,
       rowCount: fullOutput.rows.length,
       nodes,
+      ...(snapshots.length === 0 ? {} : { judgments: snapshots }),
+      ...(judgedBy === undefined ? {} : { judgedBy }),
       durationMs,
       checkedAt: this.now().toISOString(),
     };

@@ -46,12 +46,53 @@ export interface ToolCheckCellExpectation {
   readonly mode: ToolCheckCellMode;
 }
 
+/** 行の特定条件（`column == value` に最初に一致した行）。 */
+export interface ToolCheckRowLocator {
+  readonly column: string;
+  readonly value: JsonCell;
+}
+
+/** 特定した 1 行のセルへの期待（mode は無い: 特定した行だけを見る）。 */
+export interface ToolCheckRowCellExpectation {
+  readonly column: string;
+  readonly op: ToolCheckCellOp;
+  readonly value: JsonCell;
+}
+
+/**
+ * 終端出力の 1 行を特定して検証する期待。
+ * 「id が E1 の行が残り、金額 >= 10000」「id が E2 の行は無い」のように書く。
+ */
+export interface ToolCheckRowExpectation {
+  readonly where: ToolCheckRowLocator;
+  /** false なら「その行が無い」ことを期待する（cells は評価しない）。既定 true。 */
+  readonly present?: boolean;
+  readonly cells?: readonly ToolCheckRowCellExpectation[];
+}
+
+/**
+ * AI 判定ノード（`ai-judge`）の判定を、そのノードの**入力行**を特定して検証する期待。
+ * 終端出力ではなくノードの判定結果を見るので、keep / exclude で行が消えても「E2 は no と判定された」を確かめられる。
+ */
+export interface ToolCheckJudgmentExpectation {
+  readonly nodeId: string;
+  readonly where: ToolCheckRowLocator;
+  /** 期待する判定値。いずれかに一致すれば合格（AI の揺れを許容するため複数書ける）。 */
+  readonly verdict: readonly string[];
+  /** 理由に含まれるべき文字列（任意）。 */
+  readonly reasonContains?: string;
+}
+
 export interface ToolCheckExpectations {
   /** 出力行数（全行数。表示上限に依存しない）。 */
   readonly rowCount?: { readonly op: ToolCheckRowCountOp; readonly value: number };
   /** 出力スキーマに含まれるべき列名。 */
   readonly columns?: readonly string[];
   readonly cells?: readonly ToolCheckCellExpectation[];
+  /** 終端出力の行を特定した期待。 */
+  readonly rows?: readonly ToolCheckRowExpectation[];
+  /** AI 判定ノードの判定への期待。 */
+  readonly judgments?: readonly ToolCheckJudgmentExpectation[];
   /** 実行時間の上限（ms）。 */
   readonly maxDurationMs?: number;
   /** 実行の結末（省略時は 'success' と同じ扱いだが、明示したときだけ結末の assertion が出る）。 */
@@ -98,6 +139,10 @@ export interface CreateToolCheckCaseProps {
 export const TOOL_CHECK_NAME_MAX_LENGTH = 120;
 export const TOOL_CHECK_MAX_COLUMNS = 50;
 export const TOOL_CHECK_MAX_CELLS = 50;
+export const TOOL_CHECK_MAX_ROWS = 50;
+export const TOOL_CHECK_MAX_ROW_CELLS = 20;
+export const TOOL_CHECK_MAX_JUDGMENTS = 100;
+export const TOOL_CHECK_MAX_VERDICTS = 21;
 /** 所要時間上限の最大値（10分）。モデルのタイムアウト既定（LM_STUDIO_TIMEOUT_MS）と同じ桁に揃える。 */
 export const TOOL_CHECK_MAX_DURATION_MS = 600_000;
 
@@ -163,6 +208,43 @@ export function validateToolCheckExpectations(value: unknown): ToolCheckExpectat
     });
   }
 
+  if (input.rows !== undefined) {
+    if (!Array.isArray(input.rows)) throw fail('createToolCheckCase: expectations.rows must be an array');
+    if (input.rows.length > TOOL_CHECK_MAX_ROWS) throw fail(`createToolCheckCase: expectations.rows must have at most ${TOOL_CHECK_MAX_ROWS} entries`);
+    result.rows = input.rows.map((row, index) => {
+      const where = validateLocator(row?.where, `createToolCheckCase: expectations.rows[${index}].where`);
+      if (row.present !== undefined && typeof row.present !== 'boolean') throw fail(`createToolCheckCase: expectations.rows[${index}].present must be a boolean`);
+      let cells: ToolCheckRowCellExpectation[] | undefined;
+      if (row.cells !== undefined) {
+        if (!Array.isArray(row.cells)) throw fail(`createToolCheckCase: expectations.rows[${index}].cells must be an array`);
+        if (row.cells.length > TOOL_CHECK_MAX_ROW_CELLS) throw fail(`createToolCheckCase: expectations.rows[${index}].cells must have at most ${TOOL_CHECK_MAX_ROW_CELLS} entries`);
+        cells = row.cells.map((cell: ToolCheckRowCellExpectation, cellIndex: number) => {
+          const prefix = `createToolCheckCase: expectations.rows[${index}].cells[${cellIndex}]`;
+          assertNonEmpty(cell?.column, `${prefix}.column`, fail);
+          if (!TOOL_CHECK_CELL_OPS.includes(cell.op)) throw fail(`${prefix}.op must be one of ${TOOL_CHECK_CELL_OPS.join(', ')}`);
+          if (!isJsonCell(cell.value)) throw fail(`${prefix}.value must be a string, number, boolean or null`);
+          return { column: cell.column, op: cell.op, value: cell.value };
+        });
+      }
+      return { where, ...(row.present === undefined ? {} : { present: row.present }), ...(cells === undefined ? {} : { cells }) };
+    });
+  }
+
+  if (input.judgments !== undefined) {
+    if (!Array.isArray(input.judgments)) throw fail('createToolCheckCase: expectations.judgments must be an array');
+    if (input.judgments.length > TOOL_CHECK_MAX_JUDGMENTS) throw fail(`createToolCheckCase: expectations.judgments must have at most ${TOOL_CHECK_MAX_JUDGMENTS} entries`);
+    result.judgments = input.judgments.map((judgment, index) => {
+      const prefix = `createToolCheckCase: expectations.judgments[${index}]`;
+      assertNonEmpty(judgment?.nodeId, `${prefix}.nodeId`, fail);
+      const where = validateLocator(judgment.where, `${prefix}.where`);
+      if (!Array.isArray(judgment.verdict) || judgment.verdict.length === 0) throw fail(`${prefix}.verdict must be a non-empty array of strings`);
+      if (judgment.verdict.length > TOOL_CHECK_MAX_VERDICTS) throw fail(`${prefix}.verdict must have at most ${TOOL_CHECK_MAX_VERDICTS} entries`);
+      for (const value of judgment.verdict) assertNonEmpty(value, `${prefix}.verdict[]`, fail);
+      if (judgment.reasonContains !== undefined && (typeof judgment.reasonContains !== 'string' || judgment.reasonContains === '')) throw fail(`${prefix}.reasonContains must be a non-empty string`);
+      return { nodeId: judgment.nodeId, where, verdict: [...judgment.verdict], ...(judgment.reasonContains === undefined ? {} : { reasonContains: judgment.reasonContains }) };
+    });
+  }
+
   if (input.maxDurationMs !== undefined) {
     const max = input.maxDurationMs;
     if (!Number.isInteger(max) || max <= 0 || max > TOOL_CHECK_MAX_DURATION_MS) {
@@ -176,6 +258,13 @@ export function validateToolCheckExpectations(value: unknown): ToolCheckExpectat
     result.outcome = input.outcome;
   }
   return result;
+}
+
+function validateLocator(value: ToolCheckRowLocator | undefined, prefix: string): ToolCheckRowLocator {
+  if (value === null || typeof value !== 'object') throw fail(`${prefix} must be an object with column and value`);
+  assertNonEmpty(value.column, `${prefix}.column`, fail);
+  if (!isJsonCell(value.value)) throw fail(`${prefix}.value must be a string, number, boolean or null`);
+  return { column: value.column, value: value.value };
 }
 
 function validateLastResult(value: ToolCheckLastResult): ToolCheckLastResult {

@@ -726,6 +726,17 @@ export const toolCheckExpectationsSchema = z.object({
   rowCount: z.object({ op: z.enum(['eq', 'gte', 'lte']), value: z.number() }).optional(),
   columns: z.array(z.string()).optional(),
   cells: z.array(z.object({ column: z.string(), op: z.enum(['eq', 'neq', 'gte', 'lte', 'contains']), value: jsonCellSchema, mode: z.enum(['any', 'all']) })).optional(),
+  rows: z.array(z.object({
+    where: z.object({ column: z.string(), value: jsonCellSchema }),
+    present: z.boolean().optional(),
+    cells: z.array(z.object({ column: z.string(), op: z.enum(['eq', 'neq', 'gte', 'lte', 'contains']), value: jsonCellSchema })).optional(),
+  })).max(50).optional(),
+  judgments: z.array(z.object({
+    nodeId: z.string().min(1),
+    where: z.object({ column: z.string(), value: jsonCellSchema }),
+    verdict: z.array(z.string().min(1)).min(1).max(21),
+    reasonContains: z.string().min(1).optional(),
+  })).max(100).optional(),
   maxDurationMs: z.number().optional(),
   outcome: z.enum(['success', 'error']).optional(),
 });

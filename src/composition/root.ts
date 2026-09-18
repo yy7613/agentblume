@@ -28,6 +28,7 @@ import { EtlEngine } from '../application/etl/engine';
 import type { ModelProviderPort } from '../application/model/model-provider';
 import { DiagnoseToolUseCase } from '../application/tool/diagnose-tool';
 import { DraftToolUseCase } from '../application/tool/draft-tool';
+import { ResolveAiJudgmentsUseCase } from '../application/tool/resolve-ai-judgments';
 import { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
 import { PreviewToolUseCase } from '../application/tool/preview-tool';
 import { DeleteToolUseCase, GetToolUseCase, ListToolVersionsUseCase, ListToolsUseCase } from '../application/tool/query-tool';
@@ -450,6 +451,8 @@ export interface App extends JournalAppFeature, ExpenseAppFeature, ReceivablesAp
   readonly queryWikiSpaces: QueryWikiSpacesUseCase;
   readonly deleteWikiSpace: DeleteWikiSpaceUseCase;
   readonly draftTool: DraftToolUseCase;
+  /** `ai-judge` ノードの判定解決（実行経路が共有する 1 インスタンス。キャッシュも共有される）。 */
+  readonly resolveAiJudgments: ResolveAiJudgmentsUseCase;
   readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
   /** judge スロットの設定状態（`GET /runtime/capabilities` と実験起票のガードが同じ判定を使う）。 */
   readonly judgeReadiness: () => Promise<JudgeReadiness>;
@@ -756,7 +759,26 @@ export function createApp(options?: AppOptions): App {
     ...journal.rowSources, ...expense.rowSources, ...receivables.rowSources, ...contract.rowSources,
   ]);
 
-  const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot, logger: errorLogger, ...(resolveModelSnapshot === undefined ? {} : { resolveModel: resolveModelSnapshot }) }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient);
+  /** LLM 補助（分析アシスタント・ツール検証のケース提案）を使えるか。モデルはUIからも設定できるため、envだけで判定しない。 */
+  const assistantEnabled = async (): Promise<boolean> => {
+    if (profile === 'test' || (process.env['ANALYSIS_ASSISTANT_ENABLED'] ?? 'true') === 'false') return false;
+    // 保存済みのmainスロットがあればそれで足りる。
+    if ((process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== '') return true;
+    try { return (await modelSettingsAdapter.repo.find(modelSettingsScope))?.main !== undefined; }
+    catch { return false; } // 設定が読めない/復号できない場合は「使えない」側へ倒す。
+  };
+
+  /**
+   * `ai-judge` の判定解決。グラフを実行する経路（draft / 保存済み preview / 診断のドライラン /
+   * ツール検証 / Agent のツール実行）はすべて**この 1 インスタンス**を通す。
+   * 判定のキャッシュを共有するのが狙いで、経路ごとに作ると同じ行を何度もモデルへ問うことになる。
+   */
+  const resolveAiJudgments = new ResolveAiJudgmentsUseCase(engine, modelProvider, assistantEnabled, {
+    logger: errorLogger,
+    ...(resolveModelSnapshot === undefined ? {} : { snapshot: async (): Promise<{ readonly provider: string; readonly model: string }> => resolveModelSnapshot() }),
+  });
+
+  const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot, logger: errorLogger, ...(resolveModelSnapshot === undefined ? {} : { resolveModel: resolveModelSnapshot }) }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient, resolveAiJudgments);
   const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);
   const saveWikiPage = new SaveWikiPageUseCase(wikiAdapter.repo);
   const runScenario = new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo);
@@ -771,18 +793,9 @@ export function createApp(options?: AppOptions): App {
   // レポート、M4）。
   const saveTool = new SaveToolUseCase(repo, engine, resolveDataSources);
   // ツール検証は Agent 経路と同じ engine / データソース解決を使う（別配線にすると結果が食い違う）。
-  const runToolCheck = new RunToolCheckUseCase(repo, engine, resolveDataSources);
-  /** LLM 補助（分析アシスタント・ツール検証のケース提案）を使えるか。モデルはUIからも設定できるため、envだけで判定しない。 */
-  const assistantEnabled = async (): Promise<boolean> => {
-    if (profile === 'test' || (process.env['ANALYSIS_ASSISTANT_ENABLED'] ?? 'true') === 'false') return false;
-    // 保存済みのmainスロットがあればそれで足りる。
-    if ((process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== '') return true;
-    try { return (await modelSettingsAdapter.repo.find(modelSettingsScope))?.main !== undefined; }
-    catch { return false; } // 設定が読めない/復号できない場合は「使えない」側へ倒す。
-  };
-
+  const runToolCheck = new RunToolCheckUseCase(repo, engine, resolveDataSources, undefined, resolveAiJudgments);
   // Tool 単位のプリフライト診断。未保存 draft のルートと Agent 診断の両方が同じインスタンスを使う。
-  const diagnoseTool = new DiagnoseToolUseCase(engine, resolveDataSources);
+  const diagnoseTool = new DiagnoseToolUseCase(engine, resolveDataSources, resolveAiJudgments);
   const saveAgent = new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo, wikiAdapter.repo);
   const generateAgentPrompt = new GenerateAgentPromptUseCase(repo, skillAdapter.repo, agentAdapter.repo);
   const profileDataSources = new ProfileDataSourcesUseCase(dataSourceAdapter.repo, resolveDataSources, engine);
@@ -998,17 +1011,18 @@ export function createApp(options?: AppOptions): App {
     saveWikiSpace,
     queryWikiSpaces,
     deleteWikiSpace: new DeleteWikiSpaceUseCase(wikiAdapter.repo),
-    draftTool: new DraftToolUseCase(engine, resolveDataSources),
+    draftTool: new DraftToolUseCase(engine, resolveDataSources, resolveAiJudgments),
+    resolveAiJudgments,
     suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, assistantEnabled),
     judgeReadiness,
     // ツール検証のケース提案は分析アシスタントと同じ有効判定・同じモデルを使う（別スロットを増やさない）。
-    suggestToolCheckCases: new SuggestToolCheckCasesUseCase(repo, engine, modelProvider, assistantEnabled, resolveDataSources, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot()),
+    suggestToolCheckCases: new SuggestToolCheckCasesUseCase(repo, engine, modelProvider, assistantEnabled, resolveDataSources, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot(), resolveAiJudgments),
     saveTool,
     getTool,
     listToolVersions: new ListToolVersionsUseCase(repo),
     listTools,
     deleteTool: new DeleteToolUseCase(repo),
-    previewTool: new PreviewToolUseCase(repo, engine, resolveDataSources),
+    previewTool: new PreviewToolUseCase(repo, engine, resolveDataSources, resolveAiJudgments),
     seedSampleData,
     toolCheckCaseRepo: toolCheckCaseAdapter.repo,
     runToolCheck,

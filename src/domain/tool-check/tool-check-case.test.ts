@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { ToolCheckValidationError } from './errors';
 import {
   createToolCheckCase, TOOL_CHECK_MAX_CELLS, TOOL_CHECK_MAX_COLUMNS, TOOL_CHECK_MAX_DURATION_MS, TOOL_CHECK_NAME_MAX_LENGTH,
+  TOOL_CHECK_MAX_JUDGMENTS, TOOL_CHECK_MAX_ROW_CELLS, TOOL_CHECK_MAX_ROWS, TOOL_CHECK_MAX_VERDICTS,
   validateToolCheckExpectations, withToolCheckLastResult, type CreateToolCheckCaseProps, type ToolCheckCellExpectation, type ToolCheckExpectations,
+  type ToolCheckJudgmentExpectation, type ToolCheckRowExpectation,
 } from './tool-check-case';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
@@ -229,5 +231,190 @@ describe('withToolCheckLastResult', () => {
 
   it('checkedAt が ISO 8601 でなければ拒否', () => {
     expect(() => withToolCheckLastResult(createToolCheckCase(props()), { status: 'passed', checkedAt: 'now', toolVersion: '1.2.0', summary: '' })).toThrow('createToolCheckCase: lastResult.checkedAt must be an ISO 8601 date-time string');
+  });
+});
+
+/** 行を特定した期待の雛形。 */
+function rowExpectation(overrides: Partial<ToolCheckRowExpectation> = {}): ToolCheckRowExpectation {
+  return { where: { column: 'id', value: 'E1' }, ...overrides };
+}
+
+/** AI 判定への期待の雛形。 */
+function judgmentExpectation(overrides: Partial<ToolCheckJudgmentExpectation> = {}): ToolCheckJudgmentExpectation {
+  return { nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes'], ...overrides };
+}
+
+/** `expectations.rows` を検証して、指定のメッセージで落ちることを確かめる。 */
+function rejectRows(rows: unknown, message: string): void {
+  expect(() => validateToolCheckExpectations({ rows })).toThrow(new ToolCheckValidationError(message));
+}
+
+/** `expectations.judgments` を検証して、指定のメッセージで落ちることを確かめる。 */
+function rejectJudgments(judgments: unknown, message: string): void {
+  expect(() => validateToolCheckExpectations({ judgments })).toThrow(new ToolCheckValidationError(message));
+}
+
+describe('validateToolCheckExpectations: rows（終端出力の行を特定した期待）', () => {
+  describe('正常', () => {
+    it('where / present / cells を正規化して返す（present 省略時はキー自体が現れない）', () => {
+      const result = validateToolCheckExpectations({ rows: [
+        { where: { column: 'id', value: 'E1' }, cells: [{ column: 'amount', op: 'gte', value: 10000 }, { column: 'note', op: 'contains', value: '交通費' }] },
+        { where: { column: 'id', value: 'E2' }, present: false },
+        { where: { column: 'id', value: 'E3' }, present: true },
+      ] });
+      expect(result.rows).toEqual([
+        { where: { column: 'id', value: 'E1' }, cells: [{ column: 'amount', op: 'gte', value: 10000 }, { column: 'note', op: 'contains', value: '交通費' }] },
+        { where: { column: 'id', value: 'E2' }, present: false },
+        { where: { column: 'id', value: 'E3' }, present: true },
+      ]);
+      expect('present' in (result.rows?.[0] ?? {})).toBe(false);
+      expect('cells' in (result.rows?.[1] ?? {})).toBe(false);
+    });
+
+    it('where.value は null / 数値 / 真偽値も取れる（行の特定は JSON セルの一致）', () => {
+      const result = validateToolCheckExpectations({ rows: [
+        rowExpectation({ where: { column: 'id', value: null } }),
+        rowExpectation({ where: { column: 'seq', value: 3 } }),
+        rowExpectation({ where: { column: 'paid', value: false } }),
+      ] });
+      expect(result.rows?.map((row) => row.where.value)).toEqual([null, 3, false]);
+    });
+
+    it('期待は複製される（元の配列・where・cells と参照を共有しない）', () => {
+      const rows: ToolCheckRowExpectation[] = [rowExpectation({ cells: [{ column: 'amount', op: 'eq', value: 1 }] })];
+      const created = createToolCheckCase(props({ expectations: { rows } }));
+      expect(created.expectations.rows).toEqual(rows);
+      expect(created.expectations.rows).not.toBe(rows);
+      expect(created.expectations.rows?.[0]?.where).not.toBe(rows[0]?.where);
+      expect(created.expectations.rows?.[0]?.cells?.[0]).not.toBe(rows[0]?.cells?.[0]);
+    });
+  });
+
+  describe('境界', () => {
+    it(`rows は ${TOOL_CHECK_MAX_ROWS} 件は受理、${TOOL_CHECK_MAX_ROWS + 1} 件は拒否`, () => {
+      const rows = Array.from({ length: TOOL_CHECK_MAX_ROWS }, (_, index) => rowExpectation({ where: { column: 'id', value: `E${index}` } }));
+      expect(validateToolCheckExpectations({ rows }).rows).toHaveLength(TOOL_CHECK_MAX_ROWS);
+      rejectRows([...rows, rowExpectation()], `createToolCheckCase: expectations.rows must have at most ${TOOL_CHECK_MAX_ROWS} entries`);
+    });
+
+    it(`cells は ${TOOL_CHECK_MAX_ROW_CELLS} 件まで受理、${TOOL_CHECK_MAX_ROW_CELLS + 1} 件は拒否`, () => {
+      const cells = Array.from({ length: TOOL_CHECK_MAX_ROW_CELLS }, (_, index) => ({ column: `c${index}`, op: 'eq' as const, value: index }));
+      expect(validateToolCheckExpectations({ rows: [rowExpectation({ cells })] }).rows?.[0]?.cells).toHaveLength(TOOL_CHECK_MAX_ROW_CELLS);
+      rejectRows([rowExpectation({ cells: [...cells, { column: 'x', op: 'eq', value: 1 }] })], `createToolCheckCase: expectations.rows[0].cells must have at most ${TOOL_CHECK_MAX_ROW_CELLS} entries`);
+    });
+
+    it('空配列・cells 空配列は受理する（「行の存在だけ」を見る期待）', () => {
+      expect(validateToolCheckExpectations({ rows: [] }).rows).toEqual([]);
+      expect(validateToolCheckExpectations({ rows: [rowExpectation({ cells: [] })] }).rows?.[0]?.cells).toEqual([]);
+    });
+  });
+
+  describe('異常', () => {
+    it('配列でなければ拒否', () => {
+      rejectRows({ where: { column: 'id', value: 'E1' } }, 'createToolCheckCase: expectations.rows must be an array');
+      rejectRows('E1', 'createToolCheckCase: expectations.rows must be an array');
+    });
+
+    it('where が無い / オブジェクトでなければ位置つきで拒否', () => {
+      rejectRows([{ cells: [] }], 'createToolCheckCase: expectations.rows[0].where must be an object with column and value');
+      rejectRows([rowExpectation(), { where: 'id' }], 'createToolCheckCase: expectations.rows[1].where must be an object with column and value');
+      rejectRows([null], 'createToolCheckCase: expectations.rows[0].where must be an object with column and value');
+    });
+
+    it('where.column が空 / where.value が JSON セルでなければ拒否', () => {
+      rejectRows([{ where: { column: ' ', value: 'E1' } }], 'createToolCheckCase: expectations.rows[0].where.column must be a non-empty string');
+      rejectRows([{ where: { column: 'id', value: { nested: true } } }], 'createToolCheckCase: expectations.rows[0].where.value must be a string, number, boolean or null');
+      rejectRows([{ where: { column: 'id', value: new Date() } }], 'createToolCheckCase: expectations.rows[0].where.value must be a string, number, boolean or null');
+    });
+
+    it('present が真偽値でなければ拒否', () => {
+      rejectRows([rowExpectation({ present: 'false' as unknown as boolean })], 'createToolCheckCase: expectations.rows[0].present must be a boolean');
+      rejectRows([rowExpectation({ present: 0 as unknown as boolean })], 'createToolCheckCase: expectations.rows[0].present must be a boolean');
+    });
+
+    it('cells が配列でない / 列が空 / op が不正 / 値が JSON セルでなければ位置つきで拒否', () => {
+      rejectRows([rowExpectation({ cells: 'amount' as unknown as [] })], 'createToolCheckCase: expectations.rows[0].cells must be an array');
+      rejectRows([rowExpectation({ cells: [{ column: '', op: 'eq', value: 1 }] })], 'createToolCheckCase: expectations.rows[0].cells[0].column must be a non-empty string');
+      rejectRows([rowExpectation({ cells: [{ column: 'a', op: 'eq', value: 1 }, { column: 'b', op: 'like' as 'eq', value: 1 }] })], 'createToolCheckCase: expectations.rows[0].cells[1].op must be one of eq, neq, gte, lte, contains');
+      rejectRows([rowExpectation({ cells: [{ column: 'a', op: 'eq', value: undefined as unknown as string }] })], 'createToolCheckCase: expectations.rows[0].cells[0].value must be a string, number, boolean or null');
+    });
+  });
+});
+
+describe('validateToolCheckExpectations: judgments（AI 判定への期待）', () => {
+  describe('正常', () => {
+    it('nodeId / where / verdict / reasonContains を正規化して返す（reasonContains 省略時はキーが現れない）', () => {
+      const result = validateToolCheckExpectations({ judgments: [
+        { nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes', 'unclear'] },
+        { nodeId: 'judge', where: { column: 'id', value: 'E2' }, verdict: ['no'], reasonContains: '規程' },
+      ] });
+      expect(result.judgments).toEqual([
+        { nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes', 'unclear'] },
+        { nodeId: 'judge', where: { column: 'id', value: 'E2' }, verdict: ['no'], reasonContains: '規程' },
+      ]);
+      expect('reasonContains' in (result.judgments?.[0] ?? {})).toBe(false);
+    });
+
+    it('期待は複製される（元の配列・where・verdict と参照を共有しない）', () => {
+      const judgments: ToolCheckJudgmentExpectation[] = [judgmentExpectation({ verdict: ['yes', 'no'] })];
+      const created = createToolCheckCase(props({ expectations: { judgments } }));
+      expect(created.expectations.judgments).toEqual(judgments);
+      expect(created.expectations.judgments).not.toBe(judgments);
+      expect(created.expectations.judgments?.[0]?.where).not.toBe(judgments[0]?.where);
+      expect(created.expectations.judgments?.[0]?.verdict).not.toBe(judgments[0]?.verdict);
+    });
+  });
+
+  describe('境界', () => {
+    it(`judgments は ${TOOL_CHECK_MAX_JUDGMENTS} 件は受理、${TOOL_CHECK_MAX_JUDGMENTS + 1} 件は拒否`, () => {
+      const judgments = Array.from({ length: TOOL_CHECK_MAX_JUDGMENTS }, (_, index) => judgmentExpectation({ where: { column: 'id', value: `E${index}` } }));
+      expect(validateToolCheckExpectations({ judgments }).judgments).toHaveLength(TOOL_CHECK_MAX_JUDGMENTS);
+      rejectJudgments([...judgments, judgmentExpectation()], `createToolCheckCase: expectations.judgments must have at most ${TOOL_CHECK_MAX_JUDGMENTS} entries`);
+    });
+
+    it(`verdict は 1 件から ${TOOL_CHECK_MAX_VERDICTS} 件まで受理、${TOOL_CHECK_MAX_VERDICTS + 1} 件は拒否`, () => {
+      const verdict = Array.from({ length: TOOL_CHECK_MAX_VERDICTS }, (_, index) => `v${index}`);
+      expect(validateToolCheckExpectations({ judgments: [judgmentExpectation({ verdict })] }).judgments?.[0]?.verdict).toHaveLength(TOOL_CHECK_MAX_VERDICTS);
+      expect(validateToolCheckExpectations({ judgments: [judgmentExpectation({ verdict: ['yes'] })] }).judgments?.[0]?.verdict).toEqual(['yes']);
+      rejectJudgments([judgmentExpectation({ verdict: [...verdict, 'extra'] })], `createToolCheckCase: expectations.judgments[0].verdict must have at most ${TOOL_CHECK_MAX_VERDICTS} entries`);
+    });
+
+    it('空配列は受理する（判定への期待なし）', () => {
+      expect(validateToolCheckExpectations({ judgments: [] }).judgments).toEqual([]);
+    });
+  });
+
+  describe('異常', () => {
+    it('配列でなければ拒否', () => {
+      rejectJudgments({ nodeId: 'judge' }, 'createToolCheckCase: expectations.judgments must be an array');
+    });
+
+    it('nodeId が空文字 / 欠落なら位置つきで拒否', () => {
+      rejectJudgments([judgmentExpectation({ nodeId: '' })], 'createToolCheckCase: expectations.judgments[0].nodeId must be a non-empty string');
+      rejectJudgments([judgmentExpectation(), { where: { column: 'id', value: 'E1' }, verdict: ['yes'] }], 'createToolCheckCase: expectations.judgments[1].nodeId must be a non-empty string');
+      rejectJudgments([null], 'createToolCheckCase: expectations.judgments[0].nodeId must be a non-empty string');
+    });
+
+    it('where が無い / column が空 / value が JSON セルでなければ拒否', () => {
+      rejectJudgments([{ nodeId: 'judge', verdict: ['yes'] }], 'createToolCheckCase: expectations.judgments[0].where must be an object with column and value');
+      rejectJudgments([judgmentExpectation({ where: { column: '', value: 'E1' } })], 'createToolCheckCase: expectations.judgments[0].where.column must be a non-empty string');
+      rejectJudgments([judgmentExpectation({ where: { column: 'id', value: [] as unknown as string } })], 'createToolCheckCase: expectations.judgments[0].where.value must be a string, number, boolean or null');
+    });
+
+    it('verdict が配列でない / 空配列なら拒否', () => {
+      rejectJudgments([judgmentExpectation({ verdict: [] })], 'createToolCheckCase: expectations.judgments[0].verdict must be a non-empty array of strings');
+      rejectJudgments([judgmentExpectation({ verdict: 'yes' as unknown as string[] })], 'createToolCheckCase: expectations.judgments[0].verdict must be a non-empty array of strings');
+    });
+
+    it('verdict に空文字 / 文字列でない値があれば拒否', () => {
+      rejectJudgments([judgmentExpectation({ verdict: ['yes', ''] })], 'createToolCheckCase: expectations.judgments[0].verdict[] must be a non-empty string');
+      rejectJudgments([judgmentExpectation({ verdict: ['  '] })], 'createToolCheckCase: expectations.judgments[0].verdict[] must be a non-empty string');
+      rejectJudgments([judgmentExpectation({ verdict: [1 as unknown as string] })], 'createToolCheckCase: expectations.judgments[0].verdict[] must be a non-empty string');
+    });
+
+    it('reasonContains が空文字 / 文字列でなければ拒否', () => {
+      rejectJudgments([judgmentExpectation({ reasonContains: '' })], 'createToolCheckCase: expectations.judgments[0].reasonContains must be a non-empty string');
+      rejectJudgments([judgmentExpectation({ reasonContains: 1 as unknown as string })], 'createToolCheckCase: expectations.judgments[0].reasonContains must be a non-empty string');
+    });
   });
 });

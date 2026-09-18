@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SchemaDto, ToolCheckCaseDto, ToolCheckRunResultDto, ToolCheckSuggestionDto } from '../api/types';
 import {
-  EMPTY_EXPECTATIONS, ROW_LIMIT, argumentIssues, argumentNamesInMessage, assertionCounts, assertionKindLabel, buildArguments, buildExpectations, buildRunDto,
+  EMPTY_EXPECTATIONS, ROW_LIMIT, aiJudgeNodes, argumentIssues, argumentNamesInMessage, assertionCounts, assertionKindLabel, buildArguments, buildExpectations, buildRunDto,
   buildSuggestDto, categoryLabel, clampPerCategory, coerceCell, draftFromExpectations, draftsFromArguments, editorFingerprint, editorFromCase, editorFromSuggestion,
   groupSuggestions, initialDrafts, inputKindFor, isExpectedFailure, summarizeExpectations, summarizeStatuses,
 } from './tool-check-model';
@@ -123,7 +123,7 @@ describe('argumentNamesInMessage', () => {
 
 describe('buildExpectations', () => {
   it('正常: 埋まっている項目だけを含める', () => {
-    const built = buildExpectations({ rowCountOp: 'gte', rowCountValue: '3', columns: ['total', ' region '], cells: [{ column: 'total', op: 'gte', value: '100', mode: 'any' }], maxDurationMs: '500', outcome: '' }, { columns: [{ name: 'total', type: 'number', nullable: false }] });
+    const built = buildExpectations({ ...EMPTY_EXPECTATIONS, rowCountOp: 'gte', rowCountValue: '3', columns: ['total', ' region '], cells: [{ column: 'total', op: 'gte', value: '100', mode: 'any' }], maxDurationMs: '500', outcome: '' }, { columns: [{ name: 'total', type: 'number', nullable: false }] });
     expect(built).toEqual({ rowCount: { op: 'gte', value: 3 }, columns: ['total', 'region'], cells: [{ column: 'total', op: 'gte', value: 100, mode: 'any' }], maxDurationMs: 500 });
   });
 
@@ -164,6 +164,95 @@ describe('buildExpectations', () => {
   it('境界: 50 件のセル条件をそのまま送れる', () => {
     const cells = Array.from({ length: 50 }, (_, index) => ({ column: `c${index}`, op: 'eq' as const, value: String(index), mode: 'any' as const }));
     expect(buildExpectations({ ...EMPTY_EXPECTATIONS, cells }, undefined)?.cells).toHaveLength(50);
+  });
+
+  it('正常: 行の期待は present（既定 true）を省き、セル条件は出力スキーマの型で変換する', () => {
+    const built = buildExpectations({
+      ...EMPTY_EXPECTATIONS,
+      rows: [
+        { column: 'id', value: 'E1', present: true, cells: [{ column: 'amount', op: 'gte', value: '10000' }] },
+        { column: 'id', value: 'E2', present: false, cells: [] },
+        { column: 'id', value: 'E3', present: true, cells: [] },
+      ],
+    }, { columns: [{ name: 'id', type: 'string', nullable: false }, { name: 'amount', type: 'number', nullable: false }] });
+    expect(built?.rows).toEqual([
+      { where: { column: 'id', value: 'E1' }, cells: [{ column: 'amount', op: 'gte', value: 10000 }] },
+      { where: { column: 'id', value: 'E2' }, present: false },
+      { where: { column: 'id', value: 'E3' } },
+    ]);
+    // present を省いたときは既定（true）なので、明示の present: true は載せない。
+    expect('present' in (built?.rows?.[0] ?? {})).toBe(false);
+    expect('cells' in (built?.rows?.[2] ?? {})).toBe(false);
+  });
+
+  it('境界: 列が空の行の期待・セル条件は未完成として除き、「存在しない」行のセル条件は載せない', () => {
+    const built = buildExpectations({
+      ...EMPTY_EXPECTATIONS,
+      rows: [
+        { column: '  ', value: 'x', present: true, cells: [] },
+        { column: 'id', value: 'E2', present: false, cells: [{ column: 'amount', op: 'eq', value: '1' }] },
+        { column: ' id ', value: 'E3', present: true, cells: [{ column: '', op: 'eq', value: '1' }] },
+      ],
+    }, undefined);
+    expect(built?.rows).toEqual([{ where: { column: 'id', value: 'E2' }, present: false }, { where: { column: 'id', value: 'E3' } }]);
+  });
+
+  it('正常: AI判定の期待は verdict をそのまま送り、理由は空欄なら省く', () => {
+    const built = buildExpectations({
+      ...EMPTY_EXPECTATIONS,
+      judgments: [
+        { nodeId: 'judge', column: 'id', value: '1', verdicts: ['クレーム'], reasonContains: ' 遅延 ' },
+        { nodeId: 'judge', column: 'id', value: 'E2', verdicts: ['no', 'unclear'], reasonContains: '  ' },
+      ],
+    }, undefined);
+    expect(built?.judgments).toEqual([
+      { nodeId: 'judge', where: { column: 'id', value: 1 }, verdict: ['クレーム'], reasonContains: '遅延' },
+      { nodeId: 'judge', where: { column: 'id', value: 'E2' }, verdict: ['no', 'unclear'] },
+    ]);
+  });
+
+  it('境界: ノード・列・判定値のどれかが空の AI判定の期待は送らない', () => {
+    const judgments = [
+      { nodeId: '', column: 'id', value: '1', verdicts: ['yes'], reasonContains: '' },
+      { nodeId: 'judge', column: '', value: '1', verdicts: ['yes'], reasonContains: '' },
+      { nodeId: 'judge', column: 'id', value: '1', verdicts: [], reasonContains: '' },
+    ];
+    expect(buildExpectations({ ...EMPTY_EXPECTATIONS, judgments }, undefined)).toBeUndefined();
+    // 揃っている 1 件だけが残る（空の行に引きずられて全部落とさない）。
+    const complete = { nodeId: 'judge', column: 'id', value: '2', verdicts: ['no'], reasonContains: '' };
+    expect(buildExpectations({ ...EMPTY_EXPECTATIONS, judgments: [...judgments, complete] }, undefined)).toEqual({ judgments: [{ nodeId: 'judge', where: { column: 'id', value: 2 }, verdict: ['no'] }] }); // 値は cells と同じく数値へ寄せる
+  });
+
+  it('境界: 行の期待 50 件（各セル条件 20 件）と AI判定の期待 100 件をそのまま送れる', () => {
+    const rows = Array.from({ length: 50 }, (_, index) => ({
+      column: 'id', value: `E${index}`, present: true,
+      cells: Array.from({ length: 20 }, (_, at) => ({ column: `c${at}`, op: 'eq' as const, value: String(at) })),
+    }));
+    const judgments = Array.from({ length: 100 }, (_, index) => ({ nodeId: 'judge', column: 'id', value: `E${index}`, verdicts: ['yes'], reasonContains: '' }));
+    const built = buildExpectations({ ...EMPTY_EXPECTATIONS, rows, judgments }, undefined);
+    expect(built?.rows).toHaveLength(50);
+    expect(built?.rows?.[0]?.cells).toHaveLength(20);
+    expect(built?.judgments).toHaveLength(100);
+  });
+
+  it('正常: 保存済みの行・AI判定の期待を入力欄へ戻し、再構築すると同じ DTO になる', () => {
+    const saved = {
+      rows: [
+        { where: { column: 'id', value: 'E1' }, cells: [{ column: 'amount', op: 'gte' as const, value: 10000 }] },
+        { where: { column: 'id', value: 'E2' }, present: false },
+        { where: { column: 'id', value: 'E3' } },
+      ],
+      judgments: [
+        { nodeId: 'judge', where: { column: 'id', value: 1 }, verdict: ['クレーム', 'unclear'], reasonContains: '遅延' },
+        { nodeId: 'judge2', where: { column: 'id', value: 'E2' }, verdict: ['no'] },
+      ],
+    };
+    const draft = draftFromExpectations(saved);
+    expect(draft.rows[0]).toEqual({ column: 'id', value: 'E1', present: true, cells: [{ column: 'amount', op: 'gte', value: '10000' }] });
+    expect(draft.rows[1]?.present).toBe(false);
+    expect(draft.judgments[0]).toEqual({ nodeId: 'judge', column: 'id', value: '1', verdicts: ['クレーム', 'unclear'], reasonContains: '遅延' });
+    expect(draft.judgments[1]?.reasonContains).toBe('');
+    expect(buildExpectations(draft, { columns: [{ name: 'id', type: 'string', nullable: false }, { name: 'amount', type: 'number', nullable: false }] })).toEqual(saved);
   });
 
   it('正常: 保存済みの期待を入力欄へ戻し、再構築すると同じ DTO になる', () => {
@@ -221,6 +310,8 @@ describe('集計とラベル', () => {
     expect(assertionKindLabel('outcome')).toEqual(['Outcome', '実行の結末']);
     expect(assertionKindLabel('rowCount')).toEqual(['Row count', '行数']);
     expect(assertionKindLabel('duration')).toEqual(['Duration', '所要時間']);
+    expect(assertionKindLabel('row')).toEqual(['Row', '行']);
+    expect(assertionKindLabel('judgment')).toEqual(['AI judgment', 'AI判定']);
   });
   it('正常: 「失敗が期待値で実際に失敗した合格」は status = passed かつ error ありで判定する', () => {
     const error = { code: 'TOOL_ARGUMENTS', message: 'required argument missing: limit' };
@@ -236,6 +327,36 @@ describe('集計とラベル', () => {
     expect(inputKindFor({ name: 'a', type: 'boolean', nullable: false })).toBe('boolean');
     expect(inputKindFor({ name: 'a', type: 'date', nullable: false })).toBe('text');
     expect(inputKindFor({ name: 'a', type: 'unknown', nullable: false })).toBe('text');
+  });
+});
+
+describe('aiJudgeNodes（グラフから AI判定ノードを読む）', () => {
+  it('正常: はい/いいえのノードは yes / no / unclear、分類のノードはカテゴリ名 + unclear を判定値にする', () => {
+    const nodes = aiJudgeNodes({
+      nodes: [
+        { id: 'src', type: 'json-source', config: {} },
+        { id: 'judge', type: 'ai-judge', config: { question: 'この問い合わせはクレームですか？', categories: [], columns: ['id', 'body'] } },
+        { id: 'sort', type: 'ai-judge-lookalike', config: {} },
+        { id: 'classify', type: 'ai-judge', config: { question: '種類は？', categories: [{ name: 'クレーム' }, { name: '問い合わせ', description: 'd' }] } },
+      ],
+      edges: [],
+    });
+    expect(nodes.map((node) => node.nodeId)).toEqual(['judge', 'classify']);
+    expect(nodes[0]).toEqual({ nodeId: 'judge', question: 'この問い合わせはクレームですか？', verdicts: ['yes', 'no', 'unclear'], columns: ['id', 'body'] });
+    expect(nodes[1]?.verdicts).toEqual(['クレーム', '問い合わせ', 'unclear']);
+    // 「モデルに見せる列」が未指定なら（= 全列）候補は分からないので空にする（画面は自由入力にする）。
+    expect(nodes[1]?.columns).toEqual([]);
+  });
+
+  it('境界: グラフが無い・AI判定ノードが無いなら空', () => {
+    expect(aiJudgeNodes(undefined)).toEqual([]);
+    expect(aiJudgeNodes({ nodes: [{ id: 'a', type: 'select', config: {} }], edges: [] })).toEqual([]);
+  });
+
+  it('異常: 設定の形が違っても落とさず「はい/いいえ」として扱う', () => {
+    const nodes = aiJudgeNodes({ nodes: [{ id: 'judge', type: 'ai-judge', config: { categories: 'broken', columns: [1, 'ok'], question: 7 } }], edges: [] });
+    expect(nodes[0]).toEqual({ nodeId: 'judge', question: '', verdicts: ['yes', 'no', 'unclear'], columns: ['ok'] });
+    expect(aiJudgeNodes({ nodes: [{ id: 'judge', type: 'ai-judge', config: null }], edges: [] })[0]?.verdicts).toEqual(['yes', 'no', 'unclear']);
   });
 });
 
@@ -280,6 +401,33 @@ describe('LLM 提案の補助（buildSuggestDto / clampPerCategory / groupSugges
 
   it('境界: 期待が空なら要約も空', () => {
     expect(summarizeExpectations({})).toEqual([]);
+  });
+
+  it('正常: 行・AI判定の期待もサーバー定型文の形で要約する', () => {
+    expect(summarizeExpectations({
+      rows: [
+        { where: { column: 'id', value: 'E1' }, cells: [{ column: 'amount', op: 'gte', value: 10000 }] },
+        { where: { column: 'id', value: 'E2' }, present: false },
+        { where: { column: 'id', value: 'E3' } },
+      ],
+      judgments: [{ nodeId: 'judge', where: { column: 'id', value: 1 }, verdict: ['クレーム', 'unclear'], reasonContains: '遅延' }],
+    })).toEqual([
+      'row[id == "E1"].amount >= 10000',
+      'row[id == "E2"] absent',
+      'row[id == "E3"] present',
+      'judgment[judge][id == 1] in ["クレーム", "unclear"]',
+      'judgment[judge][id == 1] reason contains "遅延"',
+    ]);
+  });
+
+  it('正常: 提案の行・AI判定の期待もエディタ状態へ素通しする（新しい項目で落ちない）', () => {
+    const state = editorFromSuggestion(
+      suggestion({ expectations: { rows: [{ where: { column: 'id', value: 'E1' }, present: false }], judgments: [{ nodeId: 'judge', where: { column: 'id', value: 1 }, verdict: ['yes'] }] } }),
+      { toolId: 'sales', version: '' },
+      schema,
+    );
+    expect(state.expectations.rows).toEqual([{ column: 'id', value: 'E1', present: false, cells: [] }]);
+    expect(state.expectations.judgments).toEqual([{ nodeId: 'judge', column: 'id', value: '1', verdicts: ['yes'], reasonContains: '' }]);
   });
 
   it('正常: 提案をエディタ状態に展開する（名前・引数・期待。版は選択中のものを引き継ぐ）', () => {

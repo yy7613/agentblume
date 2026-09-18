@@ -32,6 +32,7 @@ import {
 } from '../../domain/tool-check/tool-check-case';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import type { EtlEngine } from '../etl/engine';
+import type { ResolveAiJudgmentsUseCase } from '../tool/resolve-ai-judgments';
 import { ModelProviderError, type JsonSchemaObject, type JsonSchemaProperty, type ModelProviderPort } from '../model/model-provider';
 import type { ToolCheckToolRef } from './tool-check-result';
 
@@ -152,6 +153,8 @@ export class SuggestToolCheckCasesUseCase {
     private readonly enabled: () => boolean | Promise<boolean>,
     private readonly resolveDataSources?: ResolveDataSourceGraphUseCase,
     private readonly modelSnapshot?: () => Promise<{ readonly provider: string; readonly model: string } | undefined>,
+    /** サンプル実行の前に AI 判定を解く。失敗してもサンプル実行の warning になるだけで提案は続く。 */
+    private readonly resolveAiJudgments?: ResolveAiJudgmentsUseCase,
   ) {}
 
   async available(): Promise<boolean> {
@@ -209,7 +212,8 @@ export class SuggestToolCheckCasesUseCase {
    */
   private async sampleRun(scope: TenantScope, tool: Tool, warnings: string[]): Promise<SuggestionContext['sampleRun']> {
     try {
-      const graph = this.resolveDataSources === undefined ? tool.graph : await this.resolveDataSources.execute(scope, tool.graph);
+      const withSources = this.resolveDataSources === undefined ? tool.graph : await this.resolveDataSources.execute(scope, tool.graph);
+      const graph = this.resolveAiJudgments === undefined ? withSources : await this.resolveAiJudgments.execute(withSources);
       const preview = this.engine.preview(graph, { rowLimit: SAMPLE_ROW_LIMIT });
       return {
         arguments: agentInputSample(tool.graph),

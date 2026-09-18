@@ -77,3 +77,88 @@ describe('serializeToolCheckCase / deserializeToolCheckCase', () => {
     expect(() => deserializeToolCheckCase({ ...serializeToolCheckCase(full()), expectations: { rowCount: { op: 'eq', value: -1 } } })).toThrow('createToolCheckCase: expectations.rowCount.value must be a non-negative integer');
   });
 });
+
+/** 行の特定・AI 判定の期待を持つケース（rows / judgments の往復用）。 */
+function judged(): ToolCheckCase {
+  return createToolCheckCase({
+    scope, id: 'case-4', toolId: 'expense-tool', name: 'judged rows', arguments: { month: '2026-09' },
+    expectations: {
+      rows: [
+        { where: { column: 'id', value: 'E1' }, cells: [{ column: 'amount', op: 'gte', value: 10000 }, { column: 'note', op: 'contains', value: '交通費' }] },
+        { where: { column: 'id', value: 'E2' }, present: false },
+        { where: { column: 'seq', value: 3 }, present: true },
+      ],
+      judgments: [
+        { nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes', 'unclear'] },
+        { nodeId: 'judge', where: { column: 'id', value: 'E2' }, verdict: ['no'], reasonContains: '規程' },
+      ],
+    },
+    createdAt: at, updatedAt: at,
+  });
+}
+
+describe('serializeToolCheckCase / deserializeToolCheckCase: rows と judgments', () => {
+  it('正常: 行の特定（present:false を含む）と AI 判定（reasonContains を含む）の期待が JSON 経由で往復する', () => {
+    const item = judged();
+    const restored = deserializeToolCheckCase(JSON.parse(JSON.stringify(serializeToolCheckCase(item))));
+    expect(restored).toEqual(item);
+    expect(restored.expectations.rows?.[1]?.present).toBe(false);
+    expect(restored.expectations.judgments?.[1]?.reasonContains).toBe('規程');
+  });
+
+  it('境界: present / reasonContains を省いたケースでは、直列化した形にもキーが現れない', () => {
+    const serialized = serializeToolCheckCase(judged());
+    // キーが「無い」だけでは旧コード（rows を写さない）でも通るので、写されていること自体も固定する。
+    expect(serialized.expectations.rows).toHaveLength(judged().expectations.rows?.length ?? -1);
+    expect(serialized.expectations.judgments).toHaveLength(judged().expectations.judgments?.length ?? -1);
+    expect('present' in (serialized.expectations.rows?.[0] ?? {})).toBe(false);
+    expect('cells' in (serialized.expectations.rows?.[1] ?? {})).toBe(false);
+    expect('reasonContains' in (serialized.expectations.judgments?.[0] ?? {})).toBe(false);
+    expect('rows' in serializeToolCheckCase(minimal()).expectations).toBe(false);
+    expect('judgments' in serializeToolCheckCase(minimal()).expectations).toBe(false);
+  });
+
+  it('境界: 直列化結果は元と参照を共有しない（rows / judgments の入れ子まで複製する）', () => {
+    const item = judged();
+    const serialized = serializeToolCheckCase(item);
+    expect(serialized.expectations.rows).not.toBe(item.expectations.rows);
+    expect(serialized.expectations.rows?.[0]).not.toBe(item.expectations.rows?.[0]);
+    expect(serialized.expectations.rows?.[0]?.where).not.toBe(item.expectations.rows?.[0]?.where);
+    expect(serialized.expectations.rows?.[0]?.cells?.[0]).not.toBe(item.expectations.rows?.[0]?.cells?.[0]);
+    expect(serialized.expectations.judgments).not.toBe(item.expectations.judgments);
+    expect(serialized.expectations.judgments?.[0]).not.toBe(item.expectations.judgments?.[0]);
+    expect(serialized.expectations.judgments?.[0]?.where).not.toBe(item.expectations.judgments?.[0]?.where);
+    expect(serialized.expectations.judgments?.[0]?.verdict).not.toBe(item.expectations.judgments?.[0]?.verdict);
+    expect(serialized.expectations.rows).toEqual(item.expectations.rows);
+    expect(serialized.expectations.judgments).toEqual(item.expectations.judgments);
+  });
+
+  it('境界: rows / judgments の未知のキーは読み捨てる（新しいコードが書いたデータを古いコードが読める）', () => {
+    const serialized = {
+      ...serializeToolCheckCase(judged()),
+      expectations: {
+        rows: [{ where: { column: 'id', value: 'E1', hint: 'x' }, present: true, mode: 'first', cells: [{ column: 'amount', op: 'gte', value: 1, tolerance: 2 }] }],
+        judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes'], confidence: 0.5 }],
+      },
+    };
+    const restored = deserializeToolCheckCase(serialized);
+    expect(restored.expectations).toEqual({
+      rows: [{ where: { column: 'id', value: 'E1' }, present: true, cells: [{ column: 'amount', op: 'gte', value: 1 }] }],
+      judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes'] }],
+    });
+  });
+
+  it('異常: 保存データの rows / judgments が形を破っていれば ToolCheckValidationError（パス付き）', () => {
+    const base = serializeToolCheckCase(judged());
+    expect(() => deserializeToolCheckCase({ ...base, expectations: { rows: [{ where: { column: 'id', value: 'E1' }, present: 'no' }] } })).toThrow('expectations.rows.0.present');
+    expect(() => deserializeToolCheckCase({ ...base, expectations: { judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: 'yes' }] } })).toThrow('expectations.judgments.0.verdict');
+    expect(() => deserializeToolCheckCase({ ...base, expectations: { judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: [] }] } })).toThrow(ToolCheckValidationError);
+  });
+
+  it('例外: 形は合っていても不変条件（verdict 非空・nodeId 非空）を破る保存データは createToolCheckCase で落ちる', () => {
+    const base = serializeToolCheckCase(judged());
+    expect(() => deserializeToolCheckCase({ ...base, expectations: { judgments: [{ nodeId: '', where: { column: 'id', value: 'E1' }, verdict: ['yes'] }] } })).toThrow('createToolCheckCase: expectations.judgments[0].nodeId must be a non-empty string');
+    expect(() => deserializeToolCheckCase({ ...base, expectations: { judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: [] }] } })).toThrow('createToolCheckCase: expectations.judgments[0].verdict must be a non-empty array of strings');
+    expect(() => deserializeToolCheckCase({ ...base, expectations: { rows: [{ where: { column: '', value: 'E1' } }] } })).toThrow('createToolCheckCase: expectations.rows[0].where.column must be a non-empty string');
+  });
+});

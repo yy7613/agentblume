@@ -376,6 +376,107 @@ describe('ToolCheckPage: 結果表示の境界', () => {
   });
 });
 
+describe('ToolCheckPage: 行の期待と AI判定の期待', () => {
+  const judgeTools: readonly ToolSummaryDto[] = [
+    { internalId: 'tickets', publishName: 'ticket_triage', displayName: 'Ticket triage', latestVersion: '1.0.0', state: 'published', sideEffect: 'read-only' },
+  ];
+  const judgeTool = {
+    metadata: { ...salesTool.metadata, internalId: 'tickets', publishName: 'ticket_triage', displayName: 'Ticket triage', version: '1.0.0' },
+    sideEffect: 'read-only',
+    graph: { nodes: [{ id: 'src', type: 'json-source', config: {} }, { id: 'judge', type: 'ai-judge', config: { question: 'この問い合わせはクレームですか？', categories: [], columns: ['id', 'body'] } }], edges: [] },
+    inputSchema: { columns: [{ name: 'limit', type: 'number', nullable: false }] },
+    outputSchema: { columns: [{ name: 'id', type: 'string', nullable: false }, { name: 'amount', type: 'number', nullable: false }] },
+  } as SerializedToolDto;
+  const judgeClient = (overrides: Record<string, unknown> = {}) => makeClient({ listTools: vi.fn().mockResolvedValue(judgeTools), getTool: vi.fn().mockResolvedValue(judgeTool), ...overrides });
+
+  it('正常: AI判定ノードのあるツールでだけ「AI判定の期待」を出す', async () => {
+    renderPage(judgeClient());
+    expect(await screen.findByText('AI判定の期待')).toBeTruthy();
+    cleanup();
+    renderPage(makeClient());
+    await waitForArguments();
+    expect(screen.getByText('行の期待')).toBeTruthy();
+    expect(screen.queryByText('AI判定の期待')).toBeNull();
+  });
+
+  it('正常: 行の期待と AI判定の期待を入力すると rows / judgments を含む DTO を送る', async () => {
+    const runToolCheck = vi.fn().mockResolvedValue(makeResult());
+    renderPage(judgeClient({ runToolCheck }));
+    await userEvent.click(await screen.findByRole('button', { name: '行の期待を追加' }));
+    await userEvent.selectOptions(screen.getByLabelText('行の期待 1 の列'), 'id');
+    await userEvent.type(screen.getByLabelText('行の期待 1 の値'), 'E1');
+    await userEvent.selectOptions(screen.getByLabelText('行の期待 1 の有無'), 'absent');
+
+    await userEvent.click(screen.getByRole('button', { name: 'AI判定の期待を追加' }));
+    await userEvent.selectOptions(screen.getByLabelText('AI判定の期待 1 の列'), 'id');
+    await userEvent.type(screen.getByLabelText('AI判定の期待 1 の値'), 'E1');
+    await userEvent.click(screen.getByLabelText('AI判定の期待 1 の判定値 no'));
+    await userEvent.click(screen.getByRole('button', { name: '実行' }));
+
+    await waitFor(() => expect(runToolCheck).toHaveBeenCalled());
+    expect(runToolCheck.mock.calls[0]?.[0]?.expectations).toEqual({
+      rows: [{ where: { column: 'id', value: 'E1' }, present: false }],
+      judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['no'] }],
+    });
+  });
+
+  it('正常: 行・AI判定の期待は合否つきで日本語化して出す', async () => {
+    renderPage(judgeClient({ runToolCheck: vi.fn().mockResolvedValue(makeResult({
+      status: 'failed',
+      assertions: [
+        { kind: 'row', passed: true, expected: 'row[id == "E1"] present', actual: 'present' },
+        { kind: 'row', passed: false, expected: 'row[id == "E2"].amount >= 10000', actual: 'row not found' },
+        { kind: 'judgment', passed: true, expected: 'judgment[judge][id == "E1"] in ["no", "unclear"]', actual: 'no (重複の問い合わせ)' },
+      ],
+    })) }));
+    await userEvent.click(await screen.findByRole('button', { name: '実行' }));
+
+    expect((await screen.findByRole('status'))?.textContent).toContain('不合格');
+    expect(screen.getByText('id == "E1" の行が存在する')).toBeTruthy();
+    expect(screen.getByText('存在する')).toBeTruthy();
+    expect(screen.getByText('id == "E2" の行の amount >= 10000')).toBeTruthy();
+    expect(screen.getByText('該当する行が無い')).toBeTruthy();
+    expect(screen.getByText('judge の判定 [id == "E1"] が no / unclear のいずれか')).toBeTruthy();
+    expect(screen.getByText('no（重複の問い合わせ）')).toBeTruthy();
+    expect(screen.getAllByLabelText('合格')).toHaveLength(2);
+    expect(screen.getAllByLabelText('不合格')).toHaveLength(1);
+    // 項目名（kind）も行・AI判定として読める。
+    expect(screen.getAllByText('行')).toHaveLength(2);
+    expect(screen.getByText('AI判定')).toBeTruthy();
+  });
+
+  it('正常: 判定表はノードごとに出し、判定したモデルと切り詰めを添える', async () => {
+    renderPage(judgeClient({ runToolCheck: vi.fn().mockResolvedValue(makeResult({
+      judgedBy: 'lmstudio/qwen3-12b',
+      judgments: [{
+        nodeId: 'judge',
+        verdictColumn: 'aiVerdict',
+        reasonColumn: 'aiReason',
+        table: { schema: { columns: [{ name: 'id', type: 'string', nullable: false }, { name: 'aiVerdict', type: 'string', nullable: false }, { name: 'aiReason', type: 'string', nullable: true }] }, rows: [{ id: 'E1', aiVerdict: 'no', aiReason: '重複の問い合わせ' }] },
+        rowCount: 3,
+      }],
+    })) }));
+    await userEvent.click(await screen.findByRole('button', { name: '実行' }));
+
+    // 判定表の caption は「ノード <nodeId>」。
+    const caption = await screen.findByText('ノード', { selector: 'caption' });
+    expect(within(caption).getByText('judge')).toBeTruthy();
+    const table = caption.closest('table') as HTMLTableElement;
+    expect(within(table).getByText('aiVerdict')).toBeTruthy();
+    expect(within(table).getByText('重複の問い合わせ')).toBeTruthy();
+    expect(screen.getByText('lmstudio/qwen3-12b')).toBeTruthy();
+    expect(screen.getByText('判定した全 3 行のうち 1 行を表示')).toBeTruthy();
+  });
+
+  it('境界: 判定表が無い結果（AI判定ノードのないツール）では従来どおり「AI判定」の節を出さない', async () => {
+    renderPage(makeClient());
+    await waitForArguments();
+    await userEvent.click(screen.getByRole('button', { name: '実行' }));
+    await screen.findByRole('status');
+    expect(screen.queryByText('AI判定')).toBeNull();
+  });
+});
+
 describe('ToolCheckPage: ケースの保存・一覧・削除', () => {
   it('正常: 名前を付けて保存すると id 無しで送り、一覧を更新し、以降は上書き保存になる', async () => {
     const saveToolCheckCase = vi.fn().mockResolvedValue(makeCase({ id: 'new-1', name: 'My case' }));

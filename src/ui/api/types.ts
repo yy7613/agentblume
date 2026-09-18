@@ -730,6 +730,8 @@ export interface JudgeReadinessDto {
 export interface RuntimeCapabilitiesDto {
   readonly analysisAssistant: { readonly enabled: boolean };
   readonly toolCheckSuggestions?: { readonly enabled: boolean };
+  /** AI判定ノード（ai-judge）を実行できるか（main スロットのモデル次第）。旧サーバーでは undefined = 使えない扱い。 */
+  readonly aiJudge?: { readonly enabled: boolean };
   readonly judge?: JudgeReadinessDto;
   /** 仕訳の LLM 抽出 / ヒアリングの可否（docs/20 §9）。旧サーバーでは undefined = どちらも使えないものとして扱う。 */
   readonly journal?: JournalCapabilitiesDto;
@@ -1126,6 +1128,29 @@ export interface SampleDataSummaryDto {
 
 /** セル期待の比較演算子。contains は文字列化した値の部分一致。 */
 export type ToolCheckCellOpDto = 'eq' | 'neq' | 'gte' | 'lte' | 'contains';
+/** 行の特定条件（`column == value` に最初に一致した行を見る）。 */
+export interface ToolCheckRowLocatorDto { readonly column: string; readonly value: JsonCell }
+/** 特定した 1 行のセルへの期待（mode は無い: その 1 行だけを見る）。 */
+export interface ToolCheckRowCellDto { readonly column: string; readonly op: ToolCheckCellOpDto; readonly value: JsonCell }
+/** 終端出力の 1 行を特定して検証する期待。present 省略時は true（その行が存在すること）。 */
+export interface ToolCheckRowExpectationDto {
+  readonly where: ToolCheckRowLocatorDto;
+  /** false なら「その行が無い」ことを期待する（cells は評価しない）。既定 true。 */
+  readonly present?: boolean;
+  readonly cells?: readonly ToolCheckRowCellDto[];
+}
+/**
+ * AI 判定ノード（`ai-judge`）の判定への期待。特定するのは**そのノードの入力行**なので、
+ * keep / exclude で行が終端出力から消えていても「この行は no と判定された」を確かめられる。
+ */
+export interface ToolCheckJudgmentExpectationDto {
+  readonly nodeId: string;
+  readonly where: ToolCheckRowLocatorDto;
+  /** 期待する判定値。いずれかに一致すれば合格（AI の揺れを許容するため複数書ける）。 */
+  readonly verdict: readonly string[];
+  /** 理由に含まれるべき文字列（任意）。 */
+  readonly reasonContains?: string;
+}
 export interface ToolCheckExpectationsDto {
   /** 出力行数（全行数、表示上限に依存しない）。 */
   readonly rowCount?: { readonly op: 'eq' | 'gte' | 'lte'; readonly value: number };
@@ -1133,6 +1158,10 @@ export interface ToolCheckExpectationsDto {
   readonly columns?: readonly string[];
   /** セル値の期待。mode: any = 1行でも満たせば合格、all = 全行が満たす必要あり。 */
   readonly cells?: readonly { readonly column: string; readonly op: ToolCheckCellOpDto; readonly value: JsonCell; readonly mode: 'any' | 'all' }[];
+  /** 終端出力の行を特定した期待（最大 50 件、1 件あたりセル条件 20 件まで）。 */
+  readonly rows?: readonly ToolCheckRowExpectationDto[];
+  /** AI 判定ノードの判定への期待（最大 100 件）。 */
+  readonly judgments?: readonly ToolCheckJudgmentExpectationDto[];
   /** 実行時間の上限（ms）。 */
   readonly maxDurationMs?: number;
   /**
@@ -1142,7 +1171,7 @@ export interface ToolCheckExpectationsDto {
   readonly outcome?: 'success' | 'error';
 }
 export interface ToolCheckAssertionResultDto {
-  readonly kind: 'rowCount' | 'column' | 'cell' | 'duration' | 'outcome';
+  readonly kind: 'rowCount' | 'column' | 'cell' | 'row' | 'judgment' | 'duration' | 'outcome';
   readonly passed: boolean;
   /** 期待の説明（英語定型文。UI で言語化する）。 */
   readonly expected: string;
@@ -1159,10 +1188,22 @@ export interface ToolCheckRunResultDto {
   /** 実際の出力行数。 */
   readonly rowCount: number;
   readonly nodes: readonly { readonly nodeId: string; readonly rowCount: number }[];
+  /** AI 判定ノードごとの判定表（入力行 + 判定列 + 理由列。表示用スナップショット）。ai-judge ノードが無ければ省略。 */
+  readonly judgments?: readonly ToolCheckJudgmentSnapshotDto[];
+  /** 判定に使ったモデル（provider/model）。judgments があるときだけ。 */
+  readonly judgedBy?: string;
   readonly durationMs: number;
   /** status = error のときの失敗理由（code はサーバーのエラーコード、nodeId は分かるときだけ）。 */
   readonly error?: { readonly code: string; readonly message: string; readonly nodeId?: string };
   readonly checkedAt: string;
+}
+/** 結果に載る判定表（rowLimit 行までのスナップショット）。 */
+export interface ToolCheckJudgmentSnapshotDto {
+  readonly nodeId: string;
+  readonly verdictColumn: string;
+  readonly reasonColumn: string;
+  readonly table: TableDto;
+  readonly rowCount: number;
 }
 export interface RunToolCheckDto {
   readonly scope: TenantScopeDto;

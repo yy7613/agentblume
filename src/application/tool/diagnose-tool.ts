@@ -24,6 +24,7 @@ import type { Tool } from '../../domain/tool/tool';
 import { agentInputInconsistency, toolToModelDefinition } from '../agent/tool-schema';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import type { EtlEngine } from '../etl/engine';
+import type { ResolveAiJudgmentsUseCase } from './resolve-ai-judgments';
 
 export type DiagnosticStatus = 'ok' | 'warning' | 'error';
 
@@ -92,6 +93,8 @@ export class DiagnoseToolUseCase {
   constructor(
     private readonly engine: EtlEngine,
     private readonly resolveDataSources?: ResolveDataSourceGraphUseCase,
+    /** ドライラン（execution 検査）の前に AI 判定を解く。解けなければ execution の error になる。 */
+    private readonly resolveAiJudgments?: ResolveAiJudgmentsUseCase,
   ) {}
 
   async execute(scope: TenantScope, tool: Tool): Promise<ToolDiagnostics> {
@@ -115,7 +118,14 @@ export class DiagnoseToolUseCase {
     // データソース解決 → グラフ検証 → ドライラン → 出力スキーマ整合。
     // 前段が失敗したら後段は検査しない（解決できないグラフは検証も実行もできない）。
     const resolved = await this.checkDataSources(scope, tool, checks);
-    if (resolved !== undefined) this.checkGraph(tool, resolved, checks);
+    if (resolved !== undefined) {
+      // ドライラン用のグラフは AI 判定まで解いておく（checkGraph は同期なので、解決はここで済ませる）。
+      // 解決自体の失敗（モデル未設定・件数上限）は「実行してみたら落ちる」ことと同義なので、
+      // 実行時と同じ nodeId 付きで execution 検査の error として報告する。
+      const judged = await this.resolveJudgments(resolved);
+      if (judged.ok) this.checkGraph(tool, judged.graph, checks);
+      else this.checkGraph(tool, resolved, checks, judged.failure);
+    }
 
     checks.push(...checkOperatorArguments(tool));
 
@@ -149,7 +159,17 @@ export class DiagnoseToolUseCase {
     }
   }
 
-  private checkGraph(tool: Tool, resolved: ToolGraph, checks: DiagnosticCheck<ToolCheckId>[]): void {
+  /**
+   * AI 判定を解く。ai-judge ノードが無ければ素通り（モデルも見ない）。
+   * 失敗は投げずに返し、execution 検査へ回す（グラフ検査そのものは判定の有無に関わらず行える）。
+   */
+  private async resolveJudgments(resolved: ToolGraph): Promise<{ readonly ok: true; readonly graph: ToolGraph } | { readonly ok: false; readonly failure: unknown }> {
+    if (this.resolveAiJudgments === undefined) return { ok: true, graph: resolved };
+    try { return { ok: true, graph: await this.resolveAiJudgments.execute(resolved) }; }
+    catch (cause) { return { ok: false, failure: cause }; }
+  }
+
+  private checkGraph(tool: Tool, resolved: ToolGraph, checks: DiagnosticCheck<ToolCheckId>[], judgmentFailure?: unknown): void {
     try {
       const propagation = this.engine.propagateSchemas(resolved);
       if (propagation.hasErrors) {
@@ -168,11 +188,17 @@ export class DiagnoseToolUseCase {
       checks.push(ok('graph'));
 
       // 設計時サンプル値でのドライラン（副作用なし。ノード実行時にしか出ないエラーを拾う）。
-      try {
-        this.engine.preview(resolved, { rowLimit: 100 });
-        checks.push(ok('execution'));
-      } catch (cause) {
-        checks.push(error('execution', messageOf(cause), nodeIdOf(cause)));
+      // AI 判定を解けなかったときは preview を試すまでもなく（ai-judge が同じ理由で落ちる）、
+      // 解決器の理由をそのまま execution の error にする。
+      if (judgmentFailure !== undefined) {
+        checks.push(error('execution', messageOf(judgmentFailure), nodeIdOf(judgmentFailure)));
+      } else {
+        try {
+          this.engine.preview(resolved, { rowLimit: 100 });
+          checks.push(ok('execution'));
+        } catch (cause) {
+          checks.push(error('execution', messageOf(cause), nodeIdOf(cause)));
+        }
       }
 
       if (tool.outputSchema !== undefined) {

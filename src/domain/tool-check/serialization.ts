@@ -30,6 +30,17 @@ const expectationsSchema = z.object({
   rowCount: z.object({ op: z.enum(TOOL_CHECK_ROW_COUNT_OPS), value: z.number() }).optional(),
   columns: z.array(z.string()).optional(),
   cells: z.array(z.object({ column: z.string(), op: z.enum(TOOL_CHECK_CELL_OPS), value: jsonCellSchema, mode: z.enum(TOOL_CHECK_CELL_MODES) })).optional(),
+  rows: z.array(z.object({
+    where: z.object({ column: z.string(), value: jsonCellSchema }),
+    present: z.boolean().optional(),
+    cells: z.array(z.object({ column: z.string(), op: z.enum(TOOL_CHECK_CELL_OPS), value: jsonCellSchema })).optional(),
+  })).optional(),
+  judgments: z.array(z.object({
+    nodeId: z.string(),
+    where: z.object({ column: z.string(), value: jsonCellSchema }),
+    verdict: z.array(z.string()),
+    reasonContains: z.string().optional(),
+  })).optional(),
   maxDurationMs: z.number().optional(),
   outcome: z.enum(TOOL_CHECK_OUTCOMES).optional(),
 });
@@ -57,6 +68,8 @@ export function serializeToolCheckCase(item: ToolCheckCase): SerializedToolCheck
   if (item.expectations.rowCount !== undefined) expectations.rowCount = { ...item.expectations.rowCount };
   if (item.expectations.columns !== undefined) expectations.columns = [...item.expectations.columns];
   if (item.expectations.cells !== undefined) expectations.cells = item.expectations.cells.map((cell) => ({ ...cell }));
+  if (item.expectations.rows !== undefined) expectations.rows = item.expectations.rows.map((row) => ({ where: { ...row.where }, ...(row.present === undefined ? {} : { present: row.present }), ...(row.cells === undefined ? {} : { cells: row.cells.map((cell) => ({ ...cell })) }) }));
+  if (item.expectations.judgments !== undefined) expectations.judgments = item.expectations.judgments.map((judgment) => ({ nodeId: judgment.nodeId, where: { ...judgment.where }, verdict: [...judgment.verdict], ...(judgment.reasonContains === undefined ? {} : { reasonContains: judgment.reasonContains }) }));
   if (item.expectations.maxDurationMs !== undefined) expectations.maxDurationMs = item.expectations.maxDurationMs;
   if (item.expectations.outcome !== undefined) expectations.outcome = item.expectations.outcome;
   return {

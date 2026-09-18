@@ -3,16 +3,18 @@
  * モデルは ScriptedModelProvider（缶詰の JSON）で、ネットワークは使わない。
  * 焦点は「モデルの出力を信用せずに検証・修復する規則」と「文脈（プロンプト）の形」。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ScriptedModelProvider } from '../../adapters/model/scripted-model-provider';
 import { InMemoryToolRepository } from '../../adapters/storage/in-memory-tool-repository';
 import type { Row, Schema } from '../../domain/data/types';
 import { createDefaultRegistry } from '../../domain/etl/nodes';
 import type { ToolGraph } from '../../domain/etl/graph';
+import { ConfigError } from '../../domain/etl/errors';
 import { ToolNotFoundError } from '../../domain/tool/errors';
 import { SemVer } from '../../domain/tool/semver';
 import { createTool, type Tool } from '../../domain/tool/tool';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
+import type { ResolveAiJudgmentsUseCase } from '../tool/resolve-ai-judgments';
 import { EtlEngine } from '../etl/engine';
 import { ModelProviderError, type ModelCapability, type ModelCompletion, type ModelProviderPort } from '../model/model-provider';
 import { SuggestToolCheckCasesUseCase, type SuggestToolCheckCasesInput } from './suggest-tool-check-cases';
@@ -84,13 +86,14 @@ interface HarnessOptions {
   readonly model?: ModelProviderPort;
   readonly resolveDataSources?: ResolveDataSourceGraphUseCase;
   readonly modelSnapshot?: () => Promise<{ provider: string; model: string } | undefined>;
+  readonly resolveAiJudgments?: ResolveAiJudgmentsUseCase;
 }
 
 async function harness(options: HarnessOptions = {}) {
   const repo = new InMemoryToolRepository();
   for (const tool of options.tools ?? [makeTool()]) await repo.save(tool);
   const scripted = new ScriptedModelProvider();
-  const useCase = new SuggestToolCheckCasesUseCase(repo, new EtlEngine(createDefaultRegistry()), options.model ?? scripted, () => options.enabled ?? true, options.resolveDataSources, options.modelSnapshot);
+  const useCase = new SuggestToolCheckCasesUseCase(repo, new EtlEngine(createDefaultRegistry()), options.model ?? scripted, () => options.enabled ?? true, options.resolveDataSources, options.modelSnapshot, options.resolveAiJudgments);
   return { useCase, scripted };
 }
 
@@ -168,6 +171,18 @@ describe('SuggestToolCheckCasesUseCase', () => {
       const resolveDataSources = { execute: async (_scope: unknown, graph: ToolGraph) => { seen.push(graph); return graph; } } as unknown as ResolveDataSourceGraphUseCase;
       const { result } = await suggest(fullResponse(), {}, { resolveDataSources });
       expect(seen).toHaveLength(1);
+      expect(result.warnings).toEqual([]);
+    });
+
+    // AI判定（ai-judge）はデータソース解決の後に解く。判定対象の行は解決済みソースから計算するため、
+    // 渡すグラフは data source resolver の戻り値そのものでなければならない。
+    it('AI判定の解決もサンプル実行の前に1回通す（データソース解決後のグラフを渡す）', async () => {
+      const resolved: ToolGraph[] = [];
+      const resolveDataSources = { execute: async (_scope: unknown, graph: ToolGraph) => { const next = { ...graph }; resolved.push(next); return next; } } as unknown as ResolveDataSourceGraphUseCase;
+      const resolveAiJudgments = { execute: vi.fn(async (graph: ToolGraph) => graph) };
+      const { result } = await suggest(fullResponse(), {}, { resolveDataSources, resolveAiJudgments: resolveAiJudgments as unknown as ResolveAiJudgmentsUseCase });
+      expect(resolveAiJudgments.execute).toHaveBeenCalledTimes(1);
+      expect(resolveAiJudgments.execute.mock.calls[0]?.[0]).toBe(resolved[0]);
       expect(result.warnings).toEqual([]);
     });
   });
@@ -328,6 +343,16 @@ describe('SuggestToolCheckCasesUseCase', () => {
       expect(result.suggestions).toHaveLength(6);
       expect(result.warnings).toHaveLength(1);
       expect(result.warnings[0]).toContain('sample run failed');
+      expect('sampleRun' in JSON.parse(scripted.requests[0]?.messages[1]?.content as string)).toBe(false);
+    });
+
+    // モデル未設定などで AI判定が解けないときも提案自体は返す（引数案は公開契約から作れる）。
+    // 例外を投げると「点検ケースを作れない」になってしまい、利用者が直せる点が見えなくなる。
+    it('AI判定の解決が失敗しても例外にせず、サンプル実行の warning にして提案は返す', async () => {
+      const resolveAiJudgments = { execute: async () => { throw new ConfigError('ai-judge: the model is not configured'); } } as unknown as ResolveAiJudgmentsUseCase;
+      const { result, scripted } = await suggest(fullResponse(), {}, { resolveAiJudgments });
+      expect(result.suggestions).toHaveLength(6);
+      expect(result.warnings).toEqual(['sample run failed (ai-judge: the model is not configured); expectations are guessed from the schema only']);
       expect('sampleRun' in JSON.parse(scripted.requests[0]?.messages[1]?.content as string)).toBe(false);
     });
 

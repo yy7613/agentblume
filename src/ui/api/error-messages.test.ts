@@ -1188,6 +1188,56 @@ describe('localizeToolCheckAssertion（ツール検証の期待・実測の定�
     expect(localizeToolCheckAssertion('row count != 3', 'ja')).toBe('row count != 3');
     expect(localizeToolCheckAssertion('duration >= 500ms', 'ja')).toBe('duration >= 500ms');
   });
+
+  it.each([
+    ['row[id == "E1"] present', 'id == "E1" の行が存在する'],
+    ['row[id == "E2"] absent', 'id == "E2" の行が存在しない'],
+    ['row[id == "E1"].amount >= 10000', 'id == "E1" の行の amount >= 10000'],
+    ['row[id == 1].status == "open"', 'id == 1 の行の status == "open"'],
+    ['row[id == "E1"].note contains "至急"', 'id == "E1" の行の note contains "至急"'],
+  ])('正常: 行を特定した期待 %s → %s', (input, expected) => {
+    expect(localizeToolCheckAssertion(input, 'ja')).toBe(expected);
+  });
+
+  it.each([
+    ['present', '存在する'],
+    ['absent', '存在しない'],
+    ['row not found', '該当する行が無い'],
+  ])('正常: 行の実測 %s → %s', (input, expected) => {
+    expect(localizeToolCheckAssertion(input, 'ja', 'actual')).toBe(expected);
+  });
+
+  it.each([
+    ['judgment[judge][id == 1] in ["クレーム"]', 'judge の判定 [id == 1] が クレーム のいずれか'],
+    ['judgment[judge][id == 1] in ["yes", "unclear"]', 'judge の判定 [id == 1] が yes / unclear のいずれか'],
+    ['judgment[judge][id == "E1"] reason contains "遅延"', 'judge の判定 [id == "E1"] の理由に 遅延 を含む'],
+  ])('正常: AI判定の期待 %s → %s', (input, expected) => {
+    expect(localizeToolCheckAssertion(input, 'ja')).toBe(expected);
+  });
+
+  it.each([
+    ['クレーム (配送の遅れへの苦情)', 'クレーム（配送の遅れへの苦情）'],
+    ["node 'judge' not judged", 'ノード「judge」は判定されていない'],
+    ["column 'id' not in node input", '列「id」はノードの入力にない'],
+    ['row not found', '該当する行が無い'],
+  ])('正常: AI判定の実測 %s → %s', (input, expected) => {
+    expect(localizeToolCheckAssertion(input, 'ja', 'actual')).toBe(expected);
+  });
+
+  it('正常: en は行・AI判定の定型文も原文のまま返す', () => {
+    expect(localizeToolCheckAssertion('row[id == "E1"] present', 'en')).toBe('row[id == "E1"] present');
+    expect(localizeToolCheckAssertion('judgment[judge][id == 1] in ["yes"]', 'en')).toBe('judgment[judge][id == 1] in ["yes"]');
+    expect(localizeToolCheckAssertion('クレーム (理由)', 'en', 'actual')).toBe('クレーム (理由)');
+  });
+
+  it('境界: 期待欄では「判定値（理由）」の形に当てない（実測だけの書式）', () => {
+    expect(localizeToolCheckAssertion('クレーム (配送の遅れへの苦情)', 'ja')).toBe('クレーム (配送の遅れへの苦情)');
+  });
+
+  it('境界: JSON として読めない判定値の並び・理由は原文のまま添える', () => {
+    expect(localizeToolCheckAssertion('judgment[judge][id == 1] in [yes]', 'ja')).toBe('judge の判定 [id == 1] が yes のいずれか');
+    expect(localizeToolCheckAssertion('judgment[judge][id == 1] reason contains 遅延', 'ja')).toBe('judge の判定 [id == 1] の理由に 遅延 を含む');
+  });
 });
 
 /**
@@ -1298,5 +1348,90 @@ describe('判定モデル未設定・軌跡必須（JUDGE_MODEL_NOT_CONFIGURED /
     expect(isJudgeModelNotConfigured({ code: 'JUDGE_PROVIDER', message: 'Judge model is NOT CONFIGURED' })).toBe(true);
     expect(isJudgeModelNotConfigured({ code: 'JUDGE_PROVIDER', message: 'HTTP 401' })).toBe(false);
     expect(isJudgeModelNotConfigured({ code: 'MODEL_PROVIDER', message: 'model is not configured' })).toBe(false);
+  });
+});
+
+describe('AI判定ノード（ai-judge）', () => {
+  it('判定基準が未入力・列の不一致は「どこを直すか」を日英で示す', () => {
+    expect(localizeSchemaIssueMessage('ai-judge: question is required', 'ja')).toContain('判定基準（質問）が未入力');
+    expect(localizeSchemaIssueMessage('ai-judge: question is required', 'ja')).toContain('設定を開く');
+    expect(localizeSchemaIssueMessage('ai-judge: question is required', 'en')).toContain('write, in one sentence, what each row should be judged on');
+    expect(localizeSchemaIssueMessage('ai-judge: column not found: memo', 'ja')).toContain('「memo」');
+    expect(localizeSchemaIssueMessage('ai-judge: column not found: memo', 'ja')).toContain('モデルに見せる列');
+    expect(localizeSchemaIssueMessage('ai-judge: column not found: memo', 'en')).toContain("column 'memo'");
+  });
+
+  it('カテゴリの予約語・重複はカテゴリ名の直し方を示す', () => {
+    expect(localizeSchemaIssueMessage('ai-judge: category name is reserved: unclear', 'ja')).toContain('予約語');
+    expect(localizeSchemaIssueMessage('ai-judge: category name is reserved: unclear', 'en')).toContain("'unclear' is reserved");
+    expect(localizeSchemaIssueMessage('ai-judge: duplicate category: クレーム', 'ja')).toContain('「クレーム」が重複');
+    expect(localizeSchemaIssueMessage('ai-judge: duplicate category: complaint', 'en')).toContain("category 'complaint' appears twice");
+  });
+
+  it('keep / exclude の一致判定（matchValues）の不足・不正を選び直す導線にする', () => {
+    expect(localizeSchemaIssueMessage('ai-judge: matchValues is required when action is keep', 'ja')).toContain('一致とみなす判定');
+    expect(localizeSchemaIssueMessage('ai-judge: matchValues is required when action is exclude', 'en')).toContain("action 'exclude' needs at least one match verdict");
+    expect(localizeSchemaIssueMessage('ai-judge: match value is not a possible verdict: maybe', 'ja')).toContain('「maybe」はこの設定では出ない判定');
+    expect(localizeSchemaIssueMessage('ai-judge: match value is not a possible verdict: maybe', 'en')).toContain("'maybe' is not a verdict this configuration can produce");
+  });
+
+  it('出力列・理由列の衝突は列名を変える場所を示す', () => {
+    expect(localizeSchemaIssueMessage('ai-judge: output column already exists: aiVerdict', 'ja')).toContain('判定列「aiVerdict」');
+    expect(localizeSchemaIssueMessage('ai-judge: reason column already exists: aiReason', 'ja')).toContain('理由列「aiReason」');
+    expect(localizeSchemaIssueMessage('ai-judge: reason column already exists: aiReason', 'en')).toContain("the reason column 'aiReason' already exists upstream");
+    expect(localizeSchemaIssueMessage('ai-judge: reason column must differ from the output column: aiVerdict', 'ja')).toContain('理由列を出力する');
+    expect(localizeSchemaIssueMessage('ai-judge: reason column must differ from the output column: aiVerdict', 'en')).toContain('turn off "Output a reason column"');
+  });
+
+  it('判定件数の上限（セミコロンを含む1文）は分割せず、上流で絞るか上限を上げるよう促す', () => {
+    const message = 'ai-judge: 320 distinct rows to judge exceed the limit of 200; narrow the rows upstream with filter or limit, or raise maxItems';
+    expect(ja(400, 'TOOL_VALIDATION', message)).toBe('ツール定義を確認してください（判定対象が 320 行（同じ内容の行は1件として数えます）で、上限の 200 行を超えました。上流の行フィルター（filter）や行数制限（limit）で行を絞るか、AI判定ノードの「1回の実行で判定する行数の上限」を上げてください）');
+    expect(en(400, 'TOOL_VALIDATION', message)).toContain('Narrow the rows upstream with a filter or limit node');
+    // `;` の後半が原文のまま別セグメントとして残らない。
+    expect(en(400, 'TOOL_VALIDATION', message)).not.toContain('raise maxItems');
+  });
+
+  it('モデル未設定・構造化出力非対応は 設定 > モデル の main スロットへ導く', () => {
+    const notConfigured = 'ai-judge: the model is not configured; set the main model slot in Settings > Models, then reload the page';
+    expect(ja(400, 'TOOL_VALIDATION', notConfigured)).toContain('設定 > モデル で main スロットのモデルを設定');
+    expect(en(400, 'TOOL_VALIDATION', notConfigured)).toContain('Set the main model slot in Settings > Models');
+    const noStructured = 'ai-judge: the model in the main slot does not support structured output; choose another model in Settings > Models';
+    expect(ja(400, 'TOOL_VALIDATION', noStructured)).toContain('構造化出力に対応したモデルへ切り替えて');
+    expect(en(400, 'TOOL_VALIDATION', noStructured)).toContain('Switch the main slot to a model that supports structured output');
+  });
+
+  it('判定が解決されないまま実行された場合は実行経路の不具合として開発者へ導く', () => {
+    const message = 'ai-judge: verdicts are not resolved; the graph must run through the AI judgment resolver before execution';
+    expect(ja(500, 'TOOL_VALIDATION', message)).toContain('開発者へ連絡');
+    expect(en(500, 'TOOL_VALIDATION', message)).toContain('contact the developer');
+  });
+
+  it('モデル呼び出しの失敗（MODEL_PROVIDER・502）はノードIDと原文を残しつつ次の一手を出す', () => {
+    const message = "ai-judge (ai-judge-1): the model could not judge the rows: HTTP 500";
+    expect(ja(502, 'MODEL_PROVIDER', message)).toContain('AI判定ノード「ai-judge-1」');
+    expect(ja(502, 'MODEL_PROVIDER', message)).toContain('HTTP 500');
+    expect(ja(502, 'MODEL_PROVIDER', message)).toContain('main スロット');
+    expect(en(502, 'MODEL_PROVIDER', message)).toContain("The AI judgment node 'ai-judge-1' could not get verdicts from the model (HTTP 500)");
+    // 汎用の「モデルサーバーがHTTP 500 を返しました」には落ちない。
+    expect(ja(502, 'MODEL_PROVIDER', message)).not.toContain('モデルサーバーがHTTP');
+  });
+
+  it('修復後もスキーマ不一致なら構造化出力に強いモデルか、基準を具体的にするよう促す', () => {
+    const message = 'ai-judge (judge-2): the model returned verdicts that do not match the schema even after one repair: value must be one of yes,no,unclear';
+    expect(ja(502, 'MODEL_PROVIDER', message)).toContain('構造化出力に強いモデル');
+    expect(ja(502, 'MODEL_PROVIDER', message)).toContain('value must be one of yes,no,unclear');
+    expect(en(502, 'MODEL_PROVIDER', message)).toContain('even after one repair');
+  });
+
+  it('config不正・入力未接続は汎用のETL文言ではなくAI判定向けの案内にする', () => {
+    expect(localizeSchemaIssueMessage('ai-judge: invalid config: maxItems: must be at most 200', 'ja')).toContain('AI判定の設定が不正です');
+    expect(localizeSchemaIssueMessage('ai-judge: invalid config: maxItems: must be at most 200', 'en')).toContain('the AI judgment configuration is invalid');
+    expect(localizeSchemaIssueMessage('ai-judge requires one input', 'ja')).toContain('入力が接続されていません');
+    expect(localizeSchemaIssueMessage('ai-judge requires one input', 'en')).toContain('the AI judgment node has no input');
+  });
+
+  it('[回帰固定] ai-judge 以外のノードの同形メッセージは従来どおり扱う', () => {
+    expect(localizeSchemaIssueMessage('select: column(s) not found: memo', 'ja')).toContain('列が見つかりません');
+    expect(localizeSchemaIssueMessage('filter: invalid config: op: is required', 'ja')).toContain('filter: 設定が不正です');
   });
 });

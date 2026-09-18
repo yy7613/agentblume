@@ -41,6 +41,7 @@ import type { AgentSessionRepository, SessionArtifactRepository } from '../../do
 import { ToolOutputDispatcher } from '../tool/tool-output-dispatcher';
 import { graphWithArguments } from '../tool/tool-execution';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
+import type { ResolveAiJudgmentsUseCase } from '../tool/resolve-ai-judgments';
 import type { WebSearchUseCase } from '../search/web-search';
 import {
   agentMemoryWikiId, AgentRuntimeHarnessRuntime, compactModelMessages,
@@ -415,6 +416,11 @@ export class RunAgentPreviewUseCase {
     /** 保存済みMCPサーバー設定。mcpClient と両方揃ったときだけMCPツールを注入する。 */
     private readonly mcpServers?: McpServerRepository,
     private readonly mcpClient?: McpClientPort,
+    /**
+     * `ai-judge` ノードの判定解決。`resolveDataSources` と同じく位置引数で受け、
+     * データソース解決の**後**・`engine.preview` の**前**に回す。
+     */
+    private readonly resolveAiJudgments?: ResolveAiJudgmentsUseCase,
   ) { this.output = new ToolOutputDispatcher(artifacts, now); }
 
   private readonly output: ToolOutputDispatcher;
@@ -865,7 +871,7 @@ export class RunAgentPreviewUseCase {
       }
       const selected = tool as Tool;
       try {
-        state.messages.push(await this.executeToolTimed(selected, call, trace, timing, ctx, loop.agent));
+        state.messages.push(await this.executeToolTimed(selected, call, trace, timing, ctx, loop.agent, loop.signal));
       } catch (error) {
         const toolRef = this.failureToolRef(selected, call);
         // 引数の作り間違いはモデル側の誤りなので、Runを落とさずツール結果として差し戻して呼び直させる。
@@ -1039,9 +1045,9 @@ export class RunAgentPreviewUseCase {
     finally { timing.toolMs += Math.max(0, this.monotonicNow() - started); span.end(failure); }
   }
 
-  private async executeToolTimed(tool: Tool, call: ModelToolCall, trace: RunTraceEvent[], timing: RunTiming, ctx: NodeContext, agent?: RunRecord['agent']): Promise<ModelMessage> {
+  private async executeToolTimed(tool: Tool, call: ModelToolCall, trace: RunTraceEvent[], timing: RunTiming, ctx: NodeContext, agent?: RunRecord['agent'], signal?: AbortSignal): Promise<ModelMessage> {
     const started = this.monotonicNow(); const span = safeStartSpan(this.observability?.telemetry, 'tool.execute', { 'tool.name': call.name, 'tool.kind': 'etl' }, this.observability?.logger); let failure: unknown;
-    try { return await this.executeTool(tool, call, trace, ctx, agent); }
+    try { return await this.executeTool(tool, call, trace, ctx, agent, signal); }
     catch (error) { failure = error; throw error; }
     finally { timing.toolMs += Math.max(0, this.monotonicNow() - started); span.end(failure); }
   }
@@ -1080,7 +1086,7 @@ export class RunAgentPreviewUseCase {
     }
   }
 
-  private async executeTool(tool: Tool, call: ModelToolCall, trace: RunTraceEvent[], ctx: NodeContext, agent?: RunRecord['agent']): Promise<ModelMessage> {
+  private async executeTool(tool: Tool, call: ModelToolCall, trace: RunTraceEvent[], ctx: NodeContext, agent?: RunRecord['agent'], signal?: AbortSignal): Promise<ModelMessage> {
     trace.push({ sequence: trace.length + 1, kind: 'tool-call', name: call.name, arguments: call.arguments });
     const args = validateToolArguments(tool.inputSchema, call.arguments);
     const graph = graphWithArguments(tool, args);
@@ -1091,7 +1097,9 @@ export class RunAgentPreviewUseCase {
     // 「実行中か / 保存・スキーマ点検か」の区別に使っており、ここで undefined を渡すと
     // 添付を要するソースが未解決のまま空表を返し、エージェントが「帳票に何も書いていない」と
     // 読み違える（「添付してください」と言えなくなる）。
-    const executableGraph = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(ctx.scope, graph, { attachments: ctx.attachments ?? [], documents: ctx.documents ?? [], arguments: args });
+    const graphWithSources = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(ctx.scope, graph, { attachments: ctx.attachments ?? [], documents: ctx.documents ?? [], arguments: args });
+    // AI 判定（ai-judge）はデータソース解決の**後**に解く: 判定対象の行は解決済みのソースから計算する。
+    const executableGraph = this.resolveAiJudgments === undefined ? graphWithSources : await this.resolveAiJudgments.execute(graphWithSources, signal);
     // 実行は常に全行。rowLimit は trace の outputPreview に使う表示用スナップショットにしか効かない。
     // かつては rowLimit で切った表をそのまま検証・配送しており、モデルが「先頭100行の合計」を
     // 全体の合計として自信を持って報告していた。

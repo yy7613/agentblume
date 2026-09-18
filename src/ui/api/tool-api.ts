@@ -253,6 +253,11 @@ export class ToolApiClient {
     return (await this.runtimeCapabilities()).analysisAssistant.enabled;
   }
 
+  /** AI判定ノード（ai-judge）を実行できるか。項目を返さない旧サーバーでは「使えない」として扱う。 */
+  async aiJudgeCapability(): Promise<boolean> {
+    return (await this.runtimeCapabilities()).aiJudge?.enabled ?? false;
+  }
+
   async suggestAnalysisConfig(input: { readonly graph: ToolGraphDto; readonly nodeId: string; readonly intent: string; readonly scope?: TenantScopeDto }): Promise<AnalysisConfigProposalDto> {
     return (await this.request<{ proposal: AnalysisConfigProposalDto }>('/tool-drafts/suggest-analysis-config', { method: 'POST', body: JSON.stringify(input) })).proposal;
   }

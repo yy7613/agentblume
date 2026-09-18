@@ -298,6 +298,9 @@ function modelMessage(raw: string, language: ErrorLanguage): string {
   const ja = language === 'ja';
   const suggestion = toolCheckSuggestionMessage(raw, ja);
   if (suggestion !== undefined) return suggestion;
+  // AI判定の失敗（MODEL_PROVIDER・502）は「どのノードで」「何を直すか」まで言える。汎用のモデル案内より先に使う。
+  const aiJudge = localizeAiJudgeDetail(raw, language);
+  if (aiJudge !== undefined) return aiJudge;
   if (/not configured/i.test(raw)) {
     return ja
       ? 'モデルが未設定です。設定画面でモデルを選ぶか、環境変数 LM_STUDIO_MODEL を設定してください。'
@@ -377,6 +380,129 @@ function localizeFieldPath(path: string, language: ErrorLanguage): string {
     if (/^\d+$/.test(part)) return language === 'ja' ? `${Number(part) + 1}件目` : `#${Number(part) + 1}`;
     return part;
   }).join('.');
+}
+
+/**
+ * AI判定ノード（`ai-judge`）の定型文。ドメイン（src/domain/etl/nodes/ai-judge.ts）とアプリ層の
+ * 判定解決器（src/application/tool/resolve-ai-judgments.ts）が投げる英語定型文を拾う。
+ *
+ * ETL の他の定型文（localizeEtlDetail）と違い **en / ja 両方**を返す。原文は「何が起きたか」しか
+ * 語らず、直す場所（AI判定ノードの設定・設定 > モデル の main スロット・上流の行フィルター）が
+ * 分からないため、英語UIでも言い換えが要る。未知の形は undefined（呼び出し側が原文を残す）。
+ */
+function localizeAiJudgeDetail(message: string, language: ErrorLanguage): string | undefined {
+  if (!message.startsWith('ai-judge')) return undefined;
+  const ja = language === 'ja';
+
+  if (message === 'ai-judge: question is required') {
+    return ja
+      ? 'AI判定の判定基準（質問）が未入力です。AI判定ノードの「設定を開く」から、各行を何で判断するかを1文で書いてください'
+      : 'the AI judgment node has no question. Open its settings and write, in one sentence, what each row should be judged on';
+  }
+
+  let matched = /^ai-judge: column not found: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `AI判定がモデルに見せる列「${matched[1]}」が上流の出力にありません。AI判定ノードの「モデルに見せる列」を実在する列へ選び直すか、未選択（全列）に戻してください`
+      : `the AI judgment node shows column '${matched[1]}' to the model, but the upstream output has no such column. Pick an existing column in "Columns shown to the model", or clear the selection to use every column`;
+  }
+
+  if (message === 'ai-judge: category name is reserved: unclear') {
+    return ja
+      ? 'カテゴリ名「unclear」は予約語です（モデルが判断できなかった行に使います）。AI判定ノードの分類カテゴリを別の名前に変えてください'
+      : "'unclear' is reserved for rows the model cannot decide, so it cannot be a category name. Rename that category in the AI judgment node settings";
+  }
+
+  matched = /^ai-judge: duplicate category: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `分類カテゴリ「${matched[1]}」が重複しています。AI判定ノードの分類カテゴリから重複した行を削除するか、別の名前にしてください`
+      : `category '${matched[1]}' appears twice. Remove the duplicate row in the AI judgment node settings, or rename it`;
+  }
+
+  matched = /^ai-judge: matchValues is required when action is (keep|exclude)$/.exec(message);
+  if (matched !== null) {
+    const what = matched[1] === 'keep' ? (ja ? '残す' : 'keep') : (ja ? '除く' : 'drop');
+    return ja
+      ? `操作が ${matched[1]} のときは「一致とみなす判定」の選択が必要です。AI判定ノードの設定で、${what}判定（yes / no / カテゴリ名）を1つ以上選んでください`
+      : `action '${matched[1]}' needs at least one match verdict. In the AI judgment node settings, choose the verdicts to ${what} (yes / no or a category name)`;
+  }
+
+  matched = /^ai-judge: match value is not a possible verdict: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `「${matched[1]}」はこの設定では出ない判定です。AI判定ノードの「一致とみなす判定」を、現在のモードの判定（はい/いいえ なら yes / no / unclear、分類ならカテゴリ名 + unclear）から選び直してください`
+      : `'${matched[1]}' is not a verdict this configuration can produce. In the AI judgment node settings, pick match verdicts from the current mode (yes / no / unclear, or the category names plus unclear)`;
+  }
+
+  matched = /^ai-judge: (output|reason) column already exists: (.+)$/.exec(message);
+  if (matched !== null) {
+    const field = matched[1] === 'output' ? (ja ? '判定列' : 'verdict column') : (ja ? '理由列' : 'reason column');
+    return ja
+      ? `${field}「${matched[2]}」と同じ名前の列が上流にすでにあります。AI判定ノードの${field}名を別の名前に変えるか、上流で列名を変更してください`
+      : `the ${field} '${matched[2]}' already exists upstream. Rename it in the AI judgment node settings, or rename the upstream column`;
+  }
+
+  matched = /^ai-judge: reason column must differ from the output column: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `理由列と判定列に同じ名前「${matched[1]}」を指定しています。AI判定ノードで理由列を別の名前にするか、「理由列を出力する」のチェックを外してください`
+      : `the reason column and the verdict column are both named '${matched[1]}'. Give the reason column another name in the AI judgment node settings, or turn off "Output a reason column"`;
+  }
+
+  matched = /^ai-judge: (\d+) distinct rows to judge exceed the limit of (\d+); narrow the rows upstream with filter or limit, or raise maxItems$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `判定対象が ${matched[1]} 行（同じ内容の行は1件として数えます）で、上限の ${matched[2]} 行を超えました。上流の行フィルター（filter）や行数制限（limit）で行を絞るか、AI判定ノードの「1回の実行で判定する行数の上限」を上げてください`
+      : `${matched[1]} distinct rows need a verdict, over the limit of ${matched[2]}. Narrow the rows upstream with a filter or limit node, or raise "Rows judged per run" in the AI judgment node settings`;
+  }
+
+  if (message === 'ai-judge: verdicts are not resolved; the graph must run through the AI judgment resolver before execution') {
+    return ja
+      ? 'AI判定が実行される前に判定結果が用意されていません（実行経路の不具合です）。画面を再読み込みしてもう一度試し、直らない場合は開発者へ連絡してください'
+      : 'the AI judgment ran before its verdicts were resolved, which means the tool run path is misconfigured. Reload the page and retry; if it persists, contact the developer';
+  }
+
+  if (message === 'ai-judge: the model is not configured; set the main model slot in Settings > Models, then reload the page') {
+    return ja
+      ? 'AI判定に使うローカルLLMが未設定です。設定 > モデル で main スロットのモデルを設定し、画面を再読み込みしてからもう一度実行してください'
+      : 'the AI judgment has no model. Set the main model slot in Settings > Models, reload the page, then run again';
+  }
+
+  if (message === 'ai-judge: the model in the main slot does not support structured output; choose another model in Settings > Models') {
+    return ja
+      ? 'main スロットのモデルは構造化出力に対応していないため、AI判定を実行できません。設定 > モデル で構造化出力に対応したモデルへ切り替えてください'
+      : 'the model in the main slot does not support structured output, so it cannot return verdicts. Switch the main slot to a model that supports structured output in Settings > Models';
+  }
+
+  matched = /^ai-judge \((.+)\): the model could not judge the rows: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `AI判定ノード「${matched[1]}」でモデルが行を判定できませんでした（${matched[2]}）。設定 > モデル の main スロットのモデルが起動しているか確認して、もう一度プレビュー／実行してください`
+      : `The AI judgment node '${matched[1]}' could not get verdicts from the model (${matched[2]}). Check that the model in the main slot (Settings > Models) is running, then preview or run again.`;
+  }
+
+  matched = /^ai-judge \((.+)\): the model returned verdicts that do not match the schema even after one repair: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `AI判定ノード「${matched[1]}」でモデルの回答が判定の形式に合いませんでした（修復を1回試みても不正: ${matched[2]}）。設定 > モデル で構造化出力に強いモデルへ切り替えるか、判定基準とカテゴリ名を短く具体的にしてください`
+      : `The AI judgment node '${matched[1]}' returned verdicts that did not match the expected shape even after one repair (${matched[2]}). Switch the main slot to a model that is strong at structured output in Settings > Models, or make the question and category names shorter and more concrete.`;
+  }
+
+  matched = /^ai-judge: invalid config: (.+)$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `AI判定の設定が不正です（${localizeDetail(matched[1] ?? '', 'ja')}）。AI判定ノードの「設定を開く」から該当項目を直してください`
+      : `the AI judgment configuration is invalid (${matched[1]}). Open the AI judgment node settings and fix the reported field`;
+  }
+
+  if (message === 'ai-judge requires one input') {
+    return ja
+      ? 'AI判定ノードに入力が接続されていません。判定したい行を出すノードからAI判定ノードへ接続してください'
+      : 'the AI judgment node has no input. Connect the node that produces the rows to judge';
+  }
+
+  return undefined;
 }
 
 /** join / analyze系ノードが使うデータ型 → 表示用の日本語名（ETLの型不一致メッセージで使う）。 */
@@ -1096,6 +1222,10 @@ function localizePermissionDetail(message: string, language: ErrorLanguage): str
 
 /** 変換できたら平易な文言、できなければ undefined（呼び出し側が原文を残す）。 */
 function localizeMessageText(message: string, language: ErrorLanguage): string | undefined {
+  // AI判定は ETL の汎用形（`<node>: invalid config: ...`）にも当たるので、専用の言い換えを先に使う。
+  const aiJudge = localizeAiJudgeDetail(message, language);
+  if (aiJudge !== undefined) return aiJudge;
+
   const etl = localizeEtlDetail(message, language);
   if (etl !== undefined) return etl;
 
@@ -1211,6 +1341,9 @@ function localizeSegment(segment: string, language: ErrorLanguage): string {
 function localizeDetail(raw: string, language: ErrorLanguage): string {
   if (raw === '' || raw.toLowerCase() === 'internal error') return '';
   const stripped = raw.replace(REQUEST_LABEL, '').trim();
+  // AI判定にもセミコロンを含む1文（判定件数の上限・モデル未設定など）があるので、`;` 分割より先に丸ごと判定する。
+  const aiJudgeWhole = localizeAiJudgeDetail(stripped, language);
+  if (aiJudgeWhole !== undefined) return aiJudgeWhole;
   // ETL定型文（例: `join: output exceeded 100000 rows; check join keys`）はセミコロンを含む
   // 1つの文なので、以下の `;` 分割より先に丸ごと判定する。分割してしまうと "check join keys"
   // が原文のまま別セグメントとして残り、日本語訳と重複した表示になる。
@@ -1472,6 +1605,10 @@ export function describeMcpServerSkipped(
  * - 期待: `row count == 3` / `column 'total' exists` / `some row has total >= 100` / `every row has region == "east"` / `duration <= 500ms`
  * - 実測: `row count 5` / `columns: a, b, c` / `columns: (none)` / `2 of 5 rows match` / `column 'total' not in output` / `812ms`
  * - 結末: 期待 `outcome error` / `outcome success`、実測 `outcome success` / `outcome error (TOOL_ARGUMENTS)`
+ * - 行の特定: 期待 `row[id == "E1"] present` / `row[id == "E1"] absent` / `row[id == "E1"].amount >= 10000`、
+ *   実測 `present` / `absent` / `row not found` / `<値の JSON>`
+ * - AI判定: 期待 `judgment[judge][id == 1] in ["クレーム"]` / `judgment[judge][id == 1] reason contains "遅延"`、
+ *   実測 `クレーム (配送の遅れへの苦情)` / `node 'judge' not judged` / `column 'id' not in node input` / `row not found`
  */
 export function localizeToolCheckAssertion(text: string, language: ErrorLanguage, role: 'expected' | 'actual' = 'expected'): string {
   if (language !== 'ja') return text;
@@ -1500,7 +1637,49 @@ export function localizeToolCheckAssertion(text: string, language: ErrorLanguage
   if (matched !== null) return `失敗した（${matched[1]}）`;
   if (trimmed === 'outcome error') return role === 'actual' ? '失敗した' : '実行が失敗すること';
   if (trimmed === 'outcome success') return role === 'actual' ? '成功した' : '実行が成功すること';
+  // 行を特定した期待（`row[<列> == <値>] ...`）。特定条件（`id == "E1"`）はサーバーの書式のまま読ませる。
+  matched = /^row\[(.+)\] present$/.exec(trimmed);
+  if (matched !== null) return `${matched[1]} の行が存在する`;
+  matched = /^row\[(.+)\] absent$/.exec(trimmed);
+  if (matched !== null) return `${matched[1]} の行が存在しない`;
+  matched = /^row\[(.+)\]\.(\S+) (==|!=|>=|<=|contains) ([\s\S]+)$/.exec(trimmed);
+  if (matched !== null) return `${matched[1]} の行の ${matched[2]} ${matched[3]} ${matched[4]}`;
+  if (trimmed === 'present') return '存在する';
+  if (trimmed === 'absent') return '存在しない';
+  if (trimmed === 'row not found') return '該当する行が無い';
+  // AI 判定の期待。判定値は「A / B のいずれか」と読ませる（AI の揺れを許して複数書けるため）。
+  matched = /^judgment\[(.+?)\]\[(.+)\] in \[([\s\S]*)\]$/.exec(trimmed);
+  if (matched !== null) return `${matched[1]} の判定 [${matched[2]}] が ${joinJsonList(matched[3] ?? '')} のいずれか`;
+  matched = /^judgment\[(.+?)\]\[(.+)\] reason contains ([\s\S]+)$/.exec(trimmed);
+  if (matched !== null) return `${matched[1]} の判定 [${matched[2]}] の理由に ${unquoteJson(matched[3] ?? '')} を含む`;
+  matched = /^node '(.+)' not judged$/.exec(trimmed);
+  if (matched !== null) return `ノード「${matched[1]}」は判定されていない`;
+  matched = /^column '(.+)' not in node input$/.exec(trimmed);
+  if (matched !== null) return `列「${matched[1]}」はノードの入力にない`;
+  // 判定の実測（`<判定値> (<理由>)`）。括弧だけ全角にして読ませる。他の定型文を全て試した後に当てる。
+  if (role === 'actual') {
+    matched = /^([^()\s][^()]*) \(([^()]*)\)$/.exec(trimmed);
+    if (matched !== null) return `${matched[1]}（${matched[2]}）`;
+  }
   return text;
+}
+
+/** `"a", "b"`（JSON 配列の中身）を「a / b」にする。JSON として読めなければ原文のまま。 */
+function joinJsonList(list: string): string {
+  try {
+    const parsed: unknown = JSON.parse(`[${list}]`);
+    if (Array.isArray(parsed) && parsed.every((value) => typeof value === 'string')) return (parsed as string[]).join(' / ');
+  } catch { /* 形が違えば原文を返す */ }
+  return list;
+}
+
+/** JSON 文字列リテラルの引用符を外す（読めなければ原文のまま）。 */
+function unquoteJson(value: string): string {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed === 'string') return parsed;
+  } catch { /* 形が違えば原文を返す */ }
+  return value;
 }
 
 /**

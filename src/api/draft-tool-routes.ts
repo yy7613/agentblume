@@ -4,6 +4,7 @@ import type { z } from 'zod';
 import type { JudgeReadiness } from '../application/evaluation/judge-readiness';
 import type { DiagnoseToolUseCase } from '../application/tool/diagnose-tool';
 import type { DraftToolUseCase } from '../application/tool/draft-tool';
+import type { ResolveAiJudgmentsUseCase } from '../application/tool/resolve-ai-judgments';
 import type { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
 import type { SuggestToolCheckCasesUseCase } from '../application/tool-check/suggest-tool-check-cases';
 import { SemVer } from '../domain/tool/semver';
@@ -25,6 +26,8 @@ export interface DraftToolRouteDeps extends BusinessRuntimeCapabilityDeps {
   readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
   readonly suggestToolCheckCases: SuggestToolCheckCasesUseCase;
   readonly diagnoseTool: DiagnoseToolUseCase;
+  /** `ai-judge` ノードを実際に回せるか（main スロット + 構造化出力）。UI がノードを出すかの機能フラグ。 */
+  readonly resolveAiJudgments: ResolveAiJudgmentsUseCase;
   /** judge スロットの設定状態（実験画面が「judge 未設定」を起票前に示すため）。毎回現在の設定を見る。 */
   readonly judgeReadiness: () => Promise<JudgeReadiness>;
 }
@@ -83,6 +86,8 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
   app.get('/runtime/capabilities', async () => ({
     analysisAssistant: { enabled: await deps.suggestAnalysisConfig.available() },
     toolCheckSuggestions: { enabled: await deps.suggestToolCheckCases.available() },
+    // AI 判定ノード。判定はモデルを要するので、使えないときは UI が設定ダイアログで先に警告する（実行して初めて失敗させない）。
+    aiJudge: { enabled: await deps.resolveAiJudgments.available() },
     judge: await deps.judgeReadiness(),
     // 業務ごとのキー（仕訳は `journal`）。業務は自分のキーだけを返し、ほかのキーを上書きしない。
     ...(await journalRuntimeCapabilities(deps)),

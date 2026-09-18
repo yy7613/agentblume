@@ -14,7 +14,7 @@ import { ExpectationEditor } from './ExpectationEditor';
 import { ResultPanel } from './ResultPanel';
 import { SuggestionPanel } from './SuggestionPanel';
 import {
-  EMPTY_EXPECTATIONS, argumentIssues, argumentNamesInMessage, buildArguments, buildExpectations, buildRunDto,
+  EMPTY_EXPECTATIONS, aiJudgeNodes, argumentIssues, argumentNamesInMessage, buildArguments, buildExpectations, buildRunDto,
   editorFingerprint, editorFromCase, editorFromSuggestion, initialDrafts, isExpectedFailure, statusLabel, summarizeStatuses, type EditorState,
 } from './tool-check-model';
 
@@ -171,6 +171,8 @@ export function ToolCheckPage({ client }: { readonly client: ToolApiClient }) {
 
   const inputColumns = definition?.inputSchema?.columns ?? [];
   const issues = useMemo(() => argumentIssues(definition?.inputSchema, editor.drafts), [definition, editor.drafts]);
+  // AI判定の期待は、選んだツールのグラフに ai-judge ノードがあるときだけ編集できる（無ければ節ごと出さない）。
+  const judgeNodes = useMemo(() => aiJudgeNodes(definition?.graph), [definition]);
   // 期待どおりの失敗（outcome = error で合格）は直す対象ではないので、引数欄も強調しない。
   const highlighted = useMemo(
     () => (result !== undefined && !isExpectedFailure(result) && result.error?.code === 'TOOL_ARGUMENTS' ? argumentNamesInMessage(result.error.message, inputColumns.map((column) => column.name)) : []),
@@ -427,7 +429,7 @@ export function ToolCheckPage({ client }: { readonly client: ToolApiClient }) {
                 disabled={busy}
                 onChange={(name, draft) => setEditor((current) => ({ ...current, drafts: { ...current.drafts, [name]: draft } }))}
               />
-              <ExpectationEditor draft={editor.expectations} outputSchema={definition?.outputSchema} disabled={busy} onChange={(expectations) => setEditor((current) => ({ ...current, expectations }))} />
+              <ExpectationEditor draft={editor.expectations} outputSchema={definition?.outputSchema} judgeNodes={judgeNodes} disabled={busy} onChange={(expectations) => setEditor((current) => ({ ...current, expectations }))} />
               <div className="tool-check-actions">
                 <button type="button" className="primary" disabled={busy || definition === undefined} onClick={() => void run()}>
                   {aborter === undefined ? text('Run', '実行') : text(`Running… ${elapsedSeconds}s`, `実行中… ${elapsedSeconds}秒`)}

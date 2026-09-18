@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SchemaError } from '../../domain/etl/errors';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { createDefaultRegistry } from '../../domain/etl/nodes/index';
 import { EtlEngine } from '../etl/engine';
 import { DraftToolUseCase } from './draft-tool';
+import type { ResolveAiJudgmentsUseCase } from './resolve-ai-judgments';
 
 const graph: ToolGraph = {
   nodes: [
@@ -50,5 +51,34 @@ describe('DraftToolUseCase', () => {
   it('option省略時は engine の既定行数を使う', async () => {
     const result = await useCase.preview(graph);
     expect(result.output.rows).toEqual([{ age: 20 }]);
+  });
+});
+
+describe('DraftToolUseCase: AI 判定の解決', () => {
+  /** グラフをそのまま返す解決器（呼ばれたかどうかだけを見る）。 */
+  function stubResolver(): { readonly execute: ReturnType<typeof vi.fn> } {
+    return { execute: vi.fn(async (input: ToolGraph) => input) };
+  }
+
+  it('preview はデータソース解決の後に AI 判定を解いてから実行する', async () => {
+    const resolver = stubResolver();
+    const useCase = new DraftToolUseCase(new EtlEngine(createDefaultRegistry()), undefined, resolver as unknown as ResolveAiJudgmentsUseCase);
+    const result = await useCase.preview(graph);
+    expect(resolver.execute).toHaveBeenCalledTimes(1);
+    expect(resolver.execute).toHaveBeenCalledWith(graph);
+    expect(result.output.rows).toEqual([{ age: 20 }]);
+  });
+
+  it('inspect は従来どおり解決器を呼ばない（スキーマ点検のたびにモデルを走らせない）', async () => {
+    const resolver = stubResolver();
+    const useCase = new DraftToolUseCase(new EtlEngine(createDefaultRegistry()), undefined, resolver as unknown as ResolveAiJudgmentsUseCase);
+    await useCase.inspect(graph);
+    expect(resolver.execute).not.toHaveBeenCalled();
+  });
+
+  it('解決器が失敗したら preview も失敗する（判定を欠いたまま実行しない）', async () => {
+    const resolver = { execute: vi.fn(async () => { throw new Error('model unavailable'); }) };
+    const useCase = new DraftToolUseCase(new EtlEngine(createDefaultRegistry()), undefined, resolver as unknown as ResolveAiJudgmentsUseCase);
+    await expect(useCase.preview(graph)).rejects.toThrow('model unavailable');
   });
 });

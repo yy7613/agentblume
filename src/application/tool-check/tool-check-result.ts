@@ -7,11 +7,12 @@
  * `expected` / `actual` は英語の定型文で、UI が正規表現で日本語化する。文言を変えると
  * UI 側の対応表が外れるので、書式は src/ui/api/types.ts の「ツール検証」節と対で保守する。
  */
-import type { Cell, Table } from '../../domain/data/types';
-import type { JsonCell, ToolCheckCellExpectation, ToolCheckCellOp, ToolCheckExpectations, ToolCheckOutcome, ToolCheckRowCountOp, ToolCheckStatus } from '../../domain/tool-check/tool-check-case';
+import type { Cell, Row, Table } from '../../domain/data/types';
+import type { JsonCell, ToolCheckCellExpectation, ToolCheckCellOp, ToolCheckExpectations, ToolCheckJudgmentExpectation, ToolCheckOutcome, ToolCheckRowCountOp, ToolCheckRowExpectation, ToolCheckRowLocator, ToolCheckStatus } from '../../domain/tool-check/tool-check-case';
+import type { ToolCheckJudgmentTable } from './judgments';
 
 export interface ToolCheckAssertion {
-  readonly kind: 'rowCount' | 'column' | 'cell' | 'duration' | 'outcome';
+  readonly kind: 'rowCount' | 'column' | 'cell' | 'row' | 'judgment' | 'duration' | 'outcome';
   readonly passed: boolean;
   readonly expected: string;
   readonly actual: string;
@@ -39,9 +40,25 @@ export interface ToolCheckRunResult {
   /** 実際の出力行数（全行）。 */
   readonly rowCount: number;
   readonly nodes: readonly { readonly nodeId: string; readonly rowCount: number }[];
+  /**
+   * AI 判定ノードごとの判定結果（入力行 + 判定列 + 理由列。表示用スナップショット）。
+   * ai-judge ノードが無ければ省略する（従来の結果と同じ形）。
+   */
+  readonly judgments?: readonly ToolCheckJudgmentSnapshot[];
+  /** 判定に使ったモデルの識別（provider/model）。judgments があるときだけ。 */
+  readonly judgedBy?: string;
   readonly durationMs: number;
   readonly error?: ToolCheckRunError;
   readonly checkedAt: string;
+}
+
+/** 結果に載せる判定表（rowLimit 行までのスナップショット）。 */
+export interface ToolCheckJudgmentSnapshot {
+  readonly nodeId: string;
+  readonly verdictColumn: string;
+  readonly reasonColumn: string;
+  readonly table: Table;
+  readonly rowCount: number;
 }
 
 const OP_SYMBOLS: Record<ToolCheckCellOp, string> = { eq: '==', neq: '!=', gte: '>=', lte: '<=', contains: 'contains' };
@@ -93,8 +110,70 @@ function evaluateCell(expectation: ToolCheckCellExpectation, output: Table): Too
   return { kind: 'cell', passed, expected, actual: `${matched} of ${total} rows match` };
 }
 
-/** 期待を全行の出力と所要時間に対して評価する。期待が無ければ空配列（＝合格）。 */
-export function evaluateExpectations(expectations: ToolCheckExpectations | undefined, output: Table, durationMs: number): readonly ToolCheckAssertion[] {
+/** `row[id == "E1"]` の書式。行の特定条件を定型文にする（UI の対応表と対）。 */
+function describeLocator(where: ToolCheckRowLocator): string {
+  return `${where.column} == ${JSON.stringify(where.value)}`;
+}
+
+/** 特定条件に最初に一致した行（列が無ければ undefined）。 */
+function locateRow(where: ToolCheckRowLocator, table: Table): { readonly row: Row | undefined; readonly columnExists: boolean } {
+  const columnExists = table.schema.columns.some((column) => column.name === where.column);
+  if (!columnExists) return { row: undefined, columnExists };
+  return { row: table.rows.find((row) => cellMatches(row[where.column], 'eq', where.value)), columnExists };
+}
+
+/**
+ * 行を特定した期待。
+ * - present:false → `row[<where>] absent` に対して actual `present` / `absent`。
+ * - cells が無ければ存在だけ → `row[<where>] present`。
+ * - cells は 1 セル 1 assertion → `row[<where>].<column> <op> <value>`、actual は実際の値（JSON）か `row not found`。
+ */
+function evaluateRow(expectation: ToolCheckRowExpectation, output: Table): readonly ToolCheckAssertion[] {
+  const locator = describeLocator(expectation.where);
+  const { row, columnExists } = locateRow(expectation.where, output);
+  const presence = !columnExists ? `column '${expectation.where.column}' not in output` : row === undefined ? 'absent' : 'present';
+  if (expectation.present === false) {
+    return [{ kind: 'row', passed: columnExists && row === undefined, expected: `row[${locator}] absent`, actual: presence }];
+  }
+  const cells = expectation.cells ?? [];
+  if (cells.length === 0) return [{ kind: 'row', passed: row !== undefined, expected: `row[${locator}] present`, actual: presence }];
+  return cells.map((cell) => {
+    const expected = `row[${locator}].${cell.column} ${OP_SYMBOLS[cell.op]} ${JSON.stringify(cell.value)}`;
+    if (row === undefined) return { kind: 'row' as const, passed: false, expected, actual: 'row not found' };
+    if (!output.schema.columns.some((column) => column.name === cell.column)) return { kind: 'row' as const, passed: false, expected, actual: `column '${cell.column}' not in output` };
+    return { kind: 'row' as const, passed: cellMatches(row[cell.column], cell.op, cell.value), expected, actual: JSON.stringify(normalizeCell(row[cell.column])) };
+  });
+}
+
+/**
+ * AI 判定の期待。判定表（ノードの入力行 + 判定列 + 理由列）から行を特定して判定値を照合する。
+ * - `judgment[<nodeId>][<where>] in [<verdicts>]` に対して actual `<verdict> (<reason>)`。
+ * - reasonContains があれば `judgment[<nodeId>][<where>] reason contains <text>` を別 assertion で出す。
+ * - ノードが無い / 判定が無い / 行が無いときは actual にその旨（`node not judged` / `row not found`）。
+ */
+function evaluateJudgment(expectation: ToolCheckJudgmentExpectation, judgments: readonly ToolCheckJudgmentTable[]): readonly ToolCheckAssertion[] {
+  const locator = `judgment[${expectation.nodeId}][${describeLocator(expectation.where)}]`;
+  const expectedVerdict = `${locator} in [${expectation.verdict.map((value) => JSON.stringify(value)).join(', ')}]`;
+  const judgment = judgments.find((item) => item.nodeId === expectation.nodeId);
+  const failAll = (actual: string): readonly ToolCheckAssertion[] => [
+    { kind: 'judgment', passed: false, expected: expectedVerdict, actual },
+    ...(expectation.reasonContains === undefined ? [] : [{ kind: 'judgment' as const, passed: false, expected: `${locator} reason contains ${JSON.stringify(expectation.reasonContains)}`, actual }]),
+  ];
+  if (judgment === undefined) return failAll(`node '${expectation.nodeId}' not judged`);
+  const { row, columnExists } = locateRow(expectation.where, judgment.table);
+  if (!columnExists) return failAll(`column '${expectation.where.column}' not in node input`);
+  if (row === undefined) return failAll('row not found');
+  const verdict = String(row[judgment.verdictColumn] ?? '');
+  const reason = String(row[judgment.reasonColumn] ?? '');
+  const assertions: ToolCheckAssertion[] = [{ kind: 'judgment', passed: expectation.verdict.includes(verdict), expected: expectedVerdict, actual: `${verdict} (${reason})` }];
+  if (expectation.reasonContains !== undefined) {
+    assertions.push({ kind: 'judgment', passed: reason.includes(expectation.reasonContains), expected: `${locator} reason contains ${JSON.stringify(expectation.reasonContains)}`, actual: JSON.stringify(reason) });
+  }
+  return assertions;
+}
+
+/** 期待を全行の出力と所要時間（と AI 判定表）に対して評価する。期待が無ければ空配列（＝合格）。 */
+export function evaluateExpectations(expectations: ToolCheckExpectations | undefined, output: Table, durationMs: number, judgments: readonly ToolCheckJudgmentTable[] = []): readonly ToolCheckAssertion[] {
   if (expectations === undefined) return [];
   const assertions: ToolCheckAssertion[] = [];
   const rowCount = output.rows.length;
@@ -110,6 +189,8 @@ export function evaluateExpectations(expectations: ToolCheckExpectations | undef
     }
   }
   for (const cell of expectations.cells ?? []) assertions.push(evaluateCell(cell, output));
+  for (const row of expectations.rows ?? []) assertions.push(...evaluateRow(row, output));
+  for (const judgment of expectations.judgments ?? []) assertions.push(...evaluateJudgment(judgment, judgments));
   if (expectations.maxDurationMs !== undefined) {
     assertions.push({ kind: 'duration', passed: durationMs <= expectations.maxDurationMs, expected: `duration <= ${expectations.maxDurationMs}ms`, actual: `${durationMs}ms` });
   }
@@ -137,9 +218,9 @@ export function evaluateOutcome(expected: ToolCheckOutcome | undefined, error: {
  * outcome: 'error' を期待していたのに成功した場合は failed だが、残りの期待も評価して
  * 「実際に何が起きたか」を見せる（結末の assertion が先頭）。
  */
-export function evaluateSuccessfulRun(expectations: ToolCheckExpectations | undefined, output: Table, durationMs: number): { readonly status: ToolCheckStatus; readonly assertions: readonly ToolCheckAssertion[] } {
+export function evaluateSuccessfulRun(expectations: ToolCheckExpectations | undefined, output: Table, durationMs: number, judgments: readonly ToolCheckJudgmentTable[] = []): { readonly status: ToolCheckStatus; readonly assertions: readonly ToolCheckAssertion[] } {
   const outcome = evaluateOutcome(expectations?.outcome, undefined);
-  const assertions = [...(outcome === undefined ? [] : [outcome]), ...evaluateExpectations(expectations, output, durationMs)];
+  const assertions = [...(outcome === undefined ? [] : [outcome]), ...evaluateExpectations(expectations, output, durationMs, judgments)];
   return { status: assertions.every((assertion) => assertion.passed) ? 'passed' : 'failed', assertions };
 }
 

@@ -112,6 +112,39 @@ export function ResultPanel({ result, argumentFields, onFocusArgument }: {
           <small className="row-count">{rowSummary}</small>
         </div>}
 
+      {(result.judgments ?? []).length > 0 && (
+        <div className="tool-check-judgment-tables">
+          <h3>{text('AI judgments', 'AI判定')}</h3>
+          <p className="tool-check-hint">{text('What the AI judgment node decided for each of its input rows. Rows removed by keep / exclude are still listed here.', 'AI判定ノードが入力の各行をどう判定したかです。keep / exclude で出力から消えた行もここには残ります。')}</p>
+          {result.judgedBy !== undefined && <p className="tool-check-meta"><small>{text('Judged by', '判定したモデル')} <code>{result.judgedBy}</code></small></p>}
+          {(result.judgments ?? []).map((judgment) => {
+            const shownRows = judgment.table.rows.length;
+            return (
+              <div key={judgment.nodeId} className="table-wrap tool-check-judgment-table">
+                <table>
+                  <caption>{text('Node', 'ノード')} <code>{judgment.nodeId}</code></caption>
+                  <thead><tr>{judgment.table.schema.columns.map((column) => <th key={column.name} className={column.name === judgment.verdictColumn || column.name === judgment.reasonColumn ? 'tool-check-judgment-column' : undefined}>{column.name}</th>)}</tr></thead>
+                  <tbody>
+                    {judgment.table.rows.map((row, index) => (
+                      <tr key={index}>
+                        {judgment.table.schema.columns.map((column) => (
+                          <td key={column.name} className={column.name === judgment.verdictColumn || column.name === judgment.reasonColumn ? 'tool-check-judgment-column' : undefined}>{displayCell(row[column.name] ?? null)}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <small className="row-count">
+                  {judgment.rowCount > shownRows
+                    ? text(`Showing ${formatCount(shownRows)} of ${formatCount(judgment.rowCount)} judged rows.`, `判定した全 ${formatCount(judgment.rowCount)} 行のうち ${formatCount(shownRows)} 行を表示`)
+                    : text(`${formatCount(judgment.rowCount)} judged row${judgment.rowCount === 1 ? '' : 's'}`, `判定した行 ${formatCount(judgment.rowCount)} 行`)}
+                </small>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {result.nodes.length > 0 && (
         <p className="tool-check-nodes">
           {text('Rows per node:', 'ノード別の行数:')}{' '}

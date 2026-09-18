@@ -78,4 +78,26 @@ export async function toolCheckCaseRepositoryContract(repo: ToolCheckCaseReposit
   expect(loaded).toEqual(mutable);
   expect(loaded).not.toBe(mutable);
   expect(loaded?.arguments).not.toBe(mutable.arguments);
+
+  // 正常: 行を特定した期待（present:false 込み）と AI 判定の期待（verdict 複数・reasonContains 込み）も欠けずに往復する。
+  const judged = item('judged', {
+    expectations: {
+      rows: [
+        { where: { column: 'id', value: 'E1' }, cells: [{ column: 'amount', op: 'gte', value: 10000 }] },
+        { where: { column: 'id', value: 'E2' }, present: false },
+      ],
+      judgments: [
+        { nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes', 'unclear'] },
+        { nodeId: 'judge', where: { column: 'id', value: 'E2' }, verdict: ['no'], reasonContains: '領収書' },
+      ],
+    },
+    createdAt: '2026-09-12T04:00:00.000Z', updatedAt: '2026-09-12T04:00:00.000Z',
+  });
+  await repo.save(judged);
+  const loadedJudged = await repo.find(scope, 'judged');
+  expect(loadedJudged).toEqual(judged);
+  expect(loadedJudged?.expectations.rows?.[1]?.present).toBe(false);
+  expect(loadedJudged?.expectations.judgments?.[0]?.verdict).toEqual(['yes', 'unclear']);
+  expect(loadedJudged?.expectations.judgments?.[1]?.reasonContains).toBe('領収書');
+  expect(await repo.delete(scope, 'judged')).toBe(true);
 }

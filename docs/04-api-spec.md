@@ -375,6 +375,17 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
     "rowCount": { "op": "gte", "value": 1 },                       // op: eq | gte | lte
     "columns": ["region", "amount"],
     "cells": [{ "column": "region", "op": "eq", "value": "Tokyo", "mode": "all" }], // op: eq | neq | gte | lte | contains、mode: any | all
+    "rows": [{                                                      // 終端出力の1行を特定した期待（最大50件、cellsは1行あたり最大20件）
+      "where": { "column": "id", "value": "E1" },                     // 最初に一致した行
+      "present": true,                                                 // false なら「その行が無い」ことを期待（省略時 true。cells は評価しない）
+      "cells": [{ "column": "amount", "op": "gte", "value": 10000 }]    // 列・演算子・値。mode は無い（特定した行だけを見る）
+    }],
+    "judgments": [{                                                  // AI判定ノード（ai-judge）の入力行を特定した期待（最大100件）
+      "nodeId": "judge1",
+      "where": { "column": "id", "value": "E2" },
+      "verdict": ["no", "unclear"],                                    // いずれかに一致すれば合格（モデルの揺れを許容。最大21件）
+      "reasonContains": "重複"                                          // 任意: 理由に含まれるべき文字列
+    }],
     "maxDurationMs": 5000,
     "outcome": "success"                                          // success | error（省略可。後述）
   },
@@ -386,16 +397,24 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
     { "kind": "rowCount", "passed": true,  "expected": "row count >= 1", "actual": "row count 2" },
     { "kind": "column",   "passed": false, "expected": "column 'amount' exists", "actual": "columns: region, total" },
     { "kind": "cell",     "passed": true,  "expected": "every row has region == \"Tokyo\"", "actual": "2 of 2 rows match" },
+    { "kind": "row",      "passed": true,  "expected": "row[id == \"E1\"].amount >= 10000", "actual": "12000" },
+    { "kind": "judgment", "passed": true,  "expected": "judgment[judge1][id == \"E2\"] in [\"no\", \"unclear\"]", "actual": "no (重複行のため除外)" },
     { "kind": "duration", "passed": true,  "expected": "duration <= 5000ms", "actual": "12ms" }
   ],
   "output": Table,                                                     // 先頭 rowLimit 行のスナップショット
   "rowCount": 2,                                                       // 全行数（期待の評価もこちら）
   "nodes": [{ "nodeId": "data", "rowCount": 3 }, { "nodeId": "filter", "rowCount": 2 }],
+  "judgments": [{ "nodeId": "judge1", "verdictColumn": "aiVerdict", "reasonColumn": "aiReason", "table": Table, "rowCount": 5 }], // ai-judgeノードがあるときだけ（判定表のスナップショット、rowLimit行まで）
+  "judgedBy": "lm-studio/qwen2.5-14b-instruct",                        // judgments があるときだけ（判定に使ったモデル）
   "durationMs": 12, "checkedAt": "2026-09-12T09:00:00.000Z",
   "error": { "code": "TOOL_ARGUMENTS", "message": "…", "nodeId": "…" } }  // status = error のときだけ
 ```
 
 `expected` / `actual` は英語の定型文で UI が正規表現で日本語化する（`row count <sym> <n>` / `column '<name>' exists` / `some row has <col> <sym> <json>` / `every row has …` / `<matched> of <total> rows match` / `column '<name>' not in output` / `duration <= <ms>ms` / `outcome success` / `outcome error (<code>)`）。セル比較は eq / neq が JSON 表現の一致（Date は ISO 文字列化）、gte / lte は数値同士だけ、contains は文字列化した部分一致。null セルは `eq null` にだけ一致する。
+
+**行を特定した期待（`rows`、kind: "row"）** は終端出力（全行）から `where`（`column == value`、最初に一致した行）で1行を特定し、`present: false` なら「その行が無い」ことを期待する（`row[<where>] absent` に対し `actual` は `present` / `absent` / `column '<column>' not in output`）。`cells` が無ければ存在だけを見る（`row[<where>] present`）。`cells` は1セル1 assertion で `row[<where>].<column> <op> <value>` に対し、`actual` は実際の値（JSON）か `row not found` / `column '<column>' not in output`。
+
+**AI判定ノードへの期待（`judgments`、kind: "judgment"）** は `nodeId` で指定した `ai-judge` ノードの**入力行**を `where` で特定し（終端出力ではなくノードの判定表を見るので、`keep` / `exclude` で行が消えていても検証できる）、判定値が `verdict` のいずれかに一致すること（`judgment[<nodeId>][<where>] in [<verdicts>]` に対し `actual` は `<verdict> (<reason>)`）を確かめる。`reasonContains` を添えると理由文字列の部分一致も別 assertion（`judgment[<nodeId>][<where>] reason contains <text>`）として出る。ノードが判定されていない・行が見つからないときは `actual` に `node '<nodeId>' not judged` / `row not found` / `column '<column>' not in node input` が入る。判定値はモデルの揺れがあるため `verdict` に複数（any-of、最大21件）を書いてよい。
 
 **結末の期待（`expectations.outcome`）** で異常系ケースを表現する。`"error"` は「引数不正・inputSchema の不整合・ノードエラーで**失敗すること**」自体を期待する: 実行が失敗すれば `status: "passed"`、assertions は `[{ kind: "outcome", passed: true, expected: "outcome error", actual: "outcome error (TOOL_ARGUMENTS)" }]` の 1 件だけ（他の期待は出力が無いので評価しない）、`error` は表示のために残る。失敗するはずが成功したら `status: "failed"` で結末の assertion（`actual: "outcome success"`）が不合格になり、残りの期待も評価して「実際に何が起きたか」を見せる。`"success"` を明示すると合格の結末 assertion が先頭に付き、実行が失敗したときは従来どおり `status: "error"` のまま不合格の結末 assertion（`actual: "outcome error (<code>)"`）を添える。省略時は従来どおり（結末の assertion は出ない）。要約は合格した異常系で `passed 1/1 (expected error: <message>)` になる。
 

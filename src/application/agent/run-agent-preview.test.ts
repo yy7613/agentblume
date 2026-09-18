@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createAgent, DEFAULT_AGENT_RUNTIME_HARNESS, type Agent, type AgentRuntimeHarness } from '../../domain/agent/agent';
 import type { AgentRepository, AgentSummary } from '../../domain/agent/agent-repository';
 import type { Schema } from '../../domain/data/types';
-import { SchemaError } from '../../domain/etl/errors';
+import { ConfigError, SchemaError } from '../../domain/etl/errors';
 import { createDefaultRegistry } from '../../domain/etl/nodes/index';
 import type { TenantScope, ToolId } from '../../domain/tool/ids';
 import type { ToolSummary } from '../../domain/tool/metadata';
@@ -16,6 +16,7 @@ import type { JsonObject, ModelCapability, ModelCompletion, ModelCompletionReque
 import { AgentRunError, RunFailedError, ToolArgumentsError, ToolExecutionError, UnsafeToolError } from './errors';
 import { queryWorkspaceTable, RunAgentPreviewUseCase, type RunObservabilityOptions } from './run-agent-preview';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
+import type { ResolveAiJudgmentsUseCase } from '../tool/resolve-ai-judgments';
 import { toolToModelDefinition } from './tool-schema';
 import { FakeWikiRepository } from '../memory/memory-repositories.fixtures';
 import { createWikiSpace } from '../../domain/memory/wiki-space';
@@ -1054,6 +1055,73 @@ describe('RunAgentPreviewUseCase', () => {
     const system = model.requests[0]?.messages[0]?.content ?? '';
     expect(system).toContain('Customer A / Refund policy'); expect(system).toContain('Alpha refunds'); expect(system).not.toContain('Beta refunds');
     await expect(usecase.executeSaved({ scope, agentId: 'agent', message: 'x', mode: 'preview', memoryPageIds: ['page-b'] })).rejects.toMatchObject({ cause: expect.objectContaining({ message: expect.stringMatching(/outside Agent wiki allowlist/) }) });
+  });
+
+  // ai-judge（AI判定）の解決は「データソース解決の後・engine.preview の前」に1回だけ挟む。
+  // 判定対象の行は解決済みソースから計算するので、渡すグラフは data source resolver が返したものでなければならない。
+  it('正常: AI判定の解決をデータソース解決の後に1回だけ呼び、Runの中断シグナルをそのまま渡す', async () => {
+    const resolvedGraphs: unknown[] = [];
+    const dataSources = { execute: async (_scope: unknown, graph: unknown) => { const resolved = { ...(graph as Record<string, unknown>) }; resolvedGraphs.push(resolved); return resolved; } } as unknown as ResolveDataSourceGraphUseCase;
+    const seen: { graph: unknown; signal: AbortSignal | undefined }[] = [];
+    const judge = { execute: vi.fn(async (graph: unknown, signal?: AbortSignal) => { seen.push({ graph, signal }); return graph; }) };
+    const controller = new AbortController();
+    const model = new QueueModel([
+      toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('done'),
+      toolCall('c2', 'score_lookup', { name: 'Bob', score: 7 }), stop('done again'),
+    ]);
+    const usecase = new RunAgentPreviewUseCase(
+      new StaticRepository(makeTool()), new EtlEngine(createDefaultRegistry()), model, new MemoryRuns(), () => 'run-judge',
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, dataSources, undefined, undefined, undefined,
+      judge as unknown as ResolveAiJudgmentsUseCase,
+    );
+
+    const run = await usecase.execute(input, controller.signal);
+    await usecase.execute(input);
+
+    expect(judge.execute).toHaveBeenCalledTimes(2);
+    expect(seen).toHaveLength(2);
+    // 解決器が受け取るのは data source resolver の戻り値そのもの（保存済みグラフではない）。
+    expect(seen[0]?.graph).toBe(resolvedGraphs[0]);
+    expect(seen[0]?.signal).toBe(controller.signal);
+    // 中断シグナル無しの実行では undefined のまま渡る（LoopContext.signal を素通しするだけ）。
+    expect(seen[1]?.signal).toBeUndefined();
+    expect(run.response).toBe('done');
+  });
+
+  it('異常: AI判定の解決が nodeId 付き ConfigError で落ちたら ETL_CONFIG のまま tool と nodeId を添えて失敗する', async () => {
+    const message = 'ai-judge: the model is not configured; set the main model slot in Settings > Models, then reload the page';
+    const failure = new ConfigError(message);
+    failure.nodeId = 'judge';
+    const judge = { execute: vi.fn(async () => { throw failure; }) } as unknown as ResolveAiJudgmentsUseCase;
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 })]);
+    const runs = new MemoryRuns();
+    const toolRef = { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' };
+    const usecase = new RunAgentPreviewUseCase(
+      new StaticRepository(makeTool()), new EtlEngine(createDefaultRegistry()), model, runs, () => 'run-judge-fail',
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      judge,
+    );
+    const rejection: unknown = await usecase.execute(input).then(() => undefined, (error: unknown) => error);
+
+    // ETLノードの実行失敗と同じ扱い: ToolExecutionError で包み、code・message は元例外のまま残す。
+    expect(rejection).toBeInstanceOf(RunFailedError);
+    const cause = (rejection as RunFailedError).cause;
+    expect(cause).toBeInstanceOf(ToolExecutionError);
+    expect(cause).toMatchObject({ code: 'ETL_CONFIG', message, tool: toolRef, nodeId: 'judge' });
+    expect((cause as ToolExecutionError).cause).toBe(failure);
+    const record = runs.records.get('run-judge-fail');
+    expect(record?.status).toBe('failed');
+    // UIが「どのToolのどのノードを直せばよいか」へ辿れるよう、failure と末尾の error イベントの両方に nodeId が入る。
+    expect(record?.failure).toEqual({ code: 'ETL_CONFIG', message, tool: toolRef, nodeId: 'judge' });
+    expect(record?.trace.at(-1)).toEqual({ sequence: record?.trace.length, kind: 'error', code: 'ETL_CONFIG', message, tool: toolRef, nodeId: 'judge' });
+  });
+
+  it('境界: AI判定の解決を注入しない配線では従来どおりグラフをそのまま実行する', async () => {
+    const model = new QueueModel([toolCall('c1', 'score_lookup', { name: 'Alice', score: 42 }), stop('done')]);
+    const runs = new MemoryRuns();
+    const run = await new RunAgentPreviewUseCase(new StaticRepository(makeTool()), new EtlEngine(createDefaultRegistry()), model, runs, () => 'run-no-judge').execute(input);
+    expect(run.response).toBe('done');
+    expect(runs.records.get('run-no-judge')?.status).toBe('succeeded');
   });
 });
 

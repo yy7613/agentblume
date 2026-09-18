@@ -4,7 +4,7 @@
  * Fake リポジトリ（テスト内インライン・Map ベース）+ 実 EtlEngine
  * （createDefaultRegistry）で検証する。adapters には依存しない。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EtlEngine } from '../etl/engine';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { createDefaultRegistry } from '../../domain/etl/nodes/index';
@@ -17,6 +17,7 @@ import { createTool } from '../../domain/tool/tool';
 import type { Tool } from '../../domain/tool/tool';
 import type { ToolRepository } from '../../domain/tool/tool-repository';
 import { PreviewToolUseCase } from './preview-tool';
+import type { ResolveAiJudgmentsUseCase } from './resolve-ai-judgments';
 
 /** テスト用インライン Fake（ToolRepository を満たす Map ベース最小実装）。 */
 class FakeToolRepository implements ToolRepository {
@@ -205,5 +206,30 @@ describe('PreviewToolUseCase', () => {
 
       await expect(usecase.inspect(scope, 'no-such-tool')).rejects.toThrow(ToolNotFoundError);
     });
+  });
+});
+
+describe('PreviewToolUseCase: AI 判定の解決', () => {
+  /** グラフをそのまま返す解決器（呼ばれたかどうかだけを見る）。 */
+  async function makeSutWithResolver(): Promise<{ usecase: PreviewToolUseCase; resolver: { execute: ReturnType<typeof vi.fn> } }> {
+    const repo = new FakeToolRepository();
+    await repo.save(makeTool(graphV2, SemVer.of(1, 0, 1)));
+    const resolver = { execute: vi.fn(async (graph: ToolGraph) => graph) };
+    const usecase = new PreviewToolUseCase(repo, new EtlEngine(createDefaultRegistry()), undefined, resolver as unknown as ResolveAiJudgmentsUseCase);
+    return { usecase, resolver };
+  }
+
+  it('preview は実行の前に AI 判定を解く', async () => {
+    const { usecase, resolver } = await makeSutWithResolver();
+    const { result } = await usecase.preview(scope, 'tool-1');
+    expect(resolver.execute).toHaveBeenCalledTimes(1);
+    expect(resolver.execute).toHaveBeenCalledWith(graphV2);
+    expect(result.output.rows).toEqual([{ a: 3 }]);
+  });
+
+  it('inspect は従来どおり解決器を呼ばない（点検は実行しない）', async () => {
+    const { usecase, resolver } = await makeSutWithResolver();
+    await usecase.inspect(scope, 'tool-1');
+    expect(resolver.execute).not.toHaveBeenCalled();
   });
 });

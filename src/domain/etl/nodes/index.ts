@@ -37,6 +37,7 @@ import { correlationAnalysisNode } from './correlation-analysis';
 import { timeSeriesAnalysisNode } from './time-series-analysis';
 import { outlierFilterNode } from './outlier-filter';
 import { chartOutputNode } from './chart-output';
+import { aiJudgeNode } from './ai-judge';
 
 export { jsonSourceNode } from './json-source';
 export type { JsonSourceConfig } from './json-source';
@@ -96,6 +97,8 @@ export { outlierFilterNode } from './outlier-filter';
 export type { OutlierFilterConfig } from './outlier-filter';
 export { chartOutputNode } from './chart-output';
 export type { ChartOutputConfig, ChartType } from './chart-output';
+export { aiJudgeNode, AI_JUDGE_TYPE, AI_JUDGE_UNCLEAR, AI_JUDGE_YES_NO_VALUES, AI_JUDGE_MAX_ITEMS, AI_JUDGE_DEFAULT_MAX_ITEMS, AI_JUDGE_MAX_CATEGORIES, aiJudgeAllowedValues, aiJudgeColumns, aiJudgeItemKey, aiJudgeItemValues, aiJudgeIssues, aiJudgeMode } from './ai-judge';
+export type { AiJudgeAction, AiJudgeCategory, AiJudgeConfig, AiJudgeMode, AiJudgeResolved, AiJudgeVerdict } from './ai-judge';
 
 /** v1 の 7 ノード + v15 の 6 ノードを登録済みの NodeRegistry を返す。 */
 export function createDefaultRegistry(): NodeRegistry {
@@ -108,6 +111,7 @@ export function createDefaultRegistry(): NodeRegistry {
   registry.register(csvSourceNode);
   registry.register(selectNode);
   registry.register(filterNode);
+  registry.register(aiJudgeNode);
   registry.register(renameNode);
   registry.register(castNode);
   registry.register(joinNode);

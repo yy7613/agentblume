@@ -17,6 +17,7 @@ import type { ToolRepository } from '../../domain/tool/tool-repository';
 import { EtlEngine } from '../etl/engine';
 import type { PropagationResult, PreviewResult } from '../etl/engine';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
+import type { ResolveAiJudgmentsUseCase } from './resolve-ai-judgments';
 
 /** inspect / preview 共通のオプション。 */
 export interface PreviewToolOptions {
@@ -44,6 +45,8 @@ export class PreviewToolUseCase {
     private readonly repo: ToolRepository,
     private readonly engine: EtlEngine,
     private readonly resolveDataSources?: ResolveDataSourceGraphUseCase,
+    /** `preview` だけが使う。`inspect` は実行しないのでモデルを呼ばない。 */
+    private readonly resolveAiJudgments?: ResolveAiJudgmentsUseCase,
   ) {}
 
   /** 保存済み Tool のスキーマ点検（実行なし）。未存在→ToolNotFoundError。 */
@@ -64,7 +67,9 @@ export class PreviewToolUseCase {
     options?: PreviewToolOptions,
   ): Promise<ToolPreview> {
     const tool = await this.load(scope, internalId, options?.version);
-    const graph = this.resolveDataSources === undefined ? tool.graph : await this.resolveDataSources.execute(scope, tool.graph);
+    const withSources = this.resolveDataSources === undefined ? tool.graph : await this.resolveDataSources.execute(scope, tool.graph);
+    // データソース解決の**後**、engine.preview の**前**に AI 判定を解く。
+    const graph = this.resolveAiJudgments === undefined ? withSources : await this.resolveAiJudgments.execute(withSources);
     const result =
       options?.rowLimit !== undefined
         ? this.engine.preview(graph, { rowLimit: options.rowLimit })

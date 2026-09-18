@@ -11,6 +11,8 @@ import { RoleMatrixAuthorization } from '../adapters/security/role-matrix-author
 import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { authenticated, rejected, type AuthenticationPort } from '../application/security/authentication';
 import { SuggestToolCheckCasesUseCase } from '../application/tool-check/suggest-tool-check-cases';
+import { RunToolCheckUseCase } from '../application/tool-check/run-tool-check';
+import { ResolveAiJudgmentsUseCase } from '../application/tool/resolve-ai-judgments';
 import { createApp, type App } from '../composition/root';
 import type { AuthorizationRole } from '../domain/security/authorization';
 import { explicitRouteAuthorization } from './authorization';
@@ -460,5 +462,197 @@ describe('tool check routes: 認可', () => {
 
   it('認証されていない要求は 401', async () => {
     expect((await editor.inject({ method: 'GET', url: '/tool-checks/cases', query: SCOPE })).statusCode).toBe(401);
+  });
+});
+
+/** `json-source → ai-judge(keep yes)` の Tool（判定で行が落ちるので終端と判定の両方を検証できる）。 */
+function judgeToolBody(overrides: Record<string, unknown> = {}) {
+  return toolBody({
+    internalId: 'expenses', workingName: 'expenses', displayName: 'Expenses', publishName: 'expense_check',
+    graph: {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ id: 'E1', amount: 12000 }, { id: 'E2', amount: 500 }] } },
+        { id: 'judge', type: 'ai-judge', config: { question: 'これは経費として妥当ですか？', action: 'keep', matchValues: ['yes'] } },
+        { id: 'arguments', type: 'agent-input', config: { schema: inputSchema, sample: { region: 'Osaka', minimum: 0 } } },
+      ],
+      edges: [{ from: 'data', to: 'judge' }],
+    },
+    ...overrides,
+  });
+}
+
+/** 缶詰のモデル応答で AI 判定を解く RunToolCheckUseCase に差し替えた App（test プロファイルの既定は未設定）。 */
+function withJudgments(app: App, scripted: ScriptedModelProvider): App {
+  const resolver = new ResolveAiJudgmentsUseCase(app.engine, scripted, () => true, { snapshot: async () => ({ provider: 'scripted', model: 'canned' }) });
+  return { ...app, runToolCheck: new RunToolCheckUseCase(app.repo, app.engine, undefined, {}, resolver) };
+}
+
+const CANNED_VERDICTS = { verdicts: [{ id: 'r1', answer: 'yes', reason: '規程の範囲内' }, { id: 'r2', answer: 'no', reason: '領収書が無い' }] };
+
+describe('tool check routes: rows / judgments の期待', () => {
+  let app: App;
+  let scripted: ScriptedModelProvider;
+  let server: FastifyInstance;
+
+  beforeEach(async () => {
+    app = createApp({ profile: 'test' });
+    scripted = new ScriptedModelProvider();
+    server = buildServer(withJudgments(app, scripted), { authentication: new SingleUserAuthentication(SCOPE) });
+    expect((await server.inject({ method: 'POST', url: '/tools', payload: toolBody() })).statusCode).toBe(201);
+    expect((await server.inject({ method: 'POST', url: '/tools', payload: judgeToolBody() })).statusCode).toBe(201);
+  });
+
+  afterEach(async () => {
+    await server.close();
+    app.close();
+  });
+
+  it('200: rows の期待（存在・不在・セル）を受け取り、定型文の expected / actual を返す', async () => {
+    const res = await server.inject({ method: 'POST', url: '/tool-checks/run', payload: {
+      scope: SCOPE, toolId: 'sales', arguments: { region: 'Tokyo' },
+      expectations: { rows: [
+        { where: { column: 'region', value: 'Tokyo' }, cells: [{ column: 'amount', op: 'gte', value: 100 }] },
+        { where: { column: 'region', value: 'Osaka' }, present: false },
+      ] },
+    } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().result).toMatchObject({ status: 'passed', assertions: [
+      { kind: 'row', passed: true, expected: 'row[region == "Tokyo"].amount >= 100', actual: '120' },
+      { kind: 'row', passed: true, expected: 'row[region == "Osaka"] absent', actual: 'absent' },
+    ] });
+  });
+
+  it('200: ai-judge を持つ Tool では判定表（judgments）と判定モデル（judgedBy）を返す', async () => {
+    scripted.enqueue({ message: { role: 'assistant', content: JSON.stringify(CANNED_VERDICTS) }, finishReason: 'stop' });
+    const res = await server.inject({ method: 'POST', url: '/tool-checks/run', payload: {
+      scope: SCOPE, toolId: 'expenses', arguments: { region: 'Tokyo' },
+      expectations: {
+        rows: [{ where: { column: 'id', value: 'E2' }, present: false }],
+        judgments: [
+          { nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes'] },
+          { nodeId: 'judge', where: { column: 'id', value: 'E2' }, verdict: ['no'], reasonContains: '領収書' },
+        ],
+      },
+    } });
+    expect(res.statusCode).toBe(200);
+    const { result } = res.json();
+    expect(result.status).toBe('passed');
+    expect(result.assertions).toEqual([
+      { kind: 'row', passed: true, expected: 'row[id == "E2"] absent', actual: 'absent' },
+      { kind: 'judgment', passed: true, expected: 'judgment[judge][id == "E1"] in ["yes"]', actual: 'yes (規程の範囲内)' },
+      { kind: 'judgment', passed: true, expected: 'judgment[judge][id == "E2"] in ["no"]', actual: 'no (領収書が無い)' },
+      { kind: 'judgment', passed: true, expected: 'judgment[judge][id == "E2"] reason contains "領収書"', actual: '"領収書が無い"' },
+    ]);
+    expect(result.rowCount).toBe(1);
+    expect(result.judgedBy).toBe('scripted/canned');
+    expect(result.judgments).toHaveLength(1);
+    expect(result.judgments[0]).toMatchObject({ nodeId: 'judge', verdictColumn: 'aiVerdict', reasonColumn: 'aiReason', rowCount: 2 });
+    expect(result.judgments[0].table.rows).toEqual([
+      { id: 'E1', amount: 12000, aiVerdict: 'yes', aiReason: '規程の範囲内' },
+      { id: 'E2', amount: 500, aiVerdict: 'no', aiReason: '領収書が無い' },
+    ]);
+  });
+
+  it('200 failed: 判定が期待と違えば不合格（判定表は返したまま）', async () => {
+    scripted.enqueue({ message: { role: 'assistant', content: JSON.stringify(CANNED_VERDICTS) }, finishReason: 'stop' });
+    const res = await server.inject({ method: 'POST', url: '/tool-checks/run', payload: {
+      scope: SCOPE, toolId: 'expenses', arguments: { region: 'Tokyo' },
+      expectations: { judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E2' }, verdict: ['yes'] }] },
+    } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().result).toMatchObject({
+      status: 'failed',
+      assertions: [{ kind: 'judgment', passed: false, expected: 'judgment[judge][id == "E2"] in ["yes"]', actual: 'no (領収書が無い)' }],
+      judgments: [{ nodeId: 'judge', rowCount: 2 }],
+    });
+  });
+
+  it('200: ai-judge を持たない Tool の結果には judgments / judgedBy が現れない', async () => {
+    const res = await server.inject({ method: 'POST', url: '/tool-checks/run', payload: { scope: SCOPE, toolId: 'sales', arguments: { region: 'Tokyo' } } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().result.judgments).toBeUndefined();
+    expect(res.json().result.judgedBy).toBeUndefined();
+  });
+
+  it('200: ケースにも rows / judgments を保存でき、一覧で往復する', async () => {
+    const expectations = {
+      rows: [{ where: { column: 'id', value: 'E1' }, present: true, cells: [{ column: 'amount', op: 'gte', value: 10000 }] }],
+      judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E2' }, verdict: ['no', 'unclear'], reasonContains: '領収書' }],
+    };
+    const saved = await server.inject({ method: 'POST', url: '/tool-checks/cases', payload: caseBody({ toolId: 'expenses', expectations }) });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().case.expectations).toEqual(expectations);
+    const listed = (await server.inject({ method: 'GET', url: '/tool-checks/cases', query: { ...SCOPE, toolId: 'expenses' } })).json().cases[0];
+    expect(listed.expectations).toEqual(expectations);
+  });
+
+  it('400 BAD_REQUEST: rows / judgments の形が壊れている（フィールドのパスを含む）', async () => {
+    const cases: readonly [unknown, string][] = [
+      [{ rows: [{ present: true }] }, 'expectations.rows.0.where'],
+      [{ rows: [{ where: { column: 'id', value: 'E1' }, present: 'no' }] }, 'expectations.rows.0.present'],
+      [{ rows: [{ where: { column: 'id', value: 'E1' }, cells: [{ column: 'amount', op: 'like', value: 1 }] }] }, 'expectations.rows.0.cells.0.op'],
+      [{ judgments: [{ where: { column: 'id', value: 'E1' }, verdict: ['yes'] }] }, 'expectations.judgments.0.nodeId'],
+      [{ judgments: [{ nodeId: '', where: { column: 'id', value: 'E1' }, verdict: ['yes'] }] }, 'expectations.judgments.0.nodeId'],
+      [{ judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: [] }] }, 'expectations.judgments.0.verdict'],
+      [{ judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes'], reasonContains: '' }] }, 'expectations.judgments.0.reasonContains'],
+    ];
+    for (const [expectations, path] of cases) {
+      const run = await server.inject({ method: 'POST', url: '/tool-checks/run', payload: { scope: SCOPE, toolId: 'expenses', arguments: { region: 'Tokyo' }, expectations } });
+      expect(run.statusCode).toBe(400);
+      expect(run.json().error.code).toBe('BAD_REQUEST');
+      expect(run.json().error.message).toContain(path);
+      const save = await server.inject({ method: 'POST', url: '/tool-checks/cases', payload: caseBody({ toolId: 'expenses', expectations }) });
+      expect(save.statusCode).toBe(400);
+      expect(save.json().error.message).toContain(path);
+    }
+  });
+
+  it('400 BAD_REQUEST: 上限超え（rows 51 件・judgments 101 件・verdict 22 件）はスキーマで弾く', async () => {
+    const rows = Array.from({ length: 51 }, (_, index) => ({ where: { column: 'id', value: `E${index}` } }));
+    const judgments = Array.from({ length: 101 }, (_, index) => ({ nodeId: 'judge', where: { column: 'id', value: `E${index}` }, verdict: ['yes'] }));
+    const verdict = Array.from({ length: 22 }, (_, index) => `v${index}`);
+    const over: readonly [Record<string, unknown>, string][] = [
+      [{ rows }, 'expectations.rows'],
+      [{ judgments }, 'expectations.judgments'],
+      [{ judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict }] }, 'expectations.judgments.0.verdict'],
+    ];
+    for (const [expectations, path] of over) {
+      const res = await server.inject({ method: 'POST', url: '/tool-checks/run', payload: { scope: SCOPE, toolId: 'expenses', arguments: { region: 'Tokyo' }, expectations } });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.message).toContain(path);
+    }
+    // 境界: 上限ちょうどは受理する（rows 50 件）。
+    scripted.enqueue({ message: { role: 'assistant', content: JSON.stringify(CANNED_VERDICTS) }, finishReason: 'stop' });
+    const atLimit = await server.inject({ method: 'POST', url: '/tool-checks/run', payload: { scope: SCOPE, toolId: 'expenses', arguments: { region: 'Tokyo' }, expectations: { rows: rows.slice(0, 50) } } });
+    expect(atLimit.statusCode).toBe(200);
+  });
+});
+
+describe('tool check routes: AI 判定のモデルが未設定（test プロファイルの既定）', () => {
+  let app: App;
+  let server: FastifyInstance;
+
+  beforeEach(async () => {
+    app = createApp({ profile: 'test' });
+    server = buildServer(app, { authentication: new SingleUserAuthentication(SCOPE) });
+    expect((await server.inject({ method: 'POST', url: '/tools', payload: judgeToolBody() })).statusCode).toBe(201);
+  });
+
+  afterEach(async () => {
+    await server.close();
+    app.close();
+  });
+
+  it('200 status error: 判定を解けないまま実行せず、設定への導線つきの ETL_CONFIG を返す', async () => {
+    const res = await server.inject({ method: 'POST', url: '/tool-checks/run', payload: {
+      scope: SCOPE, toolId: 'expenses', arguments: { region: 'Tokyo' },
+      expectations: { judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes'] }] },
+    } });
+    expect(res.statusCode).toBe(200);
+    const { result } = res.json();
+    expect(result.status).toBe('error');
+    expect(result.error).toMatchObject({ code: 'ETL_CONFIG', nodeId: 'judge' });
+    expect(result.error.message).toContain('the model is not configured');
+    expect(result.judgments).toBeUndefined();
   });
 });

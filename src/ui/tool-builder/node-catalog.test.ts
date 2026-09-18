@@ -47,6 +47,19 @@ describe('node catalog', () => {
     expect(item.labelJa).toBe('現在日時');
   });
 
+  it('ai-judgeは変換カテゴリの1入力ノードで、既定は はい/いいえ・flag（判定列を付けて全行を通す）', () => {
+    const item = catalogItem('ai-judge');
+    expect(item.kind).toBe('transform');
+    expect(item.inputArity).toBe(1);
+    expect(item.label).toBe('AI judgment');
+    expect(item.labelJa).toBe('AI判定');
+    // domain（src/domain/etl/nodes/ai-judge.ts）の既定値と一致させる。categories が空なら はい/いいえ モード。
+    expect(item.defaultConfig).toEqual({
+      configVersion: 1, question: '', categories: [], columns: [],
+      outputColumn: 'aiVerdict', reasonColumn: 'aiReason', action: 'flag', matchValues: ['yes'], maxItems: 50,
+    });
+  });
+
   it('filterの既定configは旧形式（単一条件フラット）のままで後方互換を保つ', () => {
     expect(catalogItem('filter').defaultConfig).toEqual({ column: '', op: 'eq', value: '' });
   });

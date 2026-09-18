@@ -9,7 +9,7 @@ import { DATA_TYPES, cellText, coerceCell, coerceScalar, columnsText, parseColum
 import { scope } from '../scope';
 
 const EMPTY_COLUMNS: readonly ColumnDto[] = [];
-const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'rename', 'cast', 'join', 'sort', 'fill-null', 'replace', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output']);
+const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'ai-judge', 'rename', 'cast', 'join', 'sort', 'fill-null', 'replace', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output']);
 
 export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
   const selectedNodeId = useToolBuilderStore((state) => state.selectedNodeId);
@@ -44,6 +44,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
   const [dataSources, setDataSources] = useState<readonly DataSourceDto[]>([]);
   const [searchProviders, setSearchProviders] = useState<readonly SearchProviderDto[]>([]);
   const [analysisAssistantAvailable, setAnalysisAssistantAvailable] = useState(false);
+  const [aiJudgeAvailable, setAiJudgeAvailable] = useState(false);
   const builderNodes = useToolBuilderStore((state) => state.nodes);
   const builderEdges = useToolBuilderStore((state) => state.edges);
   const graph = useMemo<ToolGraphDto>(() => ({
@@ -63,6 +64,8 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
     void client.listDataSources(scope).then(setDataSources).catch(() => setDataSources([]));
     void client.listSearchProviders().then(setSearchProviders).catch(() => setSearchProviders([]));
     void client.analysisAssistantCapability().then(setAnalysisAssistantAvailable).catch(() => setAnalysisAssistantAvailable(false));
+    // AI判定の可否は新しいサーバー（と新しいクライアント）だけが答えられる。無ければ「使えない」として案内を出す。
+    if (typeof client.aiJudgeCapability === 'function') void client.aiJudgeCapability().then(setAiJudgeAvailable).catch(() => setAiJudgeAvailable(false));
   }, [client]);
 
   if (node === undefined) return <aside className="inspector empty"><h2>{text('Inspector', 'インスペクター')}</h2><p>{text('Select a node.', 'ノードを選択してください。')}</p></aside>;
@@ -94,6 +97,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
       {type === 'select' && <ColumnMultiSelect label={text('Choose columns', '列を選択')} columns={columns} value={(config['columns'] as string[] | undefined) ?? []} onChange={(next) => setConfig({ columns: next })} />}
       {type === 'select' && <details><summary>{text('Advanced text input', '詳細テキスト入力')}</summary><label>{text('Columns', '列')}<input value={(config['columns'] as string[] | undefined)?.join(', ') ?? ''} onChange={(event) => setConfig({ columns: splitList(event.target.value) })} placeholder="id, name" /></label></details>}
       {type === 'filter' && <FilterFields config={config} replaceConfig={replaceConfig} columns={columns} agentInputColumns={agentInputColumns} />}
+      {type === 'ai-judge' && <AiJudgeSummary config={config} />}
       {type === 'rename' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Renames', '列名変更')} <small>{text('one from:to pair per line', '1行に from:to')}</small><textarea rows={8} value={(config['renames'] as {from:string;to:string}[] | undefined)?.map((pair) => `${pair.from}:${pair.to}`).join('\n') ?? ''} onChange={(event) => setConfig({ renames: parsePairs(event.target.value, 'to') })} /></label></details>}
       {type === 'cast' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Casts', '型変換')} <small>{text('one column:type pair per line', '1行に column:type')}</small><textarea rows={8} value={(config['casts'] as {column:string;to:string}[] | undefined)?.map((pair) => `${pair.column}:${pair.to}`).join('\n') ?? ''} onChange={(event) => setConfig({ casts: parsePairs(event.target.value, 'type') })} /></label></details>}
       {type === 'join' && <details><summary>{text('Advanced inline editor', '詳細インライン編集')}</summary><JoinFields config={config} setConfig={setConfig} leftColumns={leftColumns} rightColumns={rightColumns} /></details>}
@@ -116,7 +120,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
             {rightColumns.length > 0 && <div className="column-hints"><strong>{text('Right input columns', '右入力の列')}</strong>{rightColumns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
           </>
         : columns.length > 0 && <div className="column-hints"><strong>{text('Upstream columns', '上流の列')}</strong>{columns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
-      {dialogNodeId === node.id && dialogDraft !== undefined && <NodeConfigDialog type={type} initial={dialogDraft} nodeId={node.id} graph={graph} analysisAssistantAvailable={analysisAssistantAvailable} columns={columns} leftColumns={leftColumns} rightColumns={rightColumns} dataSources={dataSources} searchProviders={searchProviders} client={client} scope={scope} onCancel={closeDialog} onApply={(next) => { update(node.id, next); closeDialog(); }} />}
+      {dialogNodeId === node.id && dialogDraft !== undefined && <NodeConfigDialog type={type} initial={dialogDraft} nodeId={node.id} graph={graph} analysisAssistantAvailable={analysisAssistantAvailable} aiJudgeAvailable={aiJudgeAvailable} columns={columns} leftColumns={leftColumns} rightColumns={rightColumns} dataSources={dataSources} searchProviders={searchProviders} client={client} scope={scope} onCancel={closeDialog} onApply={(next) => { update(node.id, next); closeDialog(); }} />}
     </aside>
   );
 }
@@ -200,7 +204,105 @@ function GraphMappingFields({ config, setConfig, columns }: { readonly config: R
   </section>;
 }
 
-function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvailable, columns, leftColumns, rightColumns, dataSources, searchProviders, client, scope, onCancel, onApply }: { readonly type: ToolNodeType; readonly initial: Readonly<Record<string, unknown>>; readonly nodeId: string; readonly graph: ToolGraphDto; readonly analysisAssistantAvailable: boolean; readonly columns: readonly ColumnDto[]; readonly leftColumns: readonly ColumnDto[]; readonly rightColumns: readonly ColumnDto[]; readonly dataSources: readonly DataSourceDto[]; readonly searchProviders: readonly SearchProviderDto[]; readonly client?: ToolApiClient; readonly scope: TenantScopeDto; readonly onCancel: () => void; readonly onApply: (config: Readonly<Record<string, unknown>>) => void }) {
+/**
+ * AI判定（ai-judge）の表示用の定数。UI層は domain を import しない方針なので複製するが、
+ * 規則は src/domain/etl/nodes/ai-judge.ts（AI_JUDGE_UNCLEAR / aiJudgeAllowedValues / 上限）と同値。
+ */
+const AI_JUDGE_UNCLEAR = 'unclear';
+const AI_JUDGE_YES_NO_VALUES: readonly string[] = ['yes', 'no', AI_JUDGE_UNCLEAR];
+const AI_JUDGE_MAX_CATEGORIES = 20;
+const AI_JUDGE_MAX_ITEMS = 200;
+
+interface AiJudgeCategoryDraft { readonly name: string; readonly description?: string }
+
+function aiJudgeCategories(config: Readonly<Record<string, unknown>>): readonly AiJudgeCategoryDraft[] {
+  const categories = config['categories'];
+  return Array.isArray(categories) ? (categories as readonly AiJudgeCategoryDraft[]) : [];
+}
+
+/** この設定で出うる判定値（カテゴリ未定義なら はい/いいえ）。matchValues の選択肢そのもの。 */
+function aiJudgeVerdictValues(categories: readonly AiJudgeCategoryDraft[]): readonly string[] {
+  return categories.length === 0 ? AI_JUDGE_YES_NO_VALUES : [...categories.map((category) => category.name), AI_JUDGE_UNCLEAR];
+}
+
+/** サイドバー用の要約（ADR-0028: 実編集はダイアログ側）。質問が空なら設定を開くよう促す。 */
+function AiJudgeSummary({ config }: { readonly config: Readonly<Record<string, unknown>> }) {
+  const { text } = useI18n();
+  const categories = aiJudgeCategories(config);
+  const question = String(config['question'] ?? '').trim();
+  const action = String(config['action'] ?? 'flag');
+  const mode = categories.length === 0 ? text('yes / no', 'はい/いいえ') : text(`classify · ${categories.length} categories`, `分類 · ${categories.length}カテゴリ`);
+  const actionText = action === 'keep' ? text('keep matching rows', '一致する行だけ残す') : action === 'exclude' ? text('exclude matching rows', '一致する行を除く') : text('flag every row', '判定列を付けて全行を通す');
+  return <>
+    <p>{mode} · {actionText}</p>
+    {question === ''
+      ? <small className="field-error">{text('No judgment question yet. Open settings and write what each row should be judged on.', '判定基準（質問）が未入力です。「設定を開く」から、各行を何で判断するかを書いてください。')}</small>
+      : <small>{text(`Question: ${question.length > 60 ? `${question.slice(0, 60)}…` : question}`, `判定基準: ${question.length > 60 ? `${question.slice(0, 60)}…` : question}`)}</small>}
+  </>;
+}
+
+/**
+ * AI判定の設定（ダイアログ本体）。判定値（yes/no か カテゴリ名）が matchValues・出力列の意味を決めるため、
+ * モード切替のたびに選べなくなった matchValues を落として、保存時に弾かれる設定を作らせない。
+ */
+function AiJudgeFields({ config, setConfig, columns, available }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[]; readonly available: boolean }) {
+  const { text } = useI18n();
+  const categories = aiJudgeCategories(config);
+  const mode = categories.length === 0 ? 'yes-no' : 'classify';
+  const action = String(config['action'] ?? 'flag');
+  const matchValues = Array.isArray(config['matchValues']) ? (config['matchValues'] as string[]) : [];
+  const verdicts = aiJudgeVerdictValues(categories);
+  const reasonColumn = config['reasonColumn'];
+  const reasonEnabled = typeof reasonColumn === 'string';
+  // カテゴリを差し替えるときは、新しい判定値に無い matchValues を必ず捨てる。
+  const setCategories = (next: readonly AiJudgeCategoryDraft[]) => {
+    const allowed = aiJudgeVerdictValues(next);
+    setConfig({ categories: next, matchValues: matchValues.filter((value) => allowed.includes(value)) });
+  };
+  const updateCategory = (index: number, next: Partial<AiJudgeCategoryDraft>) => setCategories(categories.map((category, i) => i === index ? { ...category, ...next } : category));
+  const matchLabel = text('Match verdicts', '一致とみなす判定');
+  return <>
+    <label>{text('Judgment question', '判定基準（質問）')}<textarea aria-label={text('Judgment question', '判定基準（質問）')} rows={3} value={String(config['question'] ?? '')} placeholder={text('e.g. Is this inquiry a complaint?', '例: この問い合わせはクレームですか？')} onChange={(event) => setConfig({ question: event.target.value })} /></label>
+    <label>{text('Judgment mode', '判定モード')}<select aria-label={text('Judgment mode', '判定モード')} value={mode} onChange={(event) => setCategories(event.target.value === 'classify' ? [{ name: '' }] : [])}>
+      <option value="yes-no">{text('Yes / no', 'はい/いいえ')}</option>
+      <option value="classify">{text('Classify', '分類')}</option>
+    </select></label>
+    {mode === 'classify' && <section className="dialog-rule-editor">
+      <h3>{text('Categories', '分類カテゴリ')}</h3>
+      <small>{text('The model picks one category per row, or "unclear" when it cannot decide.', 'モデルは各行にカテゴリを1つ選びます。判断できない行は unclear になります。')}</small>
+      {categories.map((category, index) => <div className="rule-row ai-judge-category" key={index}>
+        <input aria-label={text('Category name', 'カテゴリ名')} value={category.name} placeholder={text('e.g. complaint', '例: クレーム')} onChange={(event) => updateCategory(index, { name: event.target.value })} />
+        <input aria-label={text('Category description (optional)', 'カテゴリの説明（任意）')} value={category.description ?? ''} onChange={(event) => updateCategory(index, { description: event.target.value === '' ? undefined : event.target.value })} />
+        <button type="button" aria-label={text('Remove category', 'カテゴリを削除')} onClick={() => setCategories(categories.filter((_, i) => i !== index))}>×</button>
+      </div>)}
+      <button type="button" disabled={categories.length >= AI_JUDGE_MAX_CATEGORIES} onClick={() => setCategories([...categories, { name: '' }])}>{text('Add category', 'カテゴリを追加')}</button>
+    </section>}
+    <ColumnMultiSelect label={text('Columns shown to the model', 'モデルに見せる列')} columns={columns} value={Array.isArray(config['columns']) ? (config['columns'] as string[]) : []} onChange={(next) => setConfig({ columns: next })} hint={text('No selection shows every upstream column.', '未選択なら全列をモデルに見せます。')} />
+    <label>{text('Action', '操作')}<select aria-label={text('Action', '操作')} value={action} onChange={(event) => setConfig({ action: event.target.value })}>
+      <option value="flag">{text('Flag: add verdict columns and keep every row', 'flag: 判定列を付けて全行を通す')}</option>
+      <option value="keep">{text('Keep: keep only matching rows', 'keep: 一致する行だけ残す')}</option>
+      <option value="exclude">{text('Exclude: drop matching rows', 'exclude: 一致する行を除く')}</option>
+    </select></label>
+    {action === 'flag'
+      ? <>
+          <label>{text('Verdict column', '判定列')}<input aria-label={text('Verdict column', '判定列')} value={String(config['outputColumn'] ?? '')} onChange={(event) => setConfig({ outputColumn: event.target.value })} /></label>
+          <label className="check"><input type="checkbox" checked={reasonEnabled} onChange={(event) => setConfig({ reasonColumn: event.target.checked ? 'aiReason' : null })} />{text('Output a reason column', '理由列を出力する')}</label>
+          {reasonEnabled && <label>{text('Reason column', '理由列')}<input aria-label={text('Reason column', '理由列')} value={String(reasonColumn)} onChange={(event) => setConfig({ reasonColumn: event.target.value })} /></label>}
+          <small>{text('Add a filter after this node (verdict column eq yes) to branch deterministically on the judgment.', 'この後ろに行フィルター（判定列 eq yes など）を置くと、AI判定で決定的に分岐できます。')}</small>
+        </>
+      : <label>{matchLabel}<small>{text('Rows whose verdict is selected here are kept (keep) or dropped (exclude).', 'ここで選んだ判定の行を残す（keep）／除く（exclude）。')}</small>
+          <select aria-label={matchLabel} multiple size={Math.min(8, Math.max(3, verdicts.length))} value={matchValues} onChange={(event) => setConfig({ matchValues: Array.from(event.currentTarget.selectedOptions).map((option) => option.value) })}>
+            {verdicts.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </label>}
+    <label>{text('Rows judged per run', '1回の実行で判定する行数の上限')}<input aria-label={text('Rows judged per run', '1回の実行で判定する行数の上限')} type="number" min={1} max={AI_JUDGE_MAX_ITEMS} value={Number(config['maxItems'] ?? 50)} onChange={(event) => setConfig({ maxItems: Number(event.target.value) })} /></label>
+    <small>{text(`Rows with identical values are judged once. Narrow the rows upstream with filter or limit; at most ${AI_JUDGE_MAX_ITEMS}.`, `同じ内容の行は1回だけ判定します。行数は上流の行フィルターや行数制限で絞ってください（上限${AI_JUDGE_MAX_ITEMS}）。`)}</small>
+    {!available && <p className="field-error">{text('The local LLM is not configured. Set the main model slot in Settings > Models to run this judgment.', 'ローカルLLMが未設定です。設定 > モデル で main スロットを設定すると、この判定を実行できます。')}</p>}
+    <p>{text('The judgment runs when the graph is previewed or executed, and the verdicts appear in the preview panel.', '判定はプレビュー・実行のたびに走り、結果はプレビューパネルで確認できます。')}</p>
+  </>;
+}
+
+function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvailable, aiJudgeAvailable, columns, leftColumns, rightColumns, dataSources, searchProviders, client, scope, onCancel, onApply }: { readonly type: ToolNodeType; readonly initial: Readonly<Record<string, unknown>>; readonly nodeId: string; readonly graph: ToolGraphDto; readonly analysisAssistantAvailable: boolean; readonly aiJudgeAvailable: boolean; readonly columns: readonly ColumnDto[]; readonly leftColumns: readonly ColumnDto[]; readonly rightColumns: readonly ColumnDto[]; readonly dataSources: readonly DataSourceDto[]; readonly searchProviders: readonly SearchProviderDto[]; readonly client?: ToolApiClient; readonly scope: TenantScopeDto; readonly onCancel: () => void; readonly onApply: (config: Readonly<Record<string, unknown>>) => void }) {
   const [draft, setDraft] = useState<Readonly<Record<string, unknown>>>(initial);
   const [intent, setIntent] = useState(''); const [proposal, setProposal] = useState<AnalysisConfigProposalDto>(); const [assistantError, setAssistantError] = useState<string>(); const [suggesting, setSuggesting] = useState(false);
   const { text } = useI18n();
@@ -222,6 +324,7 @@ function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvail
         {type === 'agent-input' && <SchemaTableEditor config={draft} setConfig={patch} />}
         {type === 'join' && <JoinFields config={draft} setConfig={patch} leftColumns={leftColumns} rightColumns={rightColumns} />}
         {type === 'fill-null' && <FillNullFields config={draft} setConfig={patch} columns={columns} />}
+        {type === 'ai-judge' && <AiJudgeFields config={draft} setConfig={patch} columns={columns} available={aiJudgeAvailable} />}
         {isAnalysisType(type) && <AnalysisFields type={type} config={draft} setConfig={patch} columns={columns} />}
         {isAnalysisType(type) && analysisAssistantAvailable && <section className="analysis-assistant"><h3>{text('Local LLM assistance', 'ローカルLLM設定補助')}</h3><label>{text('Analysis goal', '分析したいこと')}<textarea value={intent} onChange={(event) => setIntent(event.target.value)} placeholder={text('e.g. Find month-to-month trends by category.', '例: カテゴリ別の月次推移を確認したい')} rows={3} /></label><button type="button" className="secondary" disabled={suggesting || intent.trim() === ''} onClick={() => void suggest()}>{suggesting ? text('Suggesting…', '提案中…') : text('Suggest configuration', '設定案を作成')}</button>{assistantError !== undefined && <small className="field-error">{assistantError}</small>}{proposal !== undefined && <div className="assistant-proposal"><p>{text('The proposal has been validated against the current schema and preview.', '設定案は現在のスキーマとプレビューで検証済みです。')}</p>{proposal.rationale.map((item, index) => <small key={`r-${index}`}>• {item}</small>)}{proposal.warnings.map((item, index) => <small className="field-error" key={`w-${index}`}>• {item}</small>)}<button type="button" onClick={() => { setDraft(proposal.config); setProposal(undefined); }}>{text('Apply proposal to this dialog', 'このダイアログへ提案を適用')}</button></div>}</section>}
         {(type === 'json-source' || type === 'csv-source' || type === 'database-source' || type === 'web-search-source') && <SourceDialogEditor type={type} config={draft} setConfig={patch} dataSources={dataSources} searchProviders={searchProviders} client={client} scope={scope} />}

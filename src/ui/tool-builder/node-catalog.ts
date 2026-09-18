@@ -1,4 +1,4 @@
-export const NODE_TYPES = ['agent-input', 'current-datetime', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'select', 'filter', 'rename', 'cast', 'join', 'union', 'sort', 'limit', 'distinct', 'fill-null', 'replace', 'group-by', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output'] as const;
+export const NODE_TYPES = ['agent-input', 'current-datetime', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'select', 'filter', 'ai-judge', 'rename', 'cast', 'join', 'union', 'sort', 'limit', 'distinct', 'fill-null', 'replace', 'group-by', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output'] as const;
 export type ToolNodeType = (typeof NODE_TYPES)[number];
 
 export interface NodeCatalogItem {
@@ -44,6 +44,13 @@ export const NODE_CATALOG: readonly NodeCatalogItem[] = [
   },
   { type: 'select', label: 'Select', labelJa: '列選択', kind: 'transform', inputArity: 1, description: 'Keep only selected columns.', descriptionJa: '必要な列だけを残します。', defaultConfig: { columns: [] } },
   { type: 'filter', label: 'Filter', labelJa: '行フィルター', kind: 'transform', inputArity: 1, description: 'Keep only rows matching a condition.', descriptionJa: '条件に合う行だけを残します。', defaultConfig: { column: '', op: 'eq', value: '' } },
+  {
+    // 判定はローカルLLMが行うが、ノード自身は判定結果を決定的に適用するだけ（アプリ層が実行直前に解決する）。
+    type: 'ai-judge', label: 'AI judgment', labelJa: 'AI判定', kind: 'transform', inputArity: 1,
+    description: 'Let a local LLM judge each row against a written criterion (yes/no or categories), then flag rows or keep only the matching ones.',
+    descriptionJa: 'ローカルLLMが各行を判定基準に照らして はい/いいえ または分類し、判定列を付けるか行を絞ります。',
+    defaultConfig: { configVersion: 1, question: '', categories: [], columns: [], outputColumn: 'aiVerdict', reasonColumn: 'aiReason', action: 'flag', matchValues: ['yes'], maxItems: 50 },
+  },
   { type: 'rename', label: 'Rename', labelJa: '列名変更', kind: 'transform', inputArity: 1, description: 'Rename columns.', descriptionJa: '列名を変更します。', defaultConfig: { renames: [] } },
   { type: 'cast', label: 'Cast', labelJa: '型変換', kind: 'transform', inputArity: 1, description: 'Convert column data types.', descriptionJa: '列のデータ型を変換します。', defaultConfig: { casts: [] } },
   { type: 'join', label: 'Join', labelJa: '結合', kind: 'transform', inputArity: 2, description: 'Join two inputs on key columns. Key types must match, or compare keys as text.', descriptionJa: '2つの入力をキー列で結合します。キーの型が違う場合は文字列比較を選べます。', defaultConfig: { mode: 'inner', keys: [], rightSuffix: '_right' } },

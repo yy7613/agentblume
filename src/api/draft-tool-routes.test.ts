@@ -130,7 +130,7 @@ describe('draft tool routes', () => {
       const response = await server.inject({ method: 'GET', url: '/runtime/capabilities' });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({
-        analysisAssistant: { enabled: false }, toolCheckSuggestions: { enabled: false }, judge: { configured: true, provider: 'scripted-judge', model: 'scripted-judge' },
+        analysisAssistant: { enabled: false }, toolCheckSuggestions: { enabled: false }, aiJudge: { enabled: false }, judge: { configured: true, provider: 'scripted-judge', model: 'scripted-judge' },
         journal: { extraction: { enabled: false, vision: false }, hearing: { enabled: false } },
         expense: { extraction: { enabled: false, vision: false }, detailExtraction: { enabled: false }, policyHearing: { enabled: false } },
         receivables: { invoiceDraft: { enabled: false, vision: false } },

@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { ScriptedModelProvider } from '../../adapters/model/scripted-model-provider';
 import { InMemoryToolRepository } from '../../adapters/storage/in-memory-tool-repository';
 import type { Row, Schema } from '../../domain/data/types';
+import { ConfigError } from '../../domain/etl/errors';
 import { createDefaultRegistry } from '../../domain/etl/nodes';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { ToolNotFoundError } from '../../domain/tool/errors';
@@ -8,6 +10,7 @@ import { SemVer } from '../../domain/tool/semver';
 import { createTool, type Tool } from '../../domain/tool/tool';
 import type { ToolCheckExpectations } from '../../domain/tool-check/tool-check-case';
 import { EtlEngine } from '../etl/engine';
+import { ResolveAiJudgmentsUseCase } from '../tool/resolve-ai-judgments';
 import { RunToolCheckUseCase, type RunToolCheckInput } from './run-tool-check';
 
 const scope = { tenantId: 'tenant', workspaceId: 'workspace' };
@@ -374,5 +377,186 @@ describe('RunToolCheckUseCase', () => {
       const useCase = new RunToolCheckUseCase(repo, engine);
       await expect(useCase.execute(input())).rejects.toThrow(new TypeError('engine exploded'));
     });
+  });
+});
+
+describe('RunToolCheckUseCase: AI 判定の解決', () => {
+  it('実行の前に AI 判定を解く（引数を埋めた後のグラフを渡す）', async () => {
+    const repo = new InMemoryToolRepository();
+    await repo.save(makeTool());
+    const resolver = { execute: vi.fn(async (graph: ToolGraph) => graph) };
+    const useCase = new RunToolCheckUseCase(repo, new EtlEngine(createDefaultRegistry()), undefined, { now: () => checkedAt }, resolver as unknown as ResolveAiJudgmentsUseCase);
+    const result = await useCase.execute(input());
+    expect(resolver.execute).toHaveBeenCalledTimes(1);
+    // 引数（region=Tokyo）を反映したグラフが渡る＝解決は graphWithArguments の後に走る。
+    const passed = resolver.execute.mock.calls[0]?.[0] as ToolGraph;
+    expect(JSON.stringify(passed)).toContain('Tokyo');
+    expect(result.status).toBe('passed');
+  });
+
+  it('解決器の失敗は実行の失敗として結果に載る（例外で検証全体を落とさない）', async () => {
+    const repo = new InMemoryToolRepository();
+    await repo.save(makeTool());
+    const resolver = { execute: vi.fn(async () => { throw new ConfigError('ai-judge: the model is not configured'); }) };
+    const useCase = new RunToolCheckUseCase(repo, new EtlEngine(createDefaultRegistry()), undefined, { now: () => checkedAt }, resolver as unknown as ResolveAiJudgmentsUseCase);
+    const result = await useCase.execute(input());
+    expect(result.status).toBe('error');
+    expect(result.error).toMatchObject({ code: 'ETL_CONFIG', message: expect.stringContaining('the model is not configured') });
+  });
+});
+
+/**
+ * AI 判定つきの Tool を、本物の解決器（ScriptedModelProvider）と一緒に端から端まで実行する。
+ * 判定は keep で行を落とすので、終端の行（rows）とノードの判定（judgments）を同時に検証できる。
+ */
+const AGENT_OUTPUT = { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } as const;
+
+const expenseRows: Row[] = [
+  { id: 'E1', amount: 12000, note: '交通費' },
+  { id: 'E2', amount: 500, note: '会議費' },
+];
+
+/** `json-source → ai-judge(keep yes) → agent-output`（引数は agent-input ノードで宣言だけする）。 */
+function judgeGraph(judge: Record<string, unknown> = {}): ToolGraph {
+  return {
+    nodes: [
+      { id: 'data', type: 'json-source', config: { rows: expenseRows } },
+      { id: 'judge', type: 'ai-judge', config: { question: 'これは経費として妥当ですか？', action: 'keep', matchValues: ['yes'], ...judge } },
+      { id: 'out', type: 'agent-output', config: AGENT_OUTPUT },
+      { id: 'arguments', type: 'agent-input', config: { schema: searchSchema, sample: { region: 'Osaka', minimum: 0 } } },
+    ],
+    edges: [{ from: 'data', to: 'judge' }, { from: 'judge', to: 'out' }],
+  };
+}
+
+const CANNED_VERDICTS = [{ id: 'r1', answer: 'yes', reason: '規程の範囲内' }, { id: 'r2', answer: 'no', reason: '領収書が無い' }];
+
+/** 缶詰の判定を返すモデルで解決器を組んだ RunToolCheckUseCase。 */
+async function judgeHarness(options: { graph?: ToolGraph; verdicts?: readonly { id: string; answer: string; reason: string }[] } = {}) {
+  const repo = new InMemoryToolRepository();
+  await repo.save(makeTool({ graph: options.graph ?? judgeGraph() }));
+  const model = new ScriptedModelProvider();
+  model.enqueue({ message: { role: 'assistant', content: JSON.stringify({ verdicts: options.verdicts ?? CANNED_VERDICTS }) }, finishReason: 'stop' });
+  const engine = new EtlEngine(createDefaultRegistry());
+  const resolver = new ResolveAiJudgmentsUseCase(engine, model, () => true, { snapshot: async () => ({ provider: 'scripted', model: 'canned' }) });
+  const useCase = new RunToolCheckUseCase(repo, engine, undefined, { now: () => checkedAt }, resolver);
+  return { useCase, model };
+}
+
+describe('RunToolCheckUseCase: AI 判定つきの実行（端から端まで）', () => {
+  it('正常: 判定で残った行・落ちた行の両方を検証でき、判定表と判定モデルが結果に載る', async () => {
+    const { useCase, model } = await judgeHarness();
+    const result = await useCase.execute(input({ expectations: {
+      rows: [
+        { where: { column: 'id', value: 'E1' }, cells: [{ column: 'amount', op: 'gte', value: 10000 }] },
+        { where: { column: 'id', value: 'E2' }, present: false },
+      ],
+      judgments: [
+        { nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes'] },
+        { nodeId: 'judge', where: { column: 'id', value: 'E2' }, verdict: ['no', 'unclear'], reasonContains: '領収書' },
+      ],
+    } }));
+    expect(result.status).toBe('passed');
+    expect(result.assertions).toEqual([
+      { kind: 'row', passed: true, expected: 'row[id == "E1"].amount >= 10000', actual: '12000' },
+      { kind: 'row', passed: true, expected: 'row[id == "E2"] absent', actual: 'absent' },
+      { kind: 'judgment', passed: true, expected: 'judgment[judge][id == "E1"] in ["yes"]', actual: 'yes (規程の範囲内)' },
+      { kind: 'judgment', passed: true, expected: 'judgment[judge][id == "E2"] in ["no", "unclear"]', actual: 'no (領収書が無い)' },
+      { kind: 'judgment', passed: true, expected: 'judgment[judge][id == "E2"] reason contains "領収書"', actual: '"領収書が無い"' },
+    ]);
+    // 終端は keep で 1 行、判定表はノードの入力の全 2 行。
+    expect(result.rowCount).toBe(1);
+    expect(result.output.rows).toEqual([{ id: 'E1', amount: 12000, note: '交通費' }]);
+    expect(result.judgments).toEqual([{
+      nodeId: 'judge',
+      verdictColumn: 'aiVerdict',
+      reasonColumn: 'aiReason',
+      rowCount: 2,
+      table: {
+        schema: { columns: [
+          { name: 'id', type: 'string', nullable: false },
+          { name: 'amount', type: 'number', nullable: false },
+          { name: 'note', type: 'string', nullable: false },
+          { name: 'aiVerdict', type: 'string', nullable: false },
+          { name: 'aiReason', type: 'string', nullable: true },
+        ] },
+        rows: [
+          { id: 'E1', amount: 12000, note: '交通費', aiVerdict: 'yes', aiReason: '規程の範囲内' },
+          { id: 'E2', amount: 500, note: '会議費', aiVerdict: 'no', aiReason: '領収書が無い' },
+        ],
+      },
+    }]);
+    expect(result.judgedBy).toBe('scripted/canned');
+    expect(model.requests).toHaveLength(1);
+  });
+
+  it('異常: 判定が期待と違えば failed（expected / actual は定型文のまま）', async () => {
+    const { useCase } = await judgeHarness();
+    const result = await useCase.execute(input({ expectations: { judgments: [
+      { nodeId: 'judge', where: { column: 'id', value: 'E2' }, verdict: ['yes'] },
+      { nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes'], reasonContains: '領収書' },
+    ] } }));
+    expect(result.status).toBe('failed');
+    expect(result.assertions).toEqual([
+      { kind: 'judgment', passed: false, expected: 'judgment[judge][id == "E2"] in ["yes"]', actual: 'no (領収書が無い)' },
+      { kind: 'judgment', passed: true, expected: 'judgment[judge][id == "E1"] in ["yes"]', actual: 'yes (規程の範囲内)' },
+      { kind: 'judgment', passed: false, expected: 'judgment[judge][id == "E1"] reason contains "領収書"', actual: '"規程の範囲内"' },
+    ]);
+    // 不合格でも判定表は返す（何と判定されたかを画面で見せるため）。
+    expect(result.judgments?.[0]?.rowCount).toBe(2);
+  });
+
+  it('異常: 判定されなかったノード名への期待は node not judged で落ちる', async () => {
+    const { useCase } = await judgeHarness();
+    const result = await useCase.execute(input({ expectations: { judgments: [{ nodeId: 'missing', where: { column: 'id', value: 'E1' }, verdict: ['yes'] }] } }));
+    expect(result.status).toBe('failed');
+    expect(result.assertions).toEqual([{ kind: 'judgment', passed: false, expected: 'judgment[missing][id == "E1"] in ["yes"]', actual: "node 'missing' not judged" }]);
+  });
+
+  it('境界: 判定表のスナップショットは rowLimit で切られるが rowCount は全行のまま', async () => {
+    const limited = await judgeHarness();
+    const one = await limited.useCase.execute(input({ rowLimit: 1 }));
+    expect(one.judgments?.[0]?.table.rows.map((row) => row['id'])).toEqual(['E1']);
+    expect(one.judgments?.[0]?.rowCount).toBe(2);
+
+    const none = await judgeHarness();
+    const zero = await none.useCase.execute(input({ rowLimit: 0 }));
+    expect(zero.judgments?.[0]?.table.rows).toEqual([]);
+    expect(zero.judgments?.[0]?.table.schema.columns).toHaveLength(5);
+    expect(zero.judgments?.[0]?.rowCount).toBe(2);
+  });
+
+  it('境界: action flag（行を落とさない）でも判定表は同じ形で出る', async () => {
+    const { useCase } = await judgeHarness({ graph: judgeGraph({ action: 'flag' }) });
+    const result = await useCase.execute(input({ expectations: { rows: [{ where: { column: 'id', value: 'E2' } }], judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E2' }, verdict: ['no'] }] } }));
+    expect(result.status).toBe('passed');
+    expect(result.rowCount).toBe(2);
+    expect(result.judgments?.[0]?.rowCount).toBe(2);
+  });
+
+  it('境界: ai-judge を持たない Tool では judgments / judgedBy を付けない（従来の結果と同じ形）', async () => {
+    const repo = new InMemoryToolRepository();
+    await repo.save(makeTool());
+    const model = new ScriptedModelProvider();
+    const engine = new EtlEngine(createDefaultRegistry());
+    const resolver = new ResolveAiJudgmentsUseCase(engine, model, () => true, { snapshot: async () => ({ provider: 'scripted', model: 'canned' }) });
+    const useCase = new RunToolCheckUseCase(repo, engine, undefined, { now: () => checkedAt }, resolver);
+    const result = await useCase.execute(input({ expectations: { rowCount: { op: 'eq', value: 2 } } }));
+    expect(result.status).toBe('passed');
+    expect('judgments' in result).toBe(false);
+    expect('judgedBy' in result).toBe(false);
+    expect(model.requests).toEqual([]);
+  });
+
+  it('異常: モデルが使えなければ判定の前に止まり、status error になる（黙って unclear にしない）', async () => {
+    const repo = new InMemoryToolRepository();
+    await repo.save(makeTool({ graph: judgeGraph() }));
+    const engine = new EtlEngine(createDefaultRegistry());
+    const resolver = new ResolveAiJudgmentsUseCase(engine, new ScriptedModelProvider(), () => false);
+    const useCase = new RunToolCheckUseCase(repo, engine, undefined, { now: () => checkedAt }, resolver);
+    const result = await useCase.execute(input({ expectations: { judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes'] }] } }));
+    expect(result.status).toBe('error');
+    expect(result.error).toMatchObject({ code: 'ETL_CONFIG', nodeId: 'judge' });
+    expect('judgments' in result).toBe(false);
   });
 });
