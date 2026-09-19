@@ -9,7 +9,15 @@
  * 領域層のテストから応用層を読み込むと依存の規律（domain → application 禁止）に反するため。
  */
 import { describe, expect, it } from 'vitest';
-import { createDefaultRegistry } from './index';
+// 診断は「登録簿の口から引けること」が確認の目的なので、実体ではなく ./index から取り込む。
+import {
+  EXPRESSION_DIAGNOSTIC_CATEGORIES,
+  EXPRESSION_ERROR_CODES,
+  createDefaultRegistry,
+  diagnosticCategory,
+  previewExpression,
+  validateExpression,
+} from './index';
 
 describe('createDefaultRegistry: 関数電卓ノード', () => {
   it('正常: calculate が transform / 入力 1 として登録されている', () => {
@@ -32,6 +40,21 @@ describe('createDefaultRegistry: 関数電卓ノード', () => {
 
   // 綴り違いを拒む挙動は関数電卓の追加より前から成り立っている。ここで固定するのは、
   // 種別名を足すときに前方一致や大小文字無視のような「親切な」照合を入れてしまう退行を止めるため。
+  it('正常: 式の診断は登録簿経由で引ける（応用層・UI はこの口から使う）', () => {
+    // 再公開の書き忘れは型検査では捕まらない（使う側がまだ無いため）。
+    // 次の増分（LLM への設定補助）はここから読むので、口が開いていることを固定する。
+    expect(typeof validateExpression).toBe('function');
+    expect(typeof previewExpression).toBe('function');
+    expect(typeof diagnosticCategory).toBe('function');
+    expect(EXPRESSION_DIAGNOSTIC_CATEGORIES).toContain('column');
+    expect(EXPRESSION_ERROR_CODES.length).toBeGreaterThan(0);
+
+    // 実際に通して、分類と読み替えが登録簿経由でも同じに動くことまで見る。
+    const schema = { columns: [{ name: 'price', type: 'string' as const, nullable: true }] };
+    expect(validateExpression('[pric] * 2', schema).diagnostics[0]?.category).toBe('column');
+    expect(previewExpression('[price] * 2', schema, [{ price: '応相談' }]).diagnosis.notNumericColumns).toEqual(['price']);
+  });
+
   it('[回帰固定] 異常: 綴り違いの種別は has が false を返す（黙って別のノードを拾わない）', () => {
     const registry = createDefaultRegistry();
     expect(registry.has('calculator')).toBe(false);

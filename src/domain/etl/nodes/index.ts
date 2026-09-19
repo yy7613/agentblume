@@ -67,11 +67,13 @@ export type { CalculateFunction, CalculateFunctionGroup, CalculateFailureReason,
 export { evaluateExpressionDetailed } from './calculate-expression';
 export { EXPRESSION_ERROR_CODES, nameDistance, suggestName } from './calculate-expression';
 export type { ExpressionErrorCode } from './calculate-expression';
-export { EXPRESSION_DIAGNOSTIC_CODES, validateExpression, previewExpression } from './calculate-diagnostics';
+export { EXPRESSION_DIAGNOSTIC_CODES, EXPRESSION_DIAGNOSTIC_CATEGORIES, diagnosticCategory, validateExpression, previewExpression } from './calculate-diagnostics';
 export type {
   ExpressionDiagnostic,
   ExpressionDiagnosticCode,
+  ExpressionDiagnosticCategory,
   ExpressionPreview,
+  ExpressionPreviewDiagnosis,
   ExpressionPreviewOptions,
   ExpressionPreviewRow,
   ExpressionValidation,

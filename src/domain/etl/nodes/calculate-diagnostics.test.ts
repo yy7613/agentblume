@@ -14,8 +14,10 @@ import type { Row, Schema, Table } from '../../data/types';
 import { EXPRESSION_ERROR_CODES } from './calculate-expression';
 import {
   DEFAULT_PREVIEW_LIMIT,
+  EXPRESSION_DIAGNOSTIC_CATEGORIES,
   EXPRESSION_DIAGNOSTIC_CODES,
   MAX_PREVIEW_LIMIT,
+  diagnosticCategory,
   previewExpression,
   validateExpression,
 } from './calculate-diagnostics';
@@ -98,12 +100,47 @@ describe('validateExpression', () => {
     expect(validation.diagnostics.every((diagnostic) => diagnostic.position === undefined)).toBe(true);
   });
 
+  it('正常: すべての種別に分類が付き、列の指定ミスは書き方によらず column にまとまる', () => {
+    // 種別は原因を細かく言い当てるが、利用者が取る行動はもっと粗い。
+    // [列名] で書いても裸で書いても「列名を直す」なので、差し戻しでは 1 つに束ねたい。
+    for (const code of EXPRESSION_DIAGNOSTIC_CODES) {
+      expect(EXPRESSION_DIAGNOSTIC_CATEGORIES).toContain(diagnosticCategory(code));
+    }
+    expect(diagnosticCategory('unknown-column')).toBe('column');
+    expect(diagnosticCategory('unknown-name')).toBe('column');
+    expect(diagnosticCategory('empty-column-name')).toBe('column');
+    expect(diagnosticCategory('unknown-function')).toBe('function');
+    expect(diagnosticCategory('unclosed-paren')).toBe('syntax');
+    expect(diagnosticCategory('too-long')).toBe('limit');
+    expect(diagnosticCategory('type-coerced')).toBe('type');
+  });
+
+  it('正常: 角括弧でも裸でも、列の指定ミスは同じ分類で返る（差し戻しで束ねられる）', () => {
+    const input: Schema = { columns: [{ name: 'amount', type: 'number', nullable: false }] };
+    const bracketed = validateExpression('[amont] * 2', input);
+    const bare = validateExpression('amont * 2', input);
+    // 種別は違う（角括弧つきは構文として正しく、裸は名前として読めない）。
+    expect(bracketed.diagnostics[0]?.code).toBe('unknown-column');
+    expect(bare.diagnostics[0]?.code).toBe('unknown-name');
+    // 分類は同じ。どちらも「列名を直す」で済む。
+    expect(bracketed.diagnostics[0]?.category).toBe('column');
+    expect(bare.diagnostics[0]?.category).toBe('column');
+    // 候補もどちらにも付く。
+    expect(bracketed.diagnostics[0]?.suggestion).toBe('amount');
+    expect(bare.diagnostics[0]?.suggestion).toBe('amount');
+  });
+
+  it('例外: 知らない種別を渡しても投げず、syntax に寄せる', () => {
+    expect(diagnosticCategory('nope' as never)).toBe('syntax');
+    expect(diagnosticCategory(undefined as never)).toBe('syntax');
+  });
+
   it('異常: 空の式は empty の error（設定途中でも原因が分かる文言を返す）', () => {
     for (const expression of ['', '   ', '\t\n']) {
       const validation = validateExpression(expression, schema);
       expect(validation.ok).toBe(false);
       expect(validation.diagnostics).toEqual([
-        { severity: 'error', code: 'empty', message: '式を入力してください' },
+        { severity: 'error', code: 'empty', category: 'empty', message: '式を入力してください' },
       ]);
       expect(validation.references).toEqual([]);
     }
@@ -137,6 +174,7 @@ describe('validateExpression', () => {
       {
         severity: 'error',
         code: 'unknown-column',
+        category: 'column',
         message: '式が参照する列がありません: amont',
         column: 'amont',
         suggestion: 'amount',
@@ -336,6 +374,69 @@ describe('previewExpression', () => {
       { index: 1, value: 1 },
     ]);
     expect(limited.evaluated).toBe(2);
+  });
+
+  it('正常: 型の警告があって全行が空になるとき、上流の型変換が要ると言い切る', () => {
+    // 型の警告だけでは「寄せられるかもしれない」に留まる。実データで 1 つも数値にならなかった
+    // ときに初めて cast が要ると言える。件数の表から人に推理させない。
+    const input: Schema = { columns: [{ name: 'price', type: 'string', nullable: true }] };
+    const rows: readonly Row[] = [{ price: '税込 1,200 円' }, { price: 'お問い合わせ' }, { price: '応相談' }];
+    const preview = previewExpression('[price] * 2', input, rows);
+
+    expect(preview.ok).toBe(true);
+    expect(preview.failed).toBe(3);
+    expect(preview.diagnosis.allFailed).toBe(true);
+    expect(preview.diagnosis.dominantReason).toBe('missing-value');
+    expect(preview.diagnosis.notNumericColumns).toEqual(['price']);
+    expect(preview.diagnosis.nextStep).toContain('型変換');
+    expect(preview.diagnosis.nextStep).toContain('price');
+  });
+
+  it('正常: 同じ文字列の列でも、数値にできる値が混ざれば型変換を促さない', () => {
+    // 1 つでも寄せられるなら列そのものは使える。直すべきは個々の値であって上流の型ではない。
+    const input: Schema = { columns: [{ name: 'price', type: 'string', nullable: true }] };
+    const preview = previewExpression('[price] * 2', input, [{ price: '100' }, { price: '応相談' }]);
+    expect(preview.evaluated).toBe(1);
+    expect(preview.diagnosis.notNumericColumns).toEqual([]);
+    expect(preview.diagnosis.allFailed).toBe(false);
+    expect(preview.diagnosis.nextStep).toBeUndefined();
+  });
+
+  it('正常: 参照列が全行とも空なら、型変換ではなく null 処理を促す', () => {
+    const input: Schema = { columns: [{ name: '金額', type: 'number', nullable: true }] };
+    const preview = previewExpression('[金額] * 2', input, [{ 金額: null }, { 金額: null }]);
+    expect(preview.diagnosis.allNullColumns).toEqual(['金額']);
+    expect(preview.diagnosis.notNumericColumns).toEqual([]);
+    expect(preview.diagnosis.nextStep).toContain('null 処理');
+  });
+
+  it('正常: 全行が 0 除算なら、分母の見直しと行フィルターを促す', () => {
+    const preview = previewExpression('[金額] / [数量]', schema, [{ 金額: 100, 数量: 0 }, { 金額: 200, 数量: 0 }]);
+    expect(preview.diagnosis.dominantReason).toBe('divide-by-zero');
+    expect(preview.diagnosis.allFailed).toBe(true);
+    expect(preview.diagnosis.nextStep).toContain('行フィルター');
+  });
+
+  it('境界: 一部の行だけ失敗するときは読み替えを出さない（式もデータも概ね正しい）', () => {
+    const preview = previewExpression('[金額] / [数量]', schema, [{ 金額: 100, 数量: 4 }, { 金額: 200, 数量: 0 }]);
+    expect(preview.evaluated).toBe(1);
+    expect(preview.failed).toBe(1);
+    expect(preview.diagnosis.allFailed).toBe(false);
+    // 理由は分かるが、次の一手を断定できるほどの偏りではない。
+    expect(preview.diagnosis.dominantReason).toBe('divide-by-zero');
+    expect(preview.diagnosis.nextStep).toBeUndefined();
+  });
+
+  it('境界: 失敗が無ければ読み替えは空のまま（余計な案内を出さない）', () => {
+    const preview = previewExpression('[金額] * 2', schema, [{ 金額: 100 }, { 金額: 200 }]);
+    expect(preview.failed).toBe(0);
+    expect(preview.diagnosis).toEqual({ allFailed: false, notNumericColumns: [], allNullColumns: [] });
+  });
+
+  it('例外: 読めない式では行を見ないので、読み替えも空になる', () => {
+    const preview = previewExpression('[金額] +', schema, [{ 金額: 100 }]);
+    expect(preview.ok).toBe(false);
+    expect(preview.diagnosis).toEqual({ allFailed: false, notNumericColumns: [], allNullColumns: [] });
   });
 
   it('境界: 行が 0 件でも妥当な式は ok（式の良し悪しと行数は別）', () => {

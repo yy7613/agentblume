@@ -31,10 +31,55 @@ export const EXPRESSION_DIAGNOSTIC_CODES = [
 ] as const;
 export type ExpressionDiagnosticCode = (typeof EXPRESSION_DIAGNOSTIC_CODES)[number];
 
+/**
+ * 診断の大分類。**直し方が同じものを 1 つにまとめる**ための軸。
+ *
+ * 種別は原因を細かく言い当てるが、利用者（と LLM）が取る行動は種別より粗い。
+ * 列の指定ミスは `[列名]` で書いても裸で書いても「列名を直す」であり、
+ * 種別が 3 つに分かれていること自体は差し戻しの材料にならない。
+ */
+export const EXPRESSION_DIAGNOSTIC_CATEGORIES = ['empty', 'syntax', 'function', 'column', 'type', 'limit'] as const;
+export type ExpressionDiagnosticCategory = (typeof EXPRESSION_DIAGNOSTIC_CATEGORIES)[number];
+
+const CATEGORY_BY_CODE: Readonly<Record<ExpressionDiagnosticCode, ExpressionDiagnosticCategory>> = {
+  empty: 'empty',
+  'too-long': 'limit',
+  'too-many-tokens': 'limit',
+  'too-deep': 'limit',
+  'illegal-character': 'syntax',
+  'invalid-number': 'syntax',
+  'unclosed-bracket': 'syntax',
+  'unexpected-bracket': 'syntax',
+  'empty-column-name': 'column',
+  'unknown-function': 'function',
+  'function-needs-parens': 'function',
+  // 裸の識別子の打ち間違いは、関数名の可能性もあるが大半は列名。直し方も列と同じ。
+  'unknown-name': 'column',
+  'wrong-argument-count': 'function',
+  'missing-argument': 'function',
+  'misplaced-comma': 'syntax',
+  'unclosed-paren': 'syntax',
+  'unexpected-paren': 'syntax',
+  'missing-operand': 'syntax',
+  'unexpected-end': 'syntax',
+  'trailing-input': 'syntax',
+  unreadable: 'syntax',
+  'unknown-column': 'column',
+  'type-coerced': 'type',
+  'type-not-numeric': 'type',
+};
+
+/** 種別 → 大分類。知らない種別は `syntax` に寄せる（投げない）。 */
+export function diagnosticCategory(code: ExpressionDiagnosticCode): ExpressionDiagnosticCategory {
+  return CATEGORY_BY_CODE[code] ?? 'syntax';
+}
+
 /** 診断 1 件。 */
 export interface ExpressionDiagnostic {
   readonly severity: 'error' | 'warning';
   readonly code: ExpressionDiagnosticCode;
+  /** 直し方が同じものをまとめた軸。差し戻しと画面の出し分けはこちらを見る。 */
+  readonly category: ExpressionDiagnosticCategory;
   readonly message: string;
   /** 式の中の位置（0 起点）。列の問題など位置を特定できないものには入らない。 */
   readonly position?: number;
@@ -61,6 +106,29 @@ export interface ExpressionPreviewRow {
   readonly reason?: CalculateFailureReason;
 }
 
+/**
+ * 失敗の読み替え。件数の表を見て人が推理しなくて済むようにする。
+ *
+ * 型の警告（`type-coerced`）は「寄せられるかもしれない」に留まり、それだけでは
+ * 上流に型変換が要るかどうか決められない。実際の行を見て初めて「この列は数値にならない」と
+ * 言い切れる。その判断をここで済ませる。
+ */
+export interface ExpressionPreviewDiagnosis {
+  /** 見た行がすべて失敗した。式かデータのどちらかが根本的に合っていない合図。 */
+  readonly allFailed: boolean;
+  /** 最も多い失敗理由。失敗が無ければ入らない。 */
+  readonly dominantReason?: CalculateFailureReason;
+  /**
+   * **実データで数値にできなかった列**（空でない値が 1 つも数値にならなかったもの）。
+   * 型の警告と違い、上流に型変換が要ると言い切れる。出現順。
+   */
+  readonly notNumericColumns: readonly string[];
+  /** 参照列のうち、見た行すべてが空だったもの。出現順。 */
+  readonly allNullColumns: readonly string[];
+  /** 次の一手（1 文）。差し戻しと画面の案内でそのまま使える。読み替えが要らなければ入らない。 */
+  readonly nextStep?: string;
+}
+
 /** 式を実際の行へ当てた結果。 */
 export interface ExpressionPreview {
   /** 式が読めてスキーマに対して妥当（= validation.ok）。false なら rows は空。 */
@@ -73,6 +141,8 @@ export interface ExpressionPreview {
   readonly failureCounts: Readonly<Partial<Record<CalculateFailureReason, number>>>;
   /** 最初に失敗した行。差し戻しと画面の案内に使う。失敗が無ければ入らない。 */
   readonly firstFailure?: ExpressionPreviewRow;
+  /** 失敗の読み替え。行を 1 つも見ていないときも形は返る（すべて空・false）。 */
+  readonly diagnosis: ExpressionPreviewDiagnosis;
 }
 
 /** プレビューの見方。 */
@@ -145,6 +215,27 @@ function safeSchema(schema: Schema): Schema {
  * どちらも warning なのは、型が合わなくても**実行はできる**ため（値が null になるだけ）。
  * error にすると、上流の cast をまだ入れていない途中の状態で組み立てを止めてしまう。
  */
+/**
+ * 診断を組み立てる唯一の口。分類は種別から必ず導くので、作る側が付け忘れられない。
+ * 診断を作る場所は 4 か所に散っており、各所で手書きすると分類の付け漏れが起きる。
+ */
+function diagnostic(
+  severity: 'error' | 'warning',
+  code: ExpressionDiagnosticCode,
+  message: string,
+  extra: { readonly position?: number; readonly column?: string; readonly suggestion?: string } = {},
+): ExpressionDiagnostic {
+  return {
+    severity,
+    code,
+    category: diagnosticCategory(code),
+    message,
+    ...(extra.position === undefined ? {} : { position: extra.position }),
+    ...(extra.column === undefined ? {} : { column: extra.column }),
+    ...(extra.suggestion === undefined ? {} : { suggestion: extra.suggestion }),
+  };
+}
+
 function typeDiagnostic(column: Column): ExpressionDiagnostic | undefined {
   switch (column.type) {
     case 'number':
@@ -152,19 +243,19 @@ function typeDiagnostic(column: Column): ExpressionDiagnostic | undefined {
     case 'string':
     case 'unknown':
     case 'null':
-      return {
-        severity: 'warning',
-        code: 'type-coerced',
-        message: `列 '${column.name}' は ${column.type} 型です。実行時に数値へ寄せます（数値にできない値は null）`,
-        column: column.name,
-      };
+      return diagnostic(
+        'warning',
+        'type-coerced',
+        `列 '${column.name}' は ${column.type} 型です。実行時に数値へ寄せます（数値にできない値は null）`,
+        { column: column.name },
+      );
     default:
-      return {
-        severity: 'warning',
-        code: 'type-not-numeric',
-        message: `列 '${column.name}' は ${column.type} 型です。数値にできないため実行時は null になります`,
-        column: column.name,
-      };
+      return diagnostic(
+        'warning',
+        'type-not-numeric',
+        `列 '${column.name}' は ${column.type} 型です。数値にできないため実行時は null になります`,
+        { column: column.name },
+      );
   }
 }
 
@@ -177,7 +268,7 @@ export function validateExpression(expression: string, schema: Schema): Expressi
   const text = typeof expression === 'string' ? expression : '';
   if (text.trim() === '') {
     // 設定途中の空欄。位置を指しても指す先が無いので position は入れない。
-    return emptyValidation({ severity: 'error', code: 'empty', message: '式を入力してください' });
+    return emptyValidation(diagnostic('error', 'empty', '式を入力してください'));
   }
 
   const input = safeSchema(schema);
@@ -187,13 +278,10 @@ export function validateExpression(expression: string, schema: Schema): Expressi
   if (!parsed.ok) {
     // 読めない式では列の検査をしない。構文が崩れている間の参照列は当てにならず、
     // 本当の原因（構文）より後ろの話で画面を埋めてしまう。
-    return emptyValidation({
-      severity: 'error',
-      code: parsed.code,
-      message: parsed.message,
+    return emptyValidation(diagnostic('error', parsed.code, parsed.message, {
       position: parsed.position,
       ...(parsed.suggestion === undefined ? {} : { suggestion: parsed.suggestion }),
-    });
+    }));
   }
 
   const diagnostics: ExpressionDiagnostic[] = [];
@@ -203,13 +291,10 @@ export function validateExpression(expression: string, schema: Schema): Expressi
     if (column === undefined) {
       const suggestion = suggestName(reference, known);
       unknownColumns.push(reference);
-      diagnostics.push({
-        severity: 'error',
-        code: 'unknown-column',
-        message: `式が参照する列がありません: ${reference}`,
+      diagnostics.push(diagnostic('error', 'unknown-column', `式が参照する列がありません: ${reference}`, {
         column: reference,
         ...(suggestion === undefined ? {} : { suggestion }),
-      });
+      }));
       continue;
     }
     const typed = typeDiagnostic(column);
@@ -230,8 +315,80 @@ function resolveLimit(limit: number | undefined): number {
   return Math.min(limit, MAX_PREVIEW_LIMIT);
 }
 
+const EMPTY_DIAGNOSIS: ExpressionPreviewDiagnosis = { allFailed: false, notNumericColumns: [], allNullColumns: [] };
+
 function noRows(validation: ExpressionValidation): ExpressionPreview {
-  return { ok: false, validation, rows: [], evaluated: 0, failed: 0, failureCounts: {} };
+  return { ok: false, validation, rows: [], evaluated: 0, failed: 0, failureCounts: {}, diagnosis: EMPTY_DIAGNOSIS };
+}
+
+/** 参照列 1 つぶんの、実データの内訳。 */
+interface ColumnTally {
+  /** 数値として使えた値の数。 */
+  numeric: number;
+  /** 空でないのに数値にできなかった値の数。 */
+  notNumeric: number;
+  /** 空（null / undefined / 空文字）の数。 */
+  empty: number;
+}
+
+/** 最も多い失敗理由。同数なら `failureCounts` に先に入った方（評価の順）を採る。 */
+function dominantReasonOf(counts: Readonly<Partial<Record<CalculateFailureReason, number>>>): CalculateFailureReason | undefined {
+  let best: CalculateFailureReason | undefined;
+  let bestCount = 0;
+  for (const [reason, count] of Object.entries(counts) as [CalculateFailureReason, number][]) {
+    if (count > bestCount) {
+      best = reason;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+/**
+ * 件数の表を読み替えて、次の一手を 1 文にする。
+ *
+ * 型の警告だけでは「寄せられるかもしれない」に留まる。実データで 1 つも数値にならなかった列が
+ * あって初めて「上流に型変換が要る」と言い切れるので、その判断をここで済ませる
+ * （利用者にも LLM にも、件数の表から推理させない）。
+ */
+function diagnoseFailures(
+  tallies: ReadonlyMap<string, ColumnTally>,
+  seen: number,
+  failed: number,
+  counts: Readonly<Partial<Record<CalculateFailureReason, number>>>,
+): ExpressionPreviewDiagnosis {
+  const notNumericColumns: string[] = [];
+  const allNullColumns: string[] = [];
+  for (const [column, tally] of tallies) {
+    if (tally.numeric === 0 && tally.notNumeric > 0) notNumericColumns.push(column);
+    else if (tally.numeric === 0 && tally.empty > 0) allNullColumns.push(column);
+  }
+
+  const allFailed = seen > 0 && failed === seen;
+  const dominantReason = dominantReasonOf(counts);
+
+  const base: ExpressionPreviewDiagnosis = {
+    allFailed,
+    ...(dominantReason === undefined ? {} : { dominantReason }),
+    notNumericColumns,
+    allNullColumns,
+  };
+  if (failed === 0) return base;
+
+  // 言い切れる順に見る。型変換が要るなら、それが根本原因で他は結果にすぎない。
+  if (notNumericColumns.length > 0) {
+    return { ...base, nextStep: `列 ${notNumericColumns.join(' / ')} の値を数値にできません。上流に型変換（cast）を入れてください。` };
+  }
+  if (allNullColumns.length > 0) {
+    return { ...base, nextStep: `列 ${allNullColumns.join(' / ')} は見た行がすべて空です。上流の null 処理で既定値を入れるか、参照する列を見直してください。` };
+  }
+  if (allFailed && dominantReason === 'divide-by-zero') {
+    return { ...base, nextStep: '見た行すべてで 0 で割っています。分母の列を見直すか、0 の行を上流の行フィルターで除いてください。' };
+  }
+  if (allFailed && dominantReason === 'domain-error') {
+    return { ...base, nextStep: '見た行すべてが関数の定義域の外です。式を見直してください。' };
+  }
+  return base;
 }
 
 /**
@@ -262,9 +419,21 @@ export function previewExpression(
   let failed = 0;
   let firstFailure: ExpressionPreviewRow | undefined;
 
+  // 参照列ごとに実データの内訳を数える。型の警告だけでは上流の型変換が要るか決められないので、
+  // 実際の値を見て「1 つも数値にならなかった列」を特定する（その判断は diagnoseFailures が使う）。
+  const tallies = new Map<string, ColumnTally>();
+  for (const reference of validation.references) tallies.set(reference, { numeric: 0, notNumeric: 0, empty: 0 });
+
   for (let index = 0; index < source.length && previewRows.length < limit; index += 1) {
+    const row = source[index] ?? {};
+    for (const [column, tally] of tallies) {
+      const cell = row[column] ?? null;
+      if (cell === null || cell === '') tally.empty += 1;
+      else if (toCalculationNumber(cell) === null) tally.notNumeric += 1;
+      else tally.numeric += 1;
+    }
     // 入力の行は読むだけ（配列もオブジェクトも複製せず、書き換えもしない）。
-    const outcome = evaluateExpressionDetailed(parsed.ast, rowLookup(source[index] ?? {}));
+    const outcome = evaluateExpressionDetailed(parsed.ast, rowLookup(row));
     const value = applyPrecision(outcome.value, precision);
     if (value === null) {
       // 丸めで初めて null になった場合は評価そのものが成功しているので理由が入らない。
@@ -288,5 +457,6 @@ export function previewExpression(
     failed,
     failureCounts,
     ...(firstFailure === undefined ? {} : { firstFailure }),
+    diagnosis: diagnoseFailures(tallies, previewRows.length, failed, failureCounts),
   };
 }
