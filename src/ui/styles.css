@@ -1099,3 +1099,23 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 /* 設定画面の「実験的な機能を表示する」。チェックボックスと文言を 1 行に並べる。 */
 .settings-toggle { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .settings-toggle input { width: auto; margin: 0; }
+
+/* 関数電卓ノード（calculate）の設定ダイアログ（ADR-0045）。node-config-dialog の2カラムグリッドを
+   キーパッド・関数群・列チップの各ブロックだけ全幅に広げる（既存の p / details / dialog-rule-editor と同じ扱い）。 */
+.node-config-dialog-body > .calc-keypad,
+.node-config-dialog-body > .calc-function-groups,
+.node-config-dialog-body > .calc-columns { grid-column: 1 / -1; }
+.calc-keypad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 2px 0; }
+.calc-keypad button { padding: 9px 0; font-size: 14px; font-weight: 600; border-radius: 8px; border: 1px solid #dce1eb; background: #f7f8fb; color: #354158; }
+.calc-keypad button:hover { background: #edf0f6; border-color: #c3cbdd; }
+.calc-function-groups { display: flex; flex-wrap: wrap; gap: 14px; margin: 2px 0; }
+.calc-function-group { display: grid; align-content: start; gap: 5px; flex: 1 1 200px; min-width: 160px; }
+.calc-function-group strong { font-size: 11px; color: #59667d; }
+.calc-function-buttons { display: flex; flex-wrap: wrap; gap: 5px; }
+.calc-function-buttons button { padding: 3px 9px; font-size: 11px; border-radius: 99px; border: 1px solid #dce1eb; background: white; color: #354158; }
+.calc-function-buttons button:hover { background: #edf0f6; border-color: #c3cbdd; }
+.calc-columns { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0; }
+.calc-columns button { padding: 4px 11px; font-size: 11px; border-radius: 99px; border: 1px solid #cfd6e4; background: #eef1ff; color: #354158; }
+.calc-columns button:hover { background: #e1e6ff; }
+/* number以外の列（実行時に数値へ寄せる/nullになる）は控えめに見せ、titleで実行時の扱いを伝える。 */
+.calc-columns button.calc-column-dim { background: #f4f5f9; color: #8891a5; border-style: dashed; }

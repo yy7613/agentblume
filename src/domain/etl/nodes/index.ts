@@ -21,6 +21,7 @@ import { selectNode } from './select';
 import { filterNode } from './filter';
 import { renameNode } from './rename';
 import { castNode } from './cast';
+import { calculateNode } from './calculate';
 import { joinNode } from './join';
 import { unionNode } from './union';
 import { sortNode } from './sort';
@@ -51,6 +52,30 @@ export { renameNode } from './rename';
 export type { RenameConfig } from './rename';
 export { castNode } from './cast';
 export type { CastConfig } from './cast';
+export { calculateNode, CALCULATE_TYPE } from './calculate';
+export type { CalculateConfig } from './calculate';
+export {
+  CALCULATE_FUNCTIONS,
+  CALCULATE_CONSTANTS,
+  MAX_EXPRESSION_LENGTH,
+  MAX_EXPRESSION_DEPTH,
+  MAX_EXPRESSION_TOKENS,
+  parseExpression,
+  evaluateExpression,
+} from './calculate-expression';
+export type { CalculateFunction, CalculateFunctionGroup, CalculateFailureReason, EvaluationOutcome } from './calculate-expression';
+export { evaluateExpressionDetailed } from './calculate-expression';
+export { EXPRESSION_ERROR_CODES, nameDistance, suggestName } from './calculate-expression';
+export type { ExpressionErrorCode } from './calculate-expression';
+export { EXPRESSION_DIAGNOSTIC_CODES, validateExpression, previewExpression } from './calculate-diagnostics';
+export type {
+  ExpressionDiagnostic,
+  ExpressionDiagnosticCode,
+  ExpressionPreview,
+  ExpressionPreviewOptions,
+  ExpressionPreviewRow,
+  ExpressionValidation,
+} from './calculate-diagnostics';
 export { agentInputNode } from './agent-input';
 export type { AgentInputConfig } from './agent-input';
 export { journalAttachmentSourceNode } from './journal-attachment';
@@ -114,6 +139,7 @@ export function createDefaultRegistry(): NodeRegistry {
   registry.register(aiJudgeNode);
   registry.register(renameNode);
   registry.register(castNode);
+  registry.register(calculateNode);
   registry.register(joinNode);
   registry.register(unionNode);
   registry.register(sortNode);

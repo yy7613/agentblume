@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AnalysisConfigProposalDto, ColumnDto, DataSourceDto, DataType, SchemaDto, SearchProviderDto, TenantScopeDto, ToolGraphDto } from '../api/types';
+import { CALCULATOR_CONSTANT_KEYS, CALCULATOR_FUNCTION_KEYS, CALCULATOR_GROUP_LABELS, CALCULATOR_OPERATOR_KEYS, displayExpression, insertAt, parenthesisBalance, type CalculatorFunctionGroup } from './calculator-keys';
 import { catalogItem, toInputOf, type ToolNodeType } from './node-catalog';
 import { useToolBuilderStore } from './store';
 import { useModalBehavior } from '../hooks/useModalBehavior';
@@ -9,7 +10,7 @@ import { DATA_TYPES, cellText, coerceCell, coerceScalar, columnsText, parseColum
 import { scope } from '../scope';
 
 const EMPTY_COLUMNS: readonly ColumnDto[] = [];
-const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'ai-judge', 'rename', 'cast', 'join', 'sort', 'fill-null', 'replace', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output']);
+const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'ai-judge', 'rename', 'cast', 'calculate', 'join', 'sort', 'fill-null', 'replace', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output']);
 
 export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
   const selectedNodeId = useToolBuilderStore((state) => state.selectedNodeId);
@@ -100,6 +101,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
       {type === 'ai-judge' && <AiJudgeSummary config={config} />}
       {type === 'rename' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Renames', '列名変更')} <small>{text('one from:to pair per line', '1行に from:to')}</small><textarea rows={8} value={(config['renames'] as {from:string;to:string}[] | undefined)?.map((pair) => `${pair.from}:${pair.to}`).join('\n') ?? ''} onChange={(event) => setConfig({ renames: parsePairs(event.target.value, 'to') })} /></label></details>}
       {type === 'cast' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Casts', '型変換')} <small>{text('one column:type pair per line', '1行に column:type')}</small><textarea rows={8} value={(config['casts'] as {column:string;to:string}[] | undefined)?.map((pair) => `${pair.column}:${pair.to}`).join('\n') ?? ''} onChange={(event) => setConfig({ casts: parsePairs(event.target.value, 'type') })} /></label></details>}
+      {type === 'calculate' && <CalculateSummary config={config} />}
       {type === 'join' && <details><summary>{text('Advanced inline editor', '詳細インライン編集')}</summary><JoinFields config={config} setConfig={setConfig} leftColumns={leftColumns} rightColumns={rightColumns} /></details>}
       {type === 'union' && <label className="check"><input type="checkbox" checked={config['strict'] === true} onChange={(event) => setConfig({ strict: event.target.checked })} /> {text('Strict column match', '列名の完全一致を要求')}</label>}
       {type === 'limit' && <LimitFields config={config} setConfig={setConfig} />}
@@ -319,6 +321,7 @@ function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvail
         {type === 'chart-output' && <ChartOutputFields config={draft} setConfig={patch} columns={columns} />}
         {type === 'rename' && <RenameRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'cast' && <CastRuleEditor config={draft} setConfig={patch} columns={columns} />}
+        {type === 'calculate' && <CalculateFields config={draft} setConfig={patch} columns={columns} />}
         {type === 'sort' && <SortRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'replace' && <ReplaceRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'agent-input' && <SchemaTableEditor config={draft} setConfig={patch} />}
@@ -765,5 +768,129 @@ function FillNullFields({ config, setConfig, columns }: { config: Readonly<Recor
       );
     })}
     <button type="button" onClick={() => setConfig({ rules: [...rules, { column: '', strategy: 'constant', value: '' }] })}>{text('Add rule', 'ルールを追加')}</button>
+  </>;
+}
+
+/** サイドバー用の要約（ADR-0028: 実編集はダイアログ側）。displayExpression で ×÷ の見た目にするだけで、保存値は変えない。 */
+function CalculateSummary({ config }: { readonly config: Readonly<Record<string, unknown>> }) {
+  const { text } = useI18n();
+  const expression = String(config['expression'] ?? '');
+  const outputColumn = String(config['outputColumn'] ?? '');
+  if (expression.trim() === '') return <small className="field-error">{text('Enter a formula.', '式を入力してください。')}</small>;
+  return <p>{`${outputColumn} = ${displayExpression(expression)}`}</p>;
+}
+
+/** キーパッドの1キー分（表示文字と式に書く文字）。数字・カッコ・+ ^ % は表示と挿入が同じ文字。 */
+interface CalcKeypadKey { readonly glyph: string; readonly insert: string }
+const CALC_OPERATOR_BY_GLYPH = new Map(CALCULATOR_OPERATOR_KEYS.map((key) => [key.glyph, key.insert]));
+const CALC_CONSTANT_BY_NAME = new Map(CALCULATOR_CONSTANT_KEYS.map((key) => [key.name, key.glyph]));
+const CALC_KEYPAD_KEYS: readonly CalcKeypadKey[] = [
+  { glyph: '7', insert: '7' }, { glyph: '8', insert: '8' }, { glyph: '9', insert: '9' }, { glyph: '÷', insert: CALC_OPERATOR_BY_GLYPH.get('÷')! },
+  { glyph: '4', insert: '4' }, { glyph: '5', insert: '5' }, { glyph: '6', insert: '6' }, { glyph: '×', insert: CALC_OPERATOR_BY_GLYPH.get('×')! },
+  { glyph: '1', insert: '1' }, { glyph: '2', insert: '2' }, { glyph: '3', insert: '3' }, { glyph: '−', insert: CALC_OPERATOR_BY_GLYPH.get('−')! },
+  { glyph: '0', insert: '0' }, { glyph: '.', insert: '.' }, { glyph: '(', insert: '(' }, { glyph: ')', insert: ')' }, { glyph: '+', insert: '+' },
+  { glyph: '^', insert: '^' }, { glyph: '%', insert: '%' },
+  { glyph: CALC_CONSTANT_BY_NAME.get('pi')!, insert: 'pi' }, { glyph: CALC_CONSTANT_BY_NAME.get('e')!, insert: 'e' },
+];
+const CALC_FUNCTION_GROUPS: readonly CalculatorFunctionGroup[] = ['basic', 'rounding', 'exponential', 'trigonometric'];
+
+/**
+ * 関数電卓ノード（calculate）の設定ダイアログ本体（ADR-0045）。
+ * カーソル位置（caret）を自前で保持し、キーパッド・関数・列チップのどれを押しても、
+ * 末尾追記ではなくそのカーソル位置へ挿入する。直接編集（textareaへの直接入力）も caret を追従させる。
+ * 式の妥当性そのものは検査しない（正典は inferSchema の issue 表示）。ここで見るのは括弧の対応だけ。
+ */
+function CalculateFields({ config, setConfig, columns }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[] }) {
+  const { text } = useI18n();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const expression = String(config['expression'] ?? '');
+  const [caret, setCaret] = useState(expression.length);
+
+  // 挿入のたびにキャレット位置を更新し、DOM側（textareaの選択範囲）もそこへ合わせる。
+  const insert = (fragment: string) => {
+    const result = insertAt(expression, caret, fragment);
+    setConfig({ expression: result.expression });
+    setCaret(result.caret);
+  };
+  // config.expression が変わるたびにDOM側の選択範囲をcaretへ合わせる（setConfigは親のdraftを書き換えるだけで、
+  // textareaの選択範囲は自動で追従しないため）。直接入力時はonChangeがcaretを既に合わせているので二重にはならない。
+  useEffect(() => {
+    const node = textareaRef.current;
+    if (node === null) return;
+    node.focus();
+    node.setSelectionRange(caret, caret);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expression]);
+
+  const backspace = () => {
+    if (caret <= 0) return;
+    const next = expression.slice(0, caret - 1) + expression.slice(caret);
+    setConfig({ expression: next });
+    setCaret(caret - 1);
+  };
+  const clear = () => { setConfig({ expression: '' }); setCaret(0); };
+
+  const balance = parenthesisBalance(expression);
+  const numberColumns = columns.filter((column) => column.type === 'number');
+  const otherColumns = columns.filter((column) => column.type !== 'number');
+  const dimTitle = (columnType: DataType): string => columnType === 'boolean' || columnType === 'date'
+    ? text('Becomes null at run time.', '実行時に null になります。')
+    : text('Coerced to a number at run time.', '実行時に数値へ寄せます。');
+
+  const precisionRaw = config['precision'];
+  const precisionValue = typeof precisionRaw === 'number' ? String(precisionRaw) : '';
+
+  return <>
+    <label>{text('Output column', '出力列名')}<input aria-label={text('Output column', '出力列名')} value={String(config['outputColumn'] ?? '')} onChange={(event) => setConfig({ outputColumn: event.target.value })} /></label>
+    <label>{text('Expression', '式')}<textarea
+      ref={textareaRef}
+      aria-label={text('Expression', '式')}
+      rows={3}
+      value={expression}
+      onChange={(event) => { setConfig({ expression: event.target.value }); setCaret(event.target.selectionStart ?? event.target.value.length); }}
+      onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? expression.length)}
+      onClick={(event) => setCaret(event.currentTarget.selectionStart ?? expression.length)}
+      onKeyUp={(event) => setCaret(event.currentTarget.selectionStart ?? expression.length)}
+    /></label>
+    {!balance.balanced && <small className="field-error">
+      {balance.open > 0
+        ? text(`${balance.open} extra opening parenthesis.`, `開き括弧が${balance.open}個多い。`)
+        : text(`${-balance.open} extra closing parenthesis.`, `閉じ括弧が${-balance.open}個多い。`)}
+    </small>}
+
+    <div className="calc-keypad" role="group" aria-label={text('Keypad', 'キーパッド')}>
+      {CALC_KEYPAD_KEYS.map((key) => <button type="button" key={key.glyph} onClick={() => insert(key.insert)}>{key.glyph}</button>)}
+      {/* 契約どおり ← / C のアクセシブル名も表示記号そのもの（title で意味を補う）。 */}
+      <button type="button" title={text('Backspace', '1文字削除')} onClick={backspace}>←</button>
+      <button type="button" title={text('Clear', '式を空にする')} onClick={clear}>C</button>
+    </div>
+
+    <div className="calc-function-groups">
+      {CALC_FUNCTION_GROUPS.map((group) => {
+        const label = text(CALCULATOR_GROUP_LABELS[group].en, CALCULATOR_GROUP_LABELS[group].ja);
+        return <div className="calc-function-group" role="group" aria-label={label} key={group}>
+          <strong>{label}</strong>
+          <div className="calc-function-buttons">
+            {CALCULATOR_FUNCTION_KEYS.filter((fn) => fn.group === group).map((fn) =>
+              <button type="button" key={fn.name} title={text(fn.hint, fn.hintJa)} onClick={() => insert(`${fn.name}(`)}>{fn.name}</button>)}
+          </div>
+        </div>;
+      })}
+    </div>
+
+    <div className="calc-columns" role="group" aria-label={text('Columns', '列')}>
+      {columns.length === 0
+        ? <small>{text('Connect an upstream node to see columns.', '上流を接続すると列が出ます。')}</small>
+        : <>
+            {numberColumns.map((column) => <button type="button" key={column.name} onClick={() => insert(`[${column.name}]`)}>{column.name}</button>)}
+            {otherColumns.map((column) => <button type="button" className="calc-column-dim" key={column.name} title={dimTitle(column.type)} onClick={() => insert(`[${column.name}]`)}>{column.name}</button>)}
+          </>}
+    </div>
+
+    <label>{text('On error', '評価不能時')}<select aria-label={text('On error', '評価不能時')} value={config['onError'] === 'fail' ? 'fail' : 'null'} onChange={(event) => setConfig({ onError: event.target.value })}>
+      <option value="null">{text('null (keep the row)', 'null（行は残す）')}</option>
+      <option value="fail">{text('fail (stop the run)', 'fail（実行を止める）')}</option>
+    </select></label>
+    <label>{text('Precision', '小数桁')}<input aria-label={text('Precision', '小数桁')} type="number" min={0} max={15} placeholder={text('no rounding', '丸めない')} value={precisionValue} onChange={(event) => setConfig({ precision: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
   </>;
 }

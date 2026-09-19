@@ -64,6 +64,16 @@ describe('node catalog', () => {
     expect(catalogItem('filter').defaultConfig).toEqual({ column: '', op: 'eq', value: '' });
   });
 
+  it('calculateはcastの直後にある変換カテゴリの1入力ノードで、既定configはonError=nullの空式（ADR-0045）', () => {
+    expect(NODE_TYPES.indexOf('calculate')).toBe(NODE_TYPES.indexOf('cast') + 1);
+    const item = catalogItem('calculate');
+    expect(item.kind).toBe('transform');
+    expect(item.inputArity).toBe(1);
+    expect(item.label).toBe('Calculator');
+    expect(item.labelJa).toBe('関数電卓');
+    expect(item.defaultConfig).toEqual({ outputColumn: 'result', expression: '', onError: 'null' });
+  });
+
   it('inputArityはsource=0/通常transform=1/join・union=2', () => {
     for (const item of NODE_CATALOG) {
       if (item.kind === 'source') expect(item.inputArity).toBe(0);

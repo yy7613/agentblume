@@ -1,4 +1,4 @@
-export const NODE_TYPES = ['agent-input', 'current-datetime', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'select', 'filter', 'ai-judge', 'rename', 'cast', 'join', 'union', 'sort', 'limit', 'distinct', 'fill-null', 'replace', 'group-by', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output'] as const;
+export const NODE_TYPES = ['agent-input', 'current-datetime', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'select', 'filter', 'ai-judge', 'rename', 'cast', 'calculate', 'join', 'union', 'sort', 'limit', 'distinct', 'fill-null', 'replace', 'group-by', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output'] as const;
 export type ToolNodeType = (typeof NODE_TYPES)[number];
 
 export interface NodeCatalogItem {
@@ -53,6 +53,12 @@ export const NODE_CATALOG: readonly NodeCatalogItem[] = [
   },
   { type: 'rename', label: 'Rename', labelJa: '列名変更', kind: 'transform', inputArity: 1, description: 'Rename columns.', descriptionJa: '列名を変更します。', defaultConfig: { renames: [] } },
   { type: 'cast', label: 'Cast', labelJa: '型変換', kind: 'transform', inputArity: 1, description: 'Convert column data types.', descriptionJa: '列のデータ型を変換します。', defaultConfig: { casts: [] } },
+  {
+    // 業務ノードではない汎用の変換ノードなので、cast と同じ並び（ADR-0045）。
+    type: 'calculate', label: 'Calculator', labelJa: '関数電卓', kind: 'transform', inputArity: 1,
+    description: 'Compute a new column from a formula over the input columns.', descriptionJa: '入力列を使った数式で新しい列を計算します。',
+    defaultConfig: { outputColumn: 'result', expression: '', onError: 'null' },
+  },
   { type: 'join', label: 'Join', labelJa: '結合', kind: 'transform', inputArity: 2, description: 'Join two inputs on key columns. Key types must match, or compare keys as text.', descriptionJa: '2つの入力をキー列で結合します。キーの型が違う場合は文字列比較を選べます。', defaultConfig: { mode: 'inner', keys: [], rightSuffix: '_right' } },
   { type: 'union', label: 'Union', labelJa: '縦結合', kind: 'transform', inputArity: 2, description: 'Append rows of two inputs by column name.', descriptionJa: '2つの入力を列名で縦に連結します。', defaultConfig: { strict: false } },
   { type: 'sort', label: 'Sort', labelJa: '並べ替え', kind: 'transform', inputArity: 1, description: 'Sort rows by one or more keys.', descriptionJa: '複数キーで行を並べ替えます。', defaultConfig: { keys: [] } },
