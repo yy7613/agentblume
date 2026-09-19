@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AnalysisConfigProposalDto, CalculateExpressionProposalDto, ColumnDto, DataSourceDto, DataType, SchemaDto, SearchProviderDto, TenantScopeDto, ToolGraphDto } from '../api/types';
+import type { AnalysisConfigProposalDto, CalculateExpressionProposalDto, ColumnDto, DataSourceDto, DataType, SchemaDto, SearchProviderDto, TenantScopeDto, ToolGraphDto, JsonRow, JsonCell } from '../api/types';
 import { CALCULATOR_CONSTANT_KEYS, CALCULATOR_FUNCTION_KEYS, CALCULATOR_GROUP_LABELS, CALCULATOR_OPERATOR_KEYS, displayExpression, insertAt, parenthesisBalance, type CalculatorFunctionGroup } from './calculator-keys';
 import { catalogItem, toInputOf, type ToolNodeType } from './node-catalog';
 import { useToolBuilderStore } from './store';
@@ -10,6 +10,33 @@ import { DATA_TYPES, cellText, coerceCell, coerceScalar, columnsText, parseColum
 import { scope } from '../scope';
 
 const EMPTY_COLUMNS: readonly ColumnDto[] = [];
+const EMPTY_ROWS: readonly JsonRow[] = [];
+/** 列ごとに見せる例の値の数。 */
+const SAMPLE_VALUES_PER_COLUMN = 3;
+
+/** 上流プレビューの先頭行から、列ごとに null 以外の相異なる値を最大 SAMPLE_VALUES_PER_COLUMN 個拾う。 */
+function sampleValues(rows: readonly JsonRow[], columns: readonly ColumnDto[]): Readonly<Record<string, readonly JsonCell[]>> {
+  const result: Record<string, JsonCell[]> = {};
+  for (const column of columns) {
+    const seen: JsonCell[] = [];
+    for (const row of rows) {
+      const value = row[column.name];
+      if (value === null || value === undefined || seen.includes(value)) continue;
+      seen.push(value);
+      if (seen.length >= SAMPLE_VALUES_PER_COLUMN) break;
+    }
+    result[column.name] = seen;
+  }
+  return result;
+}
+
+/** 例の値の表示（文字列は引用符付き。長い値は切り詰める）。 */
+function sampleText(values: readonly JsonCell[]): string {
+  return values.map((value) => {
+    const shown = typeof value === 'string' ? `"${value.length > 24 ? `${value.slice(0, 24)}…` : value}"` : String(value);
+    return shown;
+  }).join(', ');
+}
 const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'ai-judge', 'rename', 'cast', 'calculate', 'join', 'sort', 'fill-null', 'replace', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output']);
 
 export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
@@ -23,6 +50,13 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
       ? EMPTY_COLUMNS
       : (state.propagation?.nodes[sourceId]?.schema.columns ?? EMPTY_COLUMNS);
   });
+  // 上流ノードのプレビュー行（関数電卓の「値として使える入力」に例の値を添えるため）。行配列の参照だけを選ぶ。
+  const upstreamRows = useToolBuilderStore((state) => {
+    if (selectedNodeId === undefined) return EMPTY_ROWS;
+    const sourceId = state.edges.find((edge) => edge.target === selectedNodeId)?.source;
+    return sourceId === undefined ? EMPTY_ROWS : (state.preview?.nodes[sourceId]?.table.rows ?? EMPTY_ROWS);
+  });
+  const samples = useMemo(() => sampleValues(upstreamRows, columns), [upstreamRows, columns]);
   // 2入力ノード用: 左（toInput:0）/ 右（toInput:1）それぞれの上流スキーマ列。
   const leftColumns = useToolBuilderStore((state) => {
     if (selectedNodeId === undefined) return EMPTY_COLUMNS;
@@ -104,7 +138,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
       {type === 'ai-judge' && <AiJudgeSummary config={config} />}
       {type === 'rename' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Renames', '列名変更')} <small>{text('one from:to pair per line', '1行に from:to')}</small><textarea rows={8} value={(config['renames'] as {from:string;to:string}[] | undefined)?.map((pair) => `${pair.from}:${pair.to}`).join('\n') ?? ''} onChange={(event) => setConfig({ renames: parsePairs(event.target.value, 'to') })} /></label></details>}
       {type === 'cast' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Casts', '型変換')} <small>{text('one column:type pair per line', '1行に column:type')}</small><textarea rows={8} value={(config['casts'] as {column:string;to:string}[] | undefined)?.map((pair) => `${pair.column}:${pair.to}`).join('\n') ?? ''} onChange={(event) => setConfig({ casts: parsePairs(event.target.value, 'type') })} /></label></details>}
-      {type === 'calculate' && <CalculateSummary config={config} />}
+      {type === 'calculate' && <CalculateSummary config={config} columns={columns} />}
       {type === 'join' && <details><summary>{text('Advanced inline editor', '詳細インライン編集')}</summary><JoinFields config={config} setConfig={setConfig} leftColumns={leftColumns} rightColumns={rightColumns} /></details>}
       {type === 'union' && <label className="check"><input type="checkbox" checked={config['strict'] === true} onChange={(event) => setConfig({ strict: event.target.checked })} /> {text('Strict column match', '列名の完全一致を要求')}</label>}
       {type === 'limit' && <LimitFields config={config} setConfig={setConfig} />}
@@ -125,7 +159,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
             {rightColumns.length > 0 && <div className="column-hints"><strong>{text('Right input columns', '右入力の列')}</strong>{rightColumns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
           </>
         : columns.length > 0 && <div className="column-hints"><strong>{text('Upstream columns', '上流の列')}</strong>{columns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
-      {dialogNodeId === node.id && dialogDraft !== undefined && <NodeConfigDialog type={type} initial={dialogDraft} nodeId={node.id} graph={graph} analysisAssistantAvailable={analysisAssistantAvailable} aiJudgeAvailable={aiJudgeAvailable} calculateAssistantAvailable={calculateAssistantAvailable} columns={columns} leftColumns={leftColumns} rightColumns={rightColumns} dataSources={dataSources} searchProviders={searchProviders} client={client} scope={scope} onCancel={closeDialog} onApply={(next) => { update(node.id, next); closeDialog(); }} />}
+      {dialogNodeId === node.id && dialogDraft !== undefined && <NodeConfigDialog type={type} initial={dialogDraft} nodeId={node.id} graph={graph} analysisAssistantAvailable={analysisAssistantAvailable} aiJudgeAvailable={aiJudgeAvailable} calculateAssistantAvailable={calculateAssistantAvailable} columns={columns} samples={samples} leftColumns={leftColumns} rightColumns={rightColumns} dataSources={dataSources} searchProviders={searchProviders} client={client} scope={scope} onCancel={closeDialog} onApply={(next) => { update(node.id, next); closeDialog(); }} />}
     </aside>
   );
 }
@@ -307,7 +341,7 @@ function AiJudgeFields({ config, setConfig, columns, available }: { readonly con
   </>;
 }
 
-function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvailable, aiJudgeAvailable, calculateAssistantAvailable, columns, leftColumns, rightColumns, dataSources, searchProviders, client, scope, onCancel, onApply }: { readonly type: ToolNodeType; readonly initial: Readonly<Record<string, unknown>>; readonly nodeId: string; readonly graph: ToolGraphDto; readonly analysisAssistantAvailable: boolean; readonly aiJudgeAvailable: boolean; readonly calculateAssistantAvailable: boolean; readonly columns: readonly ColumnDto[]; readonly leftColumns: readonly ColumnDto[]; readonly rightColumns: readonly ColumnDto[]; readonly dataSources: readonly DataSourceDto[]; readonly searchProviders: readonly SearchProviderDto[]; readonly client?: ToolApiClient; readonly scope: TenantScopeDto; readonly onCancel: () => void; readonly onApply: (config: Readonly<Record<string, unknown>>) => void }) {
+function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvailable, aiJudgeAvailable, calculateAssistantAvailable, columns, samples, leftColumns, rightColumns, dataSources, searchProviders, client, scope, onCancel, onApply }: { readonly type: ToolNodeType; readonly initial: Readonly<Record<string, unknown>>; readonly nodeId: string; readonly graph: ToolGraphDto; readonly analysisAssistantAvailable: boolean; readonly aiJudgeAvailable: boolean; readonly calculateAssistantAvailable: boolean; readonly columns: readonly ColumnDto[]; readonly samples: Readonly<Record<string, readonly JsonCell[]>>; readonly leftColumns: readonly ColumnDto[]; readonly rightColumns: readonly ColumnDto[]; readonly dataSources: readonly DataSourceDto[]; readonly searchProviders: readonly SearchProviderDto[]; readonly client?: ToolApiClient; readonly scope: TenantScopeDto; readonly onCancel: () => void; readonly onApply: (config: Readonly<Record<string, unknown>>) => void }) {
   const [draft, setDraft] = useState<Readonly<Record<string, unknown>>>(initial);
   const [intent, setIntent] = useState(''); const [proposal, setProposal] = useState<AnalysisConfigProposalDto>(); const [assistantError, setAssistantError] = useState<string>(); const [suggesting, setSuggesting] = useState(false);
   // 式提案（v41）は分析設定補助とは別の草案・状態を持つ（ダイアログ内で共存しうるため名前を分ける）。
@@ -345,7 +379,7 @@ function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvail
             <button type="button" onClick={() => { patch({ expression: calcProposal.config.expression, outputColumn: calcProposal.config.outputColumn }); setCalcProposal(undefined); }}>{text('Apply expression to this dialog', 'この式をダイアログへ適用')}</button>
           </div>}
         </section>}
-        {type === 'calculate' && <CalculateFields config={draft} setConfig={patch} columns={columns} />}
+        {type === 'calculate' && <CalculateFields config={draft} setConfig={patch} columns={columns} samples={samples} />}
         {type === 'sort' && <SortRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'replace' && <ReplaceRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'agent-input' && <SchemaTableEditor config={draft} setConfig={patch} />}
@@ -796,12 +830,17 @@ function FillNullFields({ config, setConfig, columns }: { config: Readonly<Recor
 }
 
 /** サイドバー用の要約（ADR-0028: 実編集はダイアログ側）。displayExpression で ×÷ の見た目にするだけで、保存値は変えない。 */
-function CalculateSummary({ config }: { readonly config: Readonly<Record<string, unknown>> }) {
+function CalculateSummary({ config, columns }: { readonly config: Readonly<Record<string, unknown>>; readonly columns: readonly ColumnDto[] }) {
   const { text } = useI18n();
   const expression = String(config['expression'] ?? '');
   const outputColumn = String(config['outputColumn'] ?? '');
-  if (expression.trim() === '') return <small className="field-error">{text('Enter a formula.', '式を入力してください。')}</small>;
-  return <p>{`${outputColumn} = ${displayExpression(expression)}`}</p>;
+  const numberColumns = columns.filter((column) => column.type === 'number');
+  // 式を書く前に「何を値として使えるか」が分かるよう、要約にも上流の列を出す（number を先に、他は薄く）。
+  const inputs = columns.length === 0
+    ? <small>{text('Connect an upstream node to see the inputs you can use as values.', '上流を接続すると、値として使える入力が出ます。')}</small>
+    : <p className="calc-summary-inputs"><span>{text('Inputs usable as values', '値として使える入力')}:</span> {numberColumns.map((column) => <code key={column.name}>[{column.name}]</code>)}{columns.filter((column) => column.type !== 'number').map((column) => <code key={column.name} className="calc-column-dim">[{column.name}]</code>)}</p>;
+  if (expression.trim() === '') return <>{inputs}<small className="field-error">{text('Enter a formula.', '式を入力してください。')}</small></>;
+  return <>{inputs}<p>{`${outputColumn} = ${displayExpression(expression)}`}</p></>;
 }
 
 /** キーパッドの1キー分（表示文字と式に書く文字）。数字・カッコ・+ ^ % は表示と挿入が同じ文字。 */
@@ -824,7 +863,7 @@ const CALC_FUNCTION_GROUPS: readonly CalculatorFunctionGroup[] = ['basic', 'roun
  * 末尾追記ではなくそのカーソル位置へ挿入する。直接編集（textareaへの直接入力）も caret を追従させる。
  * 式の妥当性そのものは検査しない（正典は inferSchema の issue 表示）。ここで見るのは括弧の対応だけ。
  */
-function CalculateFields({ config, setConfig, columns }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[] }) {
+function CalculateFields({ config, setConfig, columns, samples = {} }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[]; readonly samples?: Readonly<Record<string, readonly JsonCell[]>> }) {
   const { text } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const expression = String(config['expression'] ?? '');
@@ -882,6 +921,25 @@ function CalculateFields({ config, setConfig, columns }: { readonly config: Read
         : text(`${-balance.open} extra closing parenthesis.`, `閉じ括弧が${-balance.open}個多い。`)}
     </small>}
 
+    {/* 値として使える入力（上流の列）。式のすぐ下に置き、何を参照できるかを見てから組めるようにする。
+        押すと [列名] をカーソル位置へ挿入する。アクセシブル名は列名そのもの（型・例の値は補足）。 */}
+    <div className="calc-columns calc-inputs" role="group" aria-label={text('Inputs usable as values', '値として使える入力')}>
+      <strong>{text('Inputs usable as values', '値として使える入力')}</strong>
+      {columns.length === 0
+        ? <small>{text('Connect an upstream node to see columns.', '上流を接続すると列が出ます。')}</small>
+        : <div className="calc-input-chips">
+            {[...numberColumns, ...otherColumns].map((column) => {
+              const dim = column.type !== 'number';
+              const example = samples[column.name] ?? [];
+              return <button type="button" key={column.name} aria-label={column.name} className={dim ? 'calc-column-dim' : undefined} title={dim ? dimTitle(column.type) : text('Insert [column] into the formula.', '式に [列名] を挿入します。')} onClick={() => insert(`[${column.name}]`)}>
+                <span className="calc-input-name">[{column.name}]</span>
+                <small className="calc-input-meta">{column.type}{example.length > 0 ? ` · ${text('e.g.', '例:')} ${sampleText(example)}` : ''}</small>
+              </button>;
+            })}
+          </div>}
+      {otherColumns.length > 0 && <small className="calc-input-hint">{text('Dimmed inputs are not numbers: text is coerced to a number at run time, booleans and dates become null. Add a cast node upstream to make them numbers.', '薄い入力は数値ではありません。文字列は実行時に数値へ寄せ、真偽値・日付は null になります。数値として使うには上流に型変換（cast）を置いてください。')}</small>}
+    </div>
+
     <div className="calc-keypad" role="group" aria-label={text('Keypad', 'キーパッド')}>
       {CALC_KEYPAD_KEYS.map((key) => <button type="button" key={key.glyph} onClick={() => insert(key.insert)}>{key.glyph}</button>)}
       {/* 契約どおり ← / C のアクセシブル名も表示記号そのもの（title で意味を補う）。 */}
@@ -900,15 +958,6 @@ function CalculateFields({ config, setConfig, columns }: { readonly config: Read
           </div>
         </div>;
       })}
-    </div>
-
-    <div className="calc-columns" role="group" aria-label={text('Columns', '列')}>
-      {columns.length === 0
-        ? <small>{text('Connect an upstream node to see columns.', '上流を接続すると列が出ます。')}</small>
-        : <>
-            {numberColumns.map((column) => <button type="button" key={column.name} onClick={() => insert(`[${column.name}]`)}>{column.name}</button>)}
-            {otherColumns.map((column) => <button type="button" className="calc-column-dim" key={column.name} title={dimTitle(column.type)} onClick={() => insert(`[${column.name}]`)}>{column.name}</button>)}
-          </>}
     </div>
 
     <label>{text('On error', '評価不能時')}<select aria-label={text('On error', '評価不能時')} value={config['onError'] === 'fail' ? 'fail' : 'null'} onChange={(event) => setConfig({ onError: event.target.value })}>

@@ -1119,6 +1119,18 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 .calc-columns button:hover { background: #e1e6ff; }
 /* number以外の列（実行時に数値へ寄せる/nullになる）は控えめに見せ、titleで実行時の扱いを伝える。 */
 .calc-columns button.calc-column-dim { background: #f4f5f9; color: #8891a5; border-style: dashed; }
+/* 値として使える入力（上流の列）: 列名の下に型と例の値を添えたキー。式の直下に置く。 */
+.calc-inputs { display: grid; gap: 6px; }
+.calc-inputs > strong { font-size: 11px; color: #59667d; }
+.calc-input-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.calc-inputs .calc-input-chips button { display: grid; gap: 1px; text-align: left; padding: 5px 11px; border-radius: 10px; }
+.calc-input-name { font-size: 12px; font-weight: 600; }
+.calc-input-meta { font-size: 10px; color: #6b7690; font-weight: 400; }
+.calc-inputs button.calc-column-dim .calc-input-meta { color: #9aa3b5; }
+.calc-input-hint { color: #6b7690; }
+.calc-summary-inputs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; }
+.calc-summary-inputs span { color: #59667d; }
+.calc-summary-inputs code.calc-column-dim { color: #8891a5; }
 
 /* ローカルLLMによる式提案（v41・ADR-0046）。分析ノードの .analysis-assistant と同じ見た目で構わない
    （契約どおり）ので、その用途を兼ねる汎用の補助区画スタイルとしてここに定義する。 */
