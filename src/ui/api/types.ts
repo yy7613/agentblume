@@ -323,6 +323,39 @@ export type HarnessRunCheckpointDto =
 
 export interface AnalysisConfigProposalDto { readonly nodeId: string; readonly nodeType: string; readonly config: Readonly<Record<string, unknown>>; readonly rationale: readonly string[]; readonly warnings: readonly string[] }
 
+/**
+ * v41: 関数電卓ノード（calculate）の式提案。`ExpressionDiagnostic`（domain, calculate-diagnostics.ts）の
+ * UI向け写し。`code` / `category` は文言と違って改訂で変わらない前提（v40の設計）なので、
+ * UI側で個別に出し分けたくなったら code / category で判定する。
+ */
+export interface ExpressionDiagnosticDto {
+  readonly severity: 'error' | 'warning';
+  readonly code: string;
+  readonly category: string;
+  readonly message: string;
+  readonly position?: number;
+  readonly column?: string;
+  readonly suggestion?: string;
+}
+export interface CalculateExpressionProposalDto {
+  readonly nodeId: string;
+  readonly nodeType: string;
+  readonly config: { readonly outputColumn: string; readonly expression: string; readonly onError?: 'null' | 'fail'; readonly precision?: number };
+  readonly rationale: readonly string[];
+  readonly warnings: readonly string[];
+  readonly validation: { readonly references: readonly string[]; readonly diagnostics: readonly ExpressionDiagnosticDto[] };
+  readonly preview: {
+    readonly rows: number;
+    readonly evaluated: number;
+    readonly failed: number;
+    readonly failureCounts: Readonly<Record<string, number>>;
+    readonly sample: readonly { readonly input: Readonly<Record<string, unknown>>; readonly output: unknown }[];
+  };
+  /** 1回目の提案が判定・プレビュー検分に落ちて、修復要求を経て通った場合に true。 */
+  readonly repaired: boolean;
+  readonly promptTemplateVersion: string;
+}
+
 /** payloadや接続資格情報を含まない、Tool用データソースのカタログ表現。 */
 export type DataSourceDto = FileDataSourceDto | DatabaseDataSourceDto;
 export interface DataSourceBaseDto {
@@ -732,6 +765,8 @@ export interface RuntimeCapabilitiesDto {
   readonly toolCheckSuggestions?: { readonly enabled: boolean };
   /** AI判定ノード（ai-judge）を実行できるか（main スロットのモデル次第）。旧サーバーでは undefined = 使えない扱い。 */
   readonly aiJudge?: { readonly enabled: boolean };
+  /** 関数電卓ノード（calculate）の式提案（v41）を実行できるか。旧サーバーでは undefined = 使えない扱い。 */
+  readonly calculateAssistant?: { readonly enabled: boolean };
   readonly judge?: JudgeReadinessDto;
   /** 仕訳の LLM 抽出 / ヒアリングの可否（docs/20 §9）。旧サーバーでは undefined = どちらも使えないものとして扱う。 */
   readonly journal?: JournalCapabilitiesDto;

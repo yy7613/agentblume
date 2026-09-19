@@ -130,7 +130,7 @@ describe('draft tool routes', () => {
       const response = await server.inject({ method: 'GET', url: '/runtime/capabilities' });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({
-        analysisAssistant: { enabled: false }, toolCheckSuggestions: { enabled: false }, aiJudge: { enabled: false }, judge: { configured: true, provider: 'scripted-judge', model: 'scripted-judge' },
+        analysisAssistant: { enabled: false }, calculateAssistant: { enabled: false }, toolCheckSuggestions: { enabled: false }, aiJudge: { enabled: false }, judge: { configured: true, provider: 'scripted-judge', model: 'scripted-judge' },
         journal: { extraction: { enabled: false, vision: false }, hearing: { enabled: false } },
         expense: { extraction: { enabled: false, vision: false }, detailExtraction: { enabled: false }, policyHearing: { enabled: false } },
         receivables: { invoiceDraft: { enabled: false, vision: false } },
@@ -165,6 +165,70 @@ describe('draft tool routes', () => {
       } finally {
         await switching.close();
       }
+    });
+  });
+
+  describe('POST /tool-drafts/suggest-calculate-expression', () => {
+    const SCOPE = { tenantId: 't', workspaceId: 'w' };
+    const TOKEN = 'r'.repeat(40);
+    const calcGraph = {
+      nodes: [
+        { id: 'source', type: 'json-source', config: { rows: [{ price: 100, quantity: 2 }] } },
+        { id: 'calc', type: 'calculate', config: { outputColumn: 'total', expression: '[price]' } },
+      ],
+      edges: [{ from: 'source', to: 'calc' }],
+    };
+    const body = { graph: calcGraph, nodeId: 'calc', intent: '単価×数量' };
+    /** 提案だけを返すフェイク（この経路が返す形を固定する。モデルの検分は応用層のテストで見る）。 */
+    const stub = (proposal: unknown): App['suggestCalculateExpression'] => ({
+      available: async () => true,
+      execute: async () => proposal,
+    } as unknown as App['suggestCalculateExpression']);
+
+    it('正常: 200 で検分済みの提案を返す（式・出力列・プレビュー要約つき）', async () => {
+      const stubbed = buildServer({ ...app, suggestCalculateExpression: stub({
+        nodeId: 'calc', nodeType: 'calculate', config: { outputColumn: 'total', expression: '[price] * [quantity]' },
+        rationale: ['単価と数量の積。'], warnings: [], validation: { references: ['price', 'quantity'], diagnostics: [] },
+        preview: { rows: 1, evaluated: 1, failed: 0, failureCounts: {}, sample: [] }, repaired: false, promptTemplateVersion: 'calculate-expression/v1',
+      }) });
+      try {
+        const response = await stubbed.inject({ method: 'POST', url: '/tool-drafts/suggest-calculate-expression', payload: body });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().proposal.config.expression).toBe('[price] * [quantity]');
+        expect(response.json().proposal).toMatchObject({ repaired: false, preview: { evaluated: 1 } });
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it('異常: intent が空なら 400 BAD_REQUEST', async () => {
+      const response = await server.inject({ method: 'POST', url: '/tool-drafts/suggest-calculate-expression', payload: { ...body, intent: '' } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe('BAD_REQUEST');
+    });
+
+    it('異常: 無効（モデル未設定）なら 502 MODEL_PROVIDER（既存の error-mapping に乗る）', async () => {
+      const response = await server.inject({ method: 'POST', url: '/tool-drafts/suggest-calculate-expression', payload: body });
+      expect(response.statusCode).toBe(502);
+      expect(response.json().error).toMatchObject({ code: 'MODEL_PROVIDER', message: expect.stringContaining('not configured') });
+    });
+
+    it('異常: tool:edit を持たない viewer は 403（認可表は edit / tool を割り当てている）', async () => {
+      const rolesAuth = (roles: readonly AuthorizationRole[]): AuthenticationPort => ({
+        mode: 'token', required: true,
+        authenticate: async (request) => request.header('authorization') === `Bearer ${TOKEN}`
+          ? authenticated({ subject: 'rita', ...SCOPE, roles })
+          : rejected('missing-credentials'),
+      });
+      const viewer = buildServer(app, { authentication: rolesAuth(['viewer']), authorization: new RoleMatrixAuthorization() });
+      try {
+        const forbidden = await viewer.inject({ method: 'POST', url: '/tool-drafts/suggest-calculate-expression', headers: { authorization: `Bearer ${TOKEN}` }, payload: body });
+        expect(forbidden.statusCode).toBe(403);
+        expect(forbidden.json().error).toEqual({ code: 'FORBIDDEN', message: "this operation requires the 'tool:edit' permission" });
+      } finally {
+        await viewer.close();
+      }
+      expect(explicitRouteAuthorization('POST', '/tool-drafts/suggest-calculate-expression')).toMatchObject({ action: 'edit', kind: 'tool' });
     });
   });
 

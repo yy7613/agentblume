@@ -30,6 +30,7 @@ import { DiagnoseToolUseCase } from '../application/tool/diagnose-tool';
 import { DraftToolUseCase } from '../application/tool/draft-tool';
 import { ResolveAiJudgmentsUseCase } from '../application/tool/resolve-ai-judgments';
 import { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
+import { SuggestCalculateExpressionUseCase } from '../application/tool/suggest-calculate-expression';
 import { PreviewToolUseCase } from '../application/tool/preview-tool';
 import { DeleteToolUseCase, GetToolUseCase, ListToolVersionsUseCase, ListToolsUseCase } from '../application/tool/query-tool';
 import { SaveToolUseCase } from '../application/tool/save-tool';
@@ -454,6 +455,7 @@ export interface App extends JournalAppFeature, ExpenseAppFeature, ReceivablesAp
   /** `ai-judge` ノードの判定解決（実行経路が共有する 1 インスタンス。キャッシュも共有される）。 */
   readonly resolveAiJudgments: ResolveAiJudgmentsUseCase;
   readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
+  readonly suggestCalculateExpression: SuggestCalculateExpressionUseCase;
   /** judge スロットの設定状態（`GET /runtime/capabilities` と実験起票のガードが同じ判定を使う）。 */
   readonly judgeReadiness: () => Promise<JudgeReadiness>;
   readonly saveTool: SaveToolUseCase;
@@ -1014,6 +1016,8 @@ export function createApp(options?: AppOptions): App {
     draftTool: new DraftToolUseCase(engine, resolveDataSources, resolveAiJudgments),
     resolveAiJudgments,
     suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, assistantEnabled),
+    // 式の提案も分析アシスタントと同じ有効判定・同じモデルを使う（別スロットを増やさない）。
+    suggestCalculateExpression: new SuggestCalculateExpressionUseCase(engine, modelProvider, assistantEnabled),
     judgeReadiness,
     // ツール検証のケース提案は分析アシスタントと同じ有効判定・同じモデルを使う（別スロットを増やさない）。
     suggestToolCheckCases: new SuggestToolCheckCasesUseCase(repo, engine, modelProvider, assistantEnabled, resolveDataSources, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot(), resolveAiJudgments),

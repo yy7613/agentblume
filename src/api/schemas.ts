@@ -323,6 +323,8 @@ export const createAgentSessionBodySchema = z.object({
 export const analysisSuggestionBodySchema = z.object({
   scope: tenantScopeSchema.optional(), graph: graphSchema, nodeId: z.string().min(1), intent: z.string().min(1).max(2_000),
 });
+/** ローカルLLMに関数電卓nodeの式だけを依頼する（形は分析補助と同じ。経路ごとに変えられるよう別名にする）。 */
+export const calculateSuggestionBodySchema = analysisSuggestionBodySchema;
 export const closeAgentSessionBodySchema = z.object({ scope: tenantScopeSchema });
 export const sessionScopeQuerySchema = tenantScopeSchema;
 export const sessionArtifactQuerySchema = tenantScopeSchema.extend({ limit: z.coerce.number().int().min(1).max(100).optional(), offset: z.coerce.number().int().min(0).max(1_000_000).optional(), section: z.enum(['nodes', 'edges']).optional() });

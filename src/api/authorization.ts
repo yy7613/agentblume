@@ -123,6 +123,7 @@ const CORE_ROUTE_RULES: readonly RouteRule[] = [
   // 診断はグラフの dry-run（データソース読み取り込み）を含むため、preview と同じ execute を要求する。
   rule('POST', '/tool-drafts/diagnose', 'execute', 'tool'),
   rule('POST', '/tool-drafts/suggest-analysis-config', 'edit', 'tool'),
+  rule('POST', '/tool-drafts/suggest-calculate-expression', 'edit', 'tool'),
   rule('GET', '/runtime/capabilities', 'read', 'workspace'),
 
   // --- tool checks（保存済みToolの単体検証。実行はデータソース読み取りを伴うので preview と同じ execute） ---

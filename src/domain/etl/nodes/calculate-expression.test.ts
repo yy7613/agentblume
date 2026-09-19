@@ -562,3 +562,32 @@ describe('calculate-expression: 文言と位置の固定', () => {
     }
   });
 });
+
+describe('calculate-expression: 正典の signature / description', () => {
+  it('正常: 全関数に空でない signature と description がある', () => {
+    // 名前を一緒に並べるのは、落ちたときにどの関数か分かるようにするため。
+    for (const fn of CALCULATE_FUNCTIONS) {
+      expect([fn.name, fn.signature.trim() !== '', fn.description.trim() !== '']).toEqual([fn.name, true, true]);
+    }
+  });
+
+  it('正常: signature は `name(` で始まる（名前の写し間違いを止める）', () => {
+    for (const fn of CALCULATE_FUNCTIONS) {
+      expect([fn.name, fn.signature.startsWith(`${fn.name}(`)]).toEqual([fn.name, true]);
+    }
+  });
+
+  it('境界: 可変長（max が undefined）の関数の signature は ... を含む', () => {
+    const variadic = CALCULATE_FUNCTIONS.filter((fn) => fn.arity.max === undefined);
+    expect(variadic.map((fn) => fn.name)).toEqual(['min', 'max']);
+    for (const fn of variadic) expect(fn.signature).toContain('...');
+  });
+
+  it('異常: 引数 2 個固定の関数の signature はカンマをちょうど 1 つ含む（引数数と説明の食い違いを止める）', () => {
+    const fixedTwo = CALCULATE_FUNCTIONS.filter((fn) => fn.arity.min === 2 && fn.arity.max === 2);
+    expect(fixedTwo.map((fn) => fn.name)).toEqual(['pow', 'mod', 'hypot', 'log', 'atan2']);
+    for (const fn of fixedTwo) {
+      expect(`${fn.name}: ${fn.signature.split(',').length - 1}`).toBe(`${fn.name}: 1`);
+    }
+  });
+});

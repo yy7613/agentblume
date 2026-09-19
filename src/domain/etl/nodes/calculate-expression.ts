@@ -24,6 +24,16 @@ export interface CalculateFunction {
   readonly group: CalculateFunctionGroup;
   /** 引数の数。可変長は max を undefined にする。 */
   readonly arity: { readonly min: number; readonly max: number | undefined };
+  /**
+   * LLM 向けの呼び方（英語・小文字）。例 `round(x, digits?)` / `min(a, b, ...)`。
+   * プロンプトの関数一覧はここから機械的に組む（手書きの一覧を別に持つと関数を足したとき置き去りになる）。
+   */
+  readonly signature: string;
+  /**
+   * LLM 向けの一文説明（英語）。単位・定義域・端の扱いを書く。
+   * 引数の順が入れ替わっても値が出てしまうもの（`log` / `atan2`）は、順そのものを言葉で書く。
+   */
+  readonly description: string;
 }
 
 /**
@@ -32,39 +42,39 @@ export interface CalculateFunction {
  */
 export const CALCULATE_FUNCTIONS: readonly CalculateFunction[] = [
   // basic
-  { name: 'abs', group: 'basic', arity: { min: 1, max: 1 } },
-  { name: 'sign', group: 'basic', arity: { min: 1, max: 1 } },
-  { name: 'sqrt', group: 'basic', arity: { min: 1, max: 1 } },
-  { name: 'cbrt', group: 'basic', arity: { min: 1, max: 1 } },
-  { name: 'pow', group: 'basic', arity: { min: 2, max: 2 } },
-  { name: 'mod', group: 'basic', arity: { min: 2, max: 2 } },
-  { name: 'min', group: 'basic', arity: { min: 1, max: undefined } },
-  { name: 'max', group: 'basic', arity: { min: 1, max: undefined } },
-  { name: 'hypot', group: 'basic', arity: { min: 2, max: 2 } },
+  { name: 'abs', group: 'basic', arity: { min: 1, max: 1 }, signature: 'abs(x)', description: 'Absolute value of x.' },
+  { name: 'sign', group: 'basic', arity: { min: 1, max: 1 }, signature: 'sign(x)', description: 'Sign of x: -1 when negative, 0 when zero, 1 when positive.' },
+  { name: 'sqrt', group: 'basic', arity: { min: 1, max: 1 }, signature: 'sqrt(x)', description: 'Square root; x must be >= 0, otherwise the row yields null.' },
+  { name: 'cbrt', group: 'basic', arity: { min: 1, max: 1 }, signature: 'cbrt(x)', description: 'Cube root; negative x is allowed.' },
+  { name: 'pow', group: 'basic', arity: { min: 2, max: 2 }, signature: 'pow(base, exponent)', description: 'base raised to exponent; the same as base ^ exponent.' },
+  { name: 'mod', group: 'basic', arity: { min: 2, max: 2 }, signature: 'mod(a, b)', description: 'Remainder of a divided by b; the sign follows a, so mod(-7, 3) is -1. b must not be 0.' },
+  { name: 'min', group: 'basic', arity: { min: 1, max: undefined }, signature: 'min(a, b, ...)', description: 'Smallest of the given values; takes one or more arguments.' },
+  { name: 'max', group: 'basic', arity: { min: 1, max: undefined }, signature: 'max(a, b, ...)', description: 'Largest of the given values; takes one or more arguments.' },
+  { name: 'hypot', group: 'basic', arity: { min: 2, max: 2 }, signature: 'hypot(a, b)', description: 'Square root of a*a + b*b; takes exactly two arguments.' },
   // rounding
-  { name: 'round', group: 'rounding', arity: { min: 1, max: 2 } },
-  { name: 'floor', group: 'rounding', arity: { min: 1, max: 1 } },
-  { name: 'ceil', group: 'rounding', arity: { min: 1, max: 1 } },
-  { name: 'trunc', group: 'rounding', arity: { min: 1, max: 1 } },
+  { name: 'round', group: 'rounding', arity: { min: 1, max: 2 }, signature: 'round(x, digits?)', description: 'Rounds x to digits decimal places (default 0), half away from zero, so round(-2.5) is -3. digits must be an integer from 0 to 15.' },
+  { name: 'floor', group: 'rounding', arity: { min: 1, max: 1 }, signature: 'floor(x)', description: 'Largest integer that is <= x.' },
+  { name: 'ceil', group: 'rounding', arity: { min: 1, max: 1 }, signature: 'ceil(x)', description: 'Smallest integer that is >= x.' },
+  { name: 'trunc', group: 'rounding', arity: { min: 1, max: 1 }, signature: 'trunc(x)', description: 'Drops the fractional part of x, rounding toward zero.' },
   // exponential
-  { name: 'exp', group: 'exponential', arity: { min: 1, max: 1 } },
-  { name: 'ln', group: 'exponential', arity: { min: 1, max: 1 } },
-  { name: 'log10', group: 'exponential', arity: { min: 1, max: 1 } },
-  { name: 'log2', group: 'exponential', arity: { min: 1, max: 1 } },
-  { name: 'log', group: 'exponential', arity: { min: 2, max: 2 } },
+  { name: 'exp', group: 'exponential', arity: { min: 1, max: 1 }, signature: 'exp(x)', description: 'e raised to x.' },
+  { name: 'ln', group: 'exponential', arity: { min: 1, max: 1 }, signature: 'ln(x)', description: 'Natural logarithm (base e); x must be > 0.' },
+  { name: 'log10', group: 'exponential', arity: { min: 1, max: 1 }, signature: 'log10(x)', description: 'Base-10 logarithm; x must be > 0.' },
+  { name: 'log2', group: 'exponential', arity: { min: 1, max: 1 }, signature: 'log2(x)', description: 'Base-2 logarithm; x must be > 0.' },
+  { name: 'log', group: 'exponential', arity: { min: 2, max: 2 }, signature: 'log(x, base)', description: 'Logarithm of x in the given base; the value comes first and the base second. Both must be > 0 and base must not be 1.' },
   // trigonometric（ラジアン）
-  { name: 'sin', group: 'trigonometric', arity: { min: 1, max: 1 } },
-  { name: 'cos', group: 'trigonometric', arity: { min: 1, max: 1 } },
-  { name: 'tan', group: 'trigonometric', arity: { min: 1, max: 1 } },
-  { name: 'asin', group: 'trigonometric', arity: { min: 1, max: 1 } },
-  { name: 'acos', group: 'trigonometric', arity: { min: 1, max: 1 } },
-  { name: 'atan', group: 'trigonometric', arity: { min: 1, max: 1 } },
-  { name: 'atan2', group: 'trigonometric', arity: { min: 2, max: 2 } },
-  { name: 'sinh', group: 'trigonometric', arity: { min: 1, max: 1 } },
-  { name: 'cosh', group: 'trigonometric', arity: { min: 1, max: 1 } },
-  { name: 'tanh', group: 'trigonometric', arity: { min: 1, max: 1 } },
-  { name: 'deg', group: 'trigonometric', arity: { min: 1, max: 1 } },
-  { name: 'rad', group: 'trigonometric', arity: { min: 1, max: 1 } },
+  { name: 'sin', group: 'trigonometric', arity: { min: 1, max: 1 }, signature: 'sin(x)', description: 'Sine of x; x is in radians, not degrees (use rad(d) to convert degrees).' },
+  { name: 'cos', group: 'trigonometric', arity: { min: 1, max: 1 }, signature: 'cos(x)', description: 'Cosine of x; x is in radians, not degrees.' },
+  { name: 'tan', group: 'trigonometric', arity: { min: 1, max: 1 }, signature: 'tan(x)', description: 'Tangent of x; x is in radians, not degrees.' },
+  { name: 'asin', group: 'trigonometric', arity: { min: 1, max: 1 }, signature: 'asin(x)', description: 'Arc sine of x in radians; x must be within -1 to 1.' },
+  { name: 'acos', group: 'trigonometric', arity: { min: 1, max: 1 }, signature: 'acos(x)', description: 'Arc cosine of x in radians; x must be within -1 to 1.' },
+  { name: 'atan', group: 'trigonometric', arity: { min: 1, max: 1 }, signature: 'atan(x)', description: 'Arc tangent of x in radians; the result is within -pi/2 to pi/2.' },
+  { name: 'atan2', group: 'trigonometric', arity: { min: 2, max: 2 }, signature: 'atan2(y, x)', description: 'Angle in radians of the point (x, y); the y coordinate comes first and the x coordinate second.' },
+  { name: 'sinh', group: 'trigonometric', arity: { min: 1, max: 1 }, signature: 'sinh(x)', description: 'Hyperbolic sine of x.' },
+  { name: 'cosh', group: 'trigonometric', arity: { min: 1, max: 1 }, signature: 'cosh(x)', description: 'Hyperbolic cosine of x.' },
+  { name: 'tanh', group: 'trigonometric', arity: { min: 1, max: 1 }, signature: 'tanh(x)', description: 'Hyperbolic tangent of x; the result is within -1 to 1.' },
+  { name: 'deg', group: 'trigonometric', arity: { min: 1, max: 1 }, signature: 'deg(x)', description: 'Converts x from radians to degrees.' },
+  { name: 'rad', group: 'trigonometric', arity: { min: 1, max: 1 }, signature: 'rad(x)', description: 'Converts x from degrees to radians.' },
 ];
 
 /** 定数。式中では大文字小文字を区別しない。 */

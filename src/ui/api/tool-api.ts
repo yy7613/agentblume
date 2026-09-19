@@ -88,6 +88,7 @@ import type {
   SearchProviderDto,
   WebSearchFetchDto,
   AnalysisConfigProposalDto,
+  CalculateExpressionProposalDto,
   SaveHarnessDto,
   SerializedAgentHarnessDto,
   HarnessSummaryDto,
@@ -260,6 +261,16 @@ export class ToolApiClient {
 
   async suggestAnalysisConfig(input: { readonly graph: ToolGraphDto; readonly nodeId: string; readonly intent: string; readonly scope?: TenantScopeDto }): Promise<AnalysisConfigProposalDto> {
     return (await this.request<{ proposal: AnalysisConfigProposalDto }>('/tool-drafts/suggest-analysis-config', { method: 'POST', body: JSON.stringify(input) })).proposal;
+  }
+
+  /** 関数電卓ノード（calculate）の式提案を実行できるか。項目を返さない旧サーバーでは「使えない」として扱う（v41）。 */
+  async calculateAssistantCapability(): Promise<boolean> {
+    return (await this.runtimeCapabilities()).calculateAssistant?.enabled ?? false;
+  }
+
+  /** 上流の列と利用者の指示文から、検証済みの式を1本提案させる（v41）。適用はUIの明示操作。 */
+  async suggestCalculateExpression(input: { readonly graph: ToolGraphDto; readonly nodeId: string; readonly intent: string; readonly scope?: TenantScopeDto }): Promise<CalculateExpressionProposalDto> {
+    return (await this.request<{ proposal: CalculateExpressionProposalDto }>('/tool-drafts/suggest-calculate-expression', { method: 'POST', body: JSON.stringify(input) })).proposal;
   }
 
   async saveTool(input: SaveToolDto): Promise<SerializedToolDto> {

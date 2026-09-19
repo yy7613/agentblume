@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AnalysisConfigProposalDto, ColumnDto, DataSourceDto, DataType, SchemaDto, SearchProviderDto, TenantScopeDto, ToolGraphDto } from '../api/types';
+import type { AnalysisConfigProposalDto, CalculateExpressionProposalDto, ColumnDto, DataSourceDto, DataType, SchemaDto, SearchProviderDto, TenantScopeDto, ToolGraphDto } from '../api/types';
 import { CALCULATOR_CONSTANT_KEYS, CALCULATOR_FUNCTION_KEYS, CALCULATOR_GROUP_LABELS, CALCULATOR_OPERATOR_KEYS, displayExpression, insertAt, parenthesisBalance, type CalculatorFunctionGroup } from './calculator-keys';
 import { catalogItem, toInputOf, type ToolNodeType } from './node-catalog';
 import { useToolBuilderStore } from './store';
@@ -46,6 +46,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
   const [searchProviders, setSearchProviders] = useState<readonly SearchProviderDto[]>([]);
   const [analysisAssistantAvailable, setAnalysisAssistantAvailable] = useState(false);
   const [aiJudgeAvailable, setAiJudgeAvailable] = useState(false);
+  const [calculateAssistantAvailable, setCalculateAssistantAvailable] = useState(false);
   const builderNodes = useToolBuilderStore((state) => state.nodes);
   const builderEdges = useToolBuilderStore((state) => state.edges);
   const graph = useMemo<ToolGraphDto>(() => ({
@@ -67,6 +68,8 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
     void client.analysisAssistantCapability().then(setAnalysisAssistantAvailable).catch(() => setAnalysisAssistantAvailable(false));
     // AI判定の可否は新しいサーバー（と新しいクライアント）だけが答えられる。無ければ「使えない」として案内を出す。
     if (typeof client.aiJudgeCapability === 'function') void client.aiJudgeCapability().then(setAiJudgeAvailable).catch(() => setAiJudgeAvailable(false));
+    // 式提案（v41）も同様に新しいクライアントだけが答えられる。
+    if (typeof client.calculateAssistantCapability === 'function') void client.calculateAssistantCapability().then(setCalculateAssistantAvailable).catch(() => setCalculateAssistantAvailable(false));
   }, [client]);
 
   if (node === undefined) return <aside className="inspector empty"><h2>{text('Inspector', 'インスペクター')}</h2><p>{text('Select a node.', 'ノードを選択してください。')}</p></aside>;
@@ -122,7 +125,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
             {rightColumns.length > 0 && <div className="column-hints"><strong>{text('Right input columns', '右入力の列')}</strong>{rightColumns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
           </>
         : columns.length > 0 && <div className="column-hints"><strong>{text('Upstream columns', '上流の列')}</strong>{columns.map((column) => <code key={column.name}>{column.name}: {column.type}</code>)}</div>}
-      {dialogNodeId === node.id && dialogDraft !== undefined && <NodeConfigDialog type={type} initial={dialogDraft} nodeId={node.id} graph={graph} analysisAssistantAvailable={analysisAssistantAvailable} aiJudgeAvailable={aiJudgeAvailable} columns={columns} leftColumns={leftColumns} rightColumns={rightColumns} dataSources={dataSources} searchProviders={searchProviders} client={client} scope={scope} onCancel={closeDialog} onApply={(next) => { update(node.id, next); closeDialog(); }} />}
+      {dialogNodeId === node.id && dialogDraft !== undefined && <NodeConfigDialog type={type} initial={dialogDraft} nodeId={node.id} graph={graph} analysisAssistantAvailable={analysisAssistantAvailable} aiJudgeAvailable={aiJudgeAvailable} calculateAssistantAvailable={calculateAssistantAvailable} columns={columns} leftColumns={leftColumns} rightColumns={rightColumns} dataSources={dataSources} searchProviders={searchProviders} client={client} scope={scope} onCancel={closeDialog} onApply={(next) => { update(node.id, next); closeDialog(); }} />}
     </aside>
   );
 }
@@ -304,12 +307,15 @@ function AiJudgeFields({ config, setConfig, columns, available }: { readonly con
   </>;
 }
 
-function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvailable, aiJudgeAvailable, columns, leftColumns, rightColumns, dataSources, searchProviders, client, scope, onCancel, onApply }: { readonly type: ToolNodeType; readonly initial: Readonly<Record<string, unknown>>; readonly nodeId: string; readonly graph: ToolGraphDto; readonly analysisAssistantAvailable: boolean; readonly aiJudgeAvailable: boolean; readonly columns: readonly ColumnDto[]; readonly leftColumns: readonly ColumnDto[]; readonly rightColumns: readonly ColumnDto[]; readonly dataSources: readonly DataSourceDto[]; readonly searchProviders: readonly SearchProviderDto[]; readonly client?: ToolApiClient; readonly scope: TenantScopeDto; readonly onCancel: () => void; readonly onApply: (config: Readonly<Record<string, unknown>>) => void }) {
+function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvailable, aiJudgeAvailable, calculateAssistantAvailable, columns, leftColumns, rightColumns, dataSources, searchProviders, client, scope, onCancel, onApply }: { readonly type: ToolNodeType; readonly initial: Readonly<Record<string, unknown>>; readonly nodeId: string; readonly graph: ToolGraphDto; readonly analysisAssistantAvailable: boolean; readonly aiJudgeAvailable: boolean; readonly calculateAssistantAvailable: boolean; readonly columns: readonly ColumnDto[]; readonly leftColumns: readonly ColumnDto[]; readonly rightColumns: readonly ColumnDto[]; readonly dataSources: readonly DataSourceDto[]; readonly searchProviders: readonly SearchProviderDto[]; readonly client?: ToolApiClient; readonly scope: TenantScopeDto; readonly onCancel: () => void; readonly onApply: (config: Readonly<Record<string, unknown>>) => void }) {
   const [draft, setDraft] = useState<Readonly<Record<string, unknown>>>(initial);
   const [intent, setIntent] = useState(''); const [proposal, setProposal] = useState<AnalysisConfigProposalDto>(); const [assistantError, setAssistantError] = useState<string>(); const [suggesting, setSuggesting] = useState(false);
+  // 式提案（v41）は分析設定補助とは別の草案・状態を持つ（ダイアログ内で共存しうるため名前を分ける）。
+  const [calcIntent, setCalcIntent] = useState(''); const [calcProposal, setCalcProposal] = useState<CalculateExpressionProposalDto>(); const [calcAssistantError, setCalcAssistantError] = useState<string>(); const [calcSuggesting, setCalcSuggesting] = useState(false);
   const { text } = useI18n();
   const patch = (next: Record<string, unknown>) => setDraft((current) => ({ ...current, ...next }));
   const suggest = async () => { if (client === undefined || intent.trim() === '') return; setSuggesting(true); setAssistantError(undefined); try { const result = await client.suggestAnalysisConfig({ graph: { ...graph, nodes: graph.nodes.map((item) => item.id === nodeId ? { ...item, config: draft } : item) }, nodeId, intent, scope }); setProposal(result); } catch (error) { setAssistantError(error instanceof Error ? error.message : text('Suggestion failed.', '設定案の取得に失敗しました。')); } finally { setSuggesting(false); } };
+  const suggestCalculateExpression = async () => { if (client === undefined || calcIntent.trim() === '') return; setCalcSuggesting(true); setCalcAssistantError(undefined); try { const result = await client.suggestCalculateExpression({ graph: { ...graph, nodes: graph.nodes.map((item) => item.id === nodeId ? { ...item, config: draft } : item) }, nodeId, intent: calcIntent, scope }); setCalcProposal(result); } catch (error) { setCalcAssistantError(error instanceof Error ? error.message : text('Suggestion failed.', '設定案の取得に失敗しました。')); } finally { setCalcSuggesting(false); } };
   const dialogRef = useModalBehavior<HTMLElement>({ onClose: onCancel });
   return <div className="node-config-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
     <section ref={dialogRef} tabIndex={-1} className="node-config-dialog" role="dialog" aria-modal="true" aria-label={text('Node configuration', 'ノード設定')}>
@@ -321,6 +327,24 @@ function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvail
         {type === 'chart-output' && <ChartOutputFields config={draft} setConfig={patch} columns={columns} />}
         {type === 'rename' && <RenameRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'cast' && <CastRuleEditor config={draft} setConfig={patch} columns={columns} />}
+        {type === 'calculate' && calculateAssistantAvailable && <section className="calc-assistant">
+          <h3>{text('Build the expression with the local LLM', 'ローカルLLMで式を作る')}</h3>
+          <label>{text('What to calculate', '計算したいこと')}<textarea value={calcIntent} onChange={(event) => setCalcIntent(event.target.value)} placeholder={text('e.g. Tax-included amount from unit price × quantity, rounded to 0 decimals', '例: 単価×数量の税込金額を小数 0 桁で')} rows={3} /></label>
+          <button type="button" className="secondary" disabled={calcSuggesting || calcIntent.trim() === ''} onClick={() => void suggestCalculateExpression()}>{calcSuggesting ? text('Suggesting…', '提案中…') : text('Suggest expression', '式を提案')}</button>
+          {calcAssistantError !== undefined && <>
+            <small className="field-error">{calcAssistantError}</small>
+            <small className="field-error">{text('Make the instruction more specific (which columns to use, rounding, units) and try again.', '指示を具体的に（使う列名・丸め・単位）して再実行してください。')}</small>
+          </>}
+          {calcProposal !== undefined && <div className="assistant-proposal">
+            <p><code>{calcProposal.config.expression}</code></p>
+            {calcProposal.rationale.map((item, index) => <small key={`r-${index}`}>• {item}</small>)}
+            {calcProposal.warnings.map((item, index) => <small className="field-error" key={`w-${index}`}>• {item}</small>)}
+            <p>{text(`${calcProposal.preview.evaluated} of ${calcProposal.preview.rows} sample rows calculated.`, `標本 ${calcProposal.preview.rows} 行のうち ${calcProposal.preview.evaluated} 行が計算できました。`)}</p>
+            {calcProposal.validation.diagnostics.filter((diagnostic) => diagnostic.severity === 'warning').map((diagnostic, index) => <small className="field-error" key={`d-${index}`}>{diagnostic.message}</small>)}
+            {calcProposal.repaired && <small>{text('The first proposal was repaired once.', '最初の提案を 1 回直しました。')}</small>}
+            <button type="button" onClick={() => { patch({ expression: calcProposal.config.expression, outputColumn: calcProposal.config.outputColumn }); setCalcProposal(undefined); }}>{text('Apply expression to this dialog', 'この式をダイアログへ適用')}</button>
+          </div>}
+        </section>}
         {type === 'calculate' && <CalculateFields config={draft} setConfig={patch} columns={columns} />}
         {type === 'sort' && <SortRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'replace' && <ReplaceRuleEditor config={draft} setConfig={patch} columns={columns} />}

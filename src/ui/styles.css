@@ -1119,3 +1119,11 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 .calc-columns button:hover { background: #e1e6ff; }
 /* number以外の列（実行時に数値へ寄せる/nullになる）は控えめに見せ、titleで実行時の扱いを伝える。 */
 .calc-columns button.calc-column-dim { background: #f4f5f9; color: #8891a5; border-style: dashed; }
+
+/* ローカルLLMによる式提案（v41・ADR-0046）。分析ノードの .analysis-assistant と同じ見た目で構わない
+   （契約どおり）ので、その用途を兼ねる汎用の補助区画スタイルとしてここに定義する。 */
+.node-config-dialog-body > .analysis-assistant,
+.node-config-dialog-body > .calc-assistant { grid-column: 1 / -1; display: grid; gap: 8px; padding: 12px 14px; border: 1px solid #dce1eb; border-radius: 10px; background: #f7f8fc; }
+.analysis-assistant h3, .calc-assistant h3 { margin: 0; font-size: 14px; }
+.assistant-proposal { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid #cfd6e4; border-radius: 8px; background: #fff; }
+.assistant-proposal code { word-break: break-all; }
