@@ -352,6 +352,27 @@ Stage 1 の Planner が既に `FactoryPlan.personas` / `FactoryPlan.scenarios` �
 
 > **期待Tool名は `publishName` ではない。** `RunScenarioUseCase` が `metrics.expectedToolHit.called` に入れるのはトレースの `tool-call` 名、すなわち `toolToModelDefinition` がモデルへ公開する関数名である。`publishName` を期待名に入れると、Factory生成Toolは必ず `agentTool.name` を持つため `toolHitRate` が構造的に常に0になる（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。再利用した既存Toolも同じ導出（既存ツールカタログの `toolName`）で入れる。
 
+#### 検証の前提（scenario grounding。決定的合成）
+
+擬似ユーザーに渡るのは人物設定と目標の 1 行だけで、**相手が何のデータを持つエージェントなのか**は誰も教えていなかった。実測（12B）では、擬似ユーザーが「総支給額 320,000円・165時間で時間当たり給与を算出して」と自分で数値を作って渡したり、データに無い「製造業の従業者数」を尋ねたり、正しい回答を自作の試算と比べて誤りだと言い張ったりして、正しく動いているエージェントが `below-targets` になった（[ADR-0050](./adr/0050-scenario-grounding.md) / [implementation/v44](../implementation/v44-scenario-grounding.md)）。
+
+Stage 5 は Scenario を保存するとき、`context` を **計画の context + 「検証の前提」ブロック**にする（`composeScenarioContext` / `describeScenarioGrounding`。LLM には書かせない）。
+
+| 前提ブロックの中身 | 出どころ |
+|---|---|
+| 自分のデータは持たない。数値を作って渡したり、その数値での計算を頼んだりしない | 固定文 |
+| アシスタントが持つデータ（1 ソース 1 行）: 名前・行数 / 値の列 / 期間の列と範囲・粒度別件数 / カテゴリの値の例 | そのシナリオの `expectedToolKeys` が指す Tool の `dataSourceId` + `additionalDataSourceIds` の Stage 0 プロファイル（解決できなければ Run の全プロファイル） |
+| 質問は上の期間とカテゴリの範囲内にする。データに無い指標は尋ねない（目標が明示的に求める場合を除く） | 固定文 |
+| データの値つきの回答を、自作の試算と比べて誤りだと主張しない | 固定文 |
+| 目標に書かれた内容にデータの値で答えが得られたら達成とする（`goalAchieved` / `endConversation` を true）。目標に無い追加の分析を求めて会話を延ばさない | 固定文（実測: 答えを得た後も要因分析や別の比較を求め続けて `max-turns` → `goalAchieved: false`） |
+
+- 見出しは `# Validation premises / 検証の前提 (factory-managed)`。既に見出しを含む context には二重に付けない（再開・再試行で冪等）。
+- カテゴリの例には、コードらしい列と、**値の最大長が 30 文字を超える列**（e-Stat の `注記` のような自由記述）を出さない。
+- 上限: ソース 3 件・値の列 6・カテゴリ 2 列 × 8 値。全体が 1,800 文字を超えたら上限を半分にして作り直す。
+- `Scenario.context` は擬似ユーザーの system prompt とアンケートの両方へ入る既存の項目で、Scenario 画面で読めて直せる。ドメインは変えていない。
+
+Planner 側には対になる 2 つを入れてある（Stage 1）: (1) `personas[].extraInstructions` は**ユーザーがどんな人か**だけを書く（エージェント向けの指示を書くと、擬似ユーザーがそれを自分の要求として繰り返す）。(2) シナリオの `goal` / `context` が**データの期間外の年**を名指ししていたら、既存の修復ラウンドで理由つきに 1 回だけ出し直させる（`describeScenarioGroundingViolations`。年度表記のずれを見て下限 −1 年までは許す）。2 回目にも残っていたら計画は受理する — 柔らかい違反で Run は落とさず、前提ブロックが実際の範囲を伝える。
+
 **Scenario集合はRun内で凍結する。** 以降のイテレーションでScenarioを書き換えない（回帰比較の成立条件）。新Agent版の再検証は `RunScenarioUseCase` の既存の対象上書き（`input.target`）で行うため、Scenario版の改訂は不要である。Analystがシナリオ自体の欠陥を検出した場合はFindingとしてレポートに残すのみとする。
 
 ### 既存Agentの強化モード（`input.baseAgent`）

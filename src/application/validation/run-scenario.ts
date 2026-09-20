@@ -87,6 +87,17 @@ class ScenarioStageError extends Error {
   }
 }
 
+/**
+ * 評点の向き（数が大きいほど高評価）を明示する一文。実測: 自由記述は「正確で明瞭」と好意的なのに
+ * scale へ 1〜2 を付ける擬似ユーザーがいた（1 を「1位」と読んでいた）。アンケートの指示文と、
+ * 検証落ちの再依頼文の両方へ同じ文言を添える（後者だけ抜けても同じ取り違えが再現するため）。
+ */
+function surveyDirectionNote(ja: boolean): string {
+  return ja
+    ? '評点は数が大きいほど高評価である（最小値 = 最も悪い、最大値 = 最も良い）。自由記述の内容と評点を一致させること。'
+    : 'Higher scores mean a better evaluation (the minimum value is the worst, the maximum value is the best). Keep your free-text answers consistent with your scores.';
+}
+
 /** 空の理由は記録側（createScenarioRun）で弾かれ、記録そのものを失う。必ず1文にする。 */
 function reason(text: string): string {
   return text.trim() === '' ? 'unknown failure' : text;
@@ -312,6 +323,7 @@ export class RunScenarioUseCase {
       ja
         ? '上記の会話を踏まえ、この人物として各設問へ回答する。指定されたJSONスキーマに従い全設問へ回答すること。'
         : 'Based on the conversation above, answer every question as this persona, following the given JSON schema.',
+      surveyDirectionNote(ja),
     ].join('\n');
     const request = {
       messages: [{ role: 'system', content } satisfies ModelMessage],
@@ -329,8 +341,8 @@ export class RunScenarioUseCase {
         {
           role: 'user',
           content: ja
-            ? `前回の回答は検証に通らなかった: ${parsedFirst.message}。指定のJSONスキーマ（範囲も含む）を満たすJSONだけを返し直すこと。`
-            : `Your previous answer failed validation: ${parsedFirst.message}. Return only JSON that satisfies the given schema, including the allowed ranges.`,
+            ? `前回の回答は検証に通らなかった: ${parsedFirst.message}。指定のJSONスキーマ（範囲も含む）を満たすJSONだけを返し直すこと。${surveyDirectionNote(ja)}`
+            : `Your previous answer failed validation: ${parsedFirst.message}. Return only JSON that satisfies the given schema, including the allowed ranges. ${surveyDirectionNote(ja)}`,
         },
       ];
       const second = await this.model.complete({ ...request, messages: repair }, signal);

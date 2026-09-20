@@ -245,7 +245,7 @@ export const JOIN_KEY_OVERLAP_RATIO = 0.5;
 const JOINABLE_TYPES: readonly string[] = ['string', 'number', 'date', 'unknown'];
 
 /** コードらしい列名（結合キーとして優先する）。 */
-const CODE_LIKE_COLUMN = /コード|code|id$|_id|番号/i;
+export const CODE_LIKE_COLUMN = /コード|code|id$|_id|番号/i;
 
 /** セル1つを結合キーの比較用に文字列化する（`join` ノードの `coerceKeys: 'string'` と同じ発想）。 */
 function encodeKeyValue(value: unknown): string | null {

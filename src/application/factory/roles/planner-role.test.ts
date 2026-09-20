@@ -443,3 +443,73 @@ describe('PlannerRole: 使えるツールテンプレートを材料に足す（
     expect(String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content)).not.toContain('toolTemplates');
   });
 });
+
+// ─── v44 / ADR-0050: 計画の接地検査（柔らかい違反） ───────────────────────────────────
+describe('PlannerRole: 計画の接地検査（データの期間外の年を名指しするシナリオは 1 回だけ出し直させる）', () => {
+  // ds-1 に「時点」列（2012-01-01〜2025-11-01）を持つプロファイル。eStat 実測（ADR-0047/0050）と同じ範囲。
+  const periodProfiles: readonly DataProfile[] = [{
+    ...profiles[0]!,
+    periodColumns: [{ column: '時点', granularities: { month: 167 }, minStart: '2012-01-01', maxStart: '2025-11-01', mixed: false }],
+  }];
+
+  function planJsonWithScenarioGoal(scenarioGoal: string): string {
+    return JSON.stringify({
+      agentBrief: { displayName: 'Sales Assistant', role: 'Answers sales questions using the sales data source.' },
+      tools: [{ key: 'lookup', displayName: 'Lookup Sales', purpose: 'Look up sales rows.', dataSourceId: 'ds-1', sideEffect: 'read-only' }],
+      skills: [{ key: 'summarize', displayName: 'Summarize', responsibility: 'Summarize sales trends.', activationCondition: 'user asks for a summary', toolKeys: ['lookup'] }],
+      personas: [{ key: 'accountant', archetype: 'novice', knowledgeLevel: 'low', patience: 'mid', tone: 'polite', verbosity: 'normal', language: 'ja' }],
+      scenarios: [{ key: 'scenario-1', goal: scenarioGoal, personaKey: 'accountant', expectedToolKeys: ['lookup'], maxUserTurns: 3 }],
+    });
+  }
+
+  it('正常: 1 回目に範囲外の年 → 違反文つきで 2 回目を呼び、2 回目の計画を返す', async () => {
+    const model = new ScriptedModelProvider();
+    const outOfRange = planJsonWithScenarioGoal('2030年の総支給額を教えてほしい');
+    const inRange = planJsonWithScenarioGoal('直近の総支給額を教えてほしい');
+    model.enqueue({ message: { role: 'assistant', content: outOfRange }, finishReason: 'stop' }, { message: { role: 'assistant', content: inRange }, finishReason: 'stop' });
+    const role = new PlannerRole(model);
+
+    const plan = await role.propose({ goal, profiles: periodProfiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
+
+    expect(plan.scenarios[0]?.goal).toBe('直近の総支給額を教えてほしい');
+    expect(model.requests).toHaveLength(2);
+    const retryMessage = String(model.requests[1]?.messages.at(-1)?.content);
+    expect(retryMessage).toContain("scenarios.0 ('scenario-1') mentions 2030");
+    expect(retryMessage).toContain('the data covers 2012–2025');
+  });
+
+  it('従来どおり: 違反が無ければモデル呼び出しは 1 回', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: planJsonWithScenarioGoal('直近の総支給額を教えてほしい') }, finishReason: 'stop' });
+    const role = new PlannerRole(model);
+
+    const plan = await role.propose({ goal, profiles: periodProfiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
+
+    expect(plan.scenarios[0]?.goal).toBe('直近の総支給額を教えてほしい');
+    expect(model.requests).toHaveLength(1);
+  });
+
+  it('境界: 2 回目にも範囲外の年が残っていても計画を受理する（Run を落とさない）', async () => {
+    const model = new ScriptedModelProvider();
+    const outOfRange = planJsonWithScenarioGoal('2030年の総支給額を教えてほしい');
+    model.enqueue({ message: { role: 'assistant', content: outOfRange }, finishReason: 'stop' }, { message: { role: 'assistant', content: outOfRange }, finishReason: 'stop' });
+    const role = new PlannerRole(model);
+
+    const plan = await role.propose({ goal, profiles: periodProfiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
+
+    expect(plan.scenarios[0]?.goal).toContain('2030');
+    expect(model.requests).toHaveLength(2);
+  });
+
+  it('正常: system プロンプトに接地検査に関わる2つの規則が入っている', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
+    const role = new PlannerRole(model);
+
+    await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
+
+    const systemMessage = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
+    expect(systemMessage).toContain('extraInstructions describes the USER only');
+    expect(systemMessage).toContain('goal must be answerable from the listed data');
+  });
+});

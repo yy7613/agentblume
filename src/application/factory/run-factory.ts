@@ -63,6 +63,7 @@ import { MAX_TOOL_CALLS } from '../agent/run-agent-preview';
 import { FACTORY_OWNER, GenerateAgentAssetsUseCase, makePublishName, type GenerateAgentAssetsResult } from './generate-agent-assets';
 import { aggregateIterationMetrics } from './metrics';
 import { ProfileDataSourcesUseCase, type DataProfile } from './profile-data-sources';
+import { composeScenarioContext, describeScenarioGrounding } from './scenario-grounding';
 import { buildExistingToolCatalog } from './tool-catalog';
 import { AnalystRole, EMPTY_PROPOSALS_FEEDBACK, type AnalystDataSourceSummary, type AnalystScenarioSummary, type AnalystToolCallSummary } from './roles/analyst-role';
 import { PlannerRole, type PlannerCurrentAgent } from './roles/planner-role';
@@ -409,6 +410,10 @@ export class RunFactoryUseCase {
     }
 
     // Scenario保存。target は生成Agent版、pseudoUser は対応する疑似ユーザーAgent版へSemVer固定（docs/16 §4 Stage 5）。
+    // `context` には Stage 0 のプロファイルから作った「検証の前提」を決定的に足す（v44 / ADR-0050）。
+    // 実測では、相手が何のデータを持つかを知らされていない擬似ユーザーが、自分で作った数値を渡して
+    // エージェントを電卓として使おうとし、正しく動いている構成が `below-targets` になっていた。
+    const scenarioLanguage = current.input.goal.language === 'en' ? 'en' : 'ja';
     const scenarioRefs: VersionRef[] = [];
     for (const scenarioPlan of plan.scenarios) {
       throwIfAborted(signal);
@@ -418,6 +423,11 @@ export class RunFactoryUseCase {
       const expectedTools = scenarioPlan.expectedToolKeys
         .map((key) => assets.toolKeyToToolName.get(key))
         .filter((publishName): publishName is string => publishName !== undefined);
+
+      const scenarioContext = composeScenarioContext(
+        scenarioPlan.context,
+        describeScenarioGrounding({ plan, scenario: scenarioPlan, profiles: context.profiles, language: scenarioLanguage }),
+      );
 
       const scenario = await this.saveScenario.execute({
         scope: current.scope,
@@ -429,7 +439,7 @@ export class RunFactoryUseCase {
         target: { agentId: assets.agentRef.internalId, version: SemVer.parse(assets.agentRef.version) },
         pseudoUser,
         goal: scenarioPlan.goal,
-        ...(scenarioPlan.context !== undefined ? { context: scenarioPlan.context } : {}),
+        ...(scenarioContext !== undefined ? { context: scenarioContext } : {}),
         maxUserTurns: scenarioPlan.maxUserTurns,
         ...(expectedTools.length > 0 ? { expectedTools } : {}),
         survey: DEFAULT_SURVEY,

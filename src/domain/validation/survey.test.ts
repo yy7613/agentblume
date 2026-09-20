@@ -16,6 +16,14 @@ describe('DEFAULT_SURVEY', () => {
     expect(DEFAULT_SURVEY[0]).toMatchObject({ id: 'q1', kind: 'boolean' });
     expect(() => normalizeSurveyQuestions(DEFAULT_SURVEY)).not.toThrow();
   });
+
+  it('正常: q4 は「手間が少ないほど高い点」であることが向きの説明として設問ごとに逆に読めない文面になっている', () => {
+    const q4 = DEFAULT_SURVEY.find((question) => question.id === 'q4');
+    expect(q4).toMatchObject({
+      textJa: '手間の少なさ（手間が少なかったほど高い点）',
+      textEn: 'Low effort required (the less effort it took, the higher the score)',
+    });
+  });
 });
 
 describe('normalizeSurveyQuestions', () => {
@@ -58,6 +66,22 @@ describe('buildSurveySchema', () => {
     // scale 以外には付けない。
     expect(schema.properties['achieved']).not.toHaveProperty('minimum');
     expect(schema.properties['impressions']).not.toHaveProperty('maximum');
+  });
+
+  it('正常: scale の説明文は既定の 1..5 でも min=lowest・max=highest を実値で明示する（実測: 向きが書かれておらず1を高評価と誤読された）', () => {
+    const schema = buildSurveySchema(questions);
+    expect(schema.properties['satisfaction']?.description).toBe('満足度 / Satisfaction (integer 1..5; 1 = lowest / 最低, 5 = highest / 最高)');
+  });
+
+  it('境界: min/max を変えた scale 設問でも実値が向きの説明へそのまま入る', () => {
+    const schema = buildSurveySchema([...questions, { id: 'effort', textJa: '手間', textEn: 'Effort', kind: 'scale', min: 0, max: 10 }]);
+    expect(schema.properties['effort']?.description).toBe('手間 / Effort (integer 0..10; 0 = lowest / 最低, 10 = highest / 最高)');
+  });
+
+  it('従来どおり: boolean・text の説明文は向きの注記を付けず textJa / textEn のみ', () => {
+    const schema = buildSurveySchema(questions);
+    expect(schema.properties['achieved']?.description).toBe('達成? / Achieved?');
+    expect(schema.properties['impressions']?.description).toBe('感想 / Impressions');
   });
 });
 

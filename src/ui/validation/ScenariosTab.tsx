@@ -12,7 +12,7 @@ export const DEFAULT_SURVEY_TEMPLATE: readonly SurveyQuestionDto[] = [
   { id: 'q1', textJa: '目的を達成できましたか', textEn: 'Did you achieve your goal?', kind: 'boolean' },
   { id: 'q2', textJa: '総合満足度', textEn: 'Overall satisfaction', kind: 'scale', min: 1, max: 5 },
   { id: 'q3', textJa: '回答のわかりやすさ', textEn: 'Clarity of the responses', kind: 'scale', min: 1, max: 5 },
-  { id: 'q4', textJa: '手間の少なさ（少ないほど高評価）', textEn: 'Low effort required (less effort scores higher)', kind: 'scale', min: 1, max: 5 },
+  { id: 'q4', textJa: '手間の少なさ（手間が少なかったほど高い点）', textEn: 'Low effort required (the less effort it took, the higher the score)', kind: 'scale', min: 1, max: 5 },
   { id: 'q5', textJa: '回答をどの程度信頼できましたか', textEn: 'How much did you trust the responses?', kind: 'scale', min: 1, max: 5 },
   { id: 'q6', textJa: '良かった点', textEn: 'What went well?', kind: 'text' },
   { id: 'q7', textJa: '不満・困った点', textEn: 'What was frustrating or unclear?', kind: 'text' },

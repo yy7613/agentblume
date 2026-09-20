@@ -47,7 +47,7 @@ export const DEFAULT_SURVEY: readonly SurveyQuestion[] = [
   { id: 'q1', textJa: '目的を達成できましたか', textEn: 'Did you achieve your goal?', kind: 'boolean' },
   { id: 'q2', textJa: '総合満足度', textEn: 'Overall satisfaction', kind: 'scale', min: 1, max: 5 },
   { id: 'q3', textJa: '回答のわかりやすさ', textEn: 'Clarity of the responses', kind: 'scale', min: 1, max: 5 },
-  { id: 'q4', textJa: '手間の少なさ（少ないほど高評価）', textEn: 'Low effort required (less effort scores higher)', kind: 'scale', min: 1, max: 5 },
+  { id: 'q4', textJa: '手間の少なさ（手間が少なかったほど高い点）', textEn: 'Low effort required (the less effort it took, the higher the score)', kind: 'scale', min: 1, max: 5 },
   { id: 'q5', textJa: '回答をどの程度信頼できましたか', textEn: 'How much did you trust the responses?', kind: 'scale', min: 1, max: 5 },
   { id: 'q6', textJa: '良かった点', textEn: 'What went well?', kind: 'text' },
   { id: 'q7', textJa: '不満・困った点', textEn: 'What was frustrating or unclear?', kind: 'text' },
@@ -98,8 +98,11 @@ export function buildSurveySchema(questions: readonly SurveyQuestion[]): SurveyJ
     type: 'object',
     properties: Object.fromEntries(normalized.map((question) => [question.id, {
       type: question.kind === 'scale' ? 'integer' as const : question.kind === 'boolean' ? 'boolean' as const : 'string' as const,
+      // 範囲だけでは向き（数が大きいほど高評価）が伝わらない。「総合満足度 / Overall satisfaction (integer 1..5)」
+      // としか書かなかったとき、擬似ユーザーが自由記述で高評価を書きながら scale へ 1〜2 を付けた（実測）。
+      // 実値の min/max を highest/lowest へ結び付けて明示する。
       description: question.kind === 'scale'
-        ? `${question.textJa} / ${question.textEn} (integer ${question.min}..${question.max})`
+        ? `${question.textJa} / ${question.textEn} (integer ${question.min}..${question.max}; ${question.min} = lowest / 最低, ${question.max} = highest / 最高)`
         : `${question.textJa} / ${question.textEn}`,
       ...(question.kind === 'scale' ? { minimum: question.min ?? 1, maximum: question.max ?? 5 } : {}),
     }])),

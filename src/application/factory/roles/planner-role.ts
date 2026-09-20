@@ -13,6 +13,7 @@ import type { FactoryGoalInput, FactoryOptions } from '../../../domain/factory/f
 import type { JsonSchemaObject, ModelCompletionRequest, ModelProviderPort } from '../../model/model-provider';
 import type { DataProfile } from '../profile-data-sources';
 import type { ExistingToolCatalog } from '../tool-catalog';
+import { describeScenarioGroundingViolations } from './plan-grounding';
 import { wrapUntrusted } from './untrusted';
 
 /** docs/16-agent-factory.md §4 Stage 1: Tool ≤4 / Skill ≤3（固定）。Persona / Scenario は options 由来。 */
@@ -199,6 +200,12 @@ export class PlannerRole {
       `- skills: at most ${MAX_SKILLS}. Each skill.toolKeys must reference tool keys defined in this same plan.`,
       `- personas: at most ${input.options.personaCount}.`,
       `- scenarios: at most ${input.options.scenarioCount}. Each scenario.personaKey and expectedToolKeys must reference keys defined in this same plan.`,
+      // ADR-0050: 擬似ユーザーの extraInstructions にエージェント向けの指示が混じると、擬似ユーザーが
+      // それを自分の要求として繰り返してしまう（実測）。ここは「ユーザー像」だけを書かせる。
+      '- personas[].extraInstructions describes the USER only (who they are, what they care about, how they talk). Never put instructions for the assistant there (such as "always quote the tool output"): the pseudo user would repeat them as its own demands.',
+      // ADR-0050: 擬似ユーザーは自分のデータを持たない。目標がデータに無い数値の計算を頼む形になると、
+      // 電卓として使おうとして噛み合わない（実測: 「320,000円・165時間で時間当たり給与を算出して」）。
+      '- scenarios[].goal must be answerable from the listed data: name only indicators, periods (inside periodColumns minStart–maxStart) and categories that exist in the profiles. The pseudo user has no data of their own, so never plan a scenario where the user supplies figures to calculate with.',
       '- Keys (tool/skill/persona/scenario) must be unique within their own collection.',
       // ADR-0047: e-Stat 実データでは「粒度混在の期間列」「既定呼び出しの行数溢れ」「値を知らない引数」が
       // そのまま goalAchieved=false になった。計画の段階で ToolSmith へ渡る purpose/argumentSummary に
@@ -264,17 +271,24 @@ export class PlannerRole {
       ],
       responseFormat: { name: 'factory_plan', strict: true, schema: planSchemaFor(input.dataSourceIds) },
     };
-    const accept = (content: string | null): FactoryPlan => {
+    // `checkGrounding` は 1 回目の応答にだけ立てる（ADR-0050 / v44 §4.2）。データの期間外の年を
+    // 名指しするシナリオは「柔らかい違反」として理由つきで 1 回だけ出し直させるが、2 回目にも
+    // 残っていたら Run は落とさず受理する（検証シナリオの言い回し 1 つで生成を失敗させない）。
+    const accept = (content: string | null, checkGrounding: boolean): FactoryPlan => {
       const plan = inferAdditionalDataSources(normalizePlan(repairDataSourceIds(parsePlan(content), input.dataSourceIds), catalog), input.profiles);
       validateFactoryPlan(plan, {
         dataSourceIds: input.dataSourceIds,
         limits: { maxTools: MAX_TOOLS, maxSkills: MAX_SKILLS, maxPersonas: input.options.personaCount, maxScenarios: input.options.scenarioCount },
       });
+      if (checkGrounding) {
+        const violations = describeScenarioGroundingViolations(plan, input.profiles);
+        if (violations.length > 0) throw new FactoryValidationError(violations.join('; '));
+      }
       return plan;
     };
     const first = await this.model.complete(request, signal);
     try {
-      return accept(first.message.content);
+      return accept(first.message.content, true);
     } catch (error) {
       if (!(error instanceof FactoryValidationError)) throw error;
       // 計画の検証落ちで Run ごと失敗させない。何が規則に反したかを添えて 1 回だけ出し直させる
@@ -287,7 +301,7 @@ export class PlannerRole {
           { role: 'user', content: `The plan was rejected by validation: ${error.message}. Return the complete corrected plan as JSON that satisfies the schema and every rule. Do not repeat the rejected part.` },
         ],
       }, signal);
-      return accept(second.message.content);
+      return accept(second.message.content, false);
     }
   }
 }

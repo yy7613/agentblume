@@ -206,6 +206,8 @@ async function setup(options?: {
   readonly scenarioRunner?: FakeScenarioRunner;
   /** Agent Run のトレース置き場（Analystへ渡すツール呼び出しの材料）。 */
   readonly runRepo?: InMemoryRunRepository;
+  /** `ds-1` の中身の差し替え（期間列・カテゴリ列を持つ表で Stage 0 のプロファイルを変えたいとき）。 */
+  readonly dataSource?: { readonly name: string; readonly csv: string };
 }): Promise<{
   repo: FactoryRunRepository; model: ScriptedModelProvider; runFactory: RunFactoryUseCase;
   createFactoryRun: CreateFactoryRunUseCase; resumeFactoryRun: ResumeFactoryRunUseCase;
@@ -214,7 +216,10 @@ async function setup(options?: {
   applyCalls: ApplyImprovementsInput[]; runRepo: InMemoryRunRepository;
 }> {
   const dataSources = new InMemoryDataSourceRepository();
-  await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Sales', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 30, createdAt: '', updatedAt: '' }, 'id,amount\n1,100\n2,200');
+  await dataSources.save(
+    { id: 'ds-1', tenant: scope, name: options?.dataSource?.name ?? 'Sales', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 30, createdAt: '', updatedAt: '' },
+    options?.dataSource?.csv ?? 'id,amount\n1,100\n2,200',
+  );
   const engine = new EtlEngine(createDefaultRegistry());
   const resolver = new ResolveDataSourceGraphUseCase(dataSources);
   const profiler = new ProfileDataSourcesUseCase(dataSources, resolver, engine);
@@ -1665,5 +1670,64 @@ describe('candidateSourceSets: テンプレートの適用可否を数えるソ�
   it('異常: このRunに無いデータソースを指す結合候補は無視する', () => {
     const joins = [candidate('ds-1', 'ds-gone')];
     expect(candidateSourceSets([profileOf('ds-1', joins)])).toEqual([['ds-1']]);
+  });
+});
+
+describe('RunFactoryUseCase（Stage 5: Scenario.context への検証の前提の合成。v44 / ADR-0050）', () => {
+  /**
+   * 前提ブロックの見出し。`scenario-grounding` から import せず書き写す: この見出しは擬似ユーザーの
+   * system prompt へ出る**外向きの文面**なので、Stage 5 の側からも1文字ずつ固定しておく。
+   */
+  const GROUNDING_HEADING = '# Validation premises / 検証の前提 (factory-managed)';
+
+  /** 計画の `context` を持つ通常の生成計画（前提ブロックが「後ろに付く」ことを見るため）。 */
+  function plannedContextPlanJson(context: string): string {
+    const plan = JSON.parse(validPlanJson()) as { scenarios: { context?: string }[] };
+    plan.scenarios[0] = { ...plan.scenarios[0], context };
+    return JSON.stringify(plan);
+  }
+
+  /** 保存された唯一のScenarioの最新版。 */
+  async function onlyScenario(scenarioRepo: InMemoryScenarioRepository): Promise<{ readonly context?: string } | null> {
+    const internalId = (await scenarioRepo.list(scope)).map((summary) => summary.internalId)[0];
+    return scenarioRepo.findLatest(scope, internalId ?? '');
+  }
+
+  it('正常: 保存されたScenarioのcontextは「計画のcontext → 空行 → 前提ブロック」で、対象データの名前と期間の範囲が入る', async () => {
+    const { model, runFactory, createFactoryRun, scenarioRepo } = await setup({
+      dataSource: { name: '賃金統計', csv: '時点,地域,現金給与総額\n2023年1月,全国,300000\n2023年2月,全国,310000\n2024年,全国,3600000' },
+    });
+    model.enqueue(
+      { message: { role: 'assistant', content: plannedContextPlanJson('月次の締め作業の途中で質問する。') }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const run = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { maxIterations: 1 } });
+
+    await runFactory.execute(scope, run.id);
+
+    const saved = await onlyScenario(scenarioRepo);
+    expect(saved?.context).toContain(GROUNDING_HEADING);
+    // Stage 0 が全行から測った事実（行数・値の列・期間の範囲）がそのまま擬似ユーザーへ渡る。
+    expect(saved?.context).toContain('  - 賃金統計（3 行）: 値の列 = 現金給与総額 / 期間の列「時点」= 2023-01-01 〜 2024-01-01');
+    expect(saved?.context?.startsWith(`月次の締め作業の途中で質問する。\n\n${GROUNDING_HEADING}`)).toBe(true);
+  });
+
+  it('従来どおり: データソースが無いRun（既存Agent強化モード）では、Scenarioのcontextは計画のまま', async () => {
+    const { model, runFactory, createFactoryRun, scenarioRepo, toolRepo, skillRepo, agentRepo } = await setup();
+    await seedBaseAgent(toolRepo, skillRepo, agentRepo);
+    const plan = JSON.parse(noAdditionPlanJson()) as { scenarios: { context?: string }[] };
+    plan.scenarios[0] = { ...plan.scenarios[0], context: '月次の締め作業の途中で質問する。' };
+    model.enqueue({ message: { role: 'assistant', content: JSON.stringify(plan) }, finishReason: 'stop' });
+    const created = await createFactoryRun.execute({
+      scope, goal: { goal: '売上の質問に答えられるようにする', language: 'ja' },
+      dataSourceIds: [], baseAgent: { internalId: BASE_AGENT_ID }, options: { maxIterations: 1 },
+    });
+
+    await runFactory.execute(scope, created.id);
+
+    const saved = await onlyScenario(scenarioRepo);
+    expect(saved?.context).toBe('月次の締め作業の途中で質問する。');
   });
 });

@@ -65,10 +65,11 @@ const SURVEY: readonly SurveyQuestion[] = [
   { id: 'impressions', textJa: '感想', textEn: 'Impressions', kind: 'text' },
 ];
 
-function makePersona(): Persona {
+function makePersona(overrides: Partial<Persona> = {}): Persona {
   return createPersona({
     metadata: { internalId: 'persona-1', workingName: 'p', displayName: 'Novice', publishName: 'novice_user', version: v1, owner: 'owner', state: 'draft', tenant: scope },
     archetype: 'novice', knowledgeLevel: 'low', patience: 'mid', tone: '丁寧', verbosity: 'normal', language: 'ja',
+    ...overrides,
   });
 }
 
@@ -413,6 +414,39 @@ describe('RunScenarioUseCase', () => {
     expect(repair?.messages[1]?.content).toBe(JSON.stringify({ q1: true, q2: 0, impressions: 'x' }));
     expect(repair?.messages[2]?.content).toContain("survey answer 'q2' must be between 1 and 5");
     expect(repair?.responseFormat?.schema.properties['q2']).toMatchObject({ minimum: 1, maximum: 5 });
+  });
+
+  it('正常: アンケートの指示文と検証落ちの再依頼文の両方に評点の向き（大きいほど高評価）を明示する一文が入る（実測: 自由記述は好意的なのにscaleへ低い点を付ける取り違えがあった）', async () => {
+    const badSurvey: ModelCompletion = { message: { role: 'assistant', content: JSON.stringify({ q1: true, q2: 0, impressions: 'x' }) }, finishReason: 'stop' };
+    const h = harness({
+      scenario: makeScenario({ maxUserTurns: 1 }),
+      pu: [puTurn('質問1', false, false), badSurvey, surveyOk()],
+      agent: [agentSay('回答1')],
+    });
+    await h.useCase.execute(input);
+
+    const direction = '評点は数が大きいほど高評価である（最小値 = 最も悪い、最大値 = 最も良い）。自由記述の内容と評点を一致させること。';
+    const firstRequest = h.puModel.requests[1];
+    expect(firstRequest?.messages[0]?.content).toContain(direction);
+    const repair = h.puModel.requests[2];
+    expect(repair?.messages[2]?.content).toContain(direction);
+  });
+
+  it('正常: 疑似ユーザーが英語（persona.language=en）なら、指示文と再依頼文の向きの一文も英語になる', async () => {
+    const badSurvey: ModelCompletion = { message: { role: 'assistant', content: JSON.stringify({ q1: true, q2: 0, impressions: 'x' }) }, finishReason: 'stop' };
+    const h = harness({
+      persona: makePersona({ language: 'en' }),
+      scenario: makeScenario({ maxUserTurns: 1 }),
+      pu: [puTurn('question', false, false), badSurvey, surveyOk()],
+      agent: [agentSay('answer')],
+    });
+    await h.useCase.execute(input);
+
+    const direction = 'Higher scores mean a better evaluation (the minimum value is the worst, the maximum value is the best). Keep your free-text answers consistent with your scores.';
+    const firstRequest = h.puModel.requests[1];
+    expect(firstRequest?.messages[0]?.content).toContain(direction);
+    const repair = h.puModel.requests[2];
+    expect(repair?.messages[2]?.content).toContain(direction);
   });
 
   it('異常: アンケートが2回とも不正でも会話の結末は壊さず、理由を stage:survey で残す', async () => {
