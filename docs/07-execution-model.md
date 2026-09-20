@@ -119,6 +119,17 @@ Toolの終端は`agent-output`、`workspace-output`、または`graph-output`で
 
 AgentのTool callも同じエンジンで実行するが、**計算は常に全行**で行う（[§2](#2-toolプレビュー実行) の `rowLimit` はトレースの `outputPreview`（先頭10行）用スナップショットにしか使わない）。出力スキーマ検証とsinkへの配送には終端ノードの全行テーブル（`fullOutput`）を渡し、トレースの `tool-result.nodes[].rowCount` は全行数を記録する。`agent-output` が `maxRows` で行を落としたときは、ツール結果に全体件数・省略件数と注記（`Showing 100 of 500 rows; 400 rows omitted (agent-output maxRows=100).`）を含めてモデルへ伝える。実行上限（250,000 行）の超過は `ETL_SCHEMA` としてToolと `nodeId` を添えてRunを失敗させる。
 
+### 3.1 0件のツール結果には理由を添える（noMatch）
+
+空の `[]` だけを返されたモデルは、どの引数が外れたのかも、データにどんな値があるのかも知りようがない。実測では年次しか持たない統計表へ `{"region_name":"東京都","time_point":"2015年12月31日"}` で問い合わせたAgentが `[]` を受け取り、そこから人口を**記憶で捏造**した。そこで終端の出力が0行で、かつモデルへ直接返す配送（`agent-output`）のときは、**LLMを使わない決定的な診断**を結果に添える。
+
+- 判定: トポロジカル順で「入力には行があるのに出力が0行」になった最初のノードを探す。それが `filter` なら、**有効な**条件（`disabled` は除く）を1つずつ入力表へ当てて件数を数える。実行が行を残した規則そのもの（domainの `prepareFilterCondition` / `rowMatchesFilterCondition`）で数えるので、診断と実行が食い違わない。
+- 内訳: 各条件について列・演算子・使った値・供給元の引数名・単独での一致行数を返す。単独で0件の条件（どれも単独では当たるのにANDで0件になる場合は全条件）には、文字列列なら**実在する値の例**（要求値を含む/含まれる値・先頭一致を優先。`2015年12月31日` → `2015年`）と異なり数、数値・日付列なら最小・最大を添える。
+- 形: `{"rows":[], "noMatch":{"message":"No rows matched. Do not answer from memory: …","nodeId":"narrow","combine":"and","conditions":[{"column":"時点","op":"eq","argument":"time_point","value":"2015年12月31日","matchingRows":0,"availableValues":["2015年","2016年"],"distinctValues":2}]}}`。`agent-output.format` が `markdown-table` のときは同じ内容を読める文章として本文の後ろに続ける。値は**JSONの値としてのみ**運び、指示文には混ぜない。
+- 上限: 値の例は8個 × 80文字、診断全体で約1.5KB（超えたら値の数 → 条件の数の順に削る）。
+- 記録: 同じ内容を実行トレースの `tool-result.noMatch` に残す（Inspectorの行に「該当0件: 時点 eq "…" → 2015年 / 2016年」として出る）。0行だった実行だけが持つ任意フィールドで、旧Runのトレースには無い。
+- ツール検証（Tool Check）の結果は変えない。モデルへ返す本文とトレースにだけ足す。
+
 ---
 
 ## 4. 検証（疑似ユーザー）実行

@@ -229,10 +229,33 @@ export interface SaveSkillDto {
 export interface SkillSummaryDto { readonly internalId: string; readonly displayName: string; readonly publishName: string; readonly latestVersion: string; readonly state: SerializedAgentDto['metadata']['state'] }
 export interface SkillPromptDraftDto { readonly promptDraft: string; readonly sections: { readonly responsibility: string; readonly activation: string; readonly ioContract: string; readonly toolGuide: string }; readonly editable: true; readonly sources: readonly string[] }
 
+/** 0 件だったfilter条件1つ分の内訳（`value` は JSON で運べる形。日付は ISO 文字列）。 */
+export interface RunNoMatchConditionDto {
+  readonly column: string;
+  readonly op: string;
+  /** この値を供給したツール引数名（固定値の条件には無い）。 */
+  readonly argument?: string;
+  readonly value: string | number | boolean | null;
+  /** この条件だけを入力行へ当てたときに残る行数。 */
+  readonly matchingRows: number;
+  readonly availableValues?: readonly string[];
+  readonly distinctValues?: number;
+  readonly min?: string | number;
+  readonly max?: string | number;
+}
+/** ツール実行が0行になった理由（LLMを使わない決定的な診断。モデルへも同じ形で返している）。 */
+export interface RunNoMatchDto {
+  readonly message: string;
+  readonly nodeId: string;
+  readonly combine: 'and' | 'or';
+  readonly conditions: readonly RunNoMatchConditionDto[];
+}
+
 export type RunTraceEventDto =
   | { readonly sequence: number; readonly kind: 'model-request'; readonly step: number; readonly toolNames: readonly string[] }
   | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }
-  | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: string; readonly nodes: readonly { readonly nodeId: string; readonly rowCount: number; readonly truncated: boolean }[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[] }
+  // noMatch は 0 行だった実行だけが持つ（なぜ 0 行かの内訳。モデルへ返した内容と同じ形）。旧Runには無い。
+  | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: string; readonly nodes: readonly { readonly nodeId: string; readonly rowCount: number; readonly truncated: boolean }[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[]; readonly noMatch?: RunNoMatchDto }
   | { readonly sequence: number; readonly kind: 'model-response'; readonly content: string }
   | { readonly sequence: number; readonly kind: 'agent_call'; readonly toolName: string; readonly agentRef: { readonly internalId: string; readonly version: string }; readonly childRunId: string; readonly ok: boolean; readonly summary: string }
   | { readonly sequence: number; readonly kind: 'compaction'; readonly beforeChars: number; readonly afterChars: number }
@@ -600,6 +623,9 @@ export interface ScenarioSummaryDto {
 }
 
 export type ScenarioRunStatusDto = 'completed' | 'max-turns' | 'error';
+export type ScenarioRunErrorStageDto = 'pseudo-user' | 'agent' | 'survey';
+/** status:'error'、またはアンケートだけ回収できなかったときの理由。 */
+export interface ScenarioRunErrorDto { readonly stage: ScenarioRunErrorStageDto; readonly message: string }
 export interface ScenarioTurnDto { readonly speaker: 'user' | 'agent'; readonly message: string; readonly runId?: string }
 export interface ScenarioRunDto {
   readonly id: string;
@@ -607,6 +633,7 @@ export interface ScenarioRunDto {
   readonly scenario: { readonly id: string; readonly version: string };
   readonly pseudoUserRef?: { readonly type: 'persona' | 'agent'; readonly id: string; readonly version: string };
   readonly status: ScenarioRunStatusDto;
+  readonly error?: ScenarioRunErrorDto;
   readonly goalAchieved: boolean | null;
   readonly transcript: readonly ScenarioTurnDto[];
   readonly survey: readonly { readonly questionId: string; readonly value: number | boolean | string }[];
@@ -938,9 +965,12 @@ export interface FactoryIterationMetricsDto {
   readonly goalAchievedRate: number;
   readonly avgSatisfaction: number;
   readonly toolHitRate: number;
+  /** status:'error' の割合。会話（疑似ユーザー/Agent）の失敗だけで、アンケート欠測は含まない。 */
   readonly errorRate: number;
   readonly avgUserTurns: number;
   readonly scenarioCount: number;
+  /** 総合満足度を回収できなかったシナリオ件数（avgSatisfaction は回収できた分だけの平均）。 */
+  readonly surveyMissingCount: number;
   readonly usage: { readonly promptTokens?: number; readonly completionTokens?: number; readonly totalTokens?: number };
   readonly durationMs: number;
 }
@@ -959,12 +989,20 @@ export interface FactoryArtifactsDto {
   readonly pseudoUsers: readonly FactoryVersionRefDto[];
   readonly scenarios: readonly FactoryVersionRefDto[];
 }
+/**
+ * Runの品質判定。`status: 'succeeded'` は「パイプラインが最後まで走った」だけを意味するので、
+ * 成果物が目標を満たしたかはこちらで読む（`unverified` は「測れていない」= 未達とも言えない）。
+ */
+export type FactoryReportQualityDto = 'met-targets' | 'below-targets' | 'unverified';
 export interface FactoryReportDto {
   readonly bestIteration: number;
   readonly candidate: { readonly agentId: string; readonly version: string };
   readonly summary: string;
   readonly openFindings: readonly FactoryFindingDto[];
   readonly metricsByIteration: readonly FactoryIterationMetricsDto[];
+  readonly quality: FactoryReportQualityDto;
+  /** `quality` の根拠（`met-targets` では空）。 */
+  readonly qualityReasons: readonly string[];
 }
 /**
  * 強化対象の既存Agent。設定されているRunは「既存Agentの強化モード」で走る

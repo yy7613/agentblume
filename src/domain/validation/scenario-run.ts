@@ -16,6 +16,21 @@ import type { SurveyAnswer } from './survey';
 export const SCENARIO_RUN_STATUSES = ['completed', 'max-turns', 'error'] as const;
 export type ScenarioRunStatus = (typeof SCENARIO_RUN_STATUSES)[number];
 
+/** 失敗した段。`survey` は会話自体は成立したがアンケートだけ取れなかった場合。 */
+export const SCENARIO_RUN_ERROR_STAGES = ['pseudo-user', 'agent', 'survey'] as const;
+export type ScenarioRunErrorStage = (typeof SCENARIO_RUN_ERROR_STAGES)[number];
+
+/**
+ * 記録が欠けた理由。status:'error' か「アンケートを回収できなかった」ときに入る。
+ *
+ * これが無かったため、失敗したシナリオ実行は「survey が空で満足度0」としか読めず、
+ * Factory の分析役がAgent側の欠陥だと誤診していた。
+ */
+export interface ScenarioRunError {
+  readonly stage: ScenarioRunErrorStage;
+  readonly message: string;
+}
+
 export interface Turn {
   readonly speaker: 'user' | 'agent';
   readonly message: string;
@@ -53,6 +68,8 @@ export interface ScenarioRun {
   /** 使用した疑似ユーザーの参照（persona@version または agent@version）。v18。 */
   readonly pseudoUserRef?: ScenarioRunPseudoUserRef;
   readonly status: ScenarioRunStatus;
+  /** status:'error'、またはアンケートを回収できなかったときの理由。 */
+  readonly error?: ScenarioRunError;
   /** 疑似ユーザー申告（未申告は null）。 */
   readonly goalAchieved: boolean | null;
   readonly transcript: readonly Turn[];
@@ -86,6 +103,14 @@ export function createScenarioRun(props: CreateScenarioRunProps): ScenarioRun {
   }
   if (props.goalAchieved !== null && typeof props.goalAchieved !== 'boolean') {
     throw new ValidationDomainError('createScenarioRun: goalAchieved must be a boolean or null');
+  }
+  let failure: ScenarioRunError | undefined;
+  if (props.error !== undefined) {
+    if (!(SCENARIO_RUN_ERROR_STAGES as readonly string[]).includes(props.error.stage)) {
+      throw new ValidationDomainError(`createScenarioRun: invalid error.stage: ${String(props.error.stage)}`);
+    }
+    nonEmpty(props.error.message, 'createScenarioRun: error.message');
+    failure = { stage: props.error.stage, message: props.error.message };
   }
   const transcript = props.transcript.map((turn, index) => {
     if (turn.speaker !== 'user' && turn.speaker !== 'agent') {
@@ -139,6 +164,7 @@ export function createScenarioRun(props: CreateScenarioRunProps): ScenarioRun {
     scenario: { id: props.scenario.id, version: props.scenario.version },
     ...(pseudoUserRef !== undefined ? { pseudoUserRef } : {}),
     status: props.status,
+    ...(failure !== undefined ? { error: failure } : {}),
     goalAchieved: props.goalAchieved,
     transcript,
     survey,

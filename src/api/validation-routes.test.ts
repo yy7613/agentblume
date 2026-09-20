@@ -166,6 +166,33 @@ describe('validation routes', () => {
     expect(detail.json().run).toEqual(run);
   });
 
+  it('異常: アンケートを回収できなくても会話の結末は残り、理由（error.stage=survey）がAPIから読める', async () => {
+    await server.inject({ method: 'POST', url: '/personas', payload: personaBody() });
+    await server.inject({ method: 'POST', url: '/scenarios', payload: scenarioBody() });
+
+    const badSurvey = { message: { role: 'assistant' as const, content: JSON.stringify({ q1: false, q2: 0, impressions: 'x' }) }, finishReason: 'stop' as const, usage: { totalTokens: 2 } };
+    model.enqueue(
+      { message: { role: 'assistant', content: JSON.stringify({ message: 'もういい', endConversation: true, goalAchieved: false }) }, finishReason: 'stop', usage: { totalTokens: 4 } },
+      badSurvey,
+      badSurvey,
+    );
+
+    const executed = await server.inject({ method: 'POST', url: '/scenarios/sales-check/run', payload: { scope, mode: 'preview' } });
+    expect(executed.statusCode).toBe(200);
+    const run = executed.json().run;
+    expect(run).toMatchObject({
+      status: 'completed',
+      goalAchieved: false,
+      survey: [],
+      error: { stage: 'survey', message: "survey answer 'q2' must be between 1 and 5" },
+    });
+
+    // 保存先（SQLite/インメモリ）を往復しても理由が残る。
+    const detail = await server.inject({ method: 'GET', url: `/scenario-runs/${run.id}`, query: scope });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json().run.error).toEqual({ stage: 'survey', message: "survey answer 'q2' must be between 1 and 5" });
+  });
+
   it('Persona登録→pseudoUser Scenario→実行でpseudoUserRef(agent)を記録し、kindで一覧する（v18）', async () => {
     await server.inject({ method: 'POST', url: '/personas', payload: personaBody() });
     // Persona を疑似ユーザーAgentとして登録する。

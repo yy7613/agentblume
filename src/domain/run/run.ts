@@ -23,10 +23,45 @@ export interface RunFailureToolRef {
   readonly publishName?: string;
 }
 
+/**
+ * 0 件だった filter 条件 1 つ分の内訳。`value` は JSON で運べる形（日付は ISO 文字列）に寄せる。
+ * モデルへ返すツール結果と、この tool-result イベントが**同じ形**を共有する（分析者が見るものと
+ * モデルが読んだものを一致させるため）。
+ */
+export interface RunNoMatchCondition {
+  readonly column: string;
+  readonly op: string;
+  /** この値を供給した Agent Tool の引数名（固定値の条件には無い）。 */
+  readonly argument?: string;
+  readonly value: string | number | boolean | null;
+  /** この条件**だけ**を入力行へ当てたときに残る行数。 */
+  readonly matchingRows: number;
+  /** その列に実在する値の例（eq/contains の文字列列。要求値に近いものを優先）。 */
+  readonly availableValues?: readonly string[];
+  readonly distinctValues?: number;
+  /** number / date 列の最小・最大（日付は ISO 文字列）。 */
+  readonly min?: string | number;
+  readonly max?: string | number;
+}
+
+/**
+ * ツール実行が 0 行になった理由（LLM を使わない決定的な診断）。
+ * 空の `[]` だけを返すとモデルは「どの引数が外れたのか」も「どんな値があるのか」も分からず、
+ * 記憶から答えを捏造する。どの条件が何行に当たったかと実在する値を添えて差し戻す。
+ */
+export interface RunNoMatch {
+  readonly message: string;
+  /** 0 行になったノードの id。 */
+  readonly nodeId: NodeId;
+  readonly combine: 'and' | 'or';
+  readonly conditions: readonly RunNoMatchCondition[];
+}
+
 export type RunTraceEvent =
   | { readonly sequence: number; readonly kind: 'model-request'; readonly step: number; readonly toolNames: readonly string[] }
   | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }
-  | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: TerminalId; readonly nodes: readonly RunNodeOutput[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[] }
+  /** `noMatch` は 0 行だった実行だけが持つ（後から足した任意フィールド。旧 Run には無い）。 */
+  | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: TerminalId; readonly nodes: readonly RunNodeOutput[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[]; readonly noMatch?: RunNoMatch }
   | { readonly sequence: number; readonly kind: 'model-response'; readonly content: string }
   | { readonly sequence: number; readonly kind: 'agent_call'; readonly toolName: string; readonly agentRef: { readonly internalId: AgentId; readonly version: string }; readonly childRunId: RunId; readonly ok: boolean; readonly summary: string }
   /** ランタイムハーネスの自動圧縮が走ったモデル往復（beforeChars → afterChars）。 */

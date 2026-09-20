@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { describeMcpServerSkipped, localizeRunTraceError } from '../api/error-messages';
 import type { ToolApiClient } from '../api/tool-api';
 import type {
-  RunRecordDto, ScenarioRunDto, ScenarioSummaryDto, SerializedScenarioDto, SurveyQuestionDto, TenantScopeDto,
+  RunRecordDto, ScenarioRunDto, ScenarioRunErrorDto, ScenarioSummaryDto, SerializedScenarioDto, SurveyQuestionDto, TenantScopeDto,
 } from '../api/types';
 import { useI18n } from '../i18n';
 
@@ -62,6 +62,8 @@ export function RunsTab({ client, scope }: { readonly client: ToolApiClient; rea
     <section className="workspace-card" aria-label={text('Scenario run detail', 'シナリオ実行詳細')}>
       {selected === undefined ? <p className="empty-state">{text('Select a run to view the transcript and survey.', '実行を選択するとトランスクリプトとアンケートを表示します。')}</p> : <>
         <div className="panel-title"><div><span className={`run-status scenario-${selected.status}`}>{selected.status}</span> <h2>{scenarioNames[selected.scenario.id] ?? selected.scenario.id} · {selected.scenario.version}</h2></div><code>{selected.id}</code></div>
+        {/* 失敗・アンケート未回収は「どの段で何が起きたか」を出す（survey:[] だけでは不満なユーザーと区別できない）。 */}
+        <RunFailureNote failure={selected.error} />
         <h3>{text('Transcript', 'トランスクリプト')}</h3>
         {selected.transcript.length === 0 && <p className="empty-state">{text('The conversation ended before the first message.', '最初の発話前に会話が終了しました。')}</p>}
         <div className="transcript">
@@ -98,6 +100,21 @@ export function RunsTab({ client, scope }: { readonly client: ToolApiClient; rea
     </section>
     </div>
   </>;
+}
+
+/** 失敗した段と理由の1行表示。survey 段は会話自体は成立している旨を添える。 */
+function RunFailureNote({ failure }: { readonly failure?: ScenarioRunErrorDto }) {
+  const { text } = useI18n();
+  if (failure === undefined) return null;
+  const stage = failure.stage === 'pseudo-user'
+    ? text('pseudo user', '疑似ユーザー')
+    : failure.stage === 'agent' ? text('agent', 'エージェント') : text('survey', 'アンケート');
+  return <p className="api-error" role="status">
+    <strong>{failure.stage === 'survey'
+      ? text('The survey could not be collected', 'アンケートを回収できませんでした')
+      : text('This run failed', 'この実行は失敗しました')} · {stage}</strong>
+    {' '}{failure.message}
+  </p>;
 }
 
 function SurveyAnswerView({ answer, question }: {

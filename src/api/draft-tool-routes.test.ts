@@ -189,7 +189,7 @@ describe('draft tool routes', () => {
       const stubbed = buildServer({ ...app, suggestCalculateExpression: stub({
         nodeId: 'calc', nodeType: 'calculate', config: { outputColumn: 'total', expression: '[price] * [quantity]' },
         rationale: ['単価と数量の積。'], warnings: [], validation: { references: ['price', 'quantity'], diagnostics: [] },
-        preview: { rows: 1, evaluated: 1, failed: 0, failureCounts: {}, sample: [] }, repaired: false, promptTemplateVersion: 'calculate-expression/v1',
+        preview: { rows: 1, evaluated: 1, failed: 0, failureCounts: {}, sample: [] }, repaired: false, promptTemplateVersion: 'calculate-expression/v2',
       }) });
       try {
         const response = await stubbed.inject({ method: 'POST', url: '/tool-drafts/suggest-calculate-expression', payload: body });

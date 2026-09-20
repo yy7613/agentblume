@@ -27,6 +27,17 @@ function satisfactionValues(runs: readonly ScenarioRun[]): number[] {
     .map((answer) => answer.value as number);
 }
 
+/**
+ * 総合満足度（`q2`）を回収できなかったRunの件数。
+ *
+ * `avgSatisfaction` は `q2` を持つRunだけを平均するので、アンケートが1件も取れないRunがあっても
+ * 平均値には現れない（実測では「全シナリオでアンケート欠測 → avgSatisfaction 0」を
+ * 「利用者の満足度が0」と読み違える事故が起きた）。欠測そのものを指標として出す（ADR-0047）。
+ */
+function surveyMissingCount(runs: readonly ScenarioRun[]): number {
+  return runs.filter((run) => !run.survey.some((answer) => answer.questionId === 'q2' && typeof answer.value === 'number')).length;
+}
+
 function toolHitRates(runs: readonly ScenarioRun[]): number[] {
   return runs
     .map((run) => run.metrics.expectedToolHit?.hitRate)
@@ -67,6 +78,7 @@ export function aggregateIterationMetrics(input: AggregateIterationMetricsInput)
     errorRate,
     avgUserTurns,
     scenarioCount,
+    surveyMissingCount: surveyMissingCount(runs),
     usage: sumUsage(runs),
     durationMs,
   };

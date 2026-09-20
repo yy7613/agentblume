@@ -220,6 +220,19 @@ describe('NodeInspector: calculate ダイアログ', () => {
     expect(dateChip.title).toBe('Becomes null at run time.');
   });
 
+  // 電卓の中に AI の鍵がある（v41）。サーバーに繋がっていなくても入口は隠さず、直し方を示す。
+  it('境界: クライアント無しでもAIの鍵は出て、押せないまま直し方を案内する', async () => {
+    addCalculate();
+    render(<NodeInspector />);
+    const dialog = await openDialog();
+    const aiGroup = within(dialog).getByRole('group', { name: 'AI formula writer' });
+
+    const key = within(aiGroup).getByRole('button', { name: /Have AI write the formula/ }) as HTMLButtonElement;
+    expect(key.disabled).toBe(true);
+    expect(within(aiGroup).getByText('The local LLM is not configured. Set the main model slot in Settings > Models, then reload, to let AI write formulas.')).toBeTruthy();
+    expect(within(dialog).queryByLabelText('What to calculate')).toBeNull();
+  });
+
   it('例外: Cancelで閉じると括弧の途中入力は破棄される（ダイアログの外へ漏れない）', async () => {
     const id = addCalculate();
     const before = configOf(id);

@@ -139,4 +139,57 @@ describe('ToolOutputDispatcher', () => {
     expect(graph).toMatchObject({ artifact: { counts: { nodes: 2, edges: 2 }, preview: { edges: [{ label: 'knows' }] } } });
     await expect(new ToolOutputDispatcher(graphArtifacts).dispatch({ tool: tool('graph-output', { name: 'invalid', writeMode: 'create', onConflict: 'new-revision', previewRows: 1, graph: { sourceColumn: 'source', targetColumn: 'target' } }), table: { ...edges, rows: [{ source: null, target: 'bob', kind: 'knows' }] }, session, runId: 'invalid', toolCallId: 'write' })).rejects.toThrow(/empty value/);
   });
+  /** 0行の理由（noMatch）は、モデルへ直接返す配送のときだけ内容へ添える。 */
+  describe('0件の理由（noMatch）', () => {
+    const empty = { ...table, rows: [] };
+    const noMatch = {
+      message: 'No rows matched. Do not answer from memory.',
+      nodeId: 'narrow',
+      combine: 'and' as const,
+      conditions: [{ column: '時点', op: 'eq', argument: 'time_point', value: '2015年12月31日', matchingRows: 0, availableValues: ['2015年', '2016年'], distinctValues: 2 }],
+    };
+
+    it('正常: json形式では rows と並ぶ noMatch キーとして足す', async () => {
+      const result = await new ToolOutputDispatcher().dispatch({ tool: tool('agent-output', { shape: 'rows', format: 'json', maxRows: 10, maxBytes: 1024, overflow: 'error' }), table: empty, runId: 'run', toolCallId: 'json', noMatch });
+
+      expect(result).toMatchObject({ delivery: 'agent', value: { rows: [], noMatch } });
+      expect(result.content).toContain('"matchingRows":0');
+    });
+
+    it('境界: markdown形式では「(no rows)」に続けて読める文章にする（JSONを混ぜない）', async () => {
+      const result = await new ToolOutputDispatcher().dispatch({ tool: tool('agent-output', { shape: 'rows', format: 'markdown-table', maxRows: 10, maxBytes: 1024, overflow: 'error' }), table: empty, runId: 'run', toolCallId: 'markdown', noMatch });
+
+      const value = result.delivery === 'agent' ? String(result.value) : '';
+      expect(value.startsWith(`(no rows)
+
+No rows matched.`)).toBe(true);
+      expect(value).toContain('- 時点 eq "2015年12月31日" (argument time_point) matched 0 rows');
+    });
+
+    it('境界: 値が null になる形（single-value）では { value, noMatch } に包む', async () => {
+      const result = await new ToolOutputDispatcher().dispatch({ tool: tool('agent-output', { shape: 'single-value', format: 'json', valueColumn: 'name', maxRows: 10, maxBytes: 1024, overflow: 'error' }), table: empty, runId: 'run', toolCallId: 'single', noMatch });
+
+      expect(result).toMatchObject({ delivery: 'agent', value: { value: null, noMatch } });
+    });
+
+    it('例外: 上限(maxBytes)は従来どおり守る — 理由を足すと超える設定では理由だけ落として本体を返す（Runを失敗させない）', async () => {
+      const long = { ...noMatch, conditions: [{ ...noMatch.conditions[0]!, availableValues: Array.from({ length: 8 }, (_v, index) => `${index}${'値'.repeat(70)}`) }] };
+
+      const result = await new ToolOutputDispatcher().dispatch({ tool: tool('agent-output', { shape: 'rows', format: 'json', maxRows: 10, maxBytes: 1024, overflow: 'error' }), table: empty, runId: 'run', toolCallId: 'tight', noMatch: long });
+
+      expect(result).toMatchObject({ delivery: 'agent', value: { rows: [] } });
+      expect(result.content).not.toContain('noMatch');
+      expect((result as { sizeBytes: number }).sizeBytes).toBeLessThanOrEqual(1024);
+    });
+
+    it('境界: 従来どおり — セッション成果物として書き出す配送には足さない', async () => {
+      const artifacts = new InMemorySessionArtifactRepository();
+      const dispatcher = new ToolOutputDispatcher(artifacts, () => new Date('2026-07-11T01:00:00.000Z'), () => 'artifact-1');
+
+      const result = await dispatcher.dispatch({ tool: tool('workspace-output', { name: 'out', artifactKind: 'table', writeMode: 'create', onConflict: 'new-revision', previewRows: 1 }), table: empty, session, runId: 'run', toolCallId: 'write', noMatch });
+
+      expect(result.delivery).toBe('session-workspace');
+      expect(result.content).not.toContain('noMatch');
+    });
+  });
 });

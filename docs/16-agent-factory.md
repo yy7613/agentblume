@@ -2,7 +2,7 @@
 
 > Status: Implemented (M1–M5)。実装は [implementation/v33-agent-factory.md](../implementation/v33-agent-factory.md)。
 >
-> 関連: [ADR-0033](./adr/0033-agent-factory-generation-loop.md) / [11-scenario-validation.md](./11-scenario-validation.md) / [14-agent-harness-builder.md](./14-agent-harness-builder.md) / [implementation/llmops-roadmap.md](../implementation/llmops-roadmap.md)
+> 関連: [ADR-0033](./adr/0033-agent-factory-generation-loop.md) / [ADR-0047](./adr/0047-factory-lessons-from-estat.md)（実データで回して分かった欠陥と対策） / [11-scenario-validation.md](./11-scenario-validation.md) / [14-agent-harness-builder.md](./14-agent-harness-builder.md) / [implementation/llmops-roadmap.md](../implementation/llmops-roadmap.md)
 
 **データソースと「やりたいこと」を入力すると、Tool・Skill・システムプロンプト・Agent・検証資産（Persona / Scenario）を自動生成し、疑似ユーザー検証の結果から自動で改訂を繰り返す**機能を定義する。生成と改善は専門ロールに分かれた複数のLLMエージェント（内蔵ロール）が担い、その協調は決定的なパイプラインとしてオーケストレートする。
 
@@ -84,6 +84,16 @@ flowchart TB
 
 各 `dataSourceId` について、`ResolveDataSourceGraphUseCase` と `EtlEngine` でスキーマとサンプルを取得し、`DataProfile { schema, sampleRows(≤20), 列ごとの基本統計 }` を作る。LLMは使わない。ここで解決に失敗したデータソースがあればRun全体を早期に失敗させる。
 
+プロファイルは「列名と型」だけでは足りない（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。次の3つも**全行を走査して**決定的に付ける（サンプル20行では、年次と月次の混在のように末尾にしか現れない性質を取りこぼす。プレビューが既に計算済みの全行を使うので追加コストは無い）。
+
+| フィールド | 中身 | 後段での使われ方 |
+|---|---|---|
+| `rowCount` | データソース全体の行数 | 「引数なしの呼び出しが `agent-output` を溢れさせないか」の判断材料 |
+| `periodColumns[]` | `parsePeriodLabel`（`parse-period` ノードと同じ関数）が非nullの値の**90%以上**を解釈できた文字列列。`{ column, granularities: 粒度別件数, minStart, maxStart, mixed }` | 期間列は文字列なので完全一致しか引けない。範囲・時系列順が要るなら `parse-period` を挟ませる。`mixed: true` なら粒度フィルタを必須にする |
+| `categoricalColumns[]` | distinctが**60以下**の文字列列と、その全値（例: `全国` + 47都道府県） | Tool説明へ「有効な値」を書かせ、存在しない値で0行を引かせない |
+
+これらはPlanner（Stage 1）とToolSmith（Stage 2）のプロンプトへ、他のプロファイル同様 untrusted data として渡す。
+
 ### Stage 1: 構成計画（Planner）
 
 `FactoryPlan` を得る。検証規則: Tool計画は各データソースを最低1回参照する必要はないが、**参照はすべて入力の `dataSourceIds` 内**であること。Tool数・Skill数・Scenario数は上限（既定: Tool ≤ 4、Skill ≤ 3、Persona ≤ 3、Scenario ≤ 6）内であること。`write` / `external-action` を要する計画は拒否する。
@@ -104,10 +114,50 @@ Tool計画に `reuse.internalId` があり、渡された既存ツールカタ�
 
 新規作成するTool計画ごとに:
 
-1. ToolSmithへノードカタログ（登録済みノード型・config契約）・対象データソースのプロファイル・引数計画を渡し、`ToolGraph` を提案させる。
+1. ToolSmithへノードカタログ（登録済みノード型・config契約）・対象データソースのプロファイル・引数計画を渡し、`ToolGraph` を提案させる。許可する変換ノードは `SAFE_TRANSFORM_TYPES` = `select` / `filter` / `sort` / `distinct` / `limit` / `parse-period` / `summary-statistics`。各ノードのconfig契約をプロンプトへカタログとして列挙する。
 2. source ノードは計画の `dataSourceId` を参照する。sink は `agent-output`（必要に応じ `chart-output` / `workspace-output`）。
-3. `EtlEngine.propagateSchemas` + `preview(rowLimit)` で検証する。エラー時はエラー内容を添えて再提案させる（`maxRepairAttempts` 回、既定2）。
-4. 検証を通過したら `SaveToolUseCase` でdraft保存する。`sideEffect` は `read-only` または `session-write` のみ許可する。
+3. **構造検査**（決定的・エンジンより手前）: 許可ノード語彙内か、source が計画どおりの種別と `dataSourceId` か、`agent-output` がちょうど1つか、`agent-input` が未接続か、データ経路が枝分かれ・合流の無い単一チェーンか。違反は「何が違反で、どう直すか」を添えて修復ループへ回す（エンジンのスキーマエラーだけでは直し方が伝わらず修復が空回りする）。
+4. `EtlEngine.propagateSchemas` + `preview(rowLimit)` で検証する。エラー時はエラー内容を添えて再提案させる（`maxRepairAttempts` 回、既定2）。
+5. **意味の検査**（決定的・スキーマ確定後）: 構造とスキーマが通っても「答えに使えないTool」はできる。下表を検査し、違反は直し方を添えて修復ループへ回す。
+6. **既定呼び出しの溢れガード**: 生成Toolの引数は全て省略可能なので、エージェントの最初の呼び出しは「引数なし」になる。実行時と同じ `graphWithArguments` で全引数を省略した2本目のプレビューを回し、終端 `agent-output` が `shape:'rows'` かつ `overflow:'error'` で `rows > maxRows` になるなら、直し方（末尾に `limit` を足す / 集計する / `shape:"summary"` にする）を添えて修復ループへ回す（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。
+7. 検証を通過したら `SaveToolUseCase` でdraft保存する。`sideEffect` は `read-only` または `session-write` のみ許可する。
+
+#### 意味の検査（`describeToolSemanticViolations`）
+
+行を返すTool（`shape` が `rows` / `first-row`、集計ノードなし）にだけ掛ける。いずれも実測で生成された「答えられないTool」から起こした規則（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。
+
+| 検査 | 内容 | 直し方として返す文面 |
+|---|---|---|
+| 証拠列（期間） | プロファイルに期間列があるなら、終端の表に**元の期間ラベル列**（`時点` 等）が残っていること。`periodStart` は代替にならない | `select.columns` へ加える / `select` を外す |
+| 証拠列（値） | ソースに数値列があるなら、終端の表に最低1つ残っていること（`distinct` を使うToolは対象外） | 目的が問う値の列を残す |
+| 引数の型 | `date` 列を絞る引数は `type: "date"` で宣言されていること（`string` だと日付比較が文字列比較になる） | `{ "type": "date", "nullable": true }` で宣言し直す |
+| 範囲 | 同じ引数を下限（`gt`/`gte`）と上限（`lt`/`lte`）の**両方**へ束縛していないこと（完全一致の変装になる） | `*_from` / `*_to` の2つのnullable引数へ分ける |
+| 並べ替え | `parse-period` を使うなら開始日列で `sort` していること。目的が「最新・直近・latest」を求めるならその向きが `desc` であること | `{ "keys": [{ "column": "periodStart", "direction": "desc" }] }` を `limit` の前へ |
+
+注記列（`注記` / remarks / 備考）の保全は**プロンプト規則**にとどめる（目的次第で落として良い場合があるため、Runを止める検査にはしない）。「最新なら降順」の強制も、目的の文言に最新系のキーワードがある場合だけに限る（言い回しの取りこぼしはプロンプト規則が拾う）。
+
+#### 期間（粒度が混在する文字列ラベル列）の扱い
+
+`時点` のような期間列は文字列なので、`eq` では1ラベルしか引けず、`gte`/`lte` の範囲指定も時系列順の並べ替えもできない。Stage 0 が `periodColumns` を報告した計画では、ToolSmithへ次の定石を教える（[docs/06 §3.15](./06-etl-tool-builder.md)）。
+
+```text
+source → parse-period → filter(periodGranularity eq <粒度: 固定または引数>) → filter(periodStart gte <from> / lte <to>) → sort(periodStart asc) → limit → agent-output
+```
+
+- `parse-period` は元の列を壊さず `periodStart`（`date`）と `periodGranularity`（`string`）の2列を**足す**。
+- 日付の範囲引数は `agent-input` へ `type: "date"` で宣言し、`valueBinding` で gte / lte 条件へ束縛する。エージェントはISO日付文字列（`2008-01-01`）で渡し、`validateToolArguments` が `Date` へ正規化する。
+- `mixed: true` の期間列では粒度フィルタを**必須**とする（月次と年次の行を混ぜて集計させない）。
+- 日付は常に**期間の開始日**を意味する（年次の2023年は `periodStart` が 2023-01-01。`from` に 2023-10-01 を渡すとその行は外れる）。これは `agentTool.description` に書かせる。
+- `agentTool.description` には、受け付ける引数の書式と有効な値（`categoricalColumns` の値、または値域の説明）、返す粒度、データが覆う期間（`minStart` / `maxStart`）、省略時の挙動を書かせる。
+
+#### 1回の呼び出しで複数カテゴリを返せること
+
+1会話で呼べるツールは `MAX_TOOL_CALLS`（現行4回）までである。「東京都・大阪府・北海道を比較」を県ごとに1回ずつ呼ぶ設計は、この上限に当たって**会話ごと失敗**する（実測: `RunFailedError: tool call limit exceeded: maximum 4`）。
+
+- カテゴリ引数（地域・区分など）は nullable のままにし、**省略すればその期間の全カテゴリが返る**こと。比較は「1回呼んで行を選ぶ」で済む。
+- 「一度に一つの都道府県のみ」のような説明・規則を書かせない（ToolSmith・Analyst・Assemblerの全てで禁じる）。
+- `filter` に `in` 演算子は無い。複数値の明示指定は将来の課題として [ADR-0047](./adr/0047-factory-lessons-from-estat.md) に残す。
+- 上限の数字は Analyst / Assembler のペイロードへ `toolCallBudget` として渡し、ロールが「1対象1呼び出し」の設計を提案しないようにする。
 
 修復上限まで失敗したToolは欠落として記録し、計画から除外して続行する（依存するSkill計画も縮退）。全Toolが欠落した場合はRunを失敗させる。
 
@@ -130,12 +180,20 @@ Skill計画ごとにinstructions等を起草し、依存Toolを**生成済み版
 
 `GenerateAgentPromptUseCase` でSkill/Toolガイドを決定的に合成し、Assemblerが起草した役割文・追加規則を役割セクションへ結合して `SaveAgentUseCase` でdraft保存する（`kind: 'normal'`、参照は全てSemVer固定）。Tool使用ガイド・Skillガイド・協働者ガイドはLLM起草で上書きしない（出所が機械的に追跡できる部分を保つ）。
 
+**回答の規律ブロック（決定的・LLM非関与）** — 合成の最後尾へ、言語非依存の見出し `# Answer discipline / 回答の規律 (factory-managed)` を持つブロックを必ず付ける（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。内容は「数値はツールが返した行から引き写す」「0件なら0件と伝え、実在する値を挙げて次の条件を提案する（0件を『値が0』に書き換えない）」「数値には時点と単位を併記する（粒度が混ざるデータでは粒度も）」「注記があれば引用する」「引数は説明が示す書式・値で渡し、分からなければ利用者に確認する」。
+
+このRunで保存したToolの `inputSchema` に nullable な引数が1つでもあれば（`hasOmittableFilters`）、「複数の対象を比べるときは対象ごとに呼び分けず、絞り込み引数を省略して1回だけ呼び、返った行から選ぶ」という規律を**そのときだけ**足す。守れない指示（引数を省略できないTool構成）を書くと他の規律まで薄まるため、条件は契約（nullable宣言）から決定的に導く。
+
+このブロックはAssemblerの起草物ではないため、§5.3 の `system-prompt-revision`（役割文・実行規則をまるごと差し替える提案）を適用しても残る。`ApplyImprovementsUseCase` は、起点Agentが持っていた文面があればそれを引き継ぐ（利用者が手を入れた規律を既定文へ戻さない）。強化モードの `rewrite` でも同じ規律で付ける。
+
 ### Stage 5: 検証資産生成（計画のマテリアライズ）
 
 Stage 1 の Planner が既に `FactoryPlan.personas` / `FactoryPlan.scenarios` を設計しているため、初期実装ではこの段を**決定的マテリアライズ**とする（別途LLM生成しない。ScenarioDesignerロールによる後段の追い込みは後続スライス）。
 
 - 各 `plan.personas` を `SavePersonaUseCase` → `RegisterPseudoUserAgentUseCase` で疑似ユーザーAgent化する。`personaKey → 疑似ユーザーAgent版` を対応付ける。
-- 各 `plan.scenarios` を `SaveScenarioUseCase` で保存する。`target` は生成Agent版、`pseudoUser` は対応する疑似ユーザーAgent版へSemVer固定。`expectedTools` は `expectedToolKeys` を生成済みToolの公開名へ解決したもの（生成できなかったToolのキーは除外）。`survey` は `DEFAULT_SURVEY`。`maxUserTurns` は計画値。
+- 各 `plan.scenarios` を `SaveScenarioUseCase` で保存する。`target` は生成Agent版、`pseudoUser` は対応する疑似ユーザーAgent版へSemVer固定。`expectedTools` は `expectedToolKeys` を**エージェントがそのToolを呼ぶときの関数名**（`agentTool.name ?? publishName`）へ解決したもの（生成できなかったToolのキーは除外）。`survey` は `DEFAULT_SURVEY`。`maxUserTurns` は計画値。
+
+> **期待Tool名は `publishName` ではない。** `RunScenarioUseCase` が `metrics.expectedToolHit.called` に入れるのはトレースの `tool-call` 名、すなわち `toolToModelDefinition` がモデルへ公開する関数名である。`publishName` を期待名に入れると、Factory生成Toolは必ず `agentTool.name` を持つため `toolHitRate` が構造的に常に0になる（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。再利用した既存Toolも同じ導出（既存ツールカタログの `toolName`）で入れる。
 
 **Scenario集合はRun内で凍結する。** 以降のイテレーションでScenarioを書き換えない（回帰比較の成立条件）。新Agent版の再検証は `RunScenarioUseCase` の既存の対象上書き（`input.target`）で行うため、Scenario版の改訂は不要である。Analystがシナリオ自体の欠陥を検出した場合はFindingとしてレポートに残すのみとする。
 
@@ -187,9 +245,10 @@ flowchart LR
 | 指標 | 出所 |
 |---|---|
 | `goalAchievedRate` | `ScenarioRun.goalAchieved` の平均（**主指標**） |
-| `avgSatisfaction` | アンケート「総合満足度」（scale 1..5）の平均 |
-| `toolHitRate` | `ScenarioRun.metrics.expectedToolHit.hitRate` の平均 |
-| `errorRate` | status = `error` の割合 |
+| `avgSatisfaction` | アンケート「総合満足度」（scale 1..5）の平均。**回収できたRunだけの平均**（欠測は平均に現れない） |
+| `toolHitRate` | `ScenarioRun.metrics.expectedToolHit.hitRate` の平均（期待名は Stage 5 の規約どおり Tool契約名） |
+| `errorRate` | status = `error` の割合。**会話（疑似ユーザー / Agent）の失敗だけ**を数える。アンケートだけ取れなかったRunは `completed` / `max-turns` のまま `error` に含めない |
+| `surveyMissingCount` | `q2`（総合満足度）を回収できなかったScenarioRunの件数。`avgSatisfaction` は欠測を平均へ反映しないので、「満足度が低い」と「測れていない」はこの数字でしか区別できない（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)） |
 | `avgUserTurns` / usage / durationMs | `ScenarioRun.metrics` |
 
 ### 5.2 停止条件（いずれか成立で終了）
@@ -198,7 +257,35 @@ flowchart LR
 2. **改善停滞**: 主指標が前イテレーションから改善せず、`avgSatisfaction` も改善しない。
 3. **上限**: `maxIterations`（既定3）、`budget`（時間・LLM呼び出し・シナリオ実行数）のいずれか到達。
 
-終了時は**最良イテレーションの資産版**を候補としてレポートへ記載する（最終イテレーションが最良とは限らない）。
+4. **改訂の打ち切り**: Analystが提案を1件も返さない、または返した提案が全て却下された。どちらも理由をイベントへ必ず残す（下記）。
+
+終了時は**最良イテレーションの資産版**を候補としてレポートへ記載する（最終イテレーションが最良とは限らない）。選択規則は優先順に **`goalAchievedRate` 大 → `errorRate` 小 → `avgSatisfaction` 大 → index 小**。`errorRate` を満足度より先に見るのは、会話が落ちたイテレーションは「観測できていない」のであって「満足度が高い」わけではないため。全て同点なら早いイテレーションを残す（同じ成績なら改訂の少ない版を採る）。
+
+#### Analystが提案を返さなかった場合（ロール失敗として扱う）
+
+実測では、総括に「system promptを改訂する」と書きながら `proposals` が空で返り、`maxIterations` に余裕があるのにループが1回で静かに終わった（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。
+
+- `proposals` が空なら、明示的な差し戻し文言を untrusted payload 側へ添えて**1回だけ**再依頼する（`budget.maxRoleCalls` に余裕があるときだけ。無ければ再依頼しない）。
+- それでも空ならループを打ち切るが、`no_proposals` を接頭辞に持つ `proposal_rejected` イベント（stage: `analyzing`）で理由を残す。
+- 提案はあったが1件も適用できなかった場合も同様に `no_applied_proposals` で残す。
+
+新しい `FactoryEventKind` は追加しない（イベント語彙を増やさず、messageで説明する）。
+
+#### Analystへ渡す材料（Scenario別サマリ）
+
+Analystは status / goalAchieved / 感想だけでは失敗の原因を推測するしかなく、実測では毎回「Toolを呼んでいない → プロンプトを簡素化」という誤診に落ちた。次を必ず載せる（いずれも決定的な事実で、解釈はAnalystに委ねる）。
+
+| フィールド | 出所 | 取り違えを防ぐもの |
+|---|---|---|
+| `errorStage` / `errorMessage` | `ScenarioRun.error` | `survey` 段の失敗は会話が成立していること |
+| `expectedTools` / `calledTools` | `metrics.expectedToolHit` | 「名前が違う」と「呼んでいない」 |
+| `surveyCollected` | `q2` の有無 | 「満足度が低い」と「測れていない」 |
+| `toolCalls[]`（`name` / `arguments` / `rowCount` / `noMatch` / `error`） | `transcript[].runId` からAgent Runのトレースを引いて畳む。トレースは**防御的に**読む（`rowCount` も `noMatch` も古いRunには無い） | 「引数の書式・値が違って0行」 |
+| `answeredWithNumbersAfterZeroRows` | 0行（または該当なし）の直後に数字入りで答えたターンがあるか | 「データに無い数字を作文した」 |
+| `regressions[]` | 前イテレーションからの**悪化**を決定的に列挙した文字列（主指標・満足度・ツール命中率の低下、エラー率・アンケート欠測の増加、前に無かった失敗段の出現）。悪化が無ければキーごと渡さない | 「良くなったのか悪くなったのか」を数字から読み取らせない |
+| `toolCallBudget` | 1会話で呼べるツールの上限（`MAX_TOOL_CALLS`） | 「対象ごとに1回ずつ呼ぶ」改訂を提案させない |
+
+Analystのsystemプロンプトには、これらの**読み方**も書く（欠測は不満ではない / 名前違いは不使用ではない / 0行は引数の問題であってプロンプトの問題ではない / `regressions` の各項目は必ず findings に反映し、空の findings で返さない / カテゴリ引数を単一値へ絞らない）。
 
 ### 5.3 改訂提案（ImprovementProposal）
 
@@ -221,6 +308,7 @@ type ImprovementProposal =
 - `add-tool` / `add-skill` は「無い能力を足す」提案で、Tool/Skillを新規保存した上でAgent新版の参照へ**追加**する（既存参照の版差替とは別経路）。`add-skill` の `plan.toolRefs` は「対象Agentが今持つTool」か「同一イテレーションの `add-tool`」だけを指せる（internalId / publishName / Tool契約名 / `add-tool` の `plan.key` の順で解決し、1つでも解決できなければ提案ごと却下）。
 - `add-tool` は Analyst へ `availableDataSources`（Stage 0 プロファイルの要約）が渡っている場合だけ提案でき、そこに無い `dataSourceId` を指す提案は破棄する。1イテレーションの追加系（`add-tool` + `add-skill`）は合計2件までに絞る（改訂の枠を食い潰さないため）。
 - 1イテレーションで適用する提案数に上限を設ける（既定4）。`system-prompt-revision` は1イテレーションにつき1件のみ。検証に落ちた提案は破棄し、`proposal_rejected` イベントへ理由を残す。
+- `system-prompt-revision` は役割文・実行規則を差し替えるが、§4 Stage 4 の**回答の規律ブロックは決定的に付け直す**（起点Agentが持っていた文面があればそれを引き継ぐ）。LLMに書かせた規律はLLMに消されるため、規律は合成側の責務として固定する（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。
 
 ## 6. ドメインモデル
 
@@ -273,8 +361,26 @@ interface FactoryReport {
   summary: string;                           // Analystによる総括（人間向け）
   openFindings: readonly Finding[];          // 未解決の指摘（シナリオ欠陥等を含む）
   metricsByIteration: readonly IterationMetrics[];
+  quality: 'met-targets' | 'below-targets' | 'unverified';  // 決定的な品質判定（§6.1）
+  qualityReasons: readonly string[];         // その根拠（met-targetsで目標を満たしていれば空）
 }
 ```
+
+### 6.1 Runの状態と成果物の質は別物（`report.quality`）
+
+`FactoryRunStatus` は**パイプラインが最後まで走ったか**しか表さない。`succeeded` は「生成 → 検証 → 分析 → レポートが完走した」であり、できあがったAgentが使い物になるかは何も言っていない。実測では `errorRate: 1` / `avgSatisfaction: 0` のRunが `succeeded` + 自信のある総括で終わった（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。
+
+そこで `report.quality` を、**最良イテレーションのメトリクスと `options.targets` だけから決定的に**算出する（LLMの総括は見ない）。
+
+| 値 | 条件 | 意味 |
+|---|---|---|
+| `met-targets` | `goalAchievedRate ≥ minGoalAchievedRate` かつ `avgSatisfaction ≥ minAvgSatisfaction` | 目標を満たした |
+| `below-targets` | 測れたうえで、どちらかが目標に届かない | 未達 |
+| `unverified` | イテレーション0件 / シナリオ0件 / `errorRate` が1（全シナリオが会話段で失敗）/ アンケート全欠測 | **そもそも測れていない**（未達とは断定しない） |
+
+`qualityReasons` には人間向けの短文を入れる（「全シナリオがエラーで挙動を観測できていない」「`avgSatisfaction` は低いのではなく欠測」「`goalAchievedRate` が目標を下回る」など）。一部だけアンケート欠測でも目標自体を満たしていれば `met-targets` のままで、欠測の事実だけを理由として残す。
+
+`quality` はAPI / UIのDTOにも出し、Factory画面ではレポート見出しの直下に「成功」とは別の行として表示する。イテレーション別メトリクスの表にも `surveyMissingCount`（アンケート未回収 / シナリオ数）の列を出す。
 
 - 生成資産の出所は `FactoryRun.artifacts` が台帳として一元管理する。Tool / Skill / Agent 側の共通メタデータへは出所フィールドを追加しない（資産側の型を変えない）。
 - イベントは append-only の `FactoryEvent`（sequence付き）として **`FactoryRun` レコード内に埋め込む**（Harness run と同じ形。別テーブルにしない）。主なkind: `stage_started` / `stage_completed` / `plan_proposed` / `approval_requested` / `approval_resolved` / `tool_generated` / `tool_reused` / `tool_repair_attempted` / `artifact_saved` / `scenario_run_completed` / `analysis_completed` / `proposal_applied` / `proposal_rejected` / `iteration_completed` / `budget_exceeded` / `run_completed` / `run_failed` / `run_cancelled`。`GET /factory-runs/:runId/events` はRunレコードの `events` を返す。
@@ -362,7 +468,7 @@ POST   /factory-runs/:runId/cancel
 
 1. 入力はgoal必須・データソース1件以上（強化モードでは対象Agent必須・データソース任意）。`requirePlanApproval` 有効時は計画カードに承認・修正・却下ボタンを表示する。詳細オプションには、強化モードのときだけ systemPrompt の扱い（`promptStrategy`: 既存プロンプトを保つ / モデルに役割・ルールを書き直させる）を出す。
 2. タイムラインはevents購読（ポーリング）で更新し、各StageからArtifact（Tool / Agent / ScenarioRun）の既存画面へリンクする。
-3. レポートはイテレーション別メトリクスの推移、最良候補版、未解決Findingを表示する。**昇格ボタンは置かない**（既存のQuality画面へ誘導する）。
+3. レポートは**品質判定（`report.quality` とその理由）**を先頭に出し、続けてイテレーション別メトリクスの推移（アンケート未回収件数を含む）、最良候補版、未解決Findingを表示する。Runの状態（成功）と成果物の質を同じ画面で必ず並べて読ませる（§6.1）。**昇格ボタンは置かない**（既存のQuality画面へ誘導する）。
 
 ## 11. 検証と評価
 

@@ -22,6 +22,7 @@ import { filterNode } from './filter';
 import { renameNode } from './rename';
 import { castNode } from './cast';
 import { calculateNode } from './calculate';
+import { parsePeriodNode } from './parse-period';
 import { joinNode } from './join';
 import { unionNode } from './union';
 import { sortNode } from './sort';
@@ -78,6 +79,8 @@ export type {
   ExpressionPreviewRow,
   ExpressionValidation,
 } from './calculate-diagnostics';
+export { parsePeriodNode, parsePeriodLabel, PARSE_PERIOD_TYPE, PERIOD_GRANULARITIES } from './parse-period';
+export type { ParsePeriodConfig, ParsedPeriod, PeriodGranularity } from './parse-period';
 export { agentInputNode } from './agent-input';
 export type { AgentInputConfig } from './agent-input';
 export { journalAttachmentSourceNode } from './journal-attachment';
@@ -142,6 +145,7 @@ export function createDefaultRegistry(): NodeRegistry {
   registry.register(renameNode);
   registry.register(castNode);
   registry.register(calculateNode);
+  registry.register(parsePeriodNode);
   registry.register(joinNode);
   registry.register(unionNode);
   registry.register(sortNode);

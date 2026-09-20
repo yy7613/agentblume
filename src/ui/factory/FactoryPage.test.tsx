@@ -167,9 +167,11 @@ describe('FactoryPage', () => {
         summary: 'Iteration 1 missed the goal; revised skill instructions to double-check totals.',
         openFindings: [],
         metricsByIteration: [
-          { iteration: 1, goalAchievedRate: 0, avgSatisfaction: 2, toolHitRate: 0, errorRate: 0, avgUserTurns: 1, scenarioCount: 1, usage: { totalTokens: 15 }, durationMs: 250 },
-          { iteration: 2, goalAchievedRate: 1, avgSatisfaction: 5, toolHitRate: 1, errorRate: 0, avgUserTurns: 1, scenarioCount: 1, usage: { totalTokens: 15 }, durationMs: 250 },
+          { iteration: 1, goalAchievedRate: 0, avgSatisfaction: 2, toolHitRate: 0, errorRate: 0, avgUserTurns: 1, scenarioCount: 1, surveyMissingCount: 0, usage: { totalTokens: 15 }, durationMs: 250 },
+          { iteration: 2, goalAchievedRate: 1, avgSatisfaction: 5, toolHitRate: 1, errorRate: 0, avgUserTurns: 1, scenarioCount: 1, surveyMissingCount: 0, usage: { totalTokens: 15 }, durationMs: 250 },
         ],
+        quality: 'met-targets',
+        qualityReasons: [],
       },
       finishedAt: '2026-07-20T00:00:00.500Z',
     });
@@ -529,8 +531,10 @@ describe('FactoryPage', () => {
         summary: 'Enhanced existing agent Sales Assistant@1.2.0.',
         openFindings: [],
         metricsByIteration: [
-          { iteration: 1, goalAchievedRate: 1, avgSatisfaction: 5, toolHitRate: 1, errorRate: 0, avgUserTurns: 1, scenarioCount: 1, usage: { totalTokens: 15 }, durationMs: 250 },
+          { iteration: 1, goalAchievedRate: 1, avgSatisfaction: 5, toolHitRate: 1, errorRate: 0, avgUserTurns: 1, scenarioCount: 1, surveyMissingCount: 0, usage: { totalTokens: 15 }, durationMs: 250 },
         ],
+        quality: 'met-targets',
+        qualityReasons: [],
       },
       finishedAt: '2026-07-20T00:00:00.500Z',
     });

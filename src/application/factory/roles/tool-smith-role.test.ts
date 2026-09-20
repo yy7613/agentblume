@@ -4,13 +4,15 @@ import { FILTER_OPS, ORDER_OPS, VALUELESS_OPS } from '../../../domain/etl/nodes/
 import type { FactoryToolPlan } from '../../../domain/factory/factory-plan';
 import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../../model/model-provider';
 import type { DataProfile } from '../profile-data-sources';
-import { ToolSmithRole } from './tool-smith-role';
+import { PERIOD_GRANULARITIES } from '../../../domain/etl/nodes/parse-period';
+import { MAX_TOOL_CALLS } from '../../agent/run-agent-preview';
+import { SAFE_TRANSFORM_TYPES, ToolSmithRole } from './tool-smith-role';
 
 const toolPlan: FactoryToolPlan = { key: 'lookup', displayName: 'Lookup Sales', purpose: 'Look up sales rows.', dataSourceId: 'ds-1', sideEffect: 'read-only' };
 const profile: DataProfile = {
   dataSourceId: 'ds-1', name: 'Sales', kind: 'file', format: 'csv',
   columns: [{ name: 'id', type: 'number', nullable: false }, { name: 'amount', type: 'number', nullable: false }],
-  sampleRowCount: 2, sampleRows: [{ id: 1, amount: 100 }, { id: 2, amount: 200 }],
+  sampleRowCount: 2, sampleRows: [{ id: 1, amount: 100 }, { id: 2, amount: 200 }], rowCount: 2, periodColumns: [], categoricalColumns: [],
 };
 
 function validProposalJson(): string {
@@ -222,5 +224,133 @@ describe('ToolSmithRole', () => {
     const role = new ToolSmithRole(model);
     expect(role.available()).toBe(false);
     await expect(role.propose({ toolPlan, profile })).rejects.toThrow(/does not support structured output/);
+  });
+});
+
+// ─── ADR-0047: 期間・行数・値の列挙をToolSmithへ伝える ────────────────────────────────
+describe('ToolSmithRole（期間列・出力の上限・引数の値域）', () => {
+  /** e-Stat 実データに似せたプロファイル（粒度混在の期間列 + 列挙できる地域列 + 大量行）。 */
+  const estatProfile: DataProfile = {
+    dataSourceId: 'ds-estat', name: 'Unemployment', kind: 'file', format: 'csv',
+    columns: [
+      { name: '時点', type: 'string', nullable: false },
+      { name: '地域', type: 'string', nullable: false },
+      { name: '完全失業者（男女計）【万人】', type: 'number', nullable: true },
+      { name: '注記', type: 'string', nullable: true },
+    ],
+    sampleRowCount: 2, sampleRows: [{ 時点: '1975年10月', 地域: '全国' }, { 時点: '2024年', 地域: '北海道' }],
+    rowCount: 1191,
+    periodColumns: [{ column: '時点', granularities: { month: 600, quarter: 200, year: 300, 'fiscal-year': 91 }, minStart: '1975-01-01', maxStart: '2024-04-01', mixed: true }],
+    categoricalColumns: [{ column: '地域', distinctCount: 3, values: ['全国', '北海道', '青森県'] }],
+  };
+
+  function systemPromptFor(profile: DataProfile): Promise<string> {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
+    return new ToolSmithRole(model)
+      .propose({ toolPlan, profile })
+      .then(() => String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content));
+  }
+
+  it('正常: 許可する変換ノードに parse-period と limit が入り、それぞれのconfig契約をカタログとして示す', async () => {
+    const system = await systemPromptFor(estatProfile);
+
+    expect(SAFE_TRANSFORM_TYPES).toContain('parse-period');
+    expect(SAFE_TRANSFORM_TYPES).toContain('limit');
+    expect(system).toContain('Node catalog (config contract of every transform node you may use):');
+    expect(system).toContain('"count": <1..10000>');
+    expect(system).toContain('"startColumn": "periodStart"');
+    expect(system).toContain('"granularityColumn": "periodGranularity"');
+    expect(system).toContain('"fiscalYearStartMonth": 4');
+    expect(system).toContain('"keys": [{ "column": "<column>", "direction": "asc" | "desc"');
+    // 粒度の語彙は domain の正準リストから導出する（プロンプト側でリテラルを複製しない）。
+    for (const granularity of PERIOD_GRANULARITIES) expect(system).toContain(`'${granularity}'`);
+  });
+
+  it('正常: 期間の定石（parse-period → 粒度で絞る → 開始日で範囲指定 → 並べ替え）をプロンプトへ含める', async () => {
+    const system = await systemPromptFor(estatProfile);
+
+    expect(system).toMatch(/source → parse-period → filter \(periodGranularity eq/);
+    expect(system).toMatch(/MUST also filter "periodGranularity"/);
+    expect(system).toMatch(/"type": "date" and bound with valueBinding to the gte \/ lte conditions/);
+  });
+
+  it('正常: 既定呼び出しで溢れないよう出力を縛る規則と、説明文へ書くべき内容を指示する', async () => {
+    const system = await systemPromptFor(estatProfile);
+
+    expect(system).toMatch(/the tool MUST stay useful when the agent sends NO arguments at all/);
+    expect(system).toMatch(/append a 'limit'|end the chain with a 'limit'/);
+    expect(system).toContain('agentTool.description (what the agent reads before calling):');
+    expect(system).toMatch(/List the valid values when the data has few of them/);
+  });
+
+  it('正常: プロファイルの期間列・値の列挙・総行数はuntrusted data側でモデルへ渡す', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
+
+    await new ToolSmithRole(model).propose({ toolPlan, profile: estatProfile });
+
+    const user = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
+    expect(user).toContain('<untrusted-data');
+    expect(user).toContain('"rowCount":1191');
+    expect(user).toContain('"mixed":true');
+    expect(user).toContain('青森県');
+  });
+
+  it('境界: 期間列も列挙できる列も無いプロファイルでは、空配列として渡す（キーを落とさない）', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
+
+    await new ToolSmithRole(model).propose({ toolPlan, profile });
+
+    const user = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
+    expect(user).toContain('"periodColumns":[]');
+    expect(user).toContain('"categoricalColumns":[]');
+  });
+});
+
+// ─── ADR-0047 round 2: 証拠列・範囲・1回で複数カテゴリ を ToolSmith へ教える ─────────────
+describe('ToolSmithRole（証拠列の保全・範囲・カテゴリ引数）', () => {
+  async function systemPrompt(): Promise<string> {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
+    await new ToolSmithRole(model).propose({ toolPlan, profile });
+    return String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
+  }
+
+  it('正常: 期間ラベル列・値の列・注記列を落とさない規則を含む（注記はプロンプト規則）', async () => {
+    const system = await systemPrompt();
+
+    expect(system).toMatch(/MUST still contain that ORIGINAL label column/);
+    expect(system).toMatch(/'periodStart' does not replace it/);
+    expect(system).toMatch(/keep a note\/remark column \(注記, remarks, 備考\)/);
+    expect(system).toMatch(/A 'select' is only worth adding when the source has many irrelevant columns/);
+  });
+
+  it('正常: 範囲は2つのnullable引数・date列はdate型・開始日で降順、をプロンプトで指示する', async () => {
+    const system = await systemPrompt();
+
+    expect(system).toMatch(/A date range needs TWO nullable arguments/);
+    expect(system).toMatch(/NEVER bind the same argument to both a lower bound \(gt\/gte\) and an upper bound \(lt\/lte\)/);
+    expect(system).toMatch(/MUST be declared "type": "date" \(not "string"\)/);
+    expect(system).toMatch(/Dates always mean the START of the period/);
+    expect(system).toMatch(/"direction": "desc"/);
+  });
+
+  it('正常: カテゴリ引数は省略可能のまま・1回で全カテゴリを返す設計を、呼び出し上限つきで指示する', async () => {
+    const system = await systemPrompt();
+
+    expect(system).toContain(`the conversation has a budget of ${MAX_TOOL_CALLS} tool calls`);
+    expect(system).toMatch(/A category argument \(region, category, segment\) MUST stay nullable/);
+    expect(system).toMatch(/Never design a tool that accepts only one category value per call/);
+    expect(system).toMatch(/never say "one region at a time" in the description/);
+  });
+
+  it('正常: 説明文には粒度・日付の意味・データが覆う範囲・省略時の挙動を書かせる', async () => {
+    const system = await systemPrompt();
+
+    expect(system).toMatch(/State which granularity the rows come back as/);
+    expect(system).toMatch(/State the range the data actually covers \(dataSource.periodColumns gives minStart \/ maxStart\)/);
+    expect(system).toMatch(/especially: omitting the category returns every category/);
   });
 });

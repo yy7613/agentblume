@@ -37,6 +37,11 @@ export interface AssemblerRoleInput {
    * `<untrusted-data>` の中（payload側）へ入れ、system命令からは隔離する。
    */
   readonly currentPrompt?: string;
+  /**
+   * 1回の会話でエージェントが呼べるツールの上限（`MAX_TOOL_CALLS`）。実測では「対象ごとに1回ずつ
+   * ツールを呼ぶ」書き方が上限に当たって会話ごと失敗したため、規則を書く側へ数字を渡す（ADR-0047）。
+   */
+  readonly toolCallBudget?: number;
 }
 
 export interface AssemblerProposal {
@@ -63,6 +68,12 @@ export class AssemblerRole {
       '- Do NOT restate or regenerate the skill guide or tool usage guide shown below; they are composed deterministically elsewhere and are appended verbatim after your output.',
       '- "role" describes who the agent is and what it helps the user accomplish, tailored to the goal and target users.',
       '- "rules" adds goal-specific execution rules only; do not repeat generic tool-usage rules already covered by the tool usage guide.',
+      ...(input.toolCallBudget === undefined
+        ? []
+        : [
+            `- The agent may make at most ${input.toolCallBudget} tool calls in one conversation ("toolCallBudget" in the user message). Never write a rule that implies one call per item ("call the tool once for each region"): comparing a handful of items would exceed the budget and the whole conversation fails.`,
+            '- When a tool has an optional narrowing argument, prefer rules that omit it once and pick the needed rows out of the single result.',
+          ]),
       // 既存プロンプトの改訂であることを明示する（全面的な作り替えは利用者の資産を壊すため禁止する）。
       ...(revising
         ? [
@@ -78,6 +89,7 @@ export class AssemblerRole {
     ].join('\n');
     const payload = {
       goal: input.goal, agentBrief: input.agentBrief, skillGuide: input.skillGuide, toolUsageGuide: input.toolUsageGuide,
+      ...(input.toolCallBudget === undefined ? {} : { toolCallBudget: input.toolCallBudget }),
       ...(input.currentPrompt === undefined ? {} : { currentPrompt: input.currentPrompt }),
     };
     const completion = await this.model.complete({

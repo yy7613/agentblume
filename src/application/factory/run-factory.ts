@@ -17,6 +17,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Agent } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
+import type { RunRepository } from '../../domain/run/run-repository';
+import type { RunTraceEvent } from '../../domain/run/run';
 import type { SkillRepository } from '../../domain/skill/skill-repository';
 import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SemVer } from '../../domain/tool/semver';
@@ -40,8 +42,10 @@ import {
   type FactoryIteration,
   type FactoryPlanCheckpoint,
   type FactoryReport,
+  type FactoryReportQuality,
   type FactoryRun,
   type FactoryRunStatus,
+  type IterationMetrics,
 } from '../../domain/factory/factory-run';
 import type { FactoryPlan } from '../../domain/factory/factory-plan';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
@@ -51,11 +55,12 @@ import { FactoryAbortedError, FactoryValidationError } from '../../domain/factor
 import type { ScenarioRun } from '../../domain/validation/scenario-run';
 import { describeAbort, throwIfAborted } from './abort';
 import { ApplyImprovementsUseCase } from './apply-improvements';
+import { MAX_TOOL_CALLS } from '../agent/run-agent-preview';
 import { FACTORY_OWNER, GenerateAgentAssetsUseCase, makePublishName, type GenerateAgentAssetsResult } from './generate-agent-assets';
 import { aggregateIterationMetrics } from './metrics';
 import { ProfileDataSourcesUseCase, type DataProfile } from './profile-data-sources';
 import { buildExistingToolCatalog } from './tool-catalog';
-import { AnalystRole, type AnalystDataSourceSummary, type AnalystScenarioSummary } from './roles/analyst-role';
+import { AnalystRole, EMPTY_PROPOSALS_FEEDBACK, type AnalystDataSourceSummary, type AnalystScenarioSummary, type AnalystToolCallSummary } from './roles/analyst-role';
 import { PlannerRole, type PlannerCurrentAgent } from './roles/planner-role';
 import type { ScenarioRunnerPort } from './scenario-runner-port';
 import type { SavePersonaUseCase } from '../validation/save-persona';
@@ -90,6 +95,12 @@ export class RunFactoryUseCase {
     private readonly agents: AgentRepository,
     private readonly skills: SkillRepository,
     private readonly tools: ToolRepository,
+    /**
+     * Agent Run のトレース置き場（`ScenarioRun.transcript[].runId` の参照先）。Analystへ「実際に
+     * 呼ばれたTool・その引数・返ってきた行数」を渡すためだけに読む（ADR-0047）。未注入の配線では
+     * Analyst入力がツール呼び出しの詳細を欠くだけで、Run自体は従来どおり動く。
+     */
+    private readonly agentRuns?: RunRepository,
     private readonly makeId: () => string = randomUUID,
     private readonly now: () => Date = () => new Date(),
   ) {}
@@ -359,7 +370,7 @@ export class RunFactoryUseCase {
       if (pseudoUser === undefined) continue; // personaKeyが解決できないScenarioは欠落として除外して続行する。
 
       const expectedTools = scenarioPlan.expectedToolKeys
-        .map((key) => assets.toolKeyToPublishName.get(key))
+        .map((key) => assets.toolKeyToToolName.get(key))
         .filter((publishName): publishName is string => publishName !== undefined);
 
       const scenario = await this.saveScenario.execute({
@@ -451,6 +462,8 @@ export class RunFactoryUseCase {
     let current = run;
     let scenarioRuns = latestScenarioRuns;
     let lastSummary: string | undefined;
+    /** 直前に分析したイテレーションで観測された失敗の段（新しい壊れ方の検出に使う）。 */
+    let previousErrorStages: ReadonlySet<string> | undefined;
     // Analystの `add-tool` 提案はこの一覧に載っているデータソースだけを対象にできる（未指定なら提案させない）。
     // 生成モード・強化モードとも Stage 0 のプロファイルをそのまま要約して渡す。
     const availableDataSources = toAnalystDataSources(context.profiles);
@@ -491,23 +504,53 @@ export class RunFactoryUseCase {
       const currentSkills = await this.loadCurrentSkillContracts(current.scope, agent.skills);
       const currentTools = await this.loadCurrentToolContracts(current.scope, agent.tools);
 
-      const analystResult = await this.analyst.propose({
+      // 前イテレーションからの悪化は決定的に列挙して渡す（Analystに数字の比較をさせない・ADR-0047 round 2）。
+      const latestErrorStages = errorStagesOf(scenarioRuns);
+      const regressions = describeRegressions(
+        { metrics: latest.metrics, errorStages: latestErrorStages },
+        previous === undefined || previousErrorStages === undefined ? undefined : { metrics: previous.metrics, errorStages: previousErrorStages },
+      );
+      const analystInput = {
         goal: current.input.goal,
         metrics: latest.metrics,
-        scenarioSummaries: buildScenarioSummaries(scenarioRuns),
+        scenarioSummaries: await buildScenarioSummaries(scenarioRuns, this.agentRuns, current.scope),
         currentAgent: { id: agent.metadata.internalId, systemPrompt: agent.systemPrompt },
         currentSkills,
         currentTools,
+        // 「対象ごとに1回ずつ呼ぶ」設計を提案させないため、会話あたりのツール呼び出し上限を渡す。
+        toolCallBudget: MAX_TOOL_CALLS,
+        ...(regressions.length === 0 ? {} : { regressions }),
         ...(availableDataSources.length === 0 ? {} : { availableDataSources }),
-      }, signal);
+      };
+      previousErrorStages = latestErrorStages;
+      let analystResult = await this.analyst.propose(analystInput, signal);
       throwIfAborted(signal);
+      let analystCalls = 1;
+
+      // 「改訂すると書きながら proposals が空」はロールの失敗（ADR-0047）。黙ってループを終わらせず、
+      // 明示的な差し戻し文言で1回だけ再依頼する（予算 `maxRoleCalls` に余裕があるときだけ）。
+      if (analystResult.proposals.length === 0 && current.budget.consumed.roleCalls + analystCalls < budget.maxRoleCalls) {
+        analystResult = await this.analyst.propose({ ...analystInput, feedback: EMPTY_PROPOSALS_FEEDBACK }, signal);
+        throwIfAborted(signal);
+        analystCalls += 1;
+      }
       lastSummary = analystResult.summary;
 
-      current = updateBudget(current, { ...current.budget.consumed, roleCalls: current.budget.consumed.roleCalls + 1 });
+      current = updateBudget(current, { ...current.budget.consumed, roleCalls: current.budget.consumed.roleCalls + analystCalls });
       current = attachAnalysisToLastIteration(current, { findings: analystResult.findings, applied: [], rejected: [] });
       await this.persist(current);
       current = await this.event(current, { kind: 'analysis_completed', at: this.now().toISOString(), stage: 'analyzing', iteration: latest.index });
       current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'analyzing' });
+
+      // 再依頼しても提案が0件 = 改善ループはこれ以上進めない。理由を必ずイベントへ残してから抜ける
+      // （黙って break すると「maxIterations 2 なのに1回で終わった」理由がRunのどこにも残らない）。
+      if (analystResult.proposals.length === 0) {
+        current = await this.event(current, {
+          kind: 'proposal_rejected', at: this.now().toISOString(), stage: 'analyzing', iteration: latest.index,
+          message: `${LOOP_STOPPED_NO_PROPOSALS}: the analyst returned no proposals${analystCalls > 1 ? ' even after an explicit re-ask' : ''}, so the improvement loop stopped after iteration ${latest.index}`,
+        });
+        break;
+      }
 
       // Improve（改訂提案の検証・適用）。
       current = advanceStage(current, 'improving');
@@ -536,8 +579,13 @@ export class RunFactoryUseCase {
       const noChange = applyResult.newAgentRef.internalId === agentRef.internalId && applyResult.newAgentRef.version === agentRef.version;
       if (noChange) {
         await this.persist(current);
+        // 提案はあったが1件も適用できなかった（全て却下）→ これ以上変化しないため打ち切る。理由を残す。
+        current = await this.event(current, {
+          kind: 'proposal_rejected', at: this.now().toISOString(), stage: 'improving', iteration: latest.index,
+          message: `${LOOP_STOPPED_NO_APPLIED_PROPOSALS}: all ${analystResult.proposals.length} proposal(s) were rejected, so the improvement loop stopped after iteration ${latest.index}`,
+        });
         current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'improving' });
-        break; // 適用できる提案がなかった（全て却下）→ これ以上変化しないため打ち切る。
+        break;
       }
 
       current = setArtifacts(current, { ...current.artifacts, agentVersions: [...current.artifacts.agentVersions, applyResult.newAgentRef] });
@@ -560,12 +608,17 @@ export class RunFactoryUseCase {
 
     // 強化モードであることをレポートからも読み取れるようにする（UIはsummaryをそのまま表示する）。
     const summary = lastSummary ?? defaultSummary(current.iterations);
+    // Runのstatusは「パイプラインが最後まで走ったか」でしかない。成果物が目標を満たしたかは
+    // メトリクス vs targets から決定的に判定して別に載せる（ADR-0047）。
+    const verdict = assessReportQuality(bestIteration.metrics, current.input.options.targets);
     const report: FactoryReport = {
       bestIteration: bestIteration.index,
       candidate: { agentId: agentInternalId, version: bestIteration.agentVersion },
       summary: context.baseAgent === undefined ? summary : `Enhanced existing agent ${describeAgent(context.baseAgent)}. ${summary}`,
       openFindings: lastIteration?.analysis?.findings ?? [],
       metricsByIteration: current.iterations.map((iteration) => iteration.metrics),
+      quality: verdict.quality,
+      qualityReasons: verdict.reasons,
     };
 
     current = await this.event(current, { kind: 'stage_completed', at: this.now().toISOString(), stage: 'reporting' });
@@ -688,34 +741,211 @@ function toAnalystDataSources(profiles: readonly DataProfile[]): AnalystDataSour
   }));
 }
 
-/** Analyst入力用のScenario別サマリを構築する（`q2` = 総合満足度。docs/16 §5.1と同じ規約）。 */
-function buildScenarioSummaries(scenarioRuns: readonly ScenarioRun[]): AnalystScenarioSummary[] {
-  return scenarioRuns.map((scenarioRun) => {
+/** 数字（半角・全角）を含む回答か。「0行なのに数字で答えた」の判定に使う。 */
+function containsNumber(text: string): boolean {
+  return /[0-9０-９]/.test(text);
+}
+
+/**
+ * Agent Run のトレース1本を Analyst 用のツール呼び出し要約へ畳む。
+ *
+ * トレースは**防御的に**読む: `tool-result` の `nodes[].rowCount` も、別途追加されつつある `noMatch`
+ * 要約も、古いRunには無い（形が違えば黙って落とす）。
+ */
+function summarizeTrace(trace: readonly RunTraceEvent[]): { calls: AnalystToolCallSummary[]; zeroRowThenNumericAnswer: boolean } {
+  const calls: AnalystToolCallSummary[] = [];
+  let pendingZeroRows = false;
+  let zeroRowThenNumericAnswer = false;
+  for (const event of trace) {
+    if (event.kind === 'tool-call') {
+      calls.push({ name: event.name, arguments: { ...event.arguments } });
+      continue;
+    }
+    if (event.kind === 'tool-result') {
+      const last = calls[calls.length - 1];
+      const nodes = Array.isArray(event.nodes) ? event.nodes : [];
+      const terminal = nodes[nodes.length - 1];
+      const rowCount = typeof terminal?.rowCount === 'number' ? terminal.rowCount : undefined;
+      const noMatch = (event as { noMatch?: unknown }).noMatch;
+      const noMatchSummary = noMatch !== null && typeof noMatch === 'object' && !Array.isArray(noMatch)
+        ? { ...(noMatch as Record<string, unknown>) }
+        : undefined;
+      if (last !== undefined && last.name === event.name && last.rowCount === undefined && last.error === undefined) {
+        calls[calls.length - 1] = {
+          ...last,
+          ...(rowCount === undefined ? {} : { rowCount }),
+          ...(noMatchSummary === undefined ? {} : { noMatch: noMatchSummary }),
+        };
+      }
+      if (rowCount === 0 || noMatchSummary !== undefined) pendingZeroRows = true;
+      continue;
+    }
+    if (event.kind === 'error') {
+      const last = calls[calls.length - 1];
+      if (last !== undefined && last.error === undefined) calls[calls.length - 1] = { ...last, error: event.message };
+      continue;
+    }
+    if (event.kind === 'model-response') {
+      if (pendingZeroRows && containsNumber(event.content)) zeroRowThenNumericAnswer = true;
+      continue;
+    }
+  }
+  return { calls, zeroRowThenNumericAnswer };
+}
+
+/**
+ * Analyst入力用のScenario別サマリを構築する（`q2` = 総合満足度。docs/16 §5.1と同じ規約）。
+ *
+ * ADR-0047: status/goalAchieved/感想だけでは、Analystは「なぜ失敗したか」を推測するしかなく、
+ * 実測では毎回「Toolを呼んでいない → プロンプトを簡素化」という誤診に落ちた。失敗した段・期待Tool名と
+ * 実呼び出し名・ツールへ渡した引数と返った行数・アンケート欠測までを載せる。
+ */
+async function buildScenarioSummaries(scenarioRuns: readonly ScenarioRun[], runs: RunRepository | undefined, scope: TenantScope): Promise<AnalystScenarioSummary[]> {
+  const summaries: AnalystScenarioSummary[] = [];
+  for (const scenarioRun of scenarioRuns) {
     const satisfactionAnswer = scenarioRun.survey.find((answer) => answer.questionId === 'q2');
     const toolHitRate = scenarioRun.metrics.expectedToolHit?.hitRate;
-    return {
+
+    const toolCalls: AnalystToolCallSummary[] = [];
+    let zeroRowThenNumericAnswer = false;
+    if (runs !== undefined) {
+      for (const turn of scenarioRun.transcript) {
+        if (turn.runId === undefined) continue;
+        let record: Awaited<ReturnType<RunRepository['find']>> = null;
+        try {
+          record = await runs.find(scope, turn.runId);
+        } catch {
+          record = null; // トレースが読めないことで分析全体を落とさない（分析は補助情報）。
+        }
+        if (record === null || !Array.isArray(record.trace)) continue;
+        const summarized = summarizeTrace(record.trace);
+        toolCalls.push(...summarized.calls);
+        zeroRowThenNumericAnswer = zeroRowThenNumericAnswer || summarized.zeroRowThenNumericAnswer;
+      }
+    }
+
+    summaries.push({
       scenarioId: scenarioRun.scenario.id,
       status: scenarioRun.status,
       goalAchieved: scenarioRun.goalAchieved,
       ...(typeof satisfactionAnswer?.value === 'number' ? { satisfaction: satisfactionAnswer.value } : {}),
       impressions: scenarioRun.impressions,
       ...(toolHitRate !== undefined ? { toolHitRate } : {}),
-    };
-  });
+      ...(scenarioRun.metrics.expectedToolHit === undefined
+        ? {}
+        : { expectedTools: [...scenarioRun.metrics.expectedToolHit.expected], calledTools: [...scenarioRun.metrics.expectedToolHit.called] }),
+      ...(scenarioRun.error === undefined ? {} : { errorStage: scenarioRun.error.stage, errorMessage: scenarioRun.error.message }),
+      surveyCollected: typeof satisfactionAnswer?.value === 'number',
+      ...(toolCalls.length === 0 ? {} : { toolCalls }),
+      ...(zeroRowThenNumericAnswer ? { answeredWithNumbersAfterZeroRows: true } : {}),
+    });
+  }
+  return summaries;
 }
 
-/** goalAchievedRate最大、同点はavgSatisfaction最大のイテレーションを選ぶ（docs/16 §5.2: 最終イテレーションが最良とは限らない）。 */
-function selectBestIteration(iterations: readonly FactoryIteration[]): FactoryIteration {
+/**
+ * 最良イテレーションの選択規則（docs/16 §5.2。最終イテレーションが最良とは限らない）。
+ *
+ * 優先順に **goalAchievedRate 大 → errorRate 小 → avgSatisfaction 大 → index 小**。
+ * `errorRate` を満足度より先に見るのは、会話が落ちたイテレーションは「観測できていない」のであって
+ * 「満足度が高い」わけではないため（実測では改訂後に1件が `agent` 段で落ち、主指標が 0.5→0 になった）。
+ * 同点なら早いイテレーションを採る（同じ成績なら改訂の少ない版の方が安全）。
+ */
+export function selectBestIteration(iterations: readonly FactoryIteration[]): FactoryIteration {
   let best: FactoryIteration | undefined;
   for (const iteration of iterations) {
-    if (best === undefined
-      || iteration.metrics.goalAchievedRate > best.metrics.goalAchievedRate
-      || (iteration.metrics.goalAchievedRate === best.metrics.goalAchievedRate && iteration.metrics.avgSatisfaction > best.metrics.avgSatisfaction)) {
-      best = iteration;
-    }
+    if (best === undefined || comparesBetter(iteration.metrics, best.metrics)) best = iteration;
   }
   if (best === undefined) throw new FactoryValidationError('finalizeOrImprove: run has no iterations to select a best candidate from');
   return best;
+}
+
+/** `candidate` が `incumbent` より良いか（同点は false = 先に見たイテレーションを残す）。 */
+function comparesBetter(candidate: IterationMetrics, incumbent: IterationMetrics): boolean {
+  if (candidate.goalAchievedRate !== incumbent.goalAchievedRate) return candidate.goalAchievedRate > incumbent.goalAchievedRate;
+  if (candidate.errorRate !== incumbent.errorRate) return candidate.errorRate < incumbent.errorRate;
+  return candidate.avgSatisfaction > incumbent.avgSatisfaction;
+}
+
+/**
+ * 前イテレーションからの悪化を決定的に列挙する（ADR-0047 round 2）。
+ *
+ * Analystは「良くなった/悪くなった」を数字の羅列から読み取れず、実測では主指標が半減したうえに
+ * 会話が1件落ちたイテレーションで findings を0件返した。悪化は**事実として**渡す。
+ * `errorStages` は各イテレーションで観測された `ScenarioRun.error.stage` の集合で、
+ * 新しく現れた段は「前は起きていなかった壊れ方」なので必ず挙げる。
+ */
+export function describeRegressions(
+  latest: { readonly metrics: IterationMetrics; readonly errorStages: ReadonlySet<string> },
+  previous: { readonly metrics: IterationMetrics; readonly errorStages: ReadonlySet<string> } | undefined,
+): string[] {
+  if (previous === undefined) return [];
+  const regressions: string[] = [];
+  const dropped = (name: string, now: number, before: number): void => {
+    if (now < before) regressions.push(`${name} fell from ${before.toFixed(2)} to ${now.toFixed(2)} since the previous iteration`);
+  };
+  const rose = (name: string, now: number, before: number): void => {
+    if (now > before) regressions.push(`${name} rose from ${before.toFixed(2)} to ${now.toFixed(2)} since the previous iteration`);
+  };
+  dropped('goalAchievedRate', latest.metrics.goalAchievedRate, previous.metrics.goalAchievedRate);
+  dropped('avgSatisfaction', latest.metrics.avgSatisfaction, previous.metrics.avgSatisfaction);
+  dropped('toolHitRate', latest.metrics.toolHitRate, previous.metrics.toolHitRate);
+  rose('errorRate', latest.metrics.errorRate, previous.metrics.errorRate);
+  rose('surveyMissingCount', latest.metrics.surveyMissingCount, previous.metrics.surveyMissingCount);
+  for (const stage of latest.errorStages) {
+    if (previous.errorStages.has(stage)) continue;
+    regressions.push(`scenarios now fail at the '${stage}' stage, which did not happen in the previous iteration`);
+  }
+  return regressions;
+}
+
+/** 1イテレーションで観測された失敗の段の集合（`ScenarioRun.error.stage`）。 */
+function errorStagesOf(runs: readonly ScenarioRun[]): Set<string> {
+  const stages = new Set<string>();
+  for (const run of runs) {
+    if (run.error !== undefined) stages.add(run.error.stage);
+  }
+  return stages;
+}
+
+/** 改善ループが「提案0件」で止まったことを示すイベント文言の接頭辞（テストとUIが同じ語で照合できるようにする）。 */
+export const LOOP_STOPPED_NO_PROPOSALS = 'no_proposals';
+/** 提案はあったが1件も適用できずに止まった場合の接頭辞。 */
+export const LOOP_STOPPED_NO_APPLIED_PROPOSALS = 'no_applied_proposals';
+
+/**
+ * レポートの品質判定（docs/16 §6）。最良イテレーションのメトリクスと `options.targets` だけから
+ * 決定的に決める（LLMの総括は一切見ない）。
+ *
+ * - シナリオを1件も回せていない / 全シナリオが会話段で失敗 / 満足度を1件も回収できていない場合は、
+ *   目標との比較自体が成り立たないので `unverified`（「未達」と断定もしない）。
+ * - 測れたうえで両目標を満たしていれば `met-targets`、満たさなければ `below-targets`。
+ */
+export function assessReportQuality(
+  metrics: IterationMetrics | undefined,
+  targets: { readonly minGoalAchievedRate: number; readonly minAvgSatisfaction: number },
+): { quality: FactoryReportQuality; reasons: string[] } {
+  if (metrics === undefined || metrics.scenarioCount === 0) {
+    return { quality: 'unverified', reasons: ['no scenario was validated'] };
+  }
+  const reasons: string[] = [];
+  if (metrics.errorRate >= 1) reasons.push('every scenario ended in an error, so no behaviour was actually observed');
+  if (metrics.surveyMissingCount >= metrics.scenarioCount) reasons.push('no satisfaction survey could be collected, so avgSatisfaction is missing rather than low');
+  if (reasons.length > 0) return { quality: 'unverified', reasons };
+
+  if (metrics.goalAchievedRate < targets.minGoalAchievedRate) {
+    reasons.push(`goalAchievedRate ${metrics.goalAchievedRate.toFixed(2)} is below the target ${targets.minGoalAchievedRate}`);
+  }
+  if (metrics.avgSatisfaction < targets.minAvgSatisfaction) {
+    reasons.push(`avgSatisfaction ${metrics.avgSatisfaction.toFixed(2)} is below the target ${targets.minAvgSatisfaction}`);
+  }
+  if (metrics.surveyMissingCount > 0) {
+    reasons.push(`${metrics.surveyMissingCount} of ${metrics.scenarioCount} scenario(s) returned no satisfaction survey`);
+  }
+  if (reasons.length === 0) return { quality: 'met-targets', reasons: [] };
+  // 満足度は測れているのに欠測が一部ある、というだけでは「未達」にしない（目標自体は満たしうる）。
+  const belowTarget = metrics.goalAchievedRate < targets.minGoalAchievedRate || metrics.avgSatisfaction < targets.minAvgSatisfaction;
+  return { quality: belowTarget ? 'below-targets' : 'met-targets', reasons };
 }
 
 /** Analystの総括が一度も得られなかった場合（例: maxIterations到達で分析すら行わなかった）の決定的フォールバック。 */

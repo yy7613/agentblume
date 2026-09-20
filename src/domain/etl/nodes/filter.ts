@@ -29,6 +29,14 @@
  *   eq/neq=厳密等価（Date は時刻値比較）; 大小=数値/日付比較;
  *   contains=文字列包含（String化）; isNull/notNull。
  *
+ * **日付列の value は ISO 文字列で書ける**。保存済み config は JSON なので `Date` リテラルを持てず、
+ * Agent Tool の引数も文字列で届く。そこで列が日付（inferSchema は入力スキーマの型、execute は
+ * スキーマ + 実データのセルが Date か）のとき、`eq/neq/gt/gte/lt/lte` の文字列 value を
+ * ISO 日付（`2008-01-01` = UTC 0時 / 日時も可）として Date へ寄せてから比較する。
+ * 以前はここで NaN 同士の比較になり、**エラーも出さずに 0 行**を返していた（日付範囲の絞り込みが
+ * Tool Builder からも LLM が書いたグラフからも使えなかった）。ISO として読めない文字列は
+ * inferSchema が error issue、execute が SchemaError にする（黙って 0 行にはしない）。
+ *
  * 各条件は `caseInsensitive?: boolean` を持てる（既定 false = 従来どおり区別する）。
  * true のとき、文字列比較（eq/neq は両辺が string の場合のみ・contains は String 化後）を
  * 大文字小文字を区別せず判定する。折り畳みは `toLowerCase()`（ロケール非依存の既定変換）。
@@ -38,7 +46,7 @@
 import { z } from 'zod';
 import type { Cell, Row, Schema, Table } from '../../data/types';
 import { findColumn } from '../../data/schema';
-import { ConfigError } from '../errors';
+import { ConfigError, SchemaError } from '../errors';
 import type { EtlNode, NodeKind, SchemaInference, SchemaIssue } from '../node';
 import { zodMessage } from './zod-error';
 
@@ -149,13 +157,70 @@ function isActive(condition: FilterCondition): boolean {
  * 設定を「条件配列 + 結合方法」へ正規化する（旧形式は1条件として扱う）。
  * `disabled: true` の条件はここで落とすので、以降は存在しない条件として扱われる。
  */
-function normalize(config: FilterConfig): { readonly conditions: readonly FilterCondition[]; readonly combine: FilterCombine } {
+export function normalizeFilterConfig(config: FilterConfig): { readonly conditions: readonly FilterCondition[]; readonly combine: FilterCombine } {
   if (hasConditions(config)) {
     const conditions = config as FilterConditionsConfig;
     return { conditions: conditions.conditions.filter(isActive), combine: conditions.combine ?? 'and' };
   }
   const flat = config as FilterCondition;
   return { conditions: isActive(flat) ? [flat] : [], combine: 'and' };
+}
+
+/**
+ * ISO 8601 らしき日付文字列（csv-source の判定と同じ緩さ）。日付のみ / 日時（Z or ±hh:mm）を許可。
+ * 同じ文字列が csv-source では date セルに、ここでは date 列の比較値になるよう、判定を揃える。
+ */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+
+/** 日付列で value を日付として解釈する演算子（contains は String 化の包含なので対象外）。 */
+const DATE_VALUE_OPS: ReadonlySet<FilterOp> = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte']);
+
+/**
+ * ISO 日付文字列を Date へ。日付のみ（`2008-01-01`）は UTC 0 時 — JS の既定解釈そのままで、
+ * csv-source が date セルを作るときと同じ。読めなければ undefined。
+ */
+export function isoDateValue(value: string): Date | undefined {
+  if (!ISO_DATE_RE.test(value)) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+/** 日付として解釈すべき文字列 value を持つ条件か（列が日付かどうかは呼び出し側が判定する）。 */
+function hasDateStringValue(condition: FilterCondition): condition is FilterCondition & { readonly value: string } {
+  return DATE_VALUE_OPS.has(condition.op) && typeof condition.value === 'string';
+}
+
+/** 日付列の文字列 value が ISO として読めないときのメッセージ（inferSchema と execute で同一文）。 */
+function isoDateMessage(column: string, value: string): string {
+  return `filter: value for date column '${column}' must be an ISO date (YYYY-MM-DD): ${value}`;
+}
+
+/**
+ * 実データ側で列が日付か。スキーマが date と言っていればそれ、型が未知ならセルの実体で判定する
+ * （型が date 以外と確定している列は日付扱いしない）。
+ */
+function isDateColumn(input: Table, column: string): boolean {
+  const col = findColumn(input.schema, column);
+  if (col?.type === 'date') return true;
+  if (col !== undefined && col.type !== 'unknown') return false;
+  for (const row of input.rows) {
+    const cell = row[column];
+    if (cell === undefined || cell === null) continue;
+    return cell instanceof Date;
+  }
+  return false;
+}
+
+/**
+ * 実行時の条件を整える（日付列の ISO 文字列 value を Date へ寄せる）。
+ * execute と、0 件の理由を説明する application 層の診断が**同じ関数**で整えることで、
+ * 「診断が数えた件数」と「実行が残した行」が食い違わないようにする。
+ */
+export function prepareFilterCondition(input: Table, condition: FilterCondition): FilterCondition {
+  if (!hasDateStringValue(condition) || !isDateColumn(input, condition.column)) return condition;
+  const value = isoDateValue(condition.value);
+  if (value === undefined) throw new SchemaError(isoDateMessage(condition.column, condition.value));
+  return { ...condition, value };
 }
 
 /** Cell を順序比較用の数値に変換する（number はそのまま / Date は時刻値 / 他は NaN）。 */
@@ -219,6 +284,10 @@ function conditionIssues(input: Schema, condition: FilterCondition): SchemaIssue
     }];
   }
   const issues: SchemaIssue[] = [];
+  // 日付列に読めない文字列を置くと実行時は「エラー無しの 0 行」になるため、設計時に error で止める。
+  if (col.type === 'date' && hasDateStringValue(condition) && isoDateValue(condition.value) === undefined) {
+    issues.push({ severity: 'error', message: isoDateMessage(condition.column, condition.value), column: condition.column });
+  }
   const binding = condition.opBinding;
   // 実行時にどの許可演算子が選ばれても成立するよう、順序演算子を許すなら列型 number|date を要求する。
   const orderable = binding === undefined ? [] : (binding.allowed ?? FILTER_OPS).filter((op) => ORDER_OPS.has(op));
@@ -251,8 +320,11 @@ function conditionIssues(input: Schema, condition: FilterCondition): SchemaIssue
   return issues;
 }
 
-/** 1行 × 1条件の判定（欠損キーは null 扱い）。 */
-function matches(row: Row, condition: FilterCondition): boolean {
+/**
+ * 1行 × 1条件の判定（欠損キーは null 扱い）。value は `prepareFilterCondition` で整えた後の値を渡す。
+ * execute と診断が同じ意味で数えられるよう公開する。
+ */
+export function rowMatchesFilterCondition(row: Row, condition: FilterCondition): boolean {
   const cell = Object.prototype.hasOwnProperty.call(row, condition.column)
     ? (row[condition.column] ?? null)
     : null;
@@ -277,7 +349,7 @@ class FilterNode implements EtlNode<FilterConfig> {
 
   inferSchema(inputs: readonly Schema[], config: FilterConfig): SchemaInference {
     const input = inputs[0] ?? { columns: [] };
-    const issues = normalize(config).conditions.flatMap((condition) => conditionIssues(input, condition));
+    const issues = normalizeFilterConfig(config).conditions.flatMap((condition) => conditionIssues(input, condition));
     if (issues.length > 0) {
       return { schema: input, state: 'mismatch', issues };
     }
@@ -288,14 +360,16 @@ class FilterNode implements EtlNode<FilterConfig> {
 
   execute(inputs: readonly Table[], config: FilterConfig): Table {
     const input = inputs[0] ?? { schema: { columns: [] }, rows: [] };
-    const { conditions, combine } = normalize(config);
+    const { conditions, combine } = normalizeFilterConfig(config);
+    // 日付列の ISO 文字列は行ごとではなく最初に1回だけ Date へ寄せる（読めない文字列はここで SchemaError）。
+    const prepared = conditions.map((condition) => prepareFilterCondition(input, condition));
 
     // 有効な条件が残っていなければパススルー（OR の some が全行を落とすのを避ける）。
-    const rows: Row[] = conditions.length === 0
+    const rows: Row[] = prepared.length === 0
       ? [...input.rows]
       : input.rows.filter((row: Row) => combine === 'or'
-        ? conditions.some((condition) => matches(row, condition))
-        : conditions.every((condition) => matches(row, condition)));
+        ? prepared.some((condition) => rowMatchesFilterCondition(row, condition))
+        : prepared.every((condition) => rowMatchesFilterCondition(row, condition)));
 
     // スキーマ不変。行配列は filter が新規生成。
     return { schema: input.schema, rows };

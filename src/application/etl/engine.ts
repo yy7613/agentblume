@@ -64,6 +64,13 @@ export interface PreviewOptions {
    * 超過は黙って切り捨てず SchemaError（nodeId 付き）で実行を止める。
    */
   readonly maxRows?: number;
+  /**
+   * true なら各ノードの**全行**テーブルを `tables` として結果に残す（既定 false）。
+   * 実行中はどのみち下流へ渡すために全ノード分を保持しているので追加の計算・複製は無く、
+   * 参照の寿命が preview の呼び出し側まで延びるだけ。0 行になった理由（どの filter 条件が
+   * 何行に当たったか）を、もう一度実行し直さずに説明するために使う。
+   */
+  readonly retainTables?: boolean;
 }
 
 /** 1ノードのプレビュー結果。 */
@@ -91,6 +98,8 @@ export interface PreviewResult {
   readonly fullOutput: Table;
   /** nodeId → プレビュー結果。 */
   readonly nodes: Record<string, NodePreview>;
+  /** `retainTables: true` のときだけ入る、nodeId → 全行テーブル（表示用スナップショットではない）。 */
+  readonly tables?: ReadonlyMap<string, Table>;
 }
 
 /** 表示用スナップショットの既定行数。 */
@@ -275,7 +284,7 @@ export class EtlEngine {
     const fullOutput = tableById.get(v.terminalId) as Table;
     const output = (nodes[v.terminalId] as NodePreview).table;
 
-    return { terminalId: v.terminalId, output, fullOutput, nodes };
+    return { terminalId: v.terminalId, output, fullOutput, nodes, ...(options?.retainTables === true ? { tables: tableById } : {}) };
   }
 
   /**

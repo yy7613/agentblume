@@ -89,6 +89,32 @@ describe('Run serialization', () => {
     expect(() => deserializeRun({ ...record, trace: [{ sequence: 1, kind: 'mcp-server-skipped', server: 'x', reason: 'bogus' }] })).toThrow();
   });
 
+  it('正常: 0行の理由（tool-result.noMatch）を往復し、それを持たない旧traceもそのまま読める', () => {
+    const started = startRun({ runId: 'run-nomatch', scope: { tenantId: 't', workspaceId: 'w' }, mode: 'preview', agent: { internalId: 'agent', version: '1.0.0' }, startedAt: 'now' });
+    const noMatch = {
+      message: 'No rows matched.',
+      nodeId: 'narrow',
+      combine: 'and' as const,
+      conditions: [
+        { column: '時点', op: 'eq', argument: 'time_point', value: '2015年12月31日', matchingRows: 0, availableValues: ['2015年', '2016年'], distinctValues: 2 },
+        { column: '人口', op: 'gte', value: 100, matchingRows: 3, min: 1, max: 9 },
+      ],
+    };
+    const record = failRun(started, {
+      trace: [{ sequence: 1, kind: 'tool-result', name: 'get_population_data', terminalId: 'narrow', nodes: [{ nodeId: 'narrow', rowCount: 0, truncated: false }], outputPreview: [], noMatch }],
+      failure: { code: 'X', message: 'bad' },
+      completedAt: 'later',
+    });
+    expect(deserializeRun(JSON.parse(JSON.stringify(serializeRun(record))))).toEqual(record);
+
+    // 旧record: noMatch を持たない tool-result はそのまま読める。
+    const legacy = failRun(started, { trace: [{ sequence: 1, kind: 'tool-result', name: 't', terminalId: 'n', nodes: [], outputPreview: [] }], failure: { code: 'X', message: 'bad' }, completedAt: 'later' });
+    expect(deserializeRun(JSON.parse(JSON.stringify(legacy)))).toEqual(legacy);
+
+    // 内訳の形が壊れたもの（件数が数値でない）は拒否する。
+    expect(() => deserializeRun({ ...serializeRun(record), trace: [{ sequence: 1, kind: 'tool-result', name: 't', terminalId: 'n', nodes: [], outputPreview: [], noMatch: { ...noMatch, conditions: [{ column: 'x', op: 'eq', value: null, matchingRows: 'many' }] } }] })).toThrow();
+  });
+
   it('error イベント / failure / tool 参照の未知キーは捨てて読み、識別の型が壊れたものは拒否する', () => {
     const started = startRun({ runId: 'run-x', scope: { tenantId: 't', workspaceId: 'w' }, mode: 'preview', agent: { internalId: 'agent', version: '1.0.0' }, startedAt: 'now' });
     // version / publishName を省略した tool 参照も往復する（キーは生えない）。

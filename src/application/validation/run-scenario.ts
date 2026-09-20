@@ -5,6 +5,18 @@
  * （既存の保存済みAgent実行）を交互に呼び、終了後にアンケートへ回答させる。
  * 終了条件は「endConversation」「maxUserTurns 到達」「エラー」の3つのみ。
  * エラー時も途中経過（transcript / metrics）を status:'error' で保存して返す。
+ *
+ * ## 失敗の記録（v41）
+ *
+ * かつては会話ループもアンケートも同じ空 catch へ落ち、status:'error' / survey:[] だけが残った。
+ * 会話が5ターン成立していてもアンケートの1回の検証違反で全部 error になり、しかも**理由がどこにも
+ * 残らなかった**ため、Factory の分析役が「Agentが悪い」と誤診していた。そこで、
+ *
+ * - アンケートの失敗は会話の結末（completed / max-turns）と goalAchieved を壊さない。
+ *   回収できなかった事実は `error.stage='survey'` として残す。
+ * - 会話中の失敗は status:'error' のまま、疑似ユーザー側（'pseudo-user'）か対象Agent側（'agent'）かを残す。
+ * - 中断（AbortSignal）は失敗ではないのでそのまま投げ直す。
+ * - 握り潰した例外は `logSwallowed` で1行残す。
  */
 import { randomUUID } from 'node:crypto';
 import type { AgentId } from '../../domain/agent/ids';
@@ -18,11 +30,13 @@ import { buildPersonaSystemPrompt, composeScenarioPrompt, type PersonaLanguage }
 import type { PersonaRepository } from '../../domain/validation/persona-repository';
 import type { Scenario } from '../../domain/validation/scenario';
 import type { ScenarioRepository } from '../../domain/validation/scenario-repository';
-import { createScenarioRun, type ExpectedToolHit, type ScenarioRun, type ScenarioRunPseudoUserRef, type ScenarioRunStatus, type Turn } from '../../domain/validation/scenario-run';
+import { createScenarioRun, type ExpectedToolHit, type ScenarioRun, type ScenarioRunError, type ScenarioRunErrorStage, type ScenarioRunPseudoUserRef, type ScenarioRunStatus, type Turn } from '../../domain/validation/scenario-run';
 import type { ScenarioRunRepository } from '../../domain/validation/scenario-run-repository';
 import { buildSurveySchema, validateSurveyAnswers, type SurveyAnswer } from '../../domain/validation/survey';
+import { ToolExecutionError } from '../agent/errors';
 import type { AgentHistoryMessage, AgentPreviewRun, RunAgentPreviewUseCase } from '../agent/run-agent-preview';
 import type { JsonSchemaObject, ModelMessage, ModelProviderPort, ModelUsage } from '../model/model-provider';
+import { describeError, logSwallowed, type LoggerPort } from '../operations/logger';
 
 export interface RunScenarioInput {
   readonly scope: TenantScope;
@@ -65,6 +79,42 @@ function parsePseudoUserTurn(content: string | null): PseudoUserTurn | null {
   return { message: record['message'], endConversation: record['endConversation'], goalAchieved: record['goalAchieved'] };
 }
 
+/** 会話ループ内の失敗に「どの段で起きたか」を添えて外側の catch まで運ぶ内部例外。 */
+class ScenarioStageError extends Error {
+  constructor(readonly stage: ScenarioRunErrorStage, reason: string, override readonly cause: unknown) {
+    super(reason);
+    this.name = 'ScenarioStageError';
+  }
+}
+
+/** 空の理由は記録側（createScenarioRun）で弾かれ、記録そのものを失う。必ず1文にする。 */
+function reason(text: string): string {
+  return text.trim() === '' ? 'unknown failure' : text;
+}
+
+/** 中断は「壊れた」のではなく「利用者が止めた」。失敗理由へ化けさせず投げ直すために見分ける。 */
+function isAbort(error: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true || (error instanceof Error && error.name === 'AbortError');
+}
+
+/** Tool実行由来の失敗は、どのTool・どのノードで落ちたかまで理由に残す（Factory の分析役が読む）。 */
+function describeAgentFailure(error: unknown): string {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    if (current instanceof ToolExecutionError) {
+      const where = [`tool ${current.tool.publishName ?? current.tool.internalId}`, ...(current.nodeId === undefined ? [] : [`node ${current.nodeId}`])].join(' / ');
+      return `${describeError(error)} (${where})`;
+    }
+    current = current.cause;
+  }
+  return describeError(error);
+}
+
+/** アンケート回収の結果。失敗しても会話の結末は壊さない。 */
+type SurveyOutcome =
+  | { readonly ok: true; readonly answers: SurveyAnswer[] }
+  | { readonly ok: false; readonly message: string; readonly cause: unknown };
+
 /** 会話中に蓄積する可変状態。 */
 interface ConversationState {
   readonly transcript: Turn[];
@@ -88,6 +138,8 @@ export class RunScenarioUseCase {
     private readonly agents: AgentRepository,
     private readonly makeId: () => string = randomUUID,
     private readonly now: () => Date = () => new Date(),
+    /** 握り潰した失敗の痕跡（未配線なら何も出さない）。 */
+    private readonly logger?: LoggerPort,
   ) {}
 
   async execute(input: RunScenarioInput, signal?: AbortSignal): Promise<ScenarioRun> {
@@ -102,10 +154,12 @@ export class RunScenarioUseCase {
     const state: ConversationState = { transcript: [], usage: {}, agentRuns: 0, totalToolCalls: 0, calledTools: new Set(), goalAchieved: null };
     let status: ScenarioRunStatus = 'max-turns';
     let survey: SurveyAnswer[] = [];
+    let failure: ScenarioRunError | undefined;
 
     try {
       for (let turn = 0; turn < scenario.maxUserTurns; turn += 1) {
-        const reply = await this.pseudoUserTurn(systemPrompt, state, signal);
+        const reply = await this.pseudoUserTurn(systemPrompt, state, signal)
+          .catch((error: unknown) => { throw this.stageError('pseudo-user', error, signal); });
         state.goalAchieved = reply.goalAchieved;
         if (reply.endConversation) {
           // 初回発話前の終了も許容する（userTurns=0・transcript空）。
@@ -126,16 +180,31 @@ export class RunScenarioUseCase {
           mode: input.mode,
           purpose: input.target === undefined ? 'scenario' : 'evaluation',
           ...(history.length > 0 ? { history } : {}),
-        }, signal);
+        }, signal).catch((error: unknown) => { throw this.stageError('agent', error, signal); });
         this.collectAgentRun(state, run);
         state.transcript.push({ speaker: 'agent', message: run.response, runId: run.runId });
       }
-      // アンケートは completed / max-turns の双方で実施する。
-      survey = await this.surveyTurn(systemPrompt, language, scenario, state, signal);
-    } catch {
-      // エラー時も途中経過（会話まで）を status:'error' で記録する。
+    } catch (error) {
+      // 中断は失敗ではない（「AIが壊れた」と記録されると利用者が止めたのか分からなくなる）。
+      if (isAbort(error, signal)) throw error;
+      // エラー時も途中経過（会話まで）を status:'error' で記録する。理由は error に残す。
       status = 'error';
       survey = [];
+      const stage = error instanceof ScenarioStageError ? error.stage : 'pseudo-user';
+      failure = { stage, message: reason(error instanceof Error ? error.message : String(error)) };
+      logSwallowed(this.logger, `RunScenario: the conversation of scenario '${scenario.metadata.internalId}' failed at the ${stage} stage`, error instanceof ScenarioStageError ? error.cause : error, { scenarioId: scenario.metadata.internalId, stage });
+    }
+
+    // アンケートは completed / max-turns の双方で実施する。
+    // 回収できなくても会話の結末（status / goalAchieved）は壊さない: 理由だけ残す。
+    if (status !== 'error') {
+      const outcome = await this.surveyTurn(systemPrompt, language, scenario, state, signal);
+      if (outcome.ok) {
+        survey = outcome.answers;
+      } else {
+        failure = { stage: 'survey', message: reason(outcome.message) };
+        logSwallowed(this.logger, `RunScenario: the survey of scenario '${scenario.metadata.internalId}' could not be collected; keeping the conversation result`, outcome.cause, { scenarioId: scenario.metadata.internalId, stage: 'survey' });
+      }
     }
 
     const finishedAt = this.now();
@@ -146,6 +215,7 @@ export class RunScenarioUseCase {
       scenario: { id: scenario.metadata.internalId, version: scenario.metadata.version },
       pseudoUserRef: ref,
       status,
+      ...(failure !== undefined ? { error: failure } : {}),
       goalAchieved: state.goalAchieved,
       transcript: state.transcript,
       survey,
@@ -163,6 +233,12 @@ export class RunScenarioUseCase {
     });
     await this.scenarioRuns.save(run);
     return run;
+  }
+
+  /** 会話ループの失敗を段つきの例外へ包む。中断だけはそのまま投げ直す。 */
+  private stageError(stage: ScenarioRunErrorStage, error: unknown, signal: AbortSignal | undefined): unknown {
+    if (isAbort(error, signal)) return error;
+    return new ScenarioStageError(stage, stage === 'agent' ? describeAgentFailure(error) : describeError(error), error);
   }
 
   /** 疑似ユーザー呼び出し。会話をユーザー視点で role 反転して渡す。不正JSONは1回だけ再試行。 */
@@ -214,8 +290,15 @@ export class RunScenarioUseCase {
     throw new ValidationDomainError('RunScenario: scenario has neither persona nor pseudoUser');
   }
 
-  /** 会話終了後のアンケート回答（疑似ユーザーとして self-report）。検証失敗は1回だけ再試行。 */
-  private async surveyTurn(systemPrompt: string, language: PersonaLanguage, scenario: Scenario, state: ConversationState, signal?: AbortSignal): Promise<SurveyAnswer[]> {
+  /**
+   * 会話終了後のアンケート回答（疑似ユーザーとして self-report）。
+   *
+   * 検証に落ちたときは**同じ依頼をもう一度送らない**（同じ答えが返るだけだった）。
+   * 直前の回答と「どの検証に落ちたか」を添えて1回だけ直してもらう
+   * （`application/contract/llm-criteria.ts` の completeWithRepair と同じ型）。
+   * それでも駄目なら回収を諦め、理由を返す（会話の結末は呼び出し側が保つ）。
+   */
+  private async surveyTurn(systemPrompt: string, language: PersonaLanguage, scenario: Scenario, state: ConversationState, signal?: AbortSignal): Promise<SurveyOutcome> {
     const ja = language === 'ja';
     const conversation = state.transcript.length === 0
       ? (ja ? '（会話なし）' : '(no conversation)')
@@ -234,16 +317,41 @@ export class RunScenarioUseCase {
       messages: [{ role: 'system', content } satisfies ModelMessage],
       responseFormat: { name: 'scenario_survey', strict: true, schema: buildSurveySchema(scenario.survey) },
     };
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const completion = await this.model.complete(request, signal);
-      this.addUsage(state, completion.usage);
-      try {
-        return validateSurveyAnswers(scenario.survey, JSON.parse(completion.message.content ?? ''));
-      } catch {
-        // 1回だけ再試行する。
-      }
+    try {
+      const first = await this.model.complete(request, signal);
+      this.addUsage(state, first.usage);
+      const parsedFirst = this.parseSurvey(scenario, first.message.content);
+      if (parsedFirst.ok) return { ok: true, answers: parsedFirst.answers };
+
+      const repair: ModelMessage[] = [
+        ...request.messages,
+        { role: 'assistant', content: first.message.content ?? '' },
+        {
+          role: 'user',
+          content: ja
+            ? `前回の回答は検証に通らなかった: ${parsedFirst.message}。指定のJSONスキーマ（範囲も含む）を満たすJSONだけを返し直すこと。`
+            : `Your previous answer failed validation: ${parsedFirst.message}. Return only JSON that satisfies the given schema, including the allowed ranges.`,
+        },
+      ];
+      const second = await this.model.complete({ ...request, messages: repair }, signal);
+      this.addUsage(state, second.usage);
+      const parsedSecond = this.parseSurvey(scenario, second.message.content);
+      if (parsedSecond.ok) return { ok: true, answers: parsedSecond.answers };
+      return { ok: false, message: parsedSecond.message, cause: parsedSecond.cause };
+    } catch (error) {
+      if (isAbort(error, signal)) throw error;
+      return { ok: false, message: describeError(error), cause: error };
     }
-    throw new ValidationDomainError('RunScenario: pseudo user returned invalid survey answers twice');
+  }
+
+  /** アンケート応答のJSON parse + 設問に対する検証。失敗の説明は修復依頼へそのまま載せる。 */
+  private parseSurvey(scenario: Scenario, content: string | null): { ok: true; answers: SurveyAnswer[] } | { ok: false; message: string; cause: unknown } {
+    try {
+      return { ok: true, answers: validateSurveyAnswers(scenario.survey, JSON.parse(content ?? '')) };
+    } catch (error) {
+      const message = error instanceof ValidationDomainError ? error.message : `survey answers were not valid JSON: ${describeError(error)}`;
+      return { ok: false, message, cause: error };
+    }
   }
 
   /** 対象Agent 1 Run の usage / Tool call を集計へ反映する。 */

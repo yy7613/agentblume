@@ -42,11 +42,13 @@ import { SaveToolUseCase } from '../tool/save-tool';
 import { throwIfAborted } from './abort';
 import {
   agentToolArgumentsOf,
+  extractAnswerGuardBlock,
   FACTORY_OWNER,
   generateToolWithRepair,
   makeArgumentsOptional,
   makePublishName,
   mergeAgentInputDeclarations,
+  withAnswerGuard,
 } from './generate-agent-assets';
 import type { ProfileDataSourcesUseCase } from './profile-data-sources';
 import type { ToolSmithRole } from './roles/tool-smith-role';
@@ -220,7 +222,12 @@ export class ApplyImprovementsUseCase {
       let systemPrompt = currentAgent.systemPrompt;
       if (promptRevision !== undefined) {
         const promptDraft = await this.generateAgentPrompt.execute({ scope: input.scope, displayName: currentAgent.metadata.displayName, kind: currentAgent.kind, skills: newSkills, tools: newTools });
-        systemPrompt = [promptRevision.role, promptDraft.sections.skillGuide, promptDraft.sections.toolUsageGuide, promptRevision.rules].join('\n\n');
+        // Analystの書き直しは役割文・実行規則だけを置き換える。回答の規律（ADR-0047）は決定的な
+        // 合成部分なので、提案がそれを含んでいなくても必ず残す（起点の文面があればそれを引き継ぐ）。
+        systemPrompt = withAnswerGuard(
+          [promptRevision.role, promptDraft.sections.skillGuide, promptDraft.sections.toolUsageGuide, promptRevision.rules],
+          { existing: extractAnswerGuardBlock(currentAgent.systemPrompt) },
+        );
       }
 
       // 既存Agentの設定はすべて引き継ぐ（Factory生成Agentは持たないが、既存Agentの強化では持ちうる）。

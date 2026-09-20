@@ -13,8 +13,10 @@ import { describe, expect, it } from 'vitest';
 import {
   EXPRESSION_DIAGNOSTIC_CATEGORIES,
   EXPRESSION_ERROR_CODES,
+  PERIOD_GRANULARITIES,
   createDefaultRegistry,
   diagnosticCategory,
+  parsePeriodLabel,
   previewExpression,
   validateExpression,
 } from './index';
@@ -53,6 +55,26 @@ describe('createDefaultRegistry: 関数電卓ノード', () => {
     const schema = { columns: [{ name: 'price', type: 'string' as const, nullable: true }] };
     expect(validateExpression('[pric] * 2', schema).diagnostics[0]?.category).toBe('column');
     expect(previewExpression('[price] * 2', schema, [{ price: '応相談' }]).diagnosis.notNumericColumns).toEqual(['price']);
+  });
+
+  it('正常: parse-period も transform / 入力 1 として、関数電卓の直後に登録されている', () => {
+    const registry = createDefaultRegistry();
+    expect(registry.has('parse-period')).toBe(true);
+    const node = registry.get('parse-period');
+    expect(node.kind).toBe('transform');
+    expect(node.inputArity).toBe(1);
+
+    const types = registry.types();
+    expect(types.indexOf('parse-period')).toBe(types.indexOf('calculate') + 1);
+    expect(types.filter((type) => type === 'parse-period')).toHaveLength(1);
+  });
+
+  it('正常: 期間ラベルの解釈は登録簿経由で引ける（Factory のデータプロファイラはこの口から使う）', () => {
+    // 再公開の書き忘れは型検査では捕まらない（使う側がまだ無いため）。名前と引数を固定する。
+    expect(typeof parsePeriodLabel).toBe('function');
+    expect(PERIOD_GRANULARITIES).toContain('fiscal-year');
+    expect(parsePeriodLabel('2024年度', 4).start?.toISOString()).toBe('2024-04-01T00:00:00.000Z');
+    expect(parsePeriodLabel('2024年1-3月期', 4).granularity).toBe('quarter');
   });
 
   it('[回帰固定] 異常: 綴り違いの種別は has が false を返す（黙って別のノードを拾わない）', () => {

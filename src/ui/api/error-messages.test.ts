@@ -422,6 +422,16 @@ describe('ETL定型文の日本語化（GraphError / ConfigError / SchemaError�
       .toBe("The column names or types do not match. Check the upstream node output (filter: default operator 'gt' is not in opBinding.allowed (eq, neq))");
   });
 
+  it('正常: 日付列の条件値がISOで読めないエラーを、直し方（ISO形式で入力）つきで日本語化する', () => {
+    const raw = "filter: value for date column 'periodStart' must be an ISO date (YYYY-MM-DD): 2008/01/01";
+    expect(ja(422, 'ETL_SCHEMA', raw))
+      .toBe('列名または型が一致していません。上流ノードの出力を確認してください（日付列「periodStart」と比べる値「2008/01/01」が日付として読めません。絞り込み(filter)ノードの値を ISO 形式（例: 2008-01-01 や 2008-01-01T00:00:00Z）で入力してください）');
+    // 設計時のSchemaIssueも同じ関数で日本語化できる（見出しなし）。
+    expect(localizeSchemaIssueMessage(raw, 'ja'))
+      .toBe('日付列「periodStart」と比べる値「2008/01/01」が日付として読めません。絞り込み(filter)ノードの値を ISO 形式（例: 2008-01-01 や 2008-01-01T00:00:00Z）で入力してください');
+    expect(en(422, 'ETL_SCHEMA', raw)).toContain(raw);
+  });
+
   it('filter の opBinding 検証（列型が大小比較を許さない。セミコロンを含む1文）を丸ごと日本語化する', () => {
     const raw = "filter: opBinding on 'region' allows operator(s) gt|gte which require column type number|date, but 'region' is 'string'; restrict opBinding.allowed";
     expect(ja(422, 'ETL_SCHEMA', raw))
@@ -467,6 +477,25 @@ describe('localizeSchemaIssueMessage（ノード単位のSchemaIssue/propagation
       .toBe('union: 列構成が一致しません(厳密一致モード): id, extra');
     expect(localizeSchemaIssueMessage("chart-output: input column 'isOutlier' conflicts with generated column", 'ja'))
       .toBe('chart-output: 入力列「isOutlier」が自動生成される列と重複しています');
+  });
+
+  // 期間の解釈ノード（parse-period）。原文は「何が起きたか」しか言わないので、直す場所（ノードのどの欄か）まで添える。
+  it('parse-period の定型文を、直す欄まで含めて日本語化する', () => {
+    expect(localizeSchemaIssueMessage('parse-period: column not found: 年月', 'ja'))
+      .toBe('期間ラベルの列「年月」が上流の出力にありません。期間の解釈ノードの「期間ラベルの列」を実在する列へ選び直すか、上流ノードの設定を見直してください');
+    expect(localizeSchemaIssueMessage('parse-period: start column already exists: periodStart', 'ja'))
+      .toBe('開始日の列「periodStart」と同じ名前の列が上流にすでにあります。期間の解釈ノードの開始日の列名を別の名前に変えるか、上流で列名を変更してください');
+    expect(localizeSchemaIssueMessage('parse-period: granularity column already exists: periodGranularity', 'ja'))
+      .toBe('粒度の列「periodGranularity」と同じ名前の列が上流にすでにあります。期間の解釈ノードの粒度の列名を別の名前に変えるか、上流で列名を変更してください');
+    expect(localizeSchemaIssueMessage('parse-period: start column and granularity column must differ: 期間', 'ja'))
+      .toBe('開始日の列と粒度の列に同じ名前「期間」を指定しています。期間の解釈ノードでどちらかを別の名前にしてください');
+  });
+
+  it('parse-period の設定不正は汎用の invalid config 形で日本語化され、英語UIでは原文のまま', () => {
+    expect(localizeSchemaIssueMessage('parse-period: invalid config: fiscalYearStartMonth: Too big', 'ja'))
+      .toContain('parse-period: 設定が不正です');
+    expect(localizeSchemaIssueMessage('parse-period: column not found: 年月', 'en'))
+      .toBe('parse-period: column not found: 年月');
   });
 
   it('グラフレベルの定型文（GraphErrorが投げるもの）も同じ関数で日本語化できる', () => {

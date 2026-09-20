@@ -49,6 +49,7 @@ describe('aggregateIterationMetrics', () => {
       errorRate: 0,
       avgUserTurns: 3,
       scenarioCount: 2,
+      surveyMissingCount: 0,
       usage: { promptTokens: 30, completionTokens: 15, totalTokens: 45 },
       durationMs: 300,
     });
@@ -64,6 +65,7 @@ describe('aggregateIterationMetrics', () => {
       errorRate: 0,
       avgUserTurns: 0,
       scenarioCount: 0,
+      surveyMissingCount: 0,
       usage: {},
       durationMs: 0,
     });

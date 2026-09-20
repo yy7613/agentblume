@@ -3,12 +3,30 @@ import { SIDE_EFFECTS, type SideEffect } from '../tool/metadata';
 import type { RunRecord, RunStatus } from './run';
 
 const nodeOutputSchema = z.object({ nodeId: z.string(), rowCount: z.number().int().nonnegative(), truncated: z.boolean() });
+/** 0 行の理由（tool-result の任意フィールド）。モデルへ返した内容と同じ形をそのまま保存する。 */
+const noMatchSchema = z.object({
+  message: z.string(),
+  nodeId: z.string(),
+  combine: z.enum(['and', 'or']),
+  conditions: z.array(z.object({
+    column: z.string(),
+    op: z.string(),
+    argument: z.string().optional(),
+    value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+    matchingRows: z.number().int().nonnegative(),
+    availableValues: z.array(z.string()).optional(),
+    distinctValues: z.number().int().nonnegative().optional(),
+    min: z.union([z.string(), z.number()]).optional(),
+    max: z.union([z.string(), z.number()]).optional(),
+  })),
+});
 /** 失敗したツール実行の識別（error イベントと failure が共有する）。 */
 const failureToolRefSchema = z.object({ internalId: z.string().min(1), version: z.string().optional(), publishName: z.string().optional() });
 const traceSchema = z.discriminatedUnion('kind', [
   z.object({ sequence: z.number().int().positive(), kind: z.literal('model-request'), step: z.number().int().positive(), toolNames: z.array(z.string()) }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('tool-call'), name: z.string(), arguments: z.record(z.string(), z.unknown()) }),
-  z.object({ sequence: z.number().int().positive(), kind: z.literal('tool-result'), name: z.string(), terminalId: z.string(), nodes: z.array(nodeOutputSchema), outputPreview: z.array(z.record(z.string(), z.unknown())) }),
+  // noMatch は後から足した任意フィールド。0 行だった実行だけが持ち、旧 Run のトレースには入っていない。
+  z.object({ sequence: z.number().int().positive(), kind: z.literal('tool-result'), name: z.string(), terminalId: z.string(), nodes: z.array(nodeOutputSchema), outputPreview: z.array(z.record(z.string(), z.unknown())), noMatch: noMatchSchema.optional() }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('model-response'), content: z.string() }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('agent_call'), toolName: z.string(), agentRef: z.object({ internalId: z.string(), version: z.string() }), childRunId: z.string(), ok: z.boolean(), summary: z.string() }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('compaction'), beforeChars: z.number().int().nonnegative(), afterChars: z.number().int().nonnegative() }),

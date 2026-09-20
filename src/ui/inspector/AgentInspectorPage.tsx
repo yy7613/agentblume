@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { isAbortError, type ToolApiClient } from '../api/tool-api';
-import type { AgentDiagnosticsDto, AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, EvaluationResultDto, RunTraceEventDto, SerializedAgentDto, WikiPageSummaryDto } from '../api/types';
+import type { AgentDiagnosticsDto, AgentPreviewRunDto, AgentSummaryDto, AgentToolRefDto, EvaluationResultDto, RunNoMatchDto, RunTraceEventDto, SerializedAgentDto, WikiPageSummaryDto } from '../api/types';
 import { localizeRunTraceError } from '../api/error-messages';
 import { DiagnosticsPanel } from '../components/DiagnosticsPanel';
 import { useI18n, type Language } from '../i18n';
@@ -529,14 +529,27 @@ function stepTone(kind: RunTraceEventDto['kind']): string {
   return '';
 }
 
+/** 0行だった理由の要約（外した条件を最大2つ、その列に実在する値の例つき）。 */
+function noMatchDetail(noMatch: RunNoMatchDto, text: Translate): string {
+  const missed = noMatch.conditions.filter((condition) => condition.matchingRows === 0);
+  const shown = (missed.length > 0 ? missed : noMatch.conditions).slice(0, 2).map((condition) => {
+    const examples = condition.availableValues === undefined || condition.availableValues.length === 0 ? '' : ` → ${condition.availableValues.slice(0, 3).join(' / ')}`;
+    return `${condition.column} ${condition.op} ${JSON.stringify(condition.value)}${examples}`;
+  });
+  return `${text('no rows matched', '該当0件')}: ${shown.join(' · ')}`;
+}
+
 function traceDetail(event: RunTraceEventDto, text: Translate, language: Language): string {
   switch (event.kind) {
     case 'model-request':
       return `step ${event.step}${event.toolNames.length > 0 ? ` · ${text('offered', '提供')}: ${event.toolNames.join(', ')}` : ` · ${text('no tools', 'ツールなし')}`}`;
     case 'tool-call':
       return `${event.name}(${compactJson(event.arguments)})`;
-    case 'tool-result':
-      return `${event.name} · ${event.nodes.map((node) => `${node.nodeId}:${node.rowCount}${node.truncated ? '+' : ''}`).join(', ')}`;
+    case 'tool-result': {
+      const nodes = `${event.name} · ${event.nodes.map((node) => `${node.nodeId}:${node.rowCount}${node.truncated ? '+' : ''}`).join(', ')}`;
+      // 0行だった実行では「どの条件が外したか」までを1行に出す（空の結果だけ見えても原因が分からない）。
+      return event.noMatch === undefined ? nodes : `${nodes} · ${noMatchDetail(event.noMatch, text)}`;
+    }
     case 'model-response':
       return event.content === '' ? text('(empty)', '（空）') : event.content;
     case 'agent_call':

@@ -4,6 +4,7 @@ import { InMemoryAgentRepository } from '../../adapters/storage/in-memory-agent-
 import { InMemoryDataSourceRepository } from '../../adapters/storage/in-memory-data-source-repository';
 import { InMemoryFactoryRunRepository } from '../../adapters/storage/in-memory-factory-run-repository';
 import { InMemoryPersonaRepository } from '../../adapters/storage/in-memory-persona-repository';
+import { InMemoryRunRepository } from '../../adapters/storage/in-memory-run-repository';
 import { InMemoryScenarioRepository } from '../../adapters/storage/in-memory-scenario-repository';
 import { InMemorySkillRepository } from '../../adapters/storage/in-memory-skill-repository';
 import { InMemoryToolRepository } from '../../adapters/storage/in-memory-tool-repository';
@@ -11,7 +12,8 @@ import { createAgent, type AgentRuntimeHarness } from '../../domain/agent/agent'
 import { createDefaultRegistry } from '../../domain/etl/nodes';
 import type { FactoryRunRepository } from '../../domain/factory/factory-run-repository';
 import { FactoryAbortedError, FactoryValidationError } from '../../domain/factory/errors';
-import { appendFactoryEvent, cancelFactoryRun, type FactoryRun } from '../../domain/factory/factory-run';
+import { appendFactoryEvent, cancelFactoryRun, type FactoryIteration, type FactoryRun, type IterationMetrics } from '../../domain/factory/factory-run';
+import type { RunRecord } from '../../domain/run/run';
 import { createSkill } from '../../domain/skill/skill';
 import type { TenantScope } from '../../domain/tool/ids';
 import { SemVer } from '../../domain/tool/semver';
@@ -40,7 +42,8 @@ import { PlannerRole } from './roles/planner-role';
 import { SkillWriterRole } from './roles/skill-writer-role';
 import { ToolSmithRole } from './roles/tool-smith-role';
 import { ResumeFactoryRunUseCase } from './resume-factory-run';
-import { RunFactoryUseCase } from './run-factory';
+import { assessReportQuality, describeRegressions, LOOP_STOPPED_NO_PROPOSALS, RunFactoryUseCase, selectBestIteration } from './run-factory';
+import { MAX_TOOL_CALLS } from '../agent/run-agent-preview';
 import type { ScenarioRunnerInput, ScenarioRunnerPort } from './scenario-runner-port';
 
 const scope = { tenantId: 't', workspaceId: 'w' };
@@ -201,12 +204,14 @@ async function setup(options?: {
   /** Run リポジトリの差し替え（保存の直前に処理を差し込む `InterposingFactoryRunRepository` など）。 */
   readonly repo?: InMemoryFactoryRunRepository;
   readonly scenarioRunner?: FakeScenarioRunner;
+  /** Agent Run のトレース置き場（Analystへ渡すツール呼び出しの材料）。 */
+  readonly runRepo?: InMemoryRunRepository;
 }): Promise<{
   repo: FactoryRunRepository; model: ScriptedModelProvider; runFactory: RunFactoryUseCase;
   createFactoryRun: CreateFactoryRunUseCase; resumeFactoryRun: ResumeFactoryRunUseCase;
   personaRepo: InMemoryPersonaRepository; scenarioRepo: InMemoryScenarioRepository; scenarioRunner: FakeScenarioRunner;
   agentRepo: InMemoryAgentRepository; skillRepo: InMemorySkillRepository; toolRepo: InMemoryToolRepository;
-  applyCalls: ApplyImprovementsInput[];
+  applyCalls: ApplyImprovementsInput[]; runRepo: InMemoryRunRepository;
 }> {
   const dataSources = new InMemoryDataSourceRepository();
   await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Sales', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 30, createdAt: '', updatedAt: '' }, 'id,amount\n1,100\n2,200');
@@ -243,10 +248,11 @@ async function setup(options?: {
   } as unknown as ApplyImprovementsUseCase;
 
   const repo = options?.repo ?? new InMemoryFactoryRunRepository();
-  const runFactory = new RunFactoryUseCase(repo, profiler, planner, generateAgentAssets, scenarioRunner, savePersona, registerPseudoUser, saveScenario, analyst, applyImprovements, agentRepo, skillRepo, toolRepo);
+  const runRepo = options?.runRepo ?? new InMemoryRunRepository();
+  const runFactory = new RunFactoryUseCase(repo, profiler, planner, generateAgentAssets, scenarioRunner, savePersona, registerPseudoUser, saveScenario, analyst, applyImprovements, agentRepo, skillRepo, toolRepo, runRepo);
   const createFactoryRun = new CreateFactoryRunUseCase(repo, noopWorker);
   const resumeFactoryRun = new ResumeFactoryRunUseCase(repo, runFactory, noopWorker);
-  return { repo, model, runFactory, createFactoryRun, resumeFactoryRun, personaRepo, scenarioRepo, scenarioRunner, agentRepo, skillRepo, toolRepo, applyCalls };
+  return { repo, model, runFactory, createFactoryRun, resumeFactoryRun, personaRepo, scenarioRepo, scenarioRunner, agentRepo, skillRepo, toolRepo, applyCalls, runRepo };
 }
 
 // ─── 既存Agent強化モードのフィクスチャ ───────────────────────────────────────────────
@@ -1167,5 +1173,460 @@ describe('RunFactoryUseCase（cancel / abort: 中断はモデル呼び出し1回
     expect(stored?.events.filter((event) => event.kind === 'stage_completed' && event.stage === 'generating-tools')).toHaveLength(0);
     await settle();
     expect(await repo.find(scope, created.id)).toEqual(stored);
+  });
+});
+
+// ─── ADR-0047: 期待Tool名・Analystの材料・提案0件・レポートの品質判定 ──────────────────────
+/** Analyst が受け取った user message（untrusted payload）をJSONとして取り出す。 */
+function analystPayloadOf(model: ScriptedModelProvider): Record<string, unknown> {
+  const request = model.requests.find((candidate) => candidate.responseFormat?.name === 'factory_analyst_proposal');
+  const content = String(request?.messages.find((message) => message.role === 'user')?.content ?? '');
+  const json = content.split('\n')[1] ?? '{}';
+  return JSON.parse(json) as Record<string, unknown>;
+}
+
+function analystRequestsOf(model: ScriptedModelProvider): ModelCompletionRequest[] {
+  return model.requests.filter((candidate) => candidate.responseFormat?.name === 'factory_analyst_proposal');
+}
+
+/** proposals が空の Analyst 応答（「直します」と書いておきながら何も返さない実測の失敗）。 */
+function emptyProposalsAnalysisJson(summary = 'I am revising the system prompt.'): string {
+  return JSON.stringify({
+    findings: [{ id: 'f1', severity: 'critical', area: 'agent', detail: 'the agent never calls the tool' }],
+    proposals: [],
+    summary,
+  });
+}
+
+/** 検証の見かけを作るための ScenarioRun（失敗の段・アンケート欠測・期待Tool名を指定できる）。 */
+function scenarioRunWith(
+  input: ScenarioRunnerInput,
+  options: {
+    readonly status?: 'completed' | 'max-turns' | 'error';
+    readonly goalAchieved?: boolean | null;
+    readonly error?: { readonly stage: 'pseudo-user' | 'agent' | 'survey'; readonly message: string };
+    readonly survey?: boolean;
+    readonly satisfaction?: number;
+    readonly expected?: readonly string[];
+    readonly called?: readonly string[];
+    readonly agentRunId?: string;
+  } = {},
+): ScenarioRun {
+  const survey = options.survey === false
+    ? []
+    : [{ questionId: 'q2', value: options.satisfaction ?? 2 }, { questionId: 'impressions', value: 'numbers looked made up' }];
+  return createScenarioRun({
+    id: `scenario-run-${input.scenarioId}`,
+    scope,
+    scenario: { id: input.scenarioId, version: input.version ?? SemVer.of(1, 0, 0) },
+    status: options.status ?? 'completed',
+    ...(options.error === undefined ? {} : { error: options.error }),
+    goalAchieved: options.goalAchieved ?? false,
+    transcript: [
+      { speaker: 'user', message: '2008年から2010年の推移は？' },
+      { speaker: 'agent', message: '約300万人でした。', runId: options.agentRunId ?? 'agent-run-1' },
+    ],
+    survey,
+    impressions: survey.length === 0 ? '' : 'numbers looked made up',
+    metrics: {
+      userTurns: 1, agentRuns: 1, totalToolCalls: 1,
+      expectedToolHit: { expected: [...(options.expected ?? ['lookup_sales'])], called: [...(options.called ?? [])], hitRate: 0 },
+      durationMs: 250, usage: { totalTokens: 15 },
+    },
+    startedAt: '2026-07-20T00:00:00.000Z',
+    finishedAt: '2026-07-20T00:00:01.000Z',
+  });
+}
+
+/** 「0行のツール結果 → 数字入りの回答」を含む Agent Run のトレース。 */
+function zeroRowAgentRun(runId: string): RunRecord {
+  return {
+    runId,
+    scope,
+    status: 'succeeded',
+    mode: 'test',
+    purpose: 'scenario',
+    agent: { internalId: 'asset-3', version: '0.1.0' },
+    startedAt: '2026-07-20T00:00:00.000Z',
+    trace: [
+      { sequence: 1, kind: 'tool-call', name: 'lookup_sales', arguments: { period: '2015年12月31日' } },
+      { sequence: 2, kind: 'tool-result', name: 'lookup_sales', terminalId: 'out', nodes: [{ nodeId: 'out', rowCount: 0, truncated: false }], outputPreview: [] },
+      { sequence: 3, kind: 'model-response', content: '2008年から2010年は約300万人でした。' },
+    ],
+  };
+}
+
+describe('RunFactoryUseCase（期待Tool名はエージェントが呼ぶ関数名で固定する）', () => {
+  it('正常: Scenario.expectedTools には agentTool.name が入る（publishName ではない）', async () => {
+    const { model, runFactory, createFactoryRun, scenarioRepo, toolRepo } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const run = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { maxIterations: 1 } });
+
+    await runFactory.execute(scope, run.id);
+
+    const scenario = (await scenarioRepo.list(scope)).map((summary) => summary.internalId)[0];
+    const saved = await scenarioRepo.findLatest(scope, scenario ?? '');
+    const tool = await toolRepo.findLatest(scope, 'asset-1');
+    expect(saved?.expectedTools).toEqual(['lookup_sales']);
+    expect(tool?.agentTool?.name).toBe('lookup_sales');
+    // publishName は factory_tool_... であり、実行時の calledTools とは一致しない。
+    expect(tool?.metadata.publishName).not.toBe('lookup_sales');
+  });
+
+  it('正常: 再利用した既存Toolも、その Tool契約名で expectedTools に入る', async () => {
+    const { model, runFactory, createFactoryRun, scenarioRepo, toolRepo } = await setup();
+    await seedBuiltinDatetimeTool(toolRepo);
+    model.enqueue(
+      { message: { role: 'assistant', content: reusePlanJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const run = await createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { maxIterations: 1 } });
+
+    await runFactory.execute(scope, run.id);
+
+    const scenario = (await scenarioRepo.list(scope)).map((summary) => summary.internalId)[0];
+    const saved = await scenarioRepo.findLatest(scope, scenario ?? '');
+    expect(saved?.expectedTools).toContain('current_datetime');
+  });
+});
+
+describe('RunFactoryUseCase（Analystへ渡す材料）', () => {
+  /** 目標未達で1イテレーション目の分析まで進むRunを組み立てる（分析結果は呼び出し側が enqueue する）。 */
+  async function runToAnalysis(options: {
+    readonly makeScenarioRun: (input: ScenarioRunnerInput) => ScenarioRun;
+    readonly analyses: readonly string[];
+    readonly runRecords?: readonly RunRecord[];
+  }): Promise<{ model: ScriptedModelProvider; repo: FactoryRunRepository; runId: string }> {
+    const context = await setup({ makeScenarioRun: options.makeScenarioRun });
+    for (const record of options.runRecords ?? []) await context.runRepo.save(record);
+    context.model.enqueue(
+      { message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+      ...options.analyses.map((content) => ({ message: { role: 'assistant' as const, content }, finishReason: 'stop' as const })),
+    );
+    const run = await context.createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { maxIterations: 2 } });
+    await context.runFactory.execute(scope, run.id);
+    return { model: context.model, repo: context.repo, runId: run.id };
+  }
+
+  it('正常: 失敗した段・期待Tool名と実呼び出し名・アンケート欠測をScenario別サマリへ載せる', async () => {
+    const { model } = await runToAnalysis({
+      makeScenarioRun: (input) => scenarioRunWith(input, {
+        status: 'completed', error: { stage: 'survey', message: 'survey could not be collected' }, survey: false,
+        expected: ['lookup_sales'], called: ['fetch_unemployment_data'],
+      }),
+      analyses: [validAnalystProposalJson()],
+    });
+
+    const payload = analystPayloadOf(model);
+    const summary = (payload['scenarioSummaries'] as Record<string, unknown>[])[0]!;
+    expect(summary['errorStage']).toBe('survey');
+    expect(summary['errorMessage']).toMatch(/survey could not be collected/);
+    expect(summary['surveyCollected']).toBe(false);
+    expect(summary['expectedTools']).toEqual(['lookup_sales']);
+    expect(summary['calledTools']).toEqual(['fetch_unemployment_data']);
+    // アンケート欠測はメトリクスにも出る（満足度0を「不満」と読み違えないため）。
+    expect((payload['metrics'] as Record<string, unknown>)['surveyMissingCount']).toBe(1);
+  });
+
+  it('正常: 実際のツール呼び出し（引数と返却行数）と「0行なのに数字で答えた」フラグを載せる', async () => {
+    const { model } = await runToAnalysis({
+      makeScenarioRun: (input) => scenarioRunWith(input, { called: ['lookup_sales'], agentRunId: 'agent-run-1' }),
+      analyses: [validAnalystProposalJson()],
+      runRecords: [zeroRowAgentRun('agent-run-1')],
+    });
+
+    const payload = analystPayloadOf(model);
+    const summary = (payload['scenarioSummaries'] as Record<string, unknown>[])[0]!;
+    const calls = summary['toolCalls'] as Record<string, unknown>[];
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ name: 'lookup_sales', arguments: { period: '2015年12月31日' }, rowCount: 0 });
+    expect(summary['answeredWithNumbersAfterZeroRows']).toBe(true);
+  });
+
+  it('境界: トレースが読めない（Runレコードが無い）場合でも分析は続き、toolCallsを省く', async () => {
+    const { model } = await runToAnalysis({
+      makeScenarioRun: (input) => scenarioRunWith(input, { agentRunId: 'missing-run' }),
+      analyses: [validAnalystProposalJson()],
+    });
+
+    const summary = (analystPayloadOf(model)['scenarioSummaries'] as Record<string, unknown>[])[0]!;
+    expect(summary['toolCalls']).toBeUndefined();
+    expect(summary['answeredWithNumbersAfterZeroRows']).toBeUndefined();
+  });
+
+  it('正常: サマリの読み方（errorStage / surveyCollected / 0行で数字）をsystemプロンプトで指示する', async () => {
+    const { model } = await runToAnalysis({
+      makeScenarioRun: (input) => scenarioRunWith(input),
+      analyses: [validAnalystProposalJson()],
+    });
+
+    const system = String(analystRequestsOf(model)[0]?.messages.find((message) => message.role === 'system')?.content);
+    expect(system).toMatch(/surveyCollected: false means the satisfaction score is MISSING, not low/);
+    expect(system).toMatch(/expectedTools vs calledTools/);
+    expect(system).toMatch(/answeredWithNumbersAfterZeroRows/);
+  });
+});
+
+describe('RunFactoryUseCase（提案0件のロール失敗）', () => {
+  it('異常: proposals が空なら明示的な差し戻しで1回だけ再依頼する', async () => {
+    const context = await setup({ makeScenarioRun: (input) => scenarioRunWith(input) });
+    context.model.enqueue(
+      { message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: emptyProposalsAnalysisJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAnalystProposalJson() }, finishReason: 'stop' },
+    );
+    const run = await context.createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { maxIterations: 2 } });
+
+    await context.runFactory.execute(scope, run.id);
+
+    const analystRequests = analystRequestsOf(context.model);
+    expect(analystRequests).toHaveLength(2);
+    // 再依頼はuntrusted payload側にフィードバックを載せる（system命令を書き換えない）。
+    expect(String(analystRequests[1]?.messages.find((message) => message.role === 'user')?.content)).toContain('EMPTY proposals array');
+    // 2回目で提案が出たので改善ループは続く（イテレーション2が走る）。
+    const stored = await context.repo.find(scope, run.id);
+    expect(stored?.iterations).toHaveLength(2);
+    expect(stored?.budget.consumed.roleCalls).toBeGreaterThanOrEqual(6);
+  });
+
+  it('異常: 再依頼しても空なら no_proposals の理由をイベントへ残して打ち切る（黙って終わらない）', async () => {
+    const context = await setup({ makeScenarioRun: (input) => scenarioRunWith(input) });
+    context.model.enqueue(
+      { message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: emptyProposalsAnalysisJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: emptyProposalsAnalysisJson() }, finishReason: 'stop' },
+    );
+    const run = await context.createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { maxIterations: 2 } });
+
+    await context.runFactory.execute(scope, run.id);
+
+    const stored = await context.repo.find(scope, run.id);
+    expect(stored?.status).toBe('succeeded');
+    expect(stored?.iterations).toHaveLength(1);
+    const reason = stored?.events.find((event) => event.message?.startsWith(LOOP_STOPPED_NO_PROPOSALS) === true);
+    expect(reason?.message).toMatch(/even after an explicit re-ask/);
+    expect(reason?.stage).toBe('analyzing');
+  });
+
+  it('境界: 予算(maxRoleCalls)に余裕が無ければ再依頼しない', async () => {
+    const context = await setup({ makeScenarioRun: (input) => scenarioRunWith(input) });
+    context.model.enqueue(
+      { message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: emptyProposalsAnalysisJson() }, finishReason: 'stop' },
+    );
+    // plan(1) + toolSmith(1) + skillWriter(1) + assembler(1) = 4 消費済み。上限5なら再依頼の余地が無い。
+    const run = await context.createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { maxIterations: 2, budget: { maxDurationMs: 1_800_000, maxRoleCalls: 5, maxScenarioRuns: 20, maxRepairAttempts: 2, maxProposalsPerIteration: 4 } } });
+
+    await context.runFactory.execute(scope, run.id);
+
+    expect(analystRequestsOf(context.model)).toHaveLength(1);
+    const stored = await context.repo.find(scope, run.id);
+    expect(stored?.events.some((event) => event.message?.startsWith(LOOP_STOPPED_NO_PROPOSALS) === true)).toBe(true);
+  });
+});
+
+describe('assessReportQuality（statusとは別に成果物の質を決定的に判定する）', () => {
+  const targets = { minGoalAchievedRate: 0.75, minAvgSatisfaction: 4 };
+  const metrics = (overrides: Partial<IterationMetrics>): IterationMetrics => ({
+    iteration: 1, goalAchievedRate: 1, avgSatisfaction: 5, toolHitRate: 1, errorRate: 0,
+    avgUserTurns: 1, scenarioCount: 2, surveyMissingCount: 0, usage: {}, durationMs: 1, ...overrides,
+  });
+
+  it('正常: 目標を満たしていれば met-targets（理由なし）', () => {
+    expect(assessReportQuality(metrics({}), targets)).toEqual({ quality: 'met-targets', reasons: [] });
+  });
+
+  it('異常: 測れたうえで目標に届かなければ below-targets（どの指標が足りないかを添える）', () => {
+    const verdict = assessReportQuality(metrics({ goalAchievedRate: 0.5, avgSatisfaction: 3 }), targets);
+    expect(verdict.quality).toBe('below-targets');
+    expect(verdict.reasons.join(' ')).toMatch(/goalAchievedRate 0.50 is below the target 0.75/);
+    expect(verdict.reasons.join(' ')).toMatch(/avgSatisfaction 3.00 is below the target 4/);
+  });
+
+  it('異常: 全シナリオがエラー・アンケート全欠測は unverified（未達とは断定しない）', () => {
+    expect(assessReportQuality(metrics({ errorRate: 1, goalAchievedRate: 0 }), targets)).toEqual({
+      quality: 'unverified',
+      reasons: ['every scenario ended in an error, so no behaviour was actually observed'],
+    });
+    expect(assessReportQuality(metrics({ surveyMissingCount: 2, avgSatisfaction: 0 }), targets).quality).toBe('unverified');
+  });
+
+  it('境界: シナリオ0件・メトリクス未定義も unverified', () => {
+    expect(assessReportQuality(metrics({ scenarioCount: 0 }), targets).quality).toBe('unverified');
+    expect(assessReportQuality(undefined, targets).quality).toBe('unverified');
+  });
+
+  it('境界: 一部だけアンケート欠測でも、目標を満たしていれば met-targets のまま理由だけ残す', () => {
+    const verdict = assessReportQuality(metrics({ surveyMissingCount: 1 }), targets);
+    expect(verdict.quality).toBe('met-targets');
+    expect(verdict.reasons.join(' ')).toMatch(/1 of 2 scenario\(s\) returned no satisfaction survey/);
+  });
+
+  it('正常: レポートへ quality と理由が載る（statusがsucceededでも品質は別に読める）', async () => {
+    const context = await setup({ makeScenarioRun: (input) => scenarioRunWith(input, { status: 'error', error: { stage: 'agent', message: 'tool overflowed' }, survey: false, goalAchieved: null }) });
+    context.model.enqueue(
+      { message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: emptyProposalsAnalysisJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: emptyProposalsAnalysisJson() }, finishReason: 'stop' },
+    );
+    const run = await context.createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { maxIterations: 2 } });
+
+    await context.runFactory.execute(scope, run.id);
+
+    const stored = await context.repo.find(scope, run.id);
+    expect(stored?.status).toBe('succeeded'); // パイプラインは完走した…
+    expect(stored?.report?.quality).toBe('unverified'); // …が、成果物は検証できていない。
+    expect(stored?.report?.qualityReasons.join(' ')).toMatch(/every scenario ended in an error/);
+  });
+});
+
+// ─── ADR-0047 round 2: 悪化の決定的な列挙と、最良イテレーションの選び方 ──────────────────
+describe('describeRegressions（前イテレーションからの悪化を事実として列挙する）', () => {
+  const metricsOf = (overrides: Partial<IterationMetrics>): IterationMetrics => ({
+    iteration: 1, goalAchievedRate: 0.5, avgSatisfaction: 3, toolHitRate: 1, errorRate: 0,
+    avgUserTurns: 1, scenarioCount: 2, surveyMissingCount: 0, usage: {}, durationMs: 1, ...overrides,
+  });
+  const at = (metrics: IterationMetrics, stages: readonly string[] = []) => ({ metrics, errorStages: new Set(stages) });
+
+  it('正常: 主指標・満足度・ツール命中率の低下と、エラー率・アンケート欠測の増加を挙げる', () => {
+    const regressions = describeRegressions(
+      at(metricsOf({ goalAchievedRate: 0, avgSatisfaction: 2, toolHitRate: 0.5, errorRate: 0.5, surveyMissingCount: 1 })),
+      at(metricsOf({})),
+    );
+
+    expect(regressions.join(' ')).toMatch(/goalAchievedRate fell from 0.50 to 0.00/);
+    expect(regressions.join(' ')).toMatch(/avgSatisfaction fell from 3.00 to 2.00/);
+    expect(regressions.join(' ')).toMatch(/toolHitRate fell from 1.00 to 0.50/);
+    expect(regressions.join(' ')).toMatch(/errorRate rose from 0.00 to 0.50/);
+    expect(regressions.join(' ')).toMatch(/surveyMissingCount rose from 0.00 to 1.00/);
+  });
+
+  it('正常: 前になかった失敗の段（新しい壊れ方）は必ず挙げる', () => {
+    const regressions = describeRegressions(at(metricsOf({}), ['agent']), at(metricsOf({}), ['survey']));
+
+    expect(regressions).toEqual(["scenarios now fail at the 'agent' stage, which did not happen in the previous iteration"]);
+  });
+
+  it('境界: 改善・横ばいは悪化として挙げない', () => {
+    expect(describeRegressions(at(metricsOf({ goalAchievedRate: 1 })), at(metricsOf({})))).toEqual([]);
+    expect(describeRegressions(at(metricsOf({}), ['agent']), at(metricsOf({}), ['agent']))).toEqual([]);
+  });
+
+  it('例外: 比較対象（前イテレーション）が無ければ空（イテレーション1では悪化を語らない）', () => {
+    expect(describeRegressions(at(metricsOf({ goalAchievedRate: 0, errorRate: 1 }), ['agent']), undefined)).toEqual([]);
+  });
+});
+
+describe('selectBestIteration（errorRateまで含めた最良版の選び方）', () => {
+  const iteration = (index: number, overrides: Partial<IterationMetrics>): FactoryIteration => ({
+    index,
+    agentVersion: `0.1.${index}`,
+    scenarioRunIds: [],
+    metrics: {
+      iteration: index, goalAchievedRate: 0.5, avgSatisfaction: 3, toolHitRate: 1, errorRate: 0,
+      avgUserTurns: 1, scenarioCount: 2, surveyMissingCount: 0, usage: {}, durationMs: 1, ...overrides,
+    },
+  });
+
+  it('正常: 主指標（goalAchievedRate）が最大のイテレーションを選ぶ', () => {
+    expect(selectBestIteration([iteration(1, { goalAchievedRate: 0.5 }), iteration(2, { goalAchievedRate: 0 })]).index).toBe(1);
+  });
+
+  it('正常: 主指標が同点ならエラー率の低い方を選ぶ（落ちた会話は「満足度が高い」ではない）', () => {
+    const best = selectBestIteration([
+      iteration(1, { errorRate: 0.5, avgSatisfaction: 5 }),
+      iteration(2, { errorRate: 0, avgSatisfaction: 3 }),
+    ]);
+    expect(best.index).toBe(2);
+  });
+
+  it('境界: 主指標もエラー率も同点なら満足度、それも同点なら先のイテレーションを残す', () => {
+    expect(selectBestIteration([iteration(1, { avgSatisfaction: 3 }), iteration(2, { avgSatisfaction: 4 })]).index).toBe(2);
+    expect(selectBestIteration([iteration(1, {}), iteration(2, {})]).index).toBe(1);
+  });
+
+  it('例外: イテレーションが1件も無ければ FactoryValidationError', () => {
+    expect(() => selectBestIteration([])).toThrow(FactoryValidationError);
+  });
+});
+
+describe('RunFactoryUseCase（悪化と呼び出し予算をAnalystへ渡す）', () => {
+  /**
+   * イテレーション1は目標を達成、イテレーション2で主指標だけが落ちる台本。
+   * 満足度は上げておく（両方が横ばい以下だと「改善停滞」で2回目の分析まで進まない）。
+   */
+  function worseningRun(input: ScenarioRunnerInput, attempt: { count: number }): ScenarioRun {
+    attempt.count += 1;
+    return attempt.count === 1
+      ? scenarioRunWith(input, { goalAchieved: true, satisfaction: 2, called: ['lookup_sales'] })
+      : scenarioRunWith(input, { goalAchieved: false, satisfaction: 3, called: ['lookup_sales'] });
+  }
+
+  it('正常: 2回目の分析には、前イテレーションからの悪化が事実として渡る', async () => {
+    const attempt = { count: 0 };
+    const context = await setup({ makeScenarioRun: (input) => worseningRun(input, attempt) });
+    context.model.enqueue(
+      { message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAnalystProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAnalystProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAnalystProposalJson() }, finishReason: 'stop' },
+    );
+    const run = await context.createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { maxIterations: 3 } });
+
+    await context.runFactory.execute(scope, run.id);
+
+    const analystRequests = context.model.requests.filter((request) => request.responseFormat?.name === 'factory_analyst_proposal');
+    expect(analystRequests.length).toBeGreaterThanOrEqual(2);
+    const first = String(analystRequests[0]?.messages.find((message) => message.role === 'user')?.content);
+    const second = String(analystRequests[1]?.messages.find((message) => message.role === 'user')?.content);
+    // イテレーション1には比較対象が無いので悪化を語らない。
+    expect(first).not.toContain('"regressions"');
+    expect(second).toContain('"regressions"');
+    expect(second).toMatch(/goalAchievedRate fell from 1.00 to 0.00/);
+    // 上がった指標は悪化として挙げない。
+    expect(second).not.toMatch(/avgSatisfaction fell/);
+  });
+
+  it('正常: Analystへ会話あたりのツール呼び出し上限を渡す（1対象1呼び出しの提案を止める）', async () => {
+    const context = await setup({ makeScenarioRun: (input) => scenarioRunWith(input) });
+    context.model.enqueue(
+      { message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAnalystProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAnalystProposalJson() }, finishReason: 'stop' },
+    );
+    const run = await context.createFactoryRun.execute({ scope, goal: goalInput, dataSourceIds: ['ds-1'], options: { maxIterations: 2 } });
+
+    await context.runFactory.execute(scope, run.id);
+
+    const analystRequest = context.model.requests.find((request) => request.responseFormat?.name === 'factory_analyst_proposal');
+    expect(String(analystRequest?.messages.find((message) => message.role === 'user')?.content)).toContain(`"toolCallBudget":${MAX_TOOL_CALLS}`);
   });
 });

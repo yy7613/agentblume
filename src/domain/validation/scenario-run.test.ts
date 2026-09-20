@@ -43,6 +43,21 @@ describe('createScenarioRun', () => {
     expect(run.metrics.expectedToolHit).toEqual({ expected: ['a', 'b'], called: ['a'], hitRate: 0.5 });
   });
 
+  it('正常: 失敗理由（error.stage / message）を保持し、未指定ならキーごと省く', () => {
+    const failed = createScenarioRun(props({ status: 'error', error: { stage: 'agent', message: 'ToolExecutionError: boom (tool sales_summary / node join-1)' } }));
+    expect(failed.error).toEqual({ stage: 'agent', message: 'ToolExecutionError: boom (tool sales_summary / node join-1)' });
+    // アンケートだけ落ちた実行は completed のまま理由を持てる。
+    const surveyFailed = createScenarioRun(props({ status: 'completed', survey: [], impressions: '', error: { stage: 'survey', message: "survey answer 'q2' must be between 1 and 5" } }));
+    expect(surveyFailed).toMatchObject({ status: 'completed', goalAchieved: true });
+    expect(surveyFailed.error?.stage).toBe('survey');
+    expect('error' in createScenarioRun(props())).toBe(false);
+  });
+
+  it('異常: error.stage が未知・message が空なら ValidationDomainError', () => {
+    expect(() => createScenarioRun(props({ error: { stage: 'model' as 'agent', message: 'x' } }))).toThrow(ValidationDomainError);
+    expect(() => createScenarioRun(props({ error: { stage: 'survey', message: ' ' } }))).toThrow(ValidationDomainError);
+  });
+
   it('不変条件違反は ValidationDomainError', () => {
     expect(() => createScenarioRun(props({ id: '' }))).toThrow(ValidationDomainError);
     expect(() => createScenarioRun(props({ scope: { tenantId: 't', workspaceId: '' } }))).toThrow(ValidationDomainError);

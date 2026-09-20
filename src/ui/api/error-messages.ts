@@ -565,11 +565,28 @@ function localizeEtlDetail(message: string, language: ErrorLanguage): string | u
     return `列「${matched[2]}」の型は ${types} が必要です。${matched[1]}ノードの手前に「型変換」(cast)ノードを挟んで列「${matched[2]}」を変換するか、別の列を選んでください`;
   }
 
+  // 期間の解釈ノード（src/domain/etl/nodes/parse-period.ts）。列不存在の単数形と、足す2列の衝突。
+  matched = /^parse-period: column not found: (.+)$/.exec(message);
+  if (matched !== null) return `期間ラベルの列「${matched[1]}」が上流の出力にありません。期間の解釈ノードの「期間ラベルの列」を実在する列へ選び直すか、上流ノードの設定を見直してください`;
+
+  matched = /^parse-period: (start|granularity) column already exists: (.+)$/.exec(message);
+  if (matched !== null) {
+    const field = matched[1] === 'start' ? '開始日の列' : '粒度の列';
+    return `${field}「${matched[2]}」と同じ名前の列が上流にすでにあります。期間の解釈ノードの${field}名を別の名前に変えるか、上流で列名を変更してください`;
+  }
+
+  matched = /^parse-period: start column and granularity column must differ: (.+)$/.exec(message);
+  if (matched !== null) return `開始日の列と粒度の列に同じ名前「${matched[1]}」を指定しています。期間の解釈ノードでどちらかを別の名前にしてください`;
+
   matched = /^([A-Za-z][A-Za-z0-9_-]*): duplicate aggregate name: (.+)$/.exec(message);
   if (matched !== null) return `集計の出力列名が重複しています: ${matched[2]}`;
 
   matched = /^([A-Za-z][A-Za-z0-9_-]*): aggregate '(.+)' requires a column for op '(.+)'$/.exec(message);
   if (matched !== null) return `集計「${matched[2]}」には ${matched[3]} の対象列が必要です`;
+
+  // 日付列の比較値（src/domain/etl/nodes/filter.ts）。ISO として読めない文字列は 0 行ではなくエラーにする。
+  matched = /^filter: value for date column '(.+)' must be an ISO date \(YYYY-MM-DD\): (.*)$/.exec(message);
+  if (matched !== null) return `日付列「${matched[1]}」と比べる値「${matched[2]}」が日付として読めません。絞り込み(filter)ノードの値を ISO 形式（例: 2008-01-01 や 2008-01-01T00:00:00Z）で入力してください`;
 
   // filter の opBinding（演算子のAI引数化）の検証（src/domain/etl/nodes/filter.ts）。
   matched = /^filter: default operator '(.+)' is not in opBinding\.allowed \((.+)\)$/.exec(message);

@@ -130,7 +130,7 @@ describe('recordIteration', () => {
     index: 1,
     agentVersion: '0.1.0',
     scenarioRunIds: ['sr-1'],
-    metrics: { iteration: 1, goalAchievedRate: 0.5, avgSatisfaction: 3, toolHitRate: 0.8, errorRate: 0, avgUserTurns: 3, scenarioCount: 4, usage: { totalTokens: 100 }, durationMs: 1000 },
+    metrics: { iteration: 1, goalAchievedRate: 0.5, avgSatisfaction: 3, toolHitRate: 0.8, errorRate: 0, avgUserTurns: 3, scenarioCount: 4, surveyMissingCount: 0, usage: { totalTokens: 100 }, durationMs: 1000 },
     analysis: {
       findings: [{ id: 'f1', severity: 'warning', area: 'tool', detail: '曖昧な回答' }],
       applied: [{ proposal: { kind: 'add-tool', plan: plan.tools[0]!, rationale: '不足していたため' }, resultingVersion: { internalId: 'tool-1', version: '0.1.0' } }],
@@ -163,13 +163,13 @@ describe('attachAnalysisToLastIteration', () => {
     index: 1,
     agentVersion: '0.1.0',
     scenarioRunIds: ['sr-1'],
-    metrics: { iteration: 1, goalAchievedRate: 0.5, avgSatisfaction: 3, toolHitRate: 0.8, errorRate: 0, avgUserTurns: 3, scenarioCount: 4, usage: { totalTokens: 100 }, durationMs: 1000 },
+    metrics: { iteration: 1, goalAchievedRate: 0.5, avgSatisfaction: 3, toolHitRate: 0.8, errorRate: 0, avgUserTurns: 3, scenarioCount: 4, surveyMissingCount: 0, usage: { totalTokens: 100 }, durationMs: 1000 },
   };
   const iteration2: FactoryIteration = {
     index: 2,
     agentVersion: '0.2.0',
     scenarioRunIds: ['sr-2'],
-    metrics: { iteration: 2, goalAchievedRate: 0.8, avgSatisfaction: 4, toolHitRate: 0.9, errorRate: 0, avgUserTurns: 3, scenarioCount: 4, usage: { totalTokens: 120 }, durationMs: 1100 },
+    metrics: { iteration: 2, goalAchievedRate: 0.8, avgSatisfaction: 4, toolHitRate: 0.9, errorRate: 0, avgUserTurns: 3, scenarioCount: 4, surveyMissingCount: 0, usage: { totalTokens: 120 }, durationMs: 1100 },
   };
   const analysis = {
     findings: [{ id: 'f1', severity: 'warning' as const, area: 'tool', detail: '曖昧な回答' }],
@@ -295,7 +295,7 @@ describe('waitForPlanApproval / resumeFactoryRun', () => {
 });
 
 describe('succeedFactoryRun', () => {
-  const report: FactoryReport = { bestIteration: 1, candidate: { agentId: 'agent-1', version: '0.1.0' }, summary: '目標達成', openFindings: [], metricsByIteration: [] };
+  const report: FactoryReport = { bestIteration: 1, candidate: { agentId: 'agent-1', version: '0.1.0' }, summary: '目標達成', openFindings: [], metricsByIteration: [], quality: 'unverified', qualityReasons: [] };
 
   it('running → succeeded', () => {
     const run = succeedFactoryRun(beginFactoryRun(makeRun()), report, '2026-07-20T01:00:00Z');
@@ -341,7 +341,7 @@ describe('cancelFactoryRun', () => {
   });
 
   it('終了状態からは例外を投げる', () => {
-    const report: FactoryReport = { bestIteration: 1, candidate: { agentId: 'a', version: '0.1.0' }, summary: 's', openFindings: [], metricsByIteration: [] };
+    const report: FactoryReport = { bestIteration: 1, candidate: { agentId: 'a', version: '0.1.0' }, summary: 's', openFindings: [], metricsByIteration: [], quality: 'unverified', qualityReasons: [] };
     const succeeded = succeedFactoryRun(beginFactoryRun(makeRun()), report, 'finish');
     expect(() => cancelFactoryRun(succeeded, 'finish')).toThrow(/already succeeded/);
   });

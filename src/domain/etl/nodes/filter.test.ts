@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Schema, Table } from '../../data/types';
-import { ConfigError } from '../errors';
+import { ConfigError, SchemaError } from '../errors';
 import { CASE_FOLD_OPS, FILTER_OPS, filterNode, operatorArgumentSummaries, ORDER_OPS, valueBindingsOf, VALUELESS_OPS } from './filter';
 
 const schema: Schema = {
@@ -596,5 +596,97 @@ describe('filter: execute', () => {
   it('disabled: false keeps the condition active (backward compatible)', () => {
     const out = filterNode.execute([table], { column: 'age', op: 'gte', value: 40, disabled: false });
     expect(out.rows.map((r) => r.id)).toEqual([3]);
+  });
+});
+
+/**
+ * 日付列の比較値を ISO 文字列で書ける（保存済み config は JSON なので Date リテラルを持てず、
+ * Agent Tool の引数も文字列で届く）。修正前はここが NaN 比較になり、エラー無しで 0 行だった。
+ */
+describe('filter: 日付列のISO文字列', () => {
+  const isoTable: Table = table;
+
+  it.each([
+    ['gte', '2020-01-01', [1, 2]],
+    ['gt', '2020-01-01', [2]],
+    ['lte', '2020-01-01', [1, 3]],
+    ['lt', '2020-01-01', [3]],
+    ['eq', '2020-01-01', [1]],
+    ['neq', '2020-01-01', [2, 3]],
+  ] as const)('正常: %s に ISO 日付文字列を渡すと Date と同じ結果になる', (op, value, expected) => {
+    const out = filterNode.execute([isoTable], { column: 'joined', op, value });
+    expect(out.rows.map((row) => row.id)).toEqual(expected);
+    // Date で書いた場合と1行もずれない。
+    expect(out.rows).toEqual(filterNode.execute([isoTable], { column: 'joined', op, value: d(`${value}T00:00:00Z`) }).rows);
+  });
+
+  it('正常: 日時（時刻つき）の ISO 文字列も解釈する', () => {
+    const out = filterNode.execute([isoTable], { column: 'joined', op: 'gte', value: '2021-06-01T00:00:00.000Z' });
+    expect(out.rows.map((row) => row.id)).toEqual([2]);
+  });
+
+  it('正常: エージェント引数（valueBinding）で届いた文字列も同じ規則で日付になる', () => {
+    // 実行時に application 層が value を実引数へ差し替えた形（binding は残る）。
+    const out = filterNode.execute([isoTable], {
+      column: 'joined', op: 'gte', value: '2021-01-01',
+      valueBinding: { source: 'agent-input', field: 'since' },
+    });
+    expect(out.rows.map((row) => row.id)).toEqual([2]);
+  });
+
+  it('境界: 複数条件の範囲指定（gte + lte）が ISO 文字列だけで成立する', () => {
+    const out = filterNode.execute([isoTable], {
+      conditions: [
+        { column: 'joined', op: 'gte', value: '2019-06-01' },
+        { column: 'joined', op: 'lte', value: '2020-12-31' },
+      ],
+      combine: 'and',
+    });
+    expect(out.rows.map((row) => row.id)).toEqual([1]);
+  });
+
+  it('境界: スキーマが型を持たない（unknown）列でもセルが Date なら日付として比べる', () => {
+    const loose: Table = {
+      schema: { columns: [{ name: 'joined', type: 'unknown', nullable: false }] },
+      rows: [{ joined: d('2020-01-01T00:00:00Z') }, { joined: d('2018-01-01T00:00:00Z') }],
+    };
+    const out = filterNode.execute([loose], { column: 'joined', op: 'gte', value: '2019-01-01' });
+    expect(out.rows).toHaveLength(1);
+  });
+
+  it('境界: contains は文字列包含のままで日付として解釈しない（従来どおり）', () => {
+    const out = filterNode.execute([isoTable], { column: 'joined', op: 'contains', value: '2020' });
+    expect(out.rows.map((row) => row.id)).toEqual([1]);
+  });
+
+  it('境界: 従来どおり — 文字列列の比較は日付らしい値でも文字列のまま（日付化しない）', () => {
+    const texts: Table = {
+      schema: { columns: [{ name: 'when', type: 'string', nullable: false }] },
+      rows: [{ when: '2020-01-01' }, { when: '2020-01-02' }],
+    };
+    const out = filterNode.execute([texts], { column: 'when', op: 'eq', value: '2020-01-01' });
+    expect(out.rows).toEqual([{ when: '2020-01-01' }]);
+  });
+
+  it('異常: 日付として読めない文字列は inferSchema が error issue にする', () => {
+    const inference = filterNode.inferSchema([schema], { column: 'joined', op: 'gte', value: '2020/01/01' });
+    expect(inference.state).toBe('mismatch');
+    expect(inference.issues).toEqual([
+      { severity: 'error', message: "filter: value for date column 'joined' must be an ISO date (YYYY-MM-DD): 2020/01/01", column: 'joined' },
+    ]);
+  });
+
+  it('境界: 従来どおり — 読める ISO 文字列なら inferSchema は issue を出さない（誤検知しない）', () => {
+    expect(filterNode.inferSchema([schema], { column: 'joined', op: 'gte', value: '2020-01-01' })).toEqual({ schema, state: 'confirmed', issues: [] });
+  });
+
+  it('例外: 日付として読めない文字列は execute で SchemaError（黙って0行にしない）', () => {
+    expect(() => filterNode.execute([isoTable], { column: 'joined', op: 'gte', value: '昨日' }))
+      .toThrowError(new SchemaError("filter: value for date column 'joined' must be an ISO date (YYYY-MM-DD): 昨日"));
+  });
+
+  it('例外: 月が範囲外（13月）の ISO 風文字列も読めない値として SchemaError', () => {
+    // `2020-02-30` のような「桁は正しいが実在しない日」は JS が 3/1 へ繰り上げる（csv-source の date 化と同じ挙動）。
+    expect(() => filterNode.execute([isoTable], { column: 'joined', op: 'eq', value: '2020-13-01' })).toThrowError(SchemaError);
   });
 });

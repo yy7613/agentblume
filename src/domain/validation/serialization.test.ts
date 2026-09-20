@@ -96,10 +96,20 @@ describe('ScenarioRun serialization', () => {
     expect(roundTripped).toEqual(run);
   });
 
+  it('正常: 失敗理由（error）もJSON往復で保たれる', () => {
+    const failed = createScenarioRun({ ...run, status: 'error', survey: [], impressions: '', error: { stage: 'pseudo-user', message: 'ValidationDomainError: invalid JSON twice' } });
+    const serialized = serializeScenarioRun(failed);
+    expect(serialized.error).toEqual({ stage: 'pseudo-user', message: 'ValidationDomainError: invalid JSON twice' });
+    expect(deserializeScenarioRun(JSON.parse(JSON.stringify(serialized)))).toEqual(failed);
+    // 理由の無い実行はキーごと出さない（従来どおり）。
+    expect('error' in serializeScenarioRun(run)).toBe(false);
+  });
+
   it('形の壊れた入力・不変条件違反を拒否する', () => {
     expect(() => deserializeScenarioRun({ id: 'x' })).toThrow(ValidationDomainError);
     const serialized = serializeScenarioRun(run);
     expect(() => deserializeScenarioRun({ ...serialized, status: 'running' })).toThrow(ValidationDomainError);
     expect(() => deserializeScenarioRun({ ...serialized, metrics: { ...serialized.metrics, userTurns: -1 } })).toThrow(ValidationDomainError);
+    expect(() => deserializeScenarioRun({ ...serialized, error: { stage: 'model', message: 'x' } })).toThrow(ValidationDomainError);
   });
 });

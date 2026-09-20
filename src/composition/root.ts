@@ -783,7 +783,7 @@ export function createApp(options?: AppOptions): App {
   const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot, logger: errorLogger, ...(resolveModelSnapshot === undefined ? {} : { resolveModel: resolveModelSnapshot }) }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient, resolveAiJudgments);
   const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);
   const saveWikiPage = new SaveWikiPageUseCase(wikiAdapter.repo);
-  const runScenario = new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo);
+  const runScenario = new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo, undefined, undefined, errorLogger);
   const evaluator = new MastraEvalsEvaluator();
   const runExperiment = new RunExperimentUseCase(experimentAdapter.repo, evaluationDatasetAdapter.repo, evaluatorProfileAdapter.repo, agentAdapter.repo, scenarioAdapter.repo, runAgentPreview, runScenario, evaluator, undefined, undefined, { rubrics: judgeRubricAdapter.repo, evaluator: judgeEvaluator, ...(resolveJudgeSnapshot === undefined ? {} : { resolveSnapshot: resolveJudgeSnapshot }) }, telemetry, errorLogger);
   const experimentWorker = new InProcessExperimentWorker(runExperiment, errorLogger);
@@ -817,7 +817,8 @@ export function createApp(options?: AppOptions): App {
     agentAdapter.repo, skillAdapter.repo, repo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine, undefined,
     { toolSmith: toolSmithRole, resolveDataSources, profiler: profileDataSources }, undefined, unitOfWork,
   );
-  const runFactory = new RunFactoryUseCase(factoryRunAdapter.repo, profileDataSources, plannerRole, generateAgentAssets, runScenario, savePersona, registerPseudoUserAgent, saveScenario, analystRole, applyImprovements, agentAdapter.repo, skillAdapter.repo, repo);
+  // 第14引数の Run リポジトリは Analyst へ「実際のツール呼び出し（引数・行数）」を渡すために読む（ADR-0047）。
+  const runFactory = new RunFactoryUseCase(factoryRunAdapter.repo, profileDataSources, plannerRole, generateAgentAssets, runScenario, savePersona, registerPseudoUserAgent, saveScenario, analystRole, applyImprovements, agentAdapter.repo, skillAdapter.repo, repo, runAdapter.repo);
   const factoryWorker = new InProcessFactoryWorker(runFactory, errorLogger);
   const createFactoryRun = new CreateFactoryRunUseCase(factoryRunAdapter.repo, factoryWorker);
   const resumeFactoryRun = new ResumeFactoryRunUseCase(factoryRunAdapter.repo, runFactory, factoryWorker);

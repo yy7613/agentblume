@@ -11,6 +11,7 @@
  * - `header:true`（既定）→ 1行目を列名に。`false` → `col1,col2,...`。
  * - `inferTypes:true`（既定）→ 各セル文字列を number/boolean/date に緩く変換、
  *   無理なら文字列のまま。空文字 → null。`inferTypes:false` → 全て文字列（空→null）。
+ * - 先頭の BOM は落とす。先頭ゼロつきの値を含む列（地域コード等）は列ごと文字列のまま保つ。
  */
 import { z } from 'zod';
 import type { Cell, Row, Schema, Table } from '../../data/types';
@@ -36,6 +37,9 @@ const configSchema = z.object({
 
 /** ISO 8601 らしき日付文字列（緩め）。日付のみ / 日時（Z or ±hh:mm）を許可。 */
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+
+/** 先頭ゼロつきの整数らしき値（コード）。`0` 単体や `0.5` は数値なので含めない。 */
+const LEADING_ZERO_CODE_RE = /^0\d+$/;
 
 /** 改行で行に分割する（CRLF/CR/LF 対応）。末尾の空行は落とす。 */
 function splitLines(text: string): string[] {
@@ -129,7 +133,9 @@ function parseCsv(config: CsvSourceConfig): Row[] {
   const header = config.header ?? true;
   const inferTypes = config.inferTypes ?? true;
 
-  const lines = splitLines(config.text);
+  // 先頭の BOM（U+FEFF）は落とす。Excel や e-Stat が出す「UTF-8（BOM 付き）」の CSV では、
+  // 残すと 1 列目の名前が不可視文字つき（`﻿時点`）になり、見た目どおりの列名で参照できなくなる。
+  const lines = splitLines(config.text.charCodeAt(0) === 0xfeff ? config.text.slice(1) : config.text);
   if (lines.length === 0) return [];
 
   const rowsOfFields = lines.map((line) => parseLine(line, delimiter));
@@ -148,6 +154,15 @@ function parseCsv(config: CsvSourceConfig): Row[] {
     dataRows = rowsOfFields;
   }
 
+  // 先頭ゼロを持つ値（`00000` `01000` `090…`）が 1 つでもある列はコード列とみなし、列ごと文字列のまま保つ。
+  // 数値化すると `00000` が 0 になって元に戻せず、`47000` だけ数値になる行と混ざって列の型も崩れる。
+  const codeColumns = new Set<number>();
+  if (inferTypes) {
+    for (const fields of dataRows) {
+      fields.forEach((raw, index) => { if (LEADING_ZERO_CODE_RE.test(raw.trim())) codeColumns.add(index); });
+    }
+  }
+
   return dataRows.map((fields) => {
     const row: Record<string, Cell> = {};
     for (let c = 0; c < headerNames.length; c += 1) {
@@ -155,7 +170,7 @@ function parseCsv(config: CsvSourceConfig): Row[] {
       if (name === undefined) continue;
       // 列数不足の行では該当セルを null 扱い（欠損）。
       const raw = c < fields.length ? (fields[c] ?? '') : '';
-      row[name] = c < fields.length ? toCell(raw, inferTypes) : null;
+      row[name] = c < fields.length ? toCell(raw, inferTypes && !codeColumns.has(c)) : null;
     }
     return row;
   });

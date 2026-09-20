@@ -139,6 +139,7 @@ export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
       {type === 'rename' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Renames', '列名変更')} <small>{text('one from:to pair per line', '1行に from:to')}</small><textarea rows={8} value={(config['renames'] as {from:string;to:string}[] | undefined)?.map((pair) => `${pair.from}:${pair.to}`).join('\n') ?? ''} onChange={(event) => setConfig({ renames: parsePairs(event.target.value, 'to') })} /></label></details>}
       {type === 'cast' && <details><summary>{text('Advanced text editor', '詳細テキスト編集')}</summary><label>{text('Casts', '型変換')} <small>{text('one column:type pair per line', '1行に column:type')}</small><textarea rows={8} value={(config['casts'] as {column:string;to:string}[] | undefined)?.map((pair) => `${pair.column}:${pair.to}`).join('\n') ?? ''} onChange={(event) => setConfig({ casts: parsePairs(event.target.value, 'type') })} /></label></details>}
       {type === 'calculate' && <CalculateSummary config={config} columns={columns} />}
+      {type === 'parse-period' && <ParsePeriodFields config={config} setConfig={setConfig} columns={columns} />}
       {type === 'join' && <details><summary>{text('Advanced inline editor', '詳細インライン編集')}</summary><JoinFields config={config} setConfig={setConfig} leftColumns={leftColumns} rightColumns={rightColumns} /></details>}
       {type === 'union' && <label className="check"><input type="checkbox" checked={config['strict'] === true} onChange={(event) => setConfig({ strict: event.target.checked })} /> {text('Strict column match', '列名の完全一致を要求')}</label>}
       {type === 'limit' && <LimitFields config={config} setConfig={setConfig} />}
@@ -345,11 +346,17 @@ function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvail
   const [draft, setDraft] = useState<Readonly<Record<string, unknown>>>(initial);
   const [intent, setIntent] = useState(''); const [proposal, setProposal] = useState<AnalysisConfigProposalDto>(); const [assistantError, setAssistantError] = useState<string>(); const [suggesting, setSuggesting] = useState(false);
   // 式提案（v41）は分析設定補助とは別の草案・状態を持つ（ダイアログ内で共存しうるため名前を分ける）。
-  const [calcIntent, setCalcIntent] = useState(''); const [calcProposal, setCalcProposal] = useState<CalculateExpressionProposalDto>(); const [calcAssistantError, setCalcAssistantError] = useState<string>(); const [calcSuggesting, setCalcSuggesting] = useState(false);
   const { text } = useI18n();
   const patch = (next: Record<string, unknown>) => setDraft((current) => ({ ...current, ...next }));
   const suggest = async () => { if (client === undefined || intent.trim() === '') return; setSuggesting(true); setAssistantError(undefined); try { const result = await client.suggestAnalysisConfig({ graph: { ...graph, nodes: graph.nodes.map((item) => item.id === nodeId ? { ...item, config: draft } : item) }, nodeId, intent, scope }); setProposal(result); } catch (error) { setAssistantError(error instanceof Error ? error.message : text('Suggestion failed.', '設定案の取得に失敗しました。')); } finally { setSuggesting(false); } };
-  const suggestCalculateExpression = async () => { if (client === undefined || calcIntent.trim() === '') return; setCalcSuggesting(true); setCalcAssistantError(undefined); try { const result = await client.suggestCalculateExpression({ graph: { ...graph, nodes: graph.nodes.map((item) => item.id === nodeId ? { ...item, config: draft } : item) }, nodeId, intent: calcIntent, scope }); setCalcProposal(result); } catch (error) { setCalcAssistantError(error instanceof Error ? error.message : text('Suggestion failed.', '設定案の取得に失敗しました。')); } finally { setCalcSuggesting(false); } };
+  // 関数電卓の AI 補助。状態（指示文・提案）は電卓本体が持ち、ここは「いまの下書きで提案を取りに行く」手段だけを渡す。
+  const calculateAssistant: CalculateAssistant = {
+    available: calculateAssistantAvailable && client !== undefined,
+    suggest: async (intent) => {
+      if (client === undefined) throw new Error(text('Suggestion failed.', '設定案の取得に失敗しました。'));
+      return client.suggestCalculateExpression({ graph: { ...graph, nodes: graph.nodes.map((item) => item.id === nodeId ? { ...item, config: draft } : item) }, nodeId, intent, scope });
+    },
+  };
   const dialogRef = useModalBehavior<HTMLElement>({ onClose: onCancel });
   return <div className="node-config-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
     <section ref={dialogRef} tabIndex={-1} className="node-config-dialog" role="dialog" aria-modal="true" aria-label={text('Node configuration', 'ノード設定')}>
@@ -361,25 +368,7 @@ function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvail
         {type === 'chart-output' && <ChartOutputFields config={draft} setConfig={patch} columns={columns} />}
         {type === 'rename' && <RenameRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'cast' && <CastRuleEditor config={draft} setConfig={patch} columns={columns} />}
-        {type === 'calculate' && calculateAssistantAvailable && <section className="calc-assistant">
-          <h3>{text('Build the expression with the local LLM', 'ローカルLLMで式を作る')}</h3>
-          <label>{text('What to calculate', '計算したいこと')}<textarea value={calcIntent} onChange={(event) => setCalcIntent(event.target.value)} placeholder={text('e.g. Tax-included amount from unit price × quantity, rounded to 0 decimals', '例: 単価×数量の税込金額を小数 0 桁で')} rows={3} /></label>
-          <button type="button" className="secondary" disabled={calcSuggesting || calcIntent.trim() === ''} onClick={() => void suggestCalculateExpression()}>{calcSuggesting ? text('Suggesting…', '提案中…') : text('Suggest expression', '式を提案')}</button>
-          {calcAssistantError !== undefined && <>
-            <small className="field-error">{calcAssistantError}</small>
-            <small className="field-error">{text('Make the instruction more specific (which columns to use, rounding, units) and try again.', '指示を具体的に（使う列名・丸め・単位）して再実行してください。')}</small>
-          </>}
-          {calcProposal !== undefined && <div className="assistant-proposal">
-            <p><code>{calcProposal.config.expression}</code></p>
-            {calcProposal.rationale.map((item, index) => <small key={`r-${index}`}>• {item}</small>)}
-            {calcProposal.warnings.map((item, index) => <small className="field-error" key={`w-${index}`}>• {item}</small>)}
-            <p>{text(`${calcProposal.preview.evaluated} of ${calcProposal.preview.rows} sample rows calculated.`, `標本 ${calcProposal.preview.rows} 行のうち ${calcProposal.preview.evaluated} 行が計算できました。`)}</p>
-            {calcProposal.validation.diagnostics.filter((diagnostic) => diagnostic.severity === 'warning').map((diagnostic, index) => <small className="field-error" key={`d-${index}`}>{diagnostic.message}</small>)}
-            {calcProposal.repaired && <small>{text('The first proposal was repaired once.', '最初の提案を 1 回直しました。')}</small>}
-            <button type="button" onClick={() => { patch({ expression: calcProposal.config.expression, outputColumn: calcProposal.config.outputColumn }); setCalcProposal(undefined); }}>{text('Apply expression to this dialog', 'この式をダイアログへ適用')}</button>
-          </div>}
-        </section>}
-        {type === 'calculate' && <CalculateFields config={draft} setConfig={patch} columns={columns} samples={samples} />}
+        {type === 'calculate' && <CalculateFields config={draft} setConfig={patch} columns={columns} samples={samples} assistant={calculateAssistant} />}
         {type === 'sort' && <SortRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'replace' && <ReplaceRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'agent-input' && <SchemaTableEditor config={draft} setConfig={patch} />}
@@ -643,6 +632,14 @@ function filterConditionDrafts(config: Readonly<Record<string, unknown>>): Filte
 }
 
 /**
+ * 日付入力(`type="date"`)へ渡せる `YYYY-MM-DD`。保存済みの値が日時文字列なら日付部分だけ、
+ * 日付として読めない値（空・旧データの数値など）は空欄にする（壊れた表示で上書きさせない）。
+ */
+function isoDateInputValue(value: unknown): string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : '';
+}
+
+/**
  * filter の設定UI。1条件のときは旧形式のフラットconfigを書き戻し（保存済みTool・
  * agent-input バインディングの互換を保つ）、2条件以上で `{ conditions, combine }` へ切り替える。
  * 各条件は valueBinding（値のAI引数化）と対称の opBinding（演算子のAI引数化）を持てる。
@@ -674,7 +671,11 @@ function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { c
       const coerce = (raw: string): unknown => columnType === 'number' && raw !== '' ? Number(raw) : raw;
       const binding = condition.valueBinding;
       const valueSource = binding?.source === 'agent-input' ? 'agent-input' : 'constant';
-      const valueField = <label>{text('Value', '値')}<input value={String(condition.value ?? '')} onChange={(event) => patch(index, { value: coerce(event.target.value) })} /></label>;
+      // 日付列は日付ピッカーで入れる。保存されるのは ISO 文字列（config は JSON なので Date は入らない）で、
+      // filter が実行時に日付として解釈する。手打ちの「2015/12/31」のような値で黙って0行になるのを防ぐ。
+      const valueField = columnType === 'date'
+        ? <><label>{text('Value', '値')}<input type="date" value={isoDateInputValue(condition.value)} onChange={(event) => patch(index, { value: event.target.value })} /></label><small>{text('Dates are compared as ISO dates (YYYY-MM-DD).', '日付は ISO 形式(YYYY-MM-DD)の文字列として比較します。')}</small></>
+        : <label>{text('Value', '値')}<input value={String(condition.value ?? '')} onChange={(event) => patch(index, { value: coerce(event.target.value) })} /></label>;
       const opBinding = condition.opBinding;
       const opSource = opBinding?.source === 'agent-input' ? 'agent-input' : 'fixed';
       /** 許可済み演算子（FILTER_OPS順へ正規化。allowed省略 = 全演算子。壊れたallowedは全演算子へフォールバック）。 */
@@ -730,6 +731,35 @@ function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { c
       </Fragment>;
     })}
     <button type="button" onClick={() => write([...conditions, { column: '', op: 'eq', value: '' }])}>{text('Add condition', '条件を追加')}</button>
+  </>;
+}
+
+/**
+ * 期間の解釈（parse-period）の設定。列を選んで出力列名と年度の開始月を決めるだけなので
+ * ダイアログを持たず、サイドバーへ直接置く（ADR-0028 の「単純な設定はインライン」側）。
+ * 足した列の使い道（粒度で絞る → 開始日で範囲指定・並べ替え）まで案内に書く。
+ */
+function ParsePeriodFields({ config, setConfig, columns }: { config: Readonly<Record<string, unknown>>; setConfig(patch: Record<string, unknown>): void; columns: readonly ColumnDto[] }) {
+  const { text } = useI18n();
+  const columnLabel = text('Period label column', '期間ラベルの列');
+  const startLabel = text('Period start column', '開始日の列');
+  const granularityLabel = text('Granularity column', '粒度の列');
+  const fiscalLabel = text('Fiscal year start month', '年度の開始月');
+  const column = String(config['column'] ?? '');
+  return <>
+    <label>{columnLabel}<select aria-label={columnLabel} value={column} onChange={(event) => setConfig({ column: event.target.value })}>
+      <option value="">{text('Select a column', '列を選択')}</option>
+      {columns.map((item) => <option key={item.name} value={item.name}>{item.name} · {item.type}</option>)}
+      {column !== '' && !columns.some((item) => item.name === column) && <option value={column}>{column}</option>}
+    </select></label>
+    {columns.length === 0 && <small>{text('Connect an upstream node to choose a column.', '列を選ぶには上流のノードを接続してください。')}</small>}
+    {column === '' && <small className="field-error">{text('Choose the column that holds the period labels.', '期間ラベルが入っている列を選んでください。')}</small>}
+    <label>{startLabel}<input aria-label={startLabel} value={String(config['startColumn'] ?? 'periodStart')} onChange={(event) => setConfig({ startColumn: event.target.value })} /></label>
+    <label>{granularityLabel}<input aria-label={granularityLabel} value={String(config['granularityColumn'] ?? 'periodGranularity')} onChange={(event) => setConfig({ granularityColumn: event.target.value })} /></label>
+    <label>{fiscalLabel}<input aria-label={fiscalLabel} type="number" min={1} max={12} value={Number(config['fiscalYearStartMonth'] ?? 4)} onChange={(event) => setConfig({ fiscalYearStartMonth: Number(event.target.value) })} /></label>
+    <small>{text('"2024年度" and "2024年度第1四半期" start in this month (4 = the Japanese fiscal year).', '「2024年度」「2024年度第1四半期」はこの月から始まります（4 = 日本の年度）。')}</small>
+    <p>{text('Granularity values: day / month / quarter / half / year / fiscal-year / unknown. Labels that cannot be read become an empty start date and "unknown".', '粒度は day / month / quarter / half / year / fiscal-year / unknown のいずれかです。読めないラベルは開始日が空、粒度が unknown になります。')}</p>
+    <p>{text('Typical next step: filter "periodGranularity eq month" to drop rows of other granularities, then filter and sort on the period start.', '次の一手: 行フィルターで「periodGranularity eq month」と絞って粒度の違う行を落とし、そのうえで開始日の列で範囲を絞り、並べ替えます。')}</p>
   </>;
 }
 
@@ -863,11 +893,27 @@ const CALC_FUNCTION_GROUPS: readonly CalculatorFunctionGroup[] = ['basic', 'roun
  * 末尾追記ではなくそのカーソル位置へ挿入する。直接編集（textareaへの直接入力）も caret を追従させる。
  * 式の妥当性そのものは検査しない（正典は inferSchema の issue 表示）。ここで見るのは括弧の対応だけ。
  */
-function CalculateFields({ config, setConfig, columns, samples = {} }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[]; readonly samples?: Readonly<Record<string, readonly JsonCell[]>> }) {
+/** 関数電卓の AI 補助（ローカル LLM に式を書かせる）。available が偽でも入口は隠さず、直し方を示す。 */
+interface CalculateAssistant {
+  readonly available: boolean;
+  readonly suggest: (intent: string) => Promise<CalculateExpressionProposalDto>;
+}
+
+function CalculateFields({ config, setConfig, columns, samples = {}, assistant }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[]; readonly samples?: Readonly<Record<string, readonly JsonCell[]>>; readonly assistant?: CalculateAssistant }) {
   const { text } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const expression = String(config['expression'] ?? '');
   const [caret, setCaret] = useState(expression.length);
+  // AI 補助の状態。指示文のカーソルも自前で持ち、入力キーを指示文の途中へ挿入できるようにする。
+  const [aiOpen, setAiOpen] = useState(false);
+  const [intent, setIntent] = useState('');
+  const [intentCaret, setIntentCaret] = useState(0);
+  const [proposal, setProposal] = useState<CalculateExpressionProposalDto>();
+  const [aiError, setAiError] = useState<string>();
+  const [suggesting, setSuggesting] = useState(false);
+  /** 入力キーの挿入先。最後に触った欄（式 / AI への指示文）。 */
+  const [insertTarget, setInsertTarget] = useState<'expression' | 'intent'>('expression');
+  const aiAvailable = assistant?.available === true;
 
   // 挿入のたびにキャレット位置を更新し、DOM側（textareaの選択範囲）もそこへ合わせる。
   const insert = (fragment: string) => {
@@ -884,6 +930,31 @@ function CalculateFields({ config, setConfig, columns, samples = {} }: { readonl
     node.setSelectionRange(caret, caret);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expression]);
+
+  /** 入力キー（[列名]）の挿入。AI への指示文を編集中ならそちらへ入れる（列名を正確に指示へ書けるように）。 */
+  const insertInput = (fragment: string) => {
+    if (insertTarget === 'intent' && aiAvailable && aiOpen) {
+      const result = insertAt(intent, intentCaret, fragment);
+      setIntent(result.expression);
+      setIntentCaret(result.caret);
+      return;
+    }
+    insert(fragment);
+  };
+  const suggestExpression = async () => {
+    if (assistant === undefined || intent.trim() === '') return;
+    setSuggesting(true); setAiError(undefined);
+    try { setProposal(await assistant.suggest(intent)); }
+    catch (error) { setAiError(error instanceof Error ? error.message : text('Suggestion failed.', '設定案の取得に失敗しました。')); }
+    finally { setSuggesting(false); }
+  };
+  const applyProposal = () => {
+    if (proposal === undefined) return;
+    setConfig({ expression: proposal.config.expression, outputColumn: proposal.config.outputColumn });
+    setCaret(proposal.config.expression.length);
+    setInsertTarget('expression');
+    setProposal(undefined);
+  };
 
   const backspace = () => {
     if (caret <= 0) return;
@@ -911,6 +982,7 @@ function CalculateFields({ config, setConfig, columns, samples = {} }: { readonl
       rows={3}
       value={expression}
       onChange={(event) => { setConfig({ expression: event.target.value }); setCaret(event.target.selectionStart ?? event.target.value.length); }}
+      onFocus={() => setInsertTarget('expression')}
       onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? expression.length)}
       onClick={(event) => setCaret(event.currentTarget.selectionStart ?? expression.length)}
       onKeyUp={(event) => setCaret(event.currentTarget.selectionStart ?? expression.length)}
@@ -920,6 +992,42 @@ function CalculateFields({ config, setConfig, columns, samples = {} }: { readonl
         ? text(`${balance.open} extra opening parenthesis.`, `開き括弧が${balance.open}個多い。`)
         : text(`${-balance.open} extra closing parenthesis.`, `閉じ括弧が${-balance.open}個多い。`)}
     </small>}
+
+    {/* AI に式を書かせる（ADR-0046 の提案 API を電卓の上で使う）。未設定でも入口は隠さず、直し方を示す。 */}
+    {assistant !== undefined && <div className="calc-ai" role="group" aria-label={text('AI formula writer', 'AIで式を書く')}>
+      <button type="button" className="calc-ai-key" aria-expanded={aiAvailable && aiOpen} disabled={!aiAvailable} onClick={() => setAiOpen((open) => !open)}>✨ {text('Have AI write the formula', 'AIに式を書かせる')}</button>
+      {!aiAvailable && <small className="calc-ai-unavailable">{text('The local LLM is not configured. Set the main model slot in Settings > Models, then reload, to let AI write formulas.', 'ローカルLLMが未設定です。設定 > モデル で main スロットを設定して再読み込みすると、AIに式を書かせられます。')}</small>}
+      {aiAvailable && aiOpen && <div className="calc-ai-panel">
+        <label>{text('What to calculate', '計算したいこと')}<textarea
+          aria-label={text('What to calculate', '計算したいこと')}
+          rows={2}
+          value={intent}
+          placeholder={expression.trim() === ''
+            ? text('e.g. Tax-included amount from unit price × quantity, rounded to 0 decimals', '例: 単価×数量の税込金額を小数 0 桁で')
+            : text('e.g. Change this formula to include 10% tax and round to 0 decimals', '例: いまの式を税込（10%）にして小数 0 桁で丸める')}
+          onFocus={() => setInsertTarget('intent')}
+          onChange={(event) => { setIntent(event.target.value); setIntentCaret(event.target.selectionStart ?? event.target.value.length); }}
+          onSelect={(event) => setIntentCaret(event.currentTarget.selectionStart ?? intent.length)}
+          onClick={(event) => setIntentCaret(event.currentTarget.selectionStart ?? intent.length)}
+          onKeyUp={(event) => setIntentCaret(event.currentTarget.selectionStart ?? intent.length)}
+        /></label>
+        <small>{text('While you are writing here, the input keys below insert [column] into this instruction. If a formula is already written, AI revises it.', 'ここを編集中は、下の入力キーが指示文へ [列名] を入れます。式が既にあるときは、AI はその式を直します。')}</small>
+        <button type="button" className="secondary" disabled={suggesting || intent.trim() === ''} onClick={() => void suggestExpression()}>{suggesting ? text('Suggesting…', '提案中…') : text('Suggest expression', '式を提案')}</button>
+        {aiError !== undefined && <>
+          <small className="field-error">{aiError}</small>
+          <small className="field-error">{text('Make the instruction more specific (which columns to use, rounding, units) and try again.', '指示を具体的に（使う列名・丸め・単位）して再実行してください。')}</small>
+        </>}
+        {proposal !== undefined && <div className="assistant-proposal">
+          <p><code>{proposal.config.expression}</code></p>
+          {proposal.rationale.map((item, index) => <small key={`r-${index}`}>• {item}</small>)}
+          {proposal.warnings.map((item, index) => <small className="field-error" key={`w-${index}`}>• {item}</small>)}
+          <p>{text(`${proposal.preview.evaluated} of ${proposal.preview.rows} sample rows calculated.`, `標本 ${proposal.preview.rows} 行のうち ${proposal.preview.evaluated} 行が計算できました。`)}</p>
+          {proposal.validation.diagnostics.filter((diagnostic) => diagnostic.severity === 'warning').map((diagnostic, index) => <small className="field-error" key={`d-${index}`}>{diagnostic.message}</small>)}
+          {proposal.repaired && <small>{text('The first proposal was repaired once.', '最初の提案を 1 回直しました。')}</small>}
+          <button type="button" onClick={applyProposal}>{text('Apply expression to this dialog', 'この式をダイアログへ適用')}</button>
+        </div>}
+      </div>}
+    </div>}
 
     {/* 値として使える入力（上流の列）。式のすぐ下に置き、何を参照できるかを見てから組めるようにする。
         押すと [列名] をカーソル位置へ挿入する。アクセシブル名は列名そのもの（型・例の値は補足）。 */}
@@ -931,7 +1039,7 @@ function CalculateFields({ config, setConfig, columns, samples = {} }: { readonl
             {[...numberColumns, ...otherColumns].map((column) => {
               const dim = column.type !== 'number';
               const example = samples[column.name] ?? [];
-              return <button type="button" key={column.name} aria-label={column.name} className={dim ? 'calc-column-dim' : undefined} title={dim ? dimTitle(column.type) : text('Insert [column] into the formula.', '式に [列名] を挿入します。')} onClick={() => insert(`[${column.name}]`)}>
+              return <button type="button" key={column.name} aria-label={column.name} className={dim ? 'calc-column-dim' : undefined} title={dim ? dimTitle(column.type) : text('Insert [column] into the formula.', '式に [列名] を挿入します。')} onClick={() => insertInput(`[${column.name}]`)}>
                 <span className="calc-input-name">[{column.name}]</span>
                 <small className="calc-input-meta">{column.type}{example.length > 0 ? ` · ${text('e.g.', '例:')} ${sampleText(example)}` : ''}</small>
               </button>;

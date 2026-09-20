@@ -1119,6 +1119,15 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 .calc-columns button:hover { background: #e1e6ff; }
 /* number以外の列（実行時に数値へ寄せる/nullになる）は控えめに見せ、titleで実行時の扱いを伝える。 */
 .calc-columns button.calc-column-dim { background: #f4f5f9; color: #8891a5; border-style: dashed; }
+/* AI に式を書かせる: 式の直下のキーと、開いたときの指示欄・提案。 */
+.node-config-dialog-body > .calc-ai { grid-column: 1 / -1; }
+.calc-ai { display: grid; gap: 6px; justify-items: start; }
+.calc-ai-key { padding: 7px 14px; font-size: 12px; font-weight: 600; border-radius: 99px; border: 1px solid #c9c2f0; background: #f3f0ff; color: #4b3fa8; }
+.calc-ai-key:hover:not(:disabled) { background: #e8e3ff; }
+.calc-ai-key:disabled { opacity: .55; cursor: not-allowed; }
+.calc-ai-unavailable { color: #8a5a00; }
+.calc-ai-panel { display: grid; gap: 8px; width: 100%; padding: 12px 14px; border: 1px solid #dcd7f5; border-radius: 10px; background: #faf9ff; }
+.calc-ai-panel label { display: grid; gap: 4px; }
 /* 値として使える入力（上流の列）: 列名の下に型と例の値を添えたキー。式の直下に置く。 */
 .calc-inputs { display: grid; gap: 6px; }
 .calc-inputs > strong { font-size: 11px; color: #59667d; }

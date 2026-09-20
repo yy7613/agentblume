@@ -1,4 +1,4 @@
-export const NODE_TYPES = ['agent-input', 'current-datetime', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'select', 'filter', 'ai-judge', 'rename', 'cast', 'calculate', 'join', 'union', 'sort', 'limit', 'distinct', 'fill-null', 'replace', 'group-by', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output'] as const;
+export const NODE_TYPES = ['agent-input', 'current-datetime', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'select', 'filter', 'ai-judge', 'rename', 'cast', 'calculate', 'parse-period', 'join', 'union', 'sort', 'limit', 'distinct', 'fill-null', 'replace', 'group-by', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output'] as const;
 export type ToolNodeType = (typeof NODE_TYPES)[number];
 
 export interface NodeCatalogItem {
@@ -58,6 +58,13 @@ export const NODE_CATALOG: readonly NodeCatalogItem[] = [
     type: 'calculate', label: 'Calculator', labelJa: '関数電卓', kind: 'transform', inputArity: 1,
     description: 'Compute a new column from a formula over the input columns.', descriptionJa: '入力列を使った数式で新しい列を計算します。',
     defaultConfig: { outputColumn: 'result', expression: '', onError: 'null' },
+  },
+  {
+    // 型変換の仲間（文字列の期間ラベル → 日付 + 粒度）なので cast / calculate と同じ並び。
+    type: 'parse-period', label: 'Parse period', labelJa: '期間の解釈', kind: 'transform', inputArity: 1,
+    description: 'Read period labels such as "1975年10月", "2024年1-3月期" or "2024年度" into a period start date and a granularity column.',
+    descriptionJa: '「1975年10月」「2024年1-3月期」「2024年度」のような期間ラベルから、期間の開始日と粒度（月・四半期・年・年度）の列を足します。期間での絞り込みや正しい時系列順の並べ替えに使います。',
+    defaultConfig: { column: '', startColumn: 'periodStart', granularityColumn: 'periodGranularity', fiscalYearStartMonth: 4 },
   },
   { type: 'join', label: 'Join', labelJa: '結合', kind: 'transform', inputArity: 2, description: 'Join two inputs on key columns. Key types must match, or compare keys as text.', descriptionJa: '2つの入力をキー列で結合します。キーの型が違う場合は文字列比較を選べます。', defaultConfig: { mode: 'inner', keys: [], rightSuffix: '_right' } },
   { type: 'union', label: 'Union', labelJa: '縦結合', kind: 'transform', inputArity: 2, description: 'Append rows of two inputs by column name.', descriptionJa: '2つの入力を列名で縦に連結します。', defaultConfig: { strict: false } },

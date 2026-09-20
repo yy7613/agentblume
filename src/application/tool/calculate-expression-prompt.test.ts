@@ -48,6 +48,24 @@ describe('calculate-expression-prompt: 初回の要求', () => {
     expect(system).toContain('Never return a placeholder such as 0');
   });
 
+  // v41 追補: 電卓の中から「いまの式を直して」と頼めるようになったので、現在の式を作り直しの土台に
+  // する規則をプロンプト側にも置く（現在の式は user メッセージの currentConfig で渡す）。
+  it('正常: いまの式を直す規則が system prompt に載り、user メッセージは現在の式を currentConfig で渡す', () => {
+    const current = { id: 'calc', currentConfig: { outputColumn: 'total', expression: '[price] * [quantity]' } };
+    const request = build({ node: current, intent: 'いまの式を税込にして' });
+    const system = systemOf(request);
+    expect(system).toContain('node.currentConfig.expression');
+    expect(system).toContain('keep the parts the instruction does not mention');
+    // 「直す」文脈でなければ指示だけから新しく書く、という但し書きも要る（作り直しの暴発を防ぐ）。
+    expect(system).toContain('Otherwise write a new expression from the instruction alone.');
+
+    const body = userOf(request);
+    expect(body).toContain('"currentConfig"');
+    expect(body).toContain('"expression":"[price] * [quantity]"');
+    // 現在の式は利用者の設定であって、信頼しないデータ（列名・標本値）ではない。
+    expect(untrustedOf(request)).not.toContain('"expression"');
+  });
+
   it('正常: 標本行と列名は <untrusted-data> の内側、intent は外側にある', () => {
     const request = build();
     const untrusted = untrustedOf(request);

@@ -558,6 +558,32 @@ describe('ValidationPage', () => {
     await waitFor(() => expect(getRunTrace).toHaveBeenCalledWith('run-agent-1', scope));
     expect(await screen.findByText(/summary_tool \{"month":"2026-06"\}/)).toBeTruthy();
   });
+
+  it('異常: アンケートを回収できなかった実行は「どの段で何が起きたか」を詳細に出す', async () => {
+    const run = {
+      id: 'srun-2', scope, scenario: { id: 'sc', version: '1.2.0' }, status: 'completed', goalAchieved: false,
+      error: { stage: 'survey', message: "survey answer 'q2' must be between 1 and 5" },
+      transcript: [{ speaker: 'user', message: 'Never mind.' }],
+      survey: [], impressions: '',
+      metrics: { userTurns: 1, agentRuns: 0, totalToolCalls: 0, durationMs: 10, usage: {} },
+      startedAt: '2026-07-03T00:00:00Z', finishedAt: '2026-07-03T00:00:05Z',
+    };
+    const client = stubClient({
+      listScenarioRuns: vi.fn().mockResolvedValue([run]),
+      listScenarios: vi.fn().mockResolvedValue([{ internalId: 'sc', displayName: 'Sales scenario', publishName: 'sc', latestVersion: '1.2.0', state: 'draft' }]),
+      getScenario: vi.fn().mockRejectedValue(new Error('gone')),
+    });
+    render(<ValidationPage client={client} />);
+    await userEvent.click(screen.getByRole('tab', { name: 'Runs' }));
+    await userEvent.click(await screen.findByRole('button', { name: /Sales scenario/ }));
+
+    const note = await screen.findByRole('status');
+    expect(note.textContent).toContain('The survey could not be collected');
+    expect(note.textContent).toContain('survey');
+    expect(note.textContent).toContain("survey answer 'q2' must be between 1 and 5");
+    // 会話の結末は壊れていない。
+    expect(screen.getByText('Never mind.')).toBeTruthy();
+  });
 });
 
 

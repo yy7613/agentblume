@@ -124,7 +124,7 @@ describe('RecoverInterruptedRunsUseCase', () => {
   it('終端状態のFactory Runには触らない', async () => {
     const h = harness();
     const done = succeedFactoryRun(beginFactoryRun(factoryRun('done')), {
-      bestIteration: 0, candidate: { agentId: 'a', version: '1.0.0' }, summary: 's', openFindings: [], metricsByIteration: [],
+      bestIteration: 0, candidate: { agentId: 'a', version: '1.0.0' }, summary: 's', openFindings: [], metricsByIteration: [], quality: 'unverified', qualityReasons: [],
     }, '2026-07-28T07:00:00.000Z');
     await h.factoryRuns.save(done);
 

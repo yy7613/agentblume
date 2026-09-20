@@ -131,6 +131,7 @@ sequenceDiagram
 ```
 
 - **終了条件**は3つ: ①疑似ユーザーが `endConversation:true` を返す（目標達成 or 諦め）②`maxUserTurns` 到達 ③エラー。ステータスとして記録する。
+- **失敗はどの段で起きたかを残す**（v41）。疑似ユーザー段（`pseudo-user`）と対象Agent段（`agent`）の失敗は `status:'error'` のまま `error: { stage, message }` を記録する。Tool実行由来の失敗はどのTool・どのノードかまで `message` に載せる。中断（AbortSignal）は失敗ではないのでそのまま呼び出し元へ投げ、ScenarioRun は保存しない。
 - 対象Agentの1ターンには既存の上限（Tool call 最大4回・model round 最大5回）がそのまま適用される。
 - preview/test 実行の既存規則に従い、**対象AgentのTool集合が read-only の場合のみ実行**する（[07-execution-model.md](./07-execution-model.md)）。
 
@@ -159,6 +160,12 @@ sequenceDiagram
 7. 不満・困った点（text）
 8. **感想（自由記述）**（text）— `impressions` として独立フィールドにも保持
 
+### 回答の検証と修復（v41）
+
+- `scale` の範囲は**構造化出力スキーマの `minimum` / `maximum`** として渡す。説明文だけに書いていた頃は、不満なペルソナが `0` を返して検証に落ち、会話1本分の記録ごと `error` になっていた。
+- 検証に落ちたら、**同じ依頼を送り直さない**。直前の回答と「どの検証に落ちたか」（`ValidationDomainError` の文言）を添えて1回だけ直してもらう（契約レビューの修復と同じ型）。
+- それでも回収できなければ**アンケートだけを諦める**。会話の結末（`completed` / `max-turns`）と `goalAchieved` はそのまま残し、`error: { stage: 'survey', message }` に理由を記録する（`survey: []` だけでは「不満で低評価だった利用者」と区別できない）。
+
 ---
 
 ## 6. ScenarioRun（結果の記録）🔷
@@ -168,6 +175,7 @@ interface ScenarioRun {
   id: string; scope: TenantScope;
   scenario: { id: string; version: SemVer };   // 実行時点の固定参照
   status: 'completed' | 'max-turns' | 'error';
+  error?: { stage: 'pseudo-user' | 'agent' | 'survey'; message: string };  // 失敗/アンケート未回収の理由（v41）
   goalAchieved: boolean | null;                 // 疑似ユーザー申告
   transcript: Turn[];                           // { speaker: 'user'|'agent', message, runId?(agentターン) }
   survey: { questionId: string; value: number | boolean | string }[];
@@ -183,6 +191,7 @@ interface ScenarioRun {
 
 - `transcript` の各Agentターンは既存 `RunRepository` の Run を `runId` で参照 → Status画面のトレースへドリルダウン可能。
 - `expectedToolHit` は期待Tool集合と実呼び出し集合（トレース由来）の比較（`ideas-v2.md §11` の選択率指標の会話版）。
+- `error` は `status:'error'`、またはアンケートを回収できなかったときに入る。Runs画面の詳細に「どの段で何が起きたか」として1行で出す。`stage:'survey'` の実行は会話としては成立しており、Agent Factory のメトリクス（`errorRate`）にも**エラーとして数えない**。
 
 ---
 

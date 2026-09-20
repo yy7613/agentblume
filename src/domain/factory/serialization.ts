@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { SideEffect } from '../tool/metadata';
 import { SIDE_EFFECTS } from '../tool/metadata';
 import { FactoryValidationError } from './errors';
-import { FACTORY_EVENT_KINDS, FACTORY_PROMPT_STRATEGIES, FACTORY_RUN_STATUSES, FACTORY_STAGES, type FactoryRun } from './factory-run';
+import { FACTORY_EVENT_KINDS, FACTORY_PROMPT_STRATEGIES, FACTORY_REPORT_QUALITIES, FACTORY_RUN_STATUSES, FACTORY_STAGES, type FactoryRun } from './factory-run';
 import { FACTORY_PERSONA_ARCHETYPES } from './factory-plan';
 
 const scopeSchema = z.object({ tenantId: z.string(), workspaceId: z.string() });
@@ -108,7 +108,9 @@ const factoryBudgetSnapshotSchema = z.object({ roleCalls: z.number(), scenarioRu
 const factoryOptionsSchema = z.object({ maxIterations: z.number(), personaCount: z.number(), scenarioCount: z.number(), requirePlanApproval: z.boolean(), targets: factoryTargetsSchema, budget: factoryBudgetLimitsSchema, promptStrategy: z.enum(FACTORY_PROMPT_STRATEGIES).default('preserve') });
 
 const usageSchema = z.object({ promptTokens: z.number().optional(), completionTokens: z.number().optional(), totalTokens: z.number().optional() });
-const iterationMetricsSchema = z.object({ iteration: z.number(), goalAchievedRate: z.number(), avgSatisfaction: z.number(), toolHitRate: z.number(), errorRate: z.number(), avgUserTurns: z.number(), scenarioCount: z.number(), usage: usageSchema, durationMs: z.number() });
+// `surveyMissingCount` は後から足した指標なので、既存の永続化済みRun（フィールドを持たない）を
+// 読めるよう既定値0にする（読み出し時に「欠測なし」として扱う。ADR-0047）。
+const iterationMetricsSchema = z.object({ iteration: z.number(), goalAchievedRate: z.number(), avgSatisfaction: z.number(), toolHitRate: z.number(), errorRate: z.number(), avgUserTurns: z.number(), scenarioCount: z.number(), surveyMissingCount: z.number().default(0), usage: usageSchema, durationMs: z.number() });
 
 const factoryIterationSchema = z.object({
   index: z.number(),
@@ -127,12 +129,16 @@ const factoryArtifactsSchema = z.object({
   scenarios: z.array(versionRefSchema),
 });
 
+// `quality` / `qualityReasons` も後付けなので、既定値で旧Runを読めるようにする（判定できない =
+// 'unverified' へ倒す。無かった頃のRunを「目標達成」と偽らない）。
 const factoryReportSchema = z.object({
   bestIteration: z.number(),
   candidate: z.object({ agentId: z.string(), version: z.string() }),
   summary: z.string(),
   openFindings: z.array(findingSchema),
   metricsByIteration: z.array(iterationMetricsSchema),
+  quality: z.enum(FACTORY_REPORT_QUALITIES).default('unverified'),
+  qualityReasons: z.array(z.string()).default([]),
 });
 
 const factoryPlanCheckpointSchema = z.object({ kind: z.literal('plan-approval'), expiresAt: z.string(), prompt: z.string(), plan: factoryPlanSchema });

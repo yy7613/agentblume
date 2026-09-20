@@ -192,3 +192,45 @@ describe('csv-source: inferSchema', () => {
     expect(col?.nullable).toBe(true);
   });
 });
+
+describe('csv-source: BOM とコード列（e-Stat / Excel 由来の CSV）', () => {
+  const ESTAT = '\uFEFF"時点","地域コード","地域","総人口【人】","注記"\n"2015年","00000","全国","127094745","国勢調査"\n"2015年","13000","東京都","13515271",""\n"2015年","01000","北海道","5381733",""';
+
+  it('正常: 先頭の BOM を落とし、1 列目を見た目どおりの列名で参照できる', () => {
+    const table = csvSourceNode.execute([], { text: ESTAT });
+    expect(table.schema.columns[0]?.name).toBe('時点');
+    expect(Object.keys(table.rows[0] ?? {})[0]).toBe('時点');
+    expect(table.rows[0]?.['時点']).toBe('2015年');
+  });
+
+  it('正常: 先頭ゼロつきの値を含む列は列ごと文字列のまま保つ（00000 を 0 にしない・13000 も文字列）', () => {
+    const table = csvSourceNode.execute([], { text: ESTAT });
+    expect(table.rows.map((row) => row['地域コード'])).toEqual(['00000', '13000', '01000']);
+    expect(table.schema.columns.find((column) => column.name === '地域コード')?.type).toBe('string');
+    // 値の列は従来どおり数値になる。
+    expect(table.rows[1]?.['総人口【人】']).toBe(13515271);
+  });
+
+  it('境界: 0 単体・小数（0.5）・負数は先頭ゼロのコードとみなさず、数値のまま', () => {
+    const table = csvSourceNode.execute([], { text: 'a,b,c\n0,0.5,-05\n10,1.25,7' });
+    expect(table.rows[0]).toEqual({ a: 0, b: 0.5, c: -5 });
+    expect(table.schema.columns.map((column) => column.type)).toEqual(['number', 'number', 'number']);
+  });
+
+  it('境界: BOM はテキスト先頭だけを落とす（途中の U+FEFF や header:false の 1 セル目も対象）', () => {
+    const table = csvSourceNode.execute([], { text: '\uFEFFx,y\n1,2', header: false });
+    expect(table.rows[0]).toEqual({ col1: 'x', col2: 'y' });
+    const kept = csvSourceNode.execute([], { text: 'name\na\uFEFFb' });
+    expect(kept.rows[0]?.['name']).toBe('a\uFEFFb');
+  });
+
+  it('従来どおり: inferTypes:false なら全列が文字列で、コード列の判定は関与しない', () => {
+    const table = csvSourceNode.execute([], { text: 'code,n\n007,5', inferTypes: false });
+    expect(table.rows[0]).toEqual({ code: '007', n: '5' });
+  });
+
+  it('正常: inferSchema と execute が同じ列名・型を返す（スキーマ点検と実行で食い違わない）', () => {
+    const inferred = csvSourceNode.inferSchema([], { text: ESTAT }).schema;
+    expect(inferred).toEqual(csvSourceNode.execute([], { text: ESTAT }).schema);
+  });
+});

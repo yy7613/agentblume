@@ -31,7 +31,13 @@ export interface SurveyAnswer {
 /** 構造化出力用の JSON Schema（ModelProviderPort の responseFormat.schema と構造互換）。 */
 export interface SurveyJsonSchema {
   readonly type: 'object';
-  readonly properties: Readonly<Record<string, { readonly type: 'integer' | 'boolean' | 'string'; readonly description: string }>>;
+  readonly properties: Readonly<Record<string, {
+    readonly type: 'integer' | 'boolean' | 'string';
+    readonly description: string;
+    /** scale のみ。説明文だけでは範囲が守られないため、スキーマ自体にも入れる。 */
+    readonly minimum?: number;
+    readonly maximum?: number;
+  }>>;
   readonly required: readonly string[];
   readonly additionalProperties: false;
 }
@@ -79,7 +85,13 @@ export function normalizeSurveyQuestions(questions: readonly SurveyQuestion[]): 
   });
 }
 
-/** 設問集合から構造化出力用 JSON Schema を決定的に構築する。 */
+/**
+ * 設問集合から構造化出力用 JSON Schema を決定的に構築する。
+ *
+ * scale は `minimum` / `maximum` をスキーマへ載せる。範囲を description にしか書かないと、
+ * 不満なペルソナが 0 や 10 を返して `validateSurveyAnswers` が落ち、会話1本分の記録ごと
+ * error になっていた（実測）。範囲は制約として渡すのが正しい。
+ */
 export function buildSurveySchema(questions: readonly SurveyQuestion[]): SurveyJsonSchema {
   const normalized = normalizeSurveyQuestions(questions);
   return {
@@ -89,6 +101,7 @@ export function buildSurveySchema(questions: readonly SurveyQuestion[]): SurveyJ
       description: question.kind === 'scale'
         ? `${question.textJa} / ${question.textEn} (integer ${question.min}..${question.max})`
         : `${question.textJa} / ${question.textEn}`,
+      ...(question.kind === 'scale' ? { minimum: question.min ?? 1, maximum: question.max ?? 5 } : {}),
     }])),
     required: normalized.map((question) => question.id),
     additionalProperties: false,

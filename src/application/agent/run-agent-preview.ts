@@ -39,6 +39,7 @@ import { createAgentSession, expireAgentSession, type AgentSession } from '../..
 import { AgentSessionClosedError, AgentSessionExpiredError, AgentSessionNotFoundError } from '../../domain/session/errors';
 import type { AgentSessionRepository, SessionArtifactRepository } from '../../domain/session/session-repository';
 import { ToolOutputDispatcher } from '../tool/tool-output-dispatcher';
+import { diagnoseEmptyResult } from '../tool/empty-result-diagnosis';
 import { graphWithArguments } from '../tool/tool-execution';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import type { ResolveAiJudgmentsUseCase } from '../tool/resolve-ai-judgments';
@@ -1103,9 +1104,14 @@ export class RunAgentPreviewUseCase {
     // 実行は常に全行。rowLimit は trace の outputPreview に使う表示用スナップショットにしか効かない。
     // かつては rowLimit で切った表をそのまま検証・配送しており、モデルが「先頭100行の合計」を
     // 全体の合計として自信を持って報告していた。
-    const preview = this.engine.preview(executableGraph, { rowLimit: 100 });
+    const preview = this.engine.preview(executableGraph, { rowLimit: 100, retainTables: true });
     assertOutputMatchesSchema(preview.fullOutput, tool.outputSchema);
-    const delivery = await this.output.dispatch({ tool, table: preview.fullOutput, session: ctx.session, runId: ctx.runId, toolCallId: call.id, ...(agent?.internalId === undefined ? {} : { agentId: agent.internalId }) });
+    // 0 行のときだけ理由を組み立てる（LLM は使わない）。空の `[]` を渡されたモデルは、どの引数が
+    // 外れたのかもデータにどんな値があるのかも分からず、記憶から答えを作ってしまう。
+    const noMatch = preview.fullOutput.rows.length === 0
+      ? diagnoseEmptyResult({ graph: executableGraph, tables: preview.tables ?? new Map() })
+      : undefined;
+    const delivery = await this.output.dispatch({ tool, table: preview.fullOutput, session: ctx.session, runId: ctx.runId, toolCallId: call.id, ...(agent?.internalId === undefined ? {} : { agentId: agent.internalId }), ...(noMatch === undefined ? {} : { noMatch }) });
     trace.push({
       sequence: trace.length + 1,
       kind: 'tool-result',
@@ -1117,6 +1123,8 @@ export class RunAgentPreviewUseCase {
       outputPreview: delivery.delivery === 'session-workspace'
         ? [{ artifactId: delivery.artifact.id, name: delivery.artifact.name, kind: delivery.artifact.kind, revision: delivery.artifact.revision }]
         : preview.output.rows.slice(0, 10).map((row) => ({ ...row })),
+      // 「なぜ 0 行だったか」を分析者も見られるように残す（モデルへ返した内容と同じ形）。
+      ...(noMatch === undefined ? {} : { noMatch }),
     });
     return {
       role: 'tool',

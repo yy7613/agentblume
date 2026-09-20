@@ -28,6 +28,7 @@ import type { Agent } from '../../domain/agent/agent';
 import type { Column, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { operatorBindingsOf, valueBindingsOf } from '../../domain/etl/nodes/filter';
+import { PARSE_PERIOD_TYPE } from '../../domain/etl/nodes/parse-period';
 import type { FactoryAgentBrief, FactoryPlan, FactoryToolPlan } from '../../domain/factory/factory-plan';
 import type { FactoryEvent, FactoryGoalInput, FactoryPromptStrategy } from '../../domain/factory/factory-run';
 import { FactoryAbortedError, FactoryValidationError } from '../../domain/factory/errors';
@@ -39,10 +40,13 @@ import type { ToolId } from '../../domain/tool/ids';
 import type { SideEffect } from '../../domain/tool/metadata';
 import { SemVer } from '../../domain/tool/semver';
 import type { Tool } from '../../domain/tool/tool';
-import type { EtlEngine, PropagationResult } from '../etl/engine';
+import type { EtlEngine, PreviewResult, PropagationResult } from '../etl/engine';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import { SaveAgentUseCase } from '../agent/save-agent';
 import { GenerateAgentPromptUseCase } from '../agent/generate-agent-prompt';
+import { MAX_TOOL_CALLS } from '../agent/run-agent-preview';
+import { validateToolArguments } from '../agent/tool-schema';
+import { graphWithArguments } from '../tool/tool-execution';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
 import { throwIfAborted } from './abort';
@@ -50,10 +54,108 @@ import type { DataProfile } from './profile-data-sources';
 import { isReusableSideEffect, type ExistingToolCatalogEntry } from './tool-catalog';
 import { AssemblerRole } from './roles/assembler-role';
 import { SkillWriterRole, type SkillWriterToolContract } from './roles/skill-writer-role';
-import { ToolSmithRole } from './roles/tool-smith-role';
+import { SAFE_TRANSFORM_TYPES, ToolSmithRole } from './roles/tool-smith-role';
 
 /** Factory生成物の owner（docs/16 §8: 既存資産の名前空間を汚染しない出所ラベル）。`run-factory.ts` のStage 5でも再利用する。 */
 export const FACTORY_OWNER = 'agent-factory';
+
+/**
+ * 生成Agentのsystem promptへ決定的に差し込む「回答の規律」ブロックの見出し（ADR-0047）。
+ *
+ * 言語に依らない不変の目印にしてある: `ApplyImprovementsUseCase` が
+ * `system-prompt-revision`（役割文・実行規則をまるごと差し替える提案）を適用するときに、
+ * この見出しでブロックを見つけて必ず残す（Analystの書き直しで規律が消えないようにする）。
+ */
+export const FACTORY_ANSWER_GUARD_HEADING = '# Answer discipline / 回答の規律 (factory-managed)';
+
+const ANSWER_GUARD_RULES_JA: readonly string[] = [
+  '- 数値・件数・順位は、必ずツールが返した行から引き写す。記憶や推測で数字を書かない。',
+  '- ツールが 0 件（または該当なし）を返したら、まず「その条件に当てはまる行が無い」と伝える。そのうえで、ツールの説明や返却内容にある実在の値（期間の書式・選べる地域や区分など）を挙げて、次に試す条件を提案する。0 件を「値が 0 である」と書き換えない。',
+  '- 数値を答えるときは、その行の時点（期間）と単位を必ず併記する。期間の粒度（月次・四半期・年次・年度）が混ざりうるデータでは、どの粒度の値かも書く。',
+  '- 行に注記（備考）が付いていたら、その内容をそのまま引用して添える。',
+  '- ツールの引数は、ツールの説明が示す書式・値のとおりに渡す。当てはまる値が分からないときは、勝手に作らず利用者に確認する。',
+];
+
+const ANSWER_GUARD_RULES_EN: readonly string[] = [
+  '- Take every number, count and ranking verbatim from a row a tool returned. Never answer a number from memory or by guessing.',
+  '- When a tool returns no rows (or reports no match), say first that nothing matches those conditions. Then offer the values that do exist (the accepted period format, the selectable regions or categories) and suggest what to try next. Never turn "no rows" into "the value is 0".',
+  '- When you state a number, always cite the period (時点) and the unit from that same row. When the data mixes period granularities (monthly / quarterly / yearly / fiscal year), say which granularity the number is.',
+  '- When a row carries a note (注記 / remarks), quote it alongside the number.',
+  '- Pass tool arguments exactly in the format and values the tool description gives. If you do not know a valid value, ask the user instead of inventing one.',
+];
+
+/**
+ * 「絞り込み引数を省略できるToolがある」ときだけ足す規律（ADR-0047 round 2 / Defect C）。
+ *
+ * 1回の会話で呼べるツールは `MAX_TOOL_CALLS` 回までなので、「東京都・大阪府・北海道を比較」を
+ * 県ごとに1回ずつ呼ぶ設計は上限で必ず落ちる。絞り込み引数を省略すれば全カテゴリが1回で返るなら、
+ * そちらを使わせる。Tool契約が省略を許さないなら書かない（守れない指示を書くと他の規律も薄まる）。
+ */
+const ANSWER_GUARD_MULTI_CATEGORY_JA = '- 複数の対象（複数の地域・区分など）を比べるときは、対象ごとにツールを呼び分けない。絞り込み引数を省略して1回だけ呼び、返ってきた行から必要な対象を選ぶ（1回の会話で呼べるツールの回数には上限がある）。';
+const ANSWER_GUARD_MULTI_CATEGORY_EN = '- To compare several items (several regions, categories, …), do NOT call the tool once per item. Omit the narrowing argument, call the tool ONCE, and pick the rows you need out of the result (the number of tool calls per conversation is capped).';
+
+/** `factoryAnswerGuardBlock` の任意の調整。 */
+export interface AnswerGuardOptions {
+  /**
+   * 絞り込み引数を省略できるToolがこのAgentにあるか（`inputSchema` の nullable 列から決定的に導く）。
+   * true のときだけ「1回だけ呼んで行を選ぶ」規律を足す。
+   */
+  readonly omittableFilters?: boolean;
+}
+
+/**
+ * 回答の規律ブロック（決定的・LLM非関与）。
+ *
+ * e-Stat 実データの検証で、生成Agentは 0 行のツール結果を受けても数字を作文し、時点・単位・注記を
+ * 落として答えた（ADR-0047）。この規律は Assembler の起草物ではなく決定的合成側に置き、
+ * Analyst のプロンプト書き直しでも落ちないようにする。
+ */
+export function factoryAnswerGuardBlock(language: 'ja' | 'en' = 'ja', options: AnswerGuardOptions = {}): string {
+  const english = language === 'en';
+  const rules = english ? ANSWER_GUARD_RULES_EN : ANSWER_GUARD_RULES_JA;
+  const extra = options.omittableFilters === true
+    ? [english ? ANSWER_GUARD_MULTI_CATEGORY_EN : ANSWER_GUARD_MULTI_CATEGORY_JA]
+    : [];
+  return [FACTORY_ANSWER_GUARD_HEADING, ...rules, ...extra].join('\n');
+}
+
+/**
+ * このRunで保存したToolの引数宣言から「絞り込みを省略できるか」を決定的に判定する。
+ * Factory生成Toolは `makeArgumentsOptional` で全引数が nullable になるため、実質は
+ * 「引数を1つ以上宣言したToolがあるか」と同じだが、判定の根拠は宣言そのものに置く。
+ */
+export function hasOmittableFilters(tools: readonly Tool[]): boolean {
+  return tools.some((tool) => (tool.inputSchema?.columns ?? []).some((column) => column.nullable));
+}
+
+/**
+ * system prompt から「回答の規律」ブロックを取り出す（無ければ undefined）。
+ * セクション境界は `replaceGuideSections` と同じトップレベル見出し行（`# `）とする。
+ */
+export function extractAnswerGuardBlock(systemPrompt: string): string | undefined {
+  const lines = systemPrompt.split('\n');
+  const start = lines.findIndex((line) => line.trim() === FACTORY_ANSWER_GUARD_HEADING);
+  if (start === -1) return undefined;
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((line) => /^# \S/.test(line));
+  const body = end === -1 ? rest : rest.slice(0, end);
+  while (body.length > 0 && body[body.length - 1]!.trim() === '') body.pop();
+  return [lines[start]!.trim(), ...body].join('\n');
+}
+
+/**
+ * 「役割文 → ガイド → 実行規則」の合成結果へ回答の規律ブロックを必ず付ける。
+ * 既に同じ見出しのブロックが本文中にあればそれを採用し（利用者/Analystが手を入れた版を尊重する）、
+ * 二重に付けない。
+ */
+export function withAnswerGuard(
+  sections: readonly string[],
+  options: AnswerGuardOptions & { readonly language?: 'ja' | 'en'; readonly existing?: string | undefined } = {},
+): string {
+  const joined = sections.join('\n\n');
+  if (extractAnswerGuardBlock(joined) !== undefined) return joined;
+  return [joined, options.existing ?? factoryAnswerGuardBlock(options.language ?? 'ja', options)].join('\n\n');
+}
 
 export interface GenerateAgentAssetsInput {
   readonly scope: TenantScope;
@@ -92,8 +194,15 @@ export interface GenerateAgentAssetsResult {
   readonly skillRefs: readonly VersionRef[];
   readonly agentRef: VersionRef;
   readonly toolKeyToRef: Map<string, VersionRef>;
-  /** Tool計画キー → 生成済みToolの公開名（Stage 5でScenario.expectedToolsへ解決するために使う）。 */
-  readonly toolKeyToPublishName: ReadonlyMap<string, string>;
+  /**
+   * Tool計画キー → **エージェントがそのToolを呼ぶときの関数名**（`agentTool.name`、未設定なら `publishName`）。
+   *
+   * Stage 5 の `Scenario.expectedTools` はこの名前でなければならない: `RunScenarioUseCase` が
+   * `calledTools` へ記録するのはトレースの `tool-call` イベント名 = `toolToModelDefinition` が
+   * 公開する関数名であり、`publishName` を期待名に入れると必ず hitRate が 0 になる（ADR-0047）。
+   * 再利用した既存Toolもカタログの `toolName`（= 同じ導出）で入れる。
+   */
+  readonly toolKeyToToolName: ReadonlyMap<string, string>;
   readonly roleCallsUsed: number;
   /**
    * 既存Agent強化モードで、実際にAgentの新版を作ったか。`false` は「追加が0件でAgentに変化がない」ため
@@ -127,8 +236,10 @@ export class GenerateAgentAssetsUseCase {
     // Stage 2: Tool生成（ToolSmith + 修復ループ）。
     const toolRefs: VersionRef[] = [];
     const toolKeyToRef = new Map<string, VersionRef>();
-    const toolKeyToPublishName = new Map<string, string>();
+    const toolKeyToToolName = new Map<string, string>();
     const toolKeyToContract = new Map<string, SkillWriterToolContract>();
+    /** このRunで保存したToolの実体（回答の規律ブロックの「引数を省略できるか」を決定的に導くために持つ）。 */
+    const savedTools: Tool[] = [];
     const reusable = input.existingTools ?? [];
 
     for (const toolPlan of input.plan.tools) {
@@ -142,7 +253,8 @@ export class GenerateAgentAssetsUseCase {
           const ref: VersionRef = { internalId: existing.internalId, version: existing.latestVersion };
           toolRefs.push(ref);
           toolKeyToRef.set(toolPlan.key, ref);
-          toolKeyToPublishName.set(toolPlan.key, existing.publishName);
+          // 期待Tool名は「エージェントが呼ぶ関数名」で揃える（カタログの `toolName` = agentTool.name ?? publishName）。
+          toolKeyToToolName.set(toolPlan.key, existing.toolName);
           toolKeyToContract.set(toolPlan.key, { name: existing.toolName, description: existing.description });
           emit({ kind: 'tool_reused', at: this.now().toISOString(), stage: 'generating-tools', message: `${toolPlan.key}: ${existing.publishName}`, ref });
           continue;
@@ -184,8 +296,11 @@ export class GenerateAgentAssetsUseCase {
 
       const ref: VersionRef = { internalId: saved.metadata.internalId, version: saved.metadata.version.toString() };
       toolRefs.push(ref);
+      savedTools.push(saved);
       toolKeyToRef.set(toolPlan.key, ref);
-      toolKeyToPublishName.set(toolPlan.key, saved.metadata.publishName);
+      // `toolToModelDefinition` と同じ導出（agentTool.name ?? publishName）。publishName を入れると
+      // `ScenarioRun.metrics.expectedToolHit` が必ず 0 になる（ADR-0047）。
+      toolKeyToToolName.set(toolPlan.key, saved.agentTool?.name ?? saved.metadata.publishName);
       toolKeyToContract.set(toolPlan.key, { name: saved.agentTool?.name ?? saved.metadata.publishName, description: saved.agentTool?.description ?? saved.metadata.displayName });
       emit({ kind: 'tool_generated', at: this.now().toISOString(), stage: 'generating-tools', message: toolPlan.key, ref });
       emit({ kind: 'artifact_saved', at: this.now().toISOString(), stage: 'generating-tools', ref });
@@ -245,7 +360,7 @@ export class GenerateAgentAssetsUseCase {
       // 既存Agentをそのまま起点にし、新版を作らない。`rewrite` はプロンプト自体を改訂するので統合へ進む。
       if (toolPromptRefs.length === 0 && skillPromptRefs.length === 0 && promptStrategy === 'preserve') {
         const baseRef: VersionRef = { internalId: input.baseAgent.metadata.internalId, version: input.baseAgent.metadata.version.toString() };
-        return { toolRefs, skillRefs, agentRef: baseRef, toolKeyToRef, toolKeyToPublishName, roleCallsUsed, agentChanged: false };
+        return { toolRefs, skillRefs, agentRef: baseRef, toolKeyToRef, toolKeyToToolName, roleCallsUsed, agentChanged: false };
       }
       const integrated = await integrateAssetsIntoAgent(
         { saveAgent: this.saveAgent, generateAgentPrompt: this.generateAgentPrompt, assembler: this.assembler },
@@ -265,7 +380,7 @@ export class GenerateAgentAssetsUseCase {
       if (integrated.changed) {
         emit({ kind: 'artifact_saved', at: this.now().toISOString(), stage: 'assembling-agent', message: `enhanced ${input.baseAgent.metadata.displayName} (${describePromptStrategy(integrated.promptStrategy)})`, ref: integrated.agentRef });
       }
-      return { toolRefs, skillRefs, agentRef: integrated.agentRef, toolKeyToRef, toolKeyToPublishName, roleCallsUsed, agentChanged: integrated.changed };
+      return { toolRefs, skillRefs, agentRef: integrated.agentRef, toolKeyToRef, toolKeyToToolName, roleCallsUsed, agentChanged: integrated.changed };
     }
 
     const promptDraft = await this.generateAgentPrompt.execute({
@@ -282,11 +397,17 @@ export class GenerateAgentAssetsUseCase {
       agentBrief: input.plan.agentBrief,
       skillGuide: promptDraft.sections.skillGuide,
       toolUsageGuide: promptDraft.sections.toolUsageGuide,
+      // 「対象ごとに1回ずつ呼ぶ」規則を書かせないため、会話あたりのツール呼び出し上限を渡す（ADR-0047）。
+      toolCallBudget: MAX_TOOL_CALLS,
     }, signal);
     throwIfAborted(signal);
 
     // Tool使用ガイド・Skillガイドはassemblerが上書き生成しない（出所を機械的に追跡できる部分を保つ）。
-    const systemPrompt = [assembled.role, promptDraft.sections.skillGuide, promptDraft.sections.toolUsageGuide, assembled.rules].join('\n\n');
+    // 回答の規律（ADR-0047）も決定的合成側に置く: LLMの起草物ではないので、Analystの書き直しでも消えない。
+    const systemPrompt = withAnswerGuard(
+      [assembled.role, promptDraft.sections.skillGuide, promptDraft.sections.toolUsageGuide, assembled.rules],
+      { language: input.goal.language, omittableFilters: hasOmittableFilters(savedTools) },
+    );
 
     const savedAgent = await this.saveAgent.execute({
       scope: input.scope,
@@ -303,7 +424,7 @@ export class GenerateAgentAssetsUseCase {
     const agentRef: VersionRef = { internalId: savedAgent.metadata.internalId, version: savedAgent.metadata.version.toString() };
     emit({ kind: 'artifact_saved', at: this.now().toISOString(), stage: 'assembling-agent', ref: agentRef });
 
-    return { toolRefs, skillRefs, agentRef, toolKeyToRef, toolKeyToPublishName, roleCallsUsed, agentChanged: true };
+    return { toolRefs, skillRefs, agentRef, toolKeyToRef, toolKeyToToolName, roleCallsUsed, agentChanged: true };
   }
 }
 
@@ -389,15 +510,17 @@ export async function integrateAssetsIntoAgent(deps: IntegrateAgentAssetsDeps, r
         agentBrief: rewriteContext.agentBrief,
         skillGuide: promptDraft.sections.skillGuide,
         toolUsageGuide: promptDraft.sections.toolUsageGuide,
+        toolCallBudget: MAX_TOOL_CALLS,
         currentPrompt: base.systemPrompt,
       }, request.signal);
-      rewritten = [
+      // 書き直しでも回答の規律（ADR-0047）は落とさない。起点Agentが既に持っていればその文面を引き継ぐ。
+      rewritten = withAnswerGuard([
         assembled.role,
         promptDraft.sections.skillGuide,
         promptDraft.sections.toolUsageGuide,
         ...(base.agents.length === 0 ? [] : [promptDraft.sections.collaboratorGuide]),
         assembled.rules,
-      ].join('\n\n');
+      ], { language: rewriteContext.goal.language, existing: extractAnswerGuardBlock(base.systemPrompt) });
     } catch (error) {
       // 中断はフォールバック（preserve で保存を続ける）ではなく打ち切り: cancel 後に新版を作ってはならない。
       if (error instanceof FactoryAbortedError) throw error;
@@ -594,12 +717,27 @@ export async function generateToolWithRepair(deps: ToolRepairLoopDeps, request: 
       const proposal = await deps.toolSmith.propose({ toolPlan: request.toolPlan, profile: request.profile, ...(priorError === undefined ? {} : { priorError }) }, request.signal);
       throwIfAborted(request.signal);
       const graph = makeArgumentsOptional(mergeAgentInputDeclarations(proposal.graph));
+      // ノード語彙・単一チェーンの構造検査（エンジンより手前で、修復の当て先が分かる文面で返す）。
+      const shapeViolation = describeGraphShapeViolations(graph, {
+        sourceType: request.profile.format === 'json' ? 'json-source' : 'csv-source',
+        dataSourceId: request.toolPlan.dataSourceId,
+      });
+      if (shapeViolation !== undefined) throw new FactoryValidationError(shapeViolation);
       const resolvedGraph = await deps.resolveDataSources.execute(request.scope, graph);
       const propagation = deps.engine.propagateSchemas(resolvedGraph);
       if (propagation.hasErrors) throw new FactoryValidationError(describePropagationErrors(propagation));
-      deps.engine.preview(resolvedGraph);
+      const designTimePreview = deps.engine.preview(resolvedGraph);
 
       const inputSchema = agentToolArgumentsOf(graph);
+      // 意味の検査（証拠列の保全・期間引数の型と範囲・時系列の並べ替え）。構造が通ってスキーマが
+      // 確定して初めて列の型と終端スキーマが引けるので、ここで回す（ADR-0047 round 2）。
+      const semanticViolation = describeToolSemanticViolations({ graph, profile: request.profile, toolPlan: request.toolPlan, inputSchema, propagation });
+      if (semanticViolation !== undefined) throw new FactoryValidationError(semanticViolation);
+      // 設計時プレビューは agent-input の sample を束縛した「引数を全部渡した呼び出し」でしかない。
+      // 実際にエージェントが最初にやるのは「引数なしの呼び出し」なので、実行時と同じ `graphWithArguments`
+      // で全引数を省略した2本目のプレビューを回し、終端 agent-output が溢れないことまで確かめる（ADR-0047）。
+      const overflow = await describeDefaultCallOverflow(deps, request.scope, graph, inputSchema, designTimePreview);
+      if (overflow !== undefined) throw new FactoryValidationError(overflow);
       const identity = request.identity();
       const tool = await deps.saveTool.execute({
         scope: request.scope,
@@ -630,6 +768,267 @@ export async function generateToolWithRepair(deps: ToolRepairLoopDeps, request: 
 
 /** Tool引数として宣言できる列型（Tool Callingの引数へそのまま写せるものだけ）。 */
 const AGENT_ARGUMENT_TYPES: readonly string[] = ['string', 'number', 'boolean', 'date'];
+
+/** ToolSmithが置いてよいsourceノード種別（計画のデータソース形式で1つに決まる）。 */
+const TOOL_SOURCE_TYPES: readonly string[] = ['csv-source', 'json-source'];
+/** データ経路の外に置く宣言ノード / 終端。 */
+const TOOL_ARGUMENT_NODE_TYPE = 'agent-input';
+const TOOL_SINK_TYPE = 'agent-output';
+
+/**
+ * ToolSmithの提案グラフが Stage 2 の構造契約（docs/16 §4 Stage 2）を満たすかを決定的に検査する。
+ * 違反があれば**修復ループへそのまま渡せる文面**（何が違反で、どう直すか）を返す。
+ *
+ * エンジン（`propagateSchemas` / `preview`）は閉路・入次数・終端数は見るが「どのノード型を使ってよいか」
+ * 「source が計画どおりのデータソースを読んでいるか」「データ経路が枝分かれしていないか」は見ない。
+ * そこを外すと、実測では join や database-source を混ぜた提案や、agent-input をチェーンへ繋いだ提案が
+ * 曖昧なスキーマエラーだけを返して修復が空回りした（ADR-0047）。
+ */
+export function describeGraphShapeViolations(
+  graph: ToolGraph,
+  expected: { readonly sourceType: string; readonly dataSourceId: string },
+): string | undefined {
+  const allowed = new Set<string>([expected.sourceType, TOOL_ARGUMENT_NODE_TYPE, TOOL_SINK_TYPE, ...SAFE_TRANSFORM_TYPES]);
+  const problems: string[] = [];
+
+  const unknownTypes = [...new Set(graph.nodes.filter((node) => !allowed.has(node.type)).map((node) => node.type))];
+  if (unknownTypes.length > 0) {
+    problems.push(`node type(s) not allowed: ${unknownTypes.join(', ')}. Use only '${expected.sourceType}' for the source, one of ${SAFE_TRANSFORM_TYPES.join(', ')} for transforms, '${TOOL_ARGUMENT_NODE_TYPE}' to declare the tool arguments, and '${TOOL_SINK_TYPE}' as the single terminal node`);
+  }
+
+  const sources = graph.nodes.filter((node) => TOOL_SOURCE_TYPES.includes(node.type));
+  if (sources.length !== 1) {
+    problems.push(`the graph must contain exactly one source node of type '${expected.sourceType}', found ${sources.length}`);
+  } else {
+    const source = sources[0]!;
+    if (source.type !== expected.sourceType) {
+      problems.push(`the source node '${source.id}' has type '${source.type}', but this data source is ${expected.sourceType === 'json-source' ? 'JSON' : 'CSV'}: use '${expected.sourceType}'`);
+    }
+    const dataSourceId = (source.config as { dataSourceId?: unknown } | null)?.dataSourceId;
+    if (expected.dataSourceId !== '' && dataSourceId !== expected.dataSourceId) {
+      problems.push(`the source node '${source.id}' must read config.dataSourceId "${expected.dataSourceId}" exactly, got ${JSON.stringify(dataSourceId ?? null)}`);
+    }
+  }
+
+  const sinks = graph.nodes.filter((node) => node.type === TOOL_SINK_TYPE);
+  if (sinks.length !== 1) {
+    problems.push(`the graph must end in exactly one '${TOOL_SINK_TYPE}' node, found ${sinks.length}`);
+  }
+
+  // データ経路は source → … → agent-output の単一チェーン。agent-input はその外側（未接続）に置く。
+  const connected = new Set(graph.edges.flatMap((edge) => [edge.from, edge.to]));
+  for (const node of graph.nodes.filter((node) => node.type === TOOL_ARGUMENT_NODE_TYPE)) {
+    if (connected.has(node.id)) {
+      problems.push(`the '${TOOL_ARGUMENT_NODE_TYPE}' node '${node.id}' must stay unconnected: it declares the tool call parameters, it is not a data source. Remove every edge that starts or ends at it`);
+    }
+  }
+  const outDegree = new Map<string, number>();
+  const inDegree = new Map<string, number>();
+  for (const edge of graph.edges) {
+    outDegree.set(edge.from, (outDegree.get(edge.from) ?? 0) + 1);
+    inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1);
+  }
+  const branching = [...outDegree.entries()].filter(([, count]) => count > 1).map(([id]) => id);
+  const merging = [...inDegree.entries()].filter(([, count]) => count > 1).map(([id]) => id);
+  if (branching.length > 0 || merging.length > 0) {
+    problems.push(`the data path must be a single linear chain from the source to '${TOOL_SINK_TYPE}': ${[...branching.map((id) => `node '${id}' feeds more than one node`), ...merging.map((id) => `node '${id}' receives more than one input`)].join('; ')}`);
+  }
+  const chainNodes = graph.nodes.filter((node) => node.type !== TOOL_ARGUMENT_NODE_TYPE);
+  const orphans = chainNodes.filter((node) => !connected.has(node.id)).map((node) => node.id);
+  if (chainNodes.length > 1 && orphans.length > 0) {
+    problems.push(`node(s) ${orphans.join(', ')} are not connected to the data path; every node except the '${TOOL_ARGUMENT_NODE_TYPE}' declaration must sit on the chain`);
+  }
+
+  return problems.length === 0 ? undefined : `tool graph shape is invalid: ${problems.join('. ')}`;
+}
+
+/** 集計してしまうノード（行がそのまま出てこないので、証拠列・並べ替えの検査対象から外す）。 */
+const AGGREGATING_NODE_TYPES: readonly string[] = ['summary-statistics', 'group-by'];
+/** 行をそのまま載せる `agent-output.shape`（ここだけが「証拠列が残っているか」を問える形）。 */
+const ROW_SHAPES: readonly string[] = ['rows', 'first-row'];
+/** 下限・上限の比較演算子（同じ引数を両方へ束縛すると「範囲」ではなく完全一致になる）。 */
+const LOWER_BOUND_OPS: readonly string[] = ['gt', 'gte'];
+const UPPER_BOUND_OPS: readonly string[] = ['lt', 'lte'];
+/**
+ * 「最新・直近」を求める計画かを見るキーワード。並べ替えの向き（desc）を強制する条件で、
+ * ここに無い言い回しは強制しない（取りこぼしはプロンプト規則が拾う）。
+ */
+const LATEST_INTENT_PATTERN = /最新|直近|最近|latest|most recent|newest/i;
+
+/** 値バインドされた filter 条件 1 件（引数名・対象列・設計時の演算子）。 */
+interface BoundConditionSite {
+  readonly field: string;
+  readonly column: string;
+  readonly op: string;
+}
+
+/** filter config（フラット1条件 / `conditions` 配列）から、valueBinding を持つ条件を取り出す。 */
+function boundConditionsOf(config: unknown): BoundConditionSite[] {
+  const raw = (config as { conditions?: unknown } | null)?.conditions;
+  const conditions: unknown[] = Array.isArray(raw) ? raw : [config];
+  const sites: BoundConditionSite[] = [];
+  for (const condition of conditions) {
+    if (condition === null || typeof condition !== 'object') continue;
+    const record = condition as { column?: unknown; op?: unknown; valueBinding?: { source?: unknown; field?: unknown } };
+    const binding = record.valueBinding;
+    if (binding?.source !== 'agent-input' || typeof binding.field !== 'string' || binding.field === '') continue;
+    sites.push({
+      field: binding.field,
+      column: typeof record.column === 'string' ? record.column : '',
+      op: typeof record.op === 'string' ? record.op : 'eq',
+    });
+  }
+  return sites;
+}
+
+export interface ToolSemanticContext {
+  readonly graph: ToolGraph;
+  readonly profile: DataProfile;
+  readonly toolPlan: FactoryToolPlan;
+  /** `agentToolArgumentsOf` で導出済みの引数スキーマ（引数なしToolは undefined）。 */
+  readonly inputSchema: Schema | undefined;
+  /** `EtlEngine.propagateSchemas` の結果（列の型と終端スキーマを引く）。 */
+  readonly propagation: PropagationResult;
+}
+
+/**
+ * 生成Toolの**意味**の検査（ADR-0047 round 2）。構造（`describeGraphShapeViolations`）とエンジンの
+ * スキーマ検証を通っても、「答えに使えないTool」はできてしまう。実測で起きた3つを決定的に塞ぐ。
+ *
+ * A. 証拠列の欠落: `select` が `時点` を落としたため、エージェントは期間を引用できず
+ *    「2023年12月 14,212,596人」と年次データに無い月を作文した。期間ラベル列の保全は**必須検査**、
+ *    注記列の保全はプロンプト規則（目的次第で落として良い場合があるため）。
+ * B. 範囲が引けない: 同じ引数を gte と lte の両方へ束縛した「完全一致の変装」、`date` 列に
+ *    `string` 引数、期間列を扱うのに `sort` が無い（「最新」が出せない）。
+ *
+ * 違反は修復ループへそのまま渡せる文面（何が違反で、どう直すか）で返す。
+ */
+export function describeToolSemanticViolations(context: ToolSemanticContext): string | undefined {
+  const { graph, profile, toolPlan, inputSchema, propagation } = context;
+  const problems: string[] = [];
+
+  const sink = graph.nodes.find((node) => node.type === TOOL_SINK_TYPE);
+  const shape = (sink?.config as { shape?: unknown } | null)?.shape;
+  const rowShaped = sink !== undefined && (shape === undefined || ROW_SHAPES.includes(String(shape)));
+  const aggregates = graph.nodes.some((node) => AGGREGATING_NODE_TYPES.includes(node.type));
+  const terminalSchema = propagation.nodes[propagation.terminalId]?.schema;
+  const terminalColumns = new Set((terminalSchema?.columns ?? []).map((column) => column.name));
+  const parsePeriod = graph.nodes.find((node) => node.type === PARSE_PERIOD_TYPE);
+  const parsePeriodConfig = (parsePeriod?.config ?? {}) as { column?: unknown; startColumn?: unknown };
+  const startColumn = typeof parsePeriodConfig.startColumn === 'string' && parsePeriodConfig.startColumn !== ''
+    ? parsePeriodConfig.startColumn
+    : 'periodStart';
+
+  // ── A. 行を返すToolは、答えの根拠になる列を落としてはならない ───────────────────────────
+  if (rowShaped && !aggregates && profile.periodColumns.length > 0) {
+    // parse-period が読んだ列を最優先に見る（無ければプロファイルが検出した期間列のいずれか）。
+    const required = typeof parsePeriodConfig.column === 'string' && parsePeriodConfig.column !== ''
+      ? [parsePeriodConfig.column]
+      : profile.periodColumns.map((column) => column.column);
+    if (!required.some((column) => terminalColumns.has(column))) {
+      problems.push(`the rows this tool returns do not contain the period column ${required.map((column) => `'${column}'`).join(' or ')}, so the agent cannot state WHEN a number is from and will invent a period. Keep that original label column in the output (add it to select.columns, or drop the select node). Adding '${startColumn}' is not a replacement: the agent quotes the label the data uses`);
+    }
+    // 値の列（数値）も一緒に落ちていれば、そもそも答えるものが無い。
+    const numericSourceColumns = profile.columns.filter((column) => column.type === 'number').map((column) => column.name);
+    if (numericSourceColumns.length > 0 && !graph.nodes.some((node) => node.type === 'distinct')
+      && !numericSourceColumns.some((column) => terminalColumns.has(column))) {
+      problems.push(`the rows this tool returns contain none of the value columns (${numericSourceColumns.map((column) => `'${column}'`).join(', ')}), so there is no number to answer with. Keep at least the value column the purpose asks about`);
+    }
+  }
+
+  // ── B. 期間を「範囲」で引けること ────────────────────────────────────────────────────
+  const declared = new Map((inputSchema?.columns ?? []).map((column) => [column.name, column] as const));
+  const bound = graph.nodes
+    .filter((node) => node.type === 'filter')
+    .flatMap((node) => boundConditionsOf(node.config).map((site) => ({ ...site, nodeId: node.id })));
+
+  // B1: date 列を絞る引数は date 型で宣言する（string だと ISO 文字列の比較が文字列比較になる）。
+  for (const site of bound) {
+    const columnType = propagation.nodes[site.nodeId]?.schema.columns.find((column) => column.name === site.column)?.type;
+    const argument = declared.get(site.field);
+    if (columnType !== 'date' || argument === undefined || argument.type === 'date') continue;
+    problems.push(`argument '${site.field}' filters the date column '${site.column}' but is declared "type": "${argument.type}". Declare it as { "name": "${site.field}", "type": "date", "nullable": true }: the agent then passes an ISO date such as "2008-01-01" and the tool compares dates, not text`);
+  }
+
+  // B2: 同じ引数を下限と上限の両方へ束縛すると、範囲ではなく完全一致になる。
+  for (const [field, sites] of groupBy(bound, (site) => site.field)) {
+    const lower = sites.filter((site) => LOWER_BOUND_OPS.includes(site.op));
+    const upper = sites.filter((site) => UPPER_BOUND_OPS.includes(site.op));
+    if (lower.length === 0 || upper.length === 0) continue;
+    problems.push(`argument '${field}' is bound to both a lower bound (${lower[0]?.op}) and an upper bound (${upper[0]?.op}) on '${lower[0]?.column}', which only ever matches one exact point in time — a range is impossible. Declare TWO nullable arguments instead (for example '${field}_from' bound to the gte condition and '${field}_to' bound to the lte condition), so the agent can ask for a span, for one end of it, or for neither`);
+  }
+
+  // B3: 期間を開いたなら、開始日で並べ替えてから絞る（並べ替えが無いと「最新」が取れない）。
+  if (parsePeriod !== undefined && rowShaped && !aggregates) {
+    const sortKeys = graph.nodes
+      .filter((node) => node.type === 'sort')
+      .flatMap((node) => {
+        const keys = (node.config as { keys?: unknown } | null)?.keys;
+        return Array.isArray(keys) ? keys as { column?: unknown; direction?: unknown }[] : [];
+      });
+    const onStart = sortKeys.filter((key) => key.column === startColumn);
+    if (onStart.length === 0) {
+      problems.push(`this tool parses periods but never sorts by '${startColumn}', so the rows it returns are in file order and the agent cannot tell which period is the latest. Add a 'sort' node with { "keys": [{ "column": "${startColumn}", "direction": "desc" }] } before the limit / ${TOOL_SINK_TYPE}, so that omitting the date arguments returns the most recent periods first`);
+    } else if (LATEST_INTENT_PATTERN.test(`${toolPlan.displayName} ${toolPlan.purpose} ${toolPlan.argumentSummary ?? ''} ${toolPlan.outputShape ?? ''}`)
+      && !onStart.some((key) => key.direction === 'desc')) {
+      problems.push(`this tool is meant to answer about the latest period, but it sorts '${startColumn}' ascending, so a limit keeps the OLDEST rows. Use { "column": "${startColumn}", "direction": "desc" }`);
+    }
+  }
+
+  return problems.length === 0 ? undefined : `tool cannot answer the plan: ${problems.join('. ')}`;
+}
+
+/** 小さな groupBy（このファイル内の検査だけで使う）。 */
+function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const item of items) {
+    const bucket = grouped.get(key(item));
+    if (bucket === undefined) grouped.set(key(item), [item]);
+    else bucket.push(item);
+  }
+  return grouped;
+}
+
+/**
+ * 「引数を1つも渡さない呼び出し」で終端 `agent-output` が溢れないかを、実行時と同じ束縛で確かめる。
+ *
+ * 溢れる（`shape: 'rows'` かつ `overflow: 'error'` で `rows > maxRows`）なら、修復ループへ渡す
+ * 具体的な直し方を添えた文面を返す。Factory生成Toolの引数はすべて省略可能（`makeArgumentsOptional`）
+ * なので、「既定の呼び出し = 全引数省略」で必ず成立していなければならない。
+ */
+async function describeDefaultCallOverflow(
+  deps: Pick<ToolRepairLoopDeps, 'engine' | 'resolveDataSources'>,
+  scope: TenantScope,
+  graph: ToolGraph,
+  inputSchema: Schema | undefined,
+  designTimePreview: PreviewResult,
+): Promise<string | undefined> {
+  const sink = graph.nodes.find((node) => node.type === TOOL_SINK_TYPE);
+  if (sink === undefined) return undefined;
+  const config = (sink.config ?? {}) as { shape?: unknown; maxRows?: unknown; overflow?: unknown };
+  // 行をそのまま返す形だけが溢れる（summary / first-row / single-value は件数か1行しか載せない）。
+  if (config.overflow !== 'error') return undefined;
+  if (config.shape !== undefined && config.shape !== 'rows') return undefined;
+  const maxRows = typeof config.maxRows === 'number' && Number.isFinite(config.maxRows) ? config.maxRows : 100;
+
+  let preview = designTimePreview;
+  if (inputSchema !== undefined && inputSchema.columns.length > 0) {
+    try {
+      // 実行時（`RunAgentPreviewUseCase`）と同じ経路: 引数を空オブジェクトで正規化し、グラフへ束縛する。
+      const row = validateToolArguments(inputSchema, {});
+      const defaultCallGraph = graphWithArguments({ graph, inputSchema } as unknown as Tool, row);
+      preview = deps.engine.preview(await deps.resolveDataSources.execute(scope, defaultCallGraph));
+    } catch {
+      // 引数宣言そのものが壊れている（未宣言fieldへのbinding等）ケース。ここで握りつぶすのは、直後の
+      // `SaveToolUseCase` が同じ不整合をより具体的な文言で拒否し、そちらを修復フィードバックにしたいため。
+      // この関数の責務は「溢れるかどうか」だけに閉じる。
+      return undefined;
+    }
+  }
+  const rowCount = preview.nodes[sink.id]?.rowCount ?? preview.fullOutput.rows.length;
+  if (rowCount <= maxRows) return undefined;
+  return `calling this tool with no arguments returns ${rowCount} rows, which overflows the terminal '${TOOL_SINK_TYPE}' (maxRows ${maxRows}, overflow "error"), so the very first tool call the agent makes fails. Every declared argument is optional at run time, so the tool must bound its own output: append a 'limit' node with count <= ${maxRows} at the end of the chain (put a 'sort' before it so the rows that are kept are the meaningful ones), or aggregate the rows with 'summary-statistics', or set the ${TOOL_SINK_TYPE} "shape" to "summary".`;
+}
 
 /**
  * 未接続の `agent-input` ノードが宣言する Tool引数スキーマを取り出す（宣言が無ければ `undefined`）。

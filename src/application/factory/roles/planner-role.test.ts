@@ -4,13 +4,13 @@ import { DEFAULT_FACTORY_OPTIONS, type FactoryGoalInput } from '../../../domain/
 import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../../model/model-provider';
 import type { DataProfile } from '../profile-data-sources';
 import type { ExistingToolCatalog } from '../tool-catalog';
-import { PlannerRole } from './planner-role';
+import { PlannerRole, planSchemaFor, repairDataSourceIds } from './planner-role';
 
 const goal: FactoryGoalInput = { goal: 'Answer sales questions and summarize trends.', language: 'ja' };
 const profiles: readonly DataProfile[] = [{
   dataSourceId: 'ds-1', name: 'Sales', kind: 'file',
   columns: [{ name: 'amount', type: 'number', nullable: false }],
-  sampleRowCount: 1, sampleRows: [{ amount: 100 }],
+  sampleRowCount: 1, sampleRows: [{ amount: 100 }], rowCount: 1, periodColumns: [], categoricalColumns: [],
 }];
 
 function validPlanJson(overrides?: { readonly dataSourceId?: string; readonly sideEffect?: string }): string {
@@ -173,5 +173,46 @@ describe('PlannerRole', () => {
     const role = new PlannerRole(model);
     expect(role.available()).toBe(false);
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/does not support structured output/);
+  });
+});
+
+describe('PlannerRole: データソース id の写し間違い（e-Stat 実測: UUID の途中に `-` を足して Run ごと落ちた）', () => {
+  const A = 'bf942594-d24e-4e1a-83fe-089d44647404';
+  const B = '7a5bbcdb-78d6-43f1-b84f-1ac82748c9a0';
+  const planWith = (dataSourceId: string) => JSON.parse(validPlanJson({ dataSourceId })) as Parameters<typeof repairDataSourceIds>[0];
+
+  it('正常: 出力スキーマの tools[].dataSourceId を入力の id と空文字の enum に縛る', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: A }) }, finishReason: 'stop' });
+    await new PlannerRole(model).propose({ goal, profiles, dataSourceIds: [A, B], options: DEFAULT_FACTORY_OPTIONS });
+    const schema = model.requests[0]?.responseFormat?.schema;
+    expect(schema?.properties['tools']?.items?.properties?.['dataSourceId']).toEqual({ type: 'string', enum: [A, B, ''] });
+  });
+
+  it('境界: id が 0 件なら enum を付けず素のスキーマを返す（強化モード。空の enum は不正なスキーマになる）', () => {
+    expect(planSchemaFor([]).properties['tools']?.items?.properties?.['dataSourceId']).toEqual({ type: 'string' });
+  });
+
+  it('異常: enum を守らないモデルが 1 文字足した id を返しても、一意に最も近い入力 id へ直して計画を通す', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: 'bf942594-d24e-4e-1a-83fe-089d44647404' }) }, finishReason: 'stop' });
+    const plan = await new PlannerRole(model).propose({ goal, profiles, dataSourceIds: [A, B], options: DEFAULT_FACTORY_OPTIONS });
+    expect(plan.tools[0]?.dataSourceId).toBe(A);
+  });
+
+  it('異常: 近い id が無い（別物の id）なら直さず、従来どおり未知のデータソースとして落とす', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: 'totally-different-source' }) }, finishReason: 'stop' });
+    await expect(new PlannerRole(model).propose({ goal, profiles, dataSourceIds: [A, B], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/references unknown data source/);
+  });
+
+  it('境界: 同じ距離の候補が複数あるときは当て推量で選ばない（別の表を読ませない）', () => {
+    const repaired = repairDataSourceIds(planWith('ds-x'), ['ds-1', 'ds-2']);
+    expect(repaired.tools[0]?.dataSourceId).toBe('ds-x');
+  });
+
+  it('従来どおり: 既知の id と再利用計画の空文字には触らない', () => {
+    expect(repairDataSourceIds(planWith(A), [A, B]).tools[0]?.dataSourceId).toBe(A);
+    expect(repairDataSourceIds(planWith(''), [A, B]).tools[0]?.dataSourceId).toBe('');
   });
 });

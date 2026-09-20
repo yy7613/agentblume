@@ -48,7 +48,7 @@ describe('SuggestCalculateExpressionUseCase: 提案', () => {
     expect(proposal.preview).toMatchObject({ rows: 2, evaluated: 2, failed: 0, failureCounts: {} });
     expect(proposal.preview.sample[0]).toEqual({ input: rows[0], output: 200 });
     expect(proposal.validation.references).toEqual(['price', 'quantity']);
-    expect(proposal.promptTemplateVersion).toBe('calculate-expression/v1');
+    expect(proposal.promptTemplateVersion).toBe('calculate-expression/v2');
     // 提案は見せるだけ。適用は UI の明示操作なので、渡されたグラフは触らない。
     expect(graph.nodes[1]?.config).toEqual({ outputColumn: 'total', expression: '[price]' });
     expect(model.requests[0]?.responseFormat?.strict).toBe(true);

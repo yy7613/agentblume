@@ -27,6 +27,15 @@ function run(id: string, startedAt: string, scenarioId = 'scenario-1'): Scenario
   });
 }
 
+/** アンケートだけ回収できなかった実行（会話は成立・理由つき）。 */
+function surveyFailedRun(id: string, startedAt: string): ScenarioRun {
+  return createScenarioRun({
+    ...run(id, startedAt),
+    survey: [], impressions: '',
+    error: { stage: 'survey', message: "survey answer 'q2' must be between 1 and 5" },
+  });
+}
+
 export async function scenarioRunRepositoryContract(repo: ScenarioRunRepository): Promise<void> {
   const first = run('run-1', '2026-07-01T00:00:00.000Z');
   const second = run('run-2', '2026-07-01T00:00:02.000Z', 'scenario-2');
@@ -45,6 +54,14 @@ export async function scenarioRunRepositoryContract(repo: ScenarioRunRepository)
   expect((await repo.list(scope)).map((item) => item.id)).toEqual(['run-2', 'run-3', 'run-1']);
   expect((await repo.list(scope, { scenarioId: 'scenario-1' })).map((item) => item.id)).toEqual(['run-3', 'run-1']);
   expect(await repo.list(scope, { scenarioId: 'missing' })).toEqual([]);
+
+  // 失敗理由（error）も往復する: 「survey が空」だけでは不満な利用者と区別できない。
+  const failed = surveyFailedRun('run-4', '2026-07-01T00:00:03.000Z');
+  await repo.save(failed);
+  const reloaded = await repo.find(scope, 'run-4');
+  expect(reloaded).toEqual(failed);
+  expect(reloaded?.error).toEqual({ stage: 'survey', message: "survey answer 'q2' must be between 1 and 5" });
+  expect(reloaded?.status).toBe('completed');
 
   // テナント分離。
   expect(await repo.find({ tenantId: 'other', workspaceId: 'workspace' }, 'run-1')).toBeNull();

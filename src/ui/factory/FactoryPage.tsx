@@ -48,6 +48,18 @@ function statusLabel(status: FactoryRunDto['status'], text: Translate): string {
   }
 }
 
+/**
+ * レポートの品質判定（ADR-0047）。Runが `succeeded` でも目標未達・検証不能はありうるので、
+ * 「成功」表示のすぐ横で必ず読めるようにする。
+ */
+function qualityLabel(quality: NonNullable<FactoryRunDto['report']>['quality'], text: Translate): string {
+  switch (quality) {
+    case 'met-targets': return text('Targets met', '目標達成');
+    case 'below-targets': return text('Below targets', '目標未達');
+    case 'unverified': return text('Not verified', '検証できず');
+  }
+}
+
 function stageLabel(stage: FactoryRunDto['stage'], text: Translate): string {
   switch (stage) {
     case 'profiling': return text('Profiling', 'データ把握');
@@ -389,13 +401,21 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
 
           {selectedRun.status === 'succeeded' && selectedRun.report !== undefined && <div className="factory-report" aria-label={text('Factory report', 'Factoryレポート')}>
             <h3>{text('Report', 'レポート')}</h3>
+            {/* 「成功」は最後まで走ったという意味でしかない。目標を満たしたかは必ず別に示す。 */}
+            <p aria-label={text('Factory report quality', 'Factoryレポート品質判定')}>
+              {text('Quality', '品質判定')}: <strong className={`factory-quality ${selectedRun.report.quality}`}>{qualityLabel(selectedRun.report.quality, text)}</strong>
+            </p>
+            {selectedRun.report.qualityReasons.length > 0 && <ul className="factory-quality-reasons">
+              {selectedRun.report.qualityReasons.map((reason) => <li key={reason}>{reason}</li>)}
+            </ul>}
             <p>{text('Best iteration', '最良イテレーション')}: <strong>{selectedRun.report.bestIteration}</strong></p>
             <p>{text('Candidate', '候補')}: <strong>{selectedRun.report.candidate.agentId}@{selectedRun.report.candidate.version}</strong></p>
             <p>{selectedRun.report.summary}</p>
             <div className="table-wrap"><table>
               {/* APIのフィールド名（goalAchievedRate 等）をそのまま出さず、利用者に意味が通る見出しにする。 */}
-              <thead><tr><th>{text('Iteration', 'イテレーション')}</th><th>{text('Goal achieved rate', '目標達成率')}</th><th>{text('Avg. satisfaction', '平均満足度')}</th><th>{text('Tool hit rate', 'ツール命中率')}</th></tr></thead>
-              <tbody>{selectedRun.report.metricsByIteration.map((metrics) => <tr key={metrics.iteration}><td>{metrics.iteration}</td><td>{Math.round(metrics.goalAchievedRate * 100)}%</td><td>{metrics.avgSatisfaction.toFixed(1)}</td><td>{Math.round(metrics.toolHitRate * 100)}%</td></tr>)}</tbody>
+              <thead><tr><th>{text('Iteration', 'イテレーション')}</th><th>{text('Goal achieved rate', '目標達成率')}</th><th>{text('Avg. satisfaction', '平均満足度')}</th><th>{text('Tool hit rate', 'ツール命中率')}</th><th>{text('Survey not collected', 'アンケート未回収')}</th></tr></thead>
+              {/* アンケート未回収は「満足度が低い」ではない。平均値の隣に件数を出して取り違えを防ぐ。 */}
+              <tbody>{selectedRun.report.metricsByIteration.map((metrics) => <tr key={metrics.iteration}><td>{metrics.iteration}</td><td>{Math.round(metrics.goalAchievedRate * 100)}%</td><td>{metrics.avgSatisfaction.toFixed(1)}</td><td>{Math.round(metrics.toolHitRate * 100)}%</td><td>{metrics.surveyMissingCount} / {metrics.scenarioCount}</td></tr>)}</tbody>
             </table></div>
             <h4>{text('Open findings', '未解決の指摘')}</h4>
             {selectedRun.report.openFindings.length === 0 ? <p className="empty-state">{text('No open findings.', '未解決の指摘はありません。')}</p> : <ul className="factory-findings">

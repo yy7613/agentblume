@@ -135,6 +135,27 @@ describe('AgentInspectorPage', () => {
     expect(screen.getByText('MCPサーバーをスキップ: files (disabled)')).toBeTruthy();
   });
 
+  it('正常: 0行だったツール実行の行に、外した条件と実在する値の例を出す（日本語UI）', async () => {
+    const zero: AgentPreviewRunDto = {
+      runId: 'run-nomatch', mode: 'preview', response: '該当データはありません', usage: {},
+      trace: [
+        { sequence: 1, kind: 'tool-result', name: 'get_population_data', terminalId: 'narrow', nodes: [{ nodeId: 'narrow', rowCount: 0, truncated: false }], outputPreview: [], noMatch: {
+          message: 'No rows matched.', nodeId: 'narrow', combine: 'and',
+          conditions: [
+            { column: '地域', op: 'eq', argument: 'region_name', value: '東京都', matchingRows: 70 },
+            { column: '時点', op: 'eq', argument: 'time_point', value: '2015年12月31日', matchingRows: 0, availableValues: ['2015年', '2016年'], distinctValues: 70 },
+          ],
+        } },
+      ],
+    };
+    render(<I18nProvider initialLanguage="ja"><AgentInspectorPage client={makeClient({ runSavedAgent: vi.fn().mockResolvedValue(zero) })} /></I18nProvider>);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.type(screen.getByLabelText('動作確認メッセージ'), 'go');
+    await userEvent.click(screen.getByRole('button', { name: '送信' }));
+
+    expect(await screen.findByText('get_population_data · narrow:0 · 該当0件: 時点 eq "2015年12月31日" → 2015年 / 2016年')).toBeTruthy();
+  });
+
   it('英語UIでは再試行の注記を原文の形で残し、mcp-server-skipped の detail を添える', async () => {
     const failed: AgentPreviewRunDto = {
       runId: 'run-retry-en', mode: 'preview', response: '', usage: {},

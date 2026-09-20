@@ -21,6 +21,8 @@ import type { SurveyQuestion } from '../../domain/validation/survey';
 import { EtlEngine } from '../etl/engine';
 import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../model/model-provider';
 import { RunAgentPreviewUseCase } from '../agent/run-agent-preview';
+import { RunFailedError, ToolExecutionError } from '../agent/errors';
+import type { LogContext, LoggerPort } from '../operations/logger';
 import { RunScenarioUseCase } from './run-scenario';
 
 const scope: TenantScope = { tenantId: 'tenant', workspaceId: 'workspace' };
@@ -84,14 +86,23 @@ function makeScenario(overrides: Partial<Scenario> = {}): Scenario {
 
 class QueueModel implements ModelProviderPort {
   readonly requests: ModelCompletionRequest[] = [];
+  /** キューが尽きたときに投げる例外（中断の再現に差し替える）。 */
+  exhausted: () => Error = () => new Error('missing completion');
   constructor(private readonly queue: ModelCompletion[], private readonly caps: readonly ModelCapability[] = ['chat', 'tool-calling', 'structured-output']) {}
   capabilities(): readonly ModelCapability[] { return this.caps; }
   async complete(request: ModelCompletionRequest): Promise<ModelCompletion> {
     this.requests.push(structuredClone(request));
     const item = this.queue.shift();
-    if (item === undefined) throw new Error('missing completion');
+    if (item === undefined) throw this.exhausted();
     return item;
   }
+}
+
+class FakeLogger implements LoggerPort {
+  readonly warnings: { readonly message: string; readonly context?: LogContext }[] = [];
+  info(): void {}
+  warn(message: string, context?: LogContext): void { this.warnings.push({ message, ...(context === undefined ? {} : { context }) }); }
+  error(): void {}
 }
 
 class MemoryRuns implements RunRepository {
@@ -170,17 +181,21 @@ interface Harness {
   readonly agentModel: QueueModel;
   readonly scenarioRuns: MemoryScenarioRuns;
   readonly scenarios: StaticScenarios;
+  readonly logger: FakeLogger;
 }
 
 function harness(options: {
   scenario?: Scenario | null; persona?: Persona | null; pseudoUserAgent?: Agent | null;
   pu: ModelCompletion[]; agent: ModelCompletion[]; withTool?: boolean;
+  /** 対象Agent実行を差し替える（Tool実行失敗の再現用）。 */
+  runAgent?: RunAgentPreviewUseCase;
 }): Harness {
   const puModel = new QueueModel(options.pu);
   const agentModel = new QueueModel(options.agent);
   const scenarioRuns = new MemoryScenarioRuns();
+  const logger = new FakeLogger();
   let agentRunSeq = 0;
-  const runAgent = new RunAgentPreviewUseCase(
+  const runAgent = options.runAgent ?? new RunAgentPreviewUseCase(
     new StaticTools(makeTool()), new EtlEngine(createDefaultRegistry()), agentModel, new MemoryRuns(),
     () => `agent-run-${(agentRunSeq += 1)}`, undefined, new StaticAgents(makeAgent(options.withTool ?? false)),
   );
@@ -193,8 +208,9 @@ function harness(options: {
     new StaticAgents(options.pseudoUserAgent ?? null),
     () => 'scenario-run-1',
     () => new Date(Date.UTC(2026, 6, 1, 0, 0, 0, 0) + (tick += 1) * 1000),
+    logger,
   );
-  return { useCase, puModel, agentModel, scenarioRuns, scenarios };
+  return { useCase, puModel, agentModel, scenarioRuns, scenarios, logger };
 }
 
 const input = { scope, scenarioId: 'scenario-1', mode: 'preview' as const };
@@ -323,6 +339,10 @@ describe('RunScenarioUseCase', () => {
     expect(run.survey).toEqual([]);
     expect(run.impressions).toBe('');
     expect(h.scenarioRuns.saved).toEqual([run]);
+    // 理由を残す: 疑似ユーザー段の失敗。
+    expect(run.error).toMatchObject({ stage: 'pseudo-user' });
+    expect(run.error?.message).toContain('invalid JSON twice');
+    expect(h.logger.warnings[0]?.message).toContain('pseudo-user');
   });
 
   it('expectedToolHit を期待集合と実呼び出し公開名集合から計算する', async () => {
@@ -351,9 +371,51 @@ describe('RunScenarioUseCase', () => {
     expect(run.goalAchieved).toBe(false);
     expect(run.survey).toEqual([]);
     expect(h.scenarioRuns.saved).toEqual([run]);
+    expect(run.error?.stage).toBe('agent');
   });
 
-  it('アンケート検証失敗は1回再試行し、再失敗で status:error（会話は保存）', async () => {
+  it('異常: Tool実行の失敗は stage:agent として、どのTool・どのノードかまで理由に残す', async () => {
+    const failure = new ToolExecutionError(
+      { internalId: 'score-tool', version: '1.2.0', publishName: 'score_lookup' },
+      Object.assign(new Error('列 score が見つからない'), { nodeId: 'filter-1' }),
+    );
+    const runAgent = {
+      executeSaved: async (): Promise<never> => { throw new RunFailedError('agent-run-1', failure); },
+    } as unknown as RunAgentPreviewUseCase;
+    const h = harness({ pu: [puTurn('質問1', false, false)], agent: [], runAgent });
+
+    const run = await h.useCase.execute(input);
+    expect(run.status).toBe('error');
+    expect(run.error?.stage).toBe('agent');
+    expect(run.error?.message).toContain('列 score が見つからない');
+    expect(run.error?.message).toContain('score_lookup');
+    expect(run.error?.message).toContain('filter-1');
+    // 握り潰した例外はログにも1行残す。
+    expect(h.logger.warnings).toHaveLength(1);
+    expect(h.logger.warnings[0]?.context).toMatchObject({ stage: 'agent', scenarioId: 'scenario-1' });
+  });
+
+  it('境界: アンケートの範囲外回答は「何に落ちたか」と前回の回答を添えて1回だけ直させる', async () => {
+    const badSurvey: ModelCompletion = { message: { role: 'assistant', content: JSON.stringify({ q1: true, q2: 0, impressions: 'x' }) }, finishReason: 'stop' };
+    const h = harness({
+      scenario: makeScenario({ maxUserTurns: 1 }),
+      pu: [puTurn('質問1', false, false), badSurvey, surveyOk()],
+      agent: [agentSay('回答1')],
+    });
+    const run = await h.useCase.execute(input);
+
+    expect(run.status).toBe('max-turns');
+    expect(run.survey).toHaveLength(3);
+    expect(run.error).toBeUndefined();
+    // 修復依頼: 直前の回答（assistant）+ 失敗した検証の文言を添えて送り直す。
+    const repair = h.puModel.requests[2];
+    expect(repair?.messages.map((message) => message.role)).toEqual(['system', 'assistant', 'user']);
+    expect(repair?.messages[1]?.content).toBe(JSON.stringify({ q1: true, q2: 0, impressions: 'x' }));
+    expect(repair?.messages[2]?.content).toContain("survey answer 'q2' must be between 1 and 5");
+    expect(repair?.responseFormat?.schema.properties['q2']).toMatchObject({ minimum: 1, maximum: 5 });
+  });
+
+  it('異常: アンケートが2回とも不正でも会話の結末は壊さず、理由を stage:survey で残す', async () => {
     const badSurvey: ModelCompletion = { message: { role: 'assistant', content: JSON.stringify({ q1: true, q2: 99, impressions: 'x' }) }, finishReason: 'stop' };
     const h = harness({
       scenario: makeScenario({ maxUserTurns: 1 }),
@@ -361,10 +423,42 @@ describe('RunScenarioUseCase', () => {
       agent: [agentSay('回答1')],
     });
     const run = await h.useCase.execute(input);
-    expect(run.status).toBe('error');
+
+    // 会話は5ターン分の証拠を持っている。アンケート1問の違反で捨てない。
+    expect(run.status).toBe('max-turns');
+    expect(run.goalAchieved).toBe(false);
     expect(run.transcript).toHaveLength(2);
     expect(run.survey).toEqual([]);
+    expect(run.impressions).toBe('');
+    expect(run.error).toEqual({ stage: 'survey', message: "survey answer 'q2' must be between 1 and 5" });
     expect(h.puModel.requests).toHaveLength(3);
+    expect(h.logger.warnings[0]?.context).toMatchObject({ stage: 'survey' });
+    expect(h.scenarioRuns.saved).toEqual([run]);
+  });
+
+  it('異常: アンケート呼び出し自体が失敗しても会話は completed のまま理由だけ残す', async () => {
+    const h = harness({ pu: [puTurn('もう十分', true, true)], agent: [] });
+    const run = await h.useCase.execute(input);
+    expect(run.status).toBe('completed');
+    expect(run.goalAchieved).toBe(true);
+    expect(run.error?.stage).toBe('survey');
+    expect(run.error?.message).toContain('missing completion');
+  });
+
+  it('例外: 中断は失敗理由へ化けさせずそのまま投げ直す（会話中・アンケート中とも）', async () => {
+    const controller = new AbortController();
+    const h = harness({ pu: [], agent: [] });
+    h.puModel.exhausted = () => { controller.abort(); return new DOMException('aborted', 'AbortError') as unknown as Error; };
+    // 疑似ユーザー段で中断（「AIが壊れた」と記録されると利用者が止めたのか分からなくなる）。
+    await expect(h.useCase.execute(input, controller.signal)).rejects.toThrow(/abort/i);
+    expect(h.scenarioRuns.saved).toEqual([]);
+
+    // アンケート段。
+    const surveyController = new AbortController();
+    const s = harness({ pu: [puTurn('done', true, true)], agent: [] });
+    s.puModel.exhausted = () => { surveyController.abort(); return new DOMException('aborted', 'AbortError') as unknown as Error; };
+    await expect(s.useCase.execute(input, surveyController.signal)).rejects.toThrow(/abort/i);
+    expect(s.scenarioRuns.saved).toEqual([]);
   });
 
   it('version 指定時は findVersion で解決し、未存在は NotFound 系を投げる', async () => {

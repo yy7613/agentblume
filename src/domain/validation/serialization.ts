@@ -26,7 +26,7 @@ import {
   type PersonaVerbosity,
 } from './persona';
 import { createScenario, type Scenario } from './scenario';
-import { createScenarioRun, SCENARIO_RUN_STATUSES, type ScenarioRun, type ScenarioRunStatus } from './scenario-run';
+import { createScenarioRun, SCENARIO_RUN_ERROR_STAGES, SCENARIO_RUN_STATUSES, type ScenarioRun, type ScenarioRunErrorStage, type ScenarioRunStatus } from './scenario-run';
 import { SURVEY_QUESTION_KINDS, type SurveyQuestion } from './survey';
 
 export interface SerializedPersona {
@@ -59,6 +59,7 @@ export interface SerializedScenarioRun {
   readonly scenario: { readonly id: string; readonly version: string };
   readonly pseudoUserRef?: { readonly type: 'persona' | 'agent'; readonly id: string; readonly version: string };
   readonly status: ScenarioRunStatus;
+  readonly error?: { readonly stage: ScenarioRunErrorStage; readonly message: string };
   readonly goalAchieved: boolean | null;
   readonly transcript: readonly { readonly speaker: 'user' | 'agent'; readonly message: string; readonly runId?: string }[];
   readonly survey: readonly { readonly questionId: string; readonly value: number | boolean | string }[];
@@ -109,6 +110,7 @@ const scenarioRunSchema = z.object({
   scenario: z.object({ id: z.string(), version: z.string() }),
   pseudoUserRef: z.object({ type: z.enum(['persona', 'agent']), id: z.string(), version: z.string() }).optional(),
   status: z.enum(SCENARIO_RUN_STATUSES),
+  error: z.object({ stage: z.enum(SCENARIO_RUN_ERROR_STAGES), message: z.string() }).optional(),
   goalAchieved: z.boolean().nullable(),
   transcript: z.array(z.object({ speaker: z.enum(['user', 'agent']), message: z.string(), runId: z.string().optional() })),
   survey: z.array(z.object({ questionId: z.string(), value: z.union([z.number(), z.boolean(), z.string()]) })),
@@ -188,6 +190,7 @@ export function serializeScenarioRun(run: ScenarioRun): SerializedScenarioRun {
     scenario: { id: run.scenario.id, version: run.scenario.version.toString() },
     ...(run.pseudoUserRef !== undefined ? { pseudoUserRef: { ...run.pseudoUserRef } } : {}),
     status: run.status,
+    ...(run.error !== undefined ? { error: { ...run.error } } : {}),
     goalAchieved: run.goalAchieved,
     transcript: run.transcript.map((turn) => ({ ...turn })),
     survey: run.survey.map((answer) => ({ ...answer })),

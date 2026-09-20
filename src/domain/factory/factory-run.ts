@@ -100,9 +100,15 @@ export interface IterationMetrics {
   readonly goalAchievedRate: number;
   readonly avgSatisfaction: number;
   readonly toolHitRate: number;
+  /** status:'error' の割合。会話（疑似ユーザー / Agent）が失敗した分だけで、アンケート欠測は含まない。 */
   readonly errorRate: number;
   readonly avgUserTurns: number;
   readonly scenarioCount: number;
+  /**
+   * 総合満足度（`q2`）を回収できなかったScenarioRunの件数（ADR-0047）。
+   * `avgSatisfaction` は回収できたRunだけの平均なので、欠測はこの数字でしか見えない。
+   */
+  readonly surveyMissingCount: number;
   readonly usage: { readonly promptTokens?: number; readonly completionTokens?: number; readonly totalTokens?: number };
   readonly durationMs: number;
 }
@@ -124,12 +130,28 @@ export interface FactoryArtifacts {
   readonly scenarios: readonly VersionRef[];
 }
 
+/**
+ * Runの品質判定（ADR-0047）。`FactoryRunStatus` が「パイプラインが最後まで走ったか」であるのに対し、
+ * こちらは「その成果物が目標を満たしたか」を決定的に表す。実測では errorRate 1・満足度 0 のRunが
+ * `succeeded` + 自信のある総括で終わり、人間が中身を開くまで失敗に気づけなかった。
+ *
+ * - `met-targets`: 最良イテレーションが `options.targets` を満たした。
+ * - `below-targets`: 測れたが目標に届かなかった。
+ * - `unverified`: そもそも測れていない（全シナリオがエラー / アンケート全欠測 / イテレーション0）。
+ */
+export const FACTORY_REPORT_QUALITIES = ['met-targets', 'below-targets', 'unverified'] as const;
+export type FactoryReportQuality = (typeof FACTORY_REPORT_QUALITIES)[number];
+
 export interface FactoryReport {
   readonly bestIteration: number;
   readonly candidate: { readonly agentId: AgentId; readonly version: string };
   readonly summary: string;
   readonly openFindings: readonly Finding[];
   readonly metricsByIteration: readonly IterationMetrics[];
+  /** 決定的に算出した品質判定（メトリクス vs `options.targets`）。 */
+  readonly quality: FactoryReportQuality;
+  /** `quality` の根拠（人間向けの短文。`met-targets` では空配列）。 */
+  readonly qualityReasons: readonly string[];
 }
 
 export interface FactoryPlanCheckpoint {
@@ -359,6 +381,7 @@ function cloneReport(report: FactoryReport): FactoryReport {
     candidate: { ...report.candidate },
     openFindings: report.openFindings.map((finding) => ({ ...finding })),
     metricsByIteration: report.metricsByIteration.map((metrics) => ({ ...metrics, usage: { ...metrics.usage } })),
+    qualityReasons: [...report.qualityReasons],
   };
 }
 

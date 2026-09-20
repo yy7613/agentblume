@@ -74,6 +74,20 @@ describe('node catalog', () => {
     expect(item.defaultConfig).toEqual({ outputColumn: 'result', expression: '', onError: 'null' });
   });
 
+  it('parse-periodはcalculateの直後にある変換カテゴリの1入力ノードで、既定configはdomainの既定値と一致する', () => {
+    // 型変換の仲間（cast → calculate → parse-period）として並べる。
+    expect(NODE_TYPES.indexOf('parse-period')).toBe(NODE_TYPES.indexOf('calculate') + 1);
+    const item = catalogItem('parse-period');
+    expect(item.kind).toBe('transform');
+    expect(item.inputArity).toBe(1);
+    expect(item.label).toBe('Parse period');
+    expect(item.labelJa).toBe('期間の解釈');
+    // domain（src/domain/etl/nodes/parse-period.ts）の zod 既定値と一致させる。
+    expect(item.defaultConfig).toEqual({ column: '', startColumn: 'periodStart', granularityColumn: 'periodGranularity', fiscalYearStartMonth: 4 });
+    // 混在ラベルの例が説明に入っていて、パレットのツールチップだけで用途が分かる。
+    expect(item.descriptionJa).toContain('2024年1-3月期');
+  });
+
   it('inputArityはsource=0/通常transform=1/join・union=2', () => {
     for (const item of NODE_CATALOG) {
       if (item.kind === 'source') expect(item.inputArity).toBe(0);

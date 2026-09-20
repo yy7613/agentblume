@@ -34,7 +34,7 @@ function runIn(status: Exclude<FactoryRunStatus, 'cancelled'>, id: string): Fact
     case 'queued': return queued;
     case 'running': return beginFactoryRun(queued);
     case 'waiting-approval': return waitForPlanApproval(beginFactoryRun(queued), { kind: 'plan-approval', expiresAt: '2026-08-02T00:00:00.000Z', prompt: 'review', plan });
-    case 'succeeded': return succeedFactoryRun(beginFactoryRun(queued), { bestIteration: 1, candidate: { agentId: 'a', version: '1.0.0' }, summary: 's', openFindings: [], metricsByIteration: [] }, STARTED_AT);
+    case 'succeeded': return succeedFactoryRun(beginFactoryRun(queued), { bestIteration: 1, candidate: { agentId: 'a', version: '1.0.0' }, summary: 's', openFindings: [], metricsByIteration: [], quality: 'unverified', qualityReasons: [] }, STARTED_AT);
     case 'failed': return failFactoryRun(beginFactoryRun(queued), { stage: 'planning', reason: 'boom' }, STARTED_AT);
   }
 }

@@ -125,7 +125,7 @@ describe('RetryFactoryRunUseCase', () => {
       label: 'succeeded',
       make: (run) => succeedFactoryRun(
         beginFactoryRun(run),
-        { bestIteration: 1, candidate: { agentId: 'asset-3', version: '1.0.0' }, summary: 'done', openFindings: [], metricsByIteration: [] },
+        { bestIteration: 1, candidate: { agentId: 'asset-3', version: '1.0.0' }, summary: 'done', openFindings: [], metricsByIteration: [], quality: 'unverified', qualityReasons: [] },
         '2026-07-20T00:01:00.000Z',
       ),
       status: 'succeeded',

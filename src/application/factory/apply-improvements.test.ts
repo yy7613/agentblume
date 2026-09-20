@@ -18,6 +18,7 @@ import { ModelProviderError, type ModelCompletion, type ModelCompletionRequest }
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
 import { ApplyImprovementsUseCase } from './apply-improvements';
+import { factoryAnswerGuardBlock, FACTORY_ANSWER_GUARD_HEADING } from './generate-agent-assets';
 import type { UnitOfWorkPort } from '../persistence/unit-of-work';
 import { ProfileDataSourcesUseCase } from './profile-data-sources';
 import { ToolSmithRole } from './roles/tool-smith-role';
@@ -77,7 +78,7 @@ function makeSequentialId(prefix: string): () => string {
   return () => { next += 1; return `${prefix}-${next}`; };
 }
 
-async function setup(options?: { readonly withToolCreation?: boolean; readonly unitOfWork?: UnitOfWorkPort; readonly model?: ScriptedModelProvider }) {
+async function setup(options?: { readonly withToolCreation?: boolean; readonly unitOfWork?: UnitOfWorkPort; readonly model?: ScriptedModelProvider; readonly systemPrompt?: string }) {
   const dataSources = new InMemoryDataSourceRepository();
   await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Sales', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 30, createdAt: '', updatedAt: '' }, 'id,amount\n1,100\n2,200');
   const engine = new EtlEngine(createDefaultRegistry());
@@ -110,7 +111,7 @@ async function setup(options?: { readonly withToolCreation?: boolean; readonly u
   });
   const agent = await saveAgent.execute({
     scope, internalId: 'agent-1', workingName: 'sales assistant (draft)', displayName: 'Sales Assistant', publishName: 'factory_agent_sales', owner: 'agent-factory',
-    kind: 'normal', systemPrompt: '# Role\nYou are the Sales Assistant.\n\n# Extra rules\nBe concise.',
+    kind: 'normal', systemPrompt: options?.systemPrompt ?? '# Role\nYou are the Sales Assistant.\n\n# Extra rules\nBe concise.',
     skills: [{ internalId: skill.metadata.internalId, version: skill.metadata.version }],
     tools: [{ internalId: tool.metadata.internalId, version: tool.metadata.version }],
   });
@@ -480,6 +481,30 @@ describe('ApplyImprovementsUseCase', () => {
     const newAgent = await agentRepo.findVersion(scope, agentRef.internalId, SemVer.parse(result.newAgentRef.version));
     expect(newAgent?.systemPrompt).toContain('expert in monthly trends');
     expect(newAgent?.systemPrompt).toContain('Always state the period covered');
+  });
+
+  // ADR-0047: 役割文・実行規則をまるごと差し替える提案でも、決定的な「回答の規律」は落とさない。
+  it('正常: system-prompt-revision を適用しても回答の規律ブロックは末尾に残る', async () => {
+    const { agentRepo, useCase, agentRef } = await setup();
+    const proposal: ImprovementProposal = { kind: 'system-prompt-revision', agentId: agentRef.internalId, sections: { role: '# Role\nSimplified.', rules: '# Extra rules\nBe brief.' }, rationale: 'simplify' };
+
+    const result = await useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4 });
+
+    const newAgent = await agentRepo.findVersion(scope, agentRef.internalId, SemVer.parse(result.newAgentRef.version));
+    expect(newAgent?.systemPrompt).toContain(FACTORY_ANSWER_GUARD_HEADING);
+    expect(newAgent?.systemPrompt.endsWith(factoryAnswerGuardBlock('ja'))).toBe(true);
+  });
+
+  it('境界: 起点Agentが持っていた規律ブロックの文面をそのまま引き継ぐ（勝手に既定文へ戻さない）', async () => {
+    const custom = `${FACTORY_ANSWER_GUARD_HEADING}\n- 利用者が手で書き足した規律。`;
+    const { agentRepo, useCase, agentRef } = await setup({ systemPrompt: `# Role\n元の役割。\n\n${custom}` });
+    const proposal: ImprovementProposal = { kind: 'system-prompt-revision', agentId: agentRef.internalId, sections: { role: '# Role\nSimplified.', rules: '# Extra rules\nBe brief.' }, rationale: 'simplify' };
+
+    const result = await useCase.execute({ scope, agentRef, proposals: [proposal], maxProposals: 4 });
+
+    const newAgent = await agentRepo.findVersion(scope, agentRef.internalId, SemVer.parse(result.newAgentRef.version));
+    expect(newAgent?.systemPrompt.endsWith(custom)).toBe(true);
+    expect(newAgent?.systemPrompt).not.toContain('引き写す'); // 既定文へ戻っていない
   });
 
   it('system-prompt-revision: role/rulesの片方が欠けているとrejectedになる', async () => {

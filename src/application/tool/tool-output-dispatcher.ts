@@ -9,7 +9,9 @@ import { createSessionArtifact, toArtifactDescriptor, type SessionArtifactDescri
 import type { AgentSession } from '../../domain/session/agent-session';
 import { SessionQuotaExceededError } from '../../domain/session/errors';
 import type { SessionArtifactRepository } from '../../domain/session/session-repository';
+import type { RunNoMatch } from '../../domain/run/run';
 import type { Tool } from '../../domain/tool/tool';
+import { noMatchText } from './empty-result-diagnosis';
 
 export interface ToolOutputDispatchInput {
   readonly tool: Tool;
@@ -18,6 +20,11 @@ export interface ToolOutputDispatchInput {
   readonly runId: string;
   readonly toolCallId: string;
   readonly agentId?: string;
+  /**
+   * 0 行になった理由（`diagnoseEmptyResult` の結果）。**モデルへ直接返す配送のときだけ**内容へ添える。
+   * セッション成果物として書き出す配送では、読むのは後続のツールなので触らない。
+   */
+  readonly noMatch?: RunNoMatch;
 }
 
 export type ToolDeliveryResult =
@@ -40,10 +47,18 @@ export class ToolOutputDispatcher {
     const sink = terminalSink(input.tool);
     if (sink?.type === 'workspace-output' || sink?.type === 'graph-output' || sink?.type === 'chart-output') return this.store(input, sink);
     const config = sink?.type === 'agent-output' ? sink.config as AgentOutputConfig : DEFAULT_OUTPUT;
-    const value = inlineValue(input.table, config);
+    const plain = inlineValue(input.table, config);
+    const value = withNoMatch(plain, input.noMatch);
     const content = stringify(value);
     const sizeBytes = byteLength(content);
     if (sizeBytes <= config.maxBytes) return { delivery: 'agent', value, content, sizeBytes };
+    // 0 行の理由（最大 1.5KB）を足したせいで上限を超えたなら、理由だけ落として本体を返す。
+    // 説明を足した結果として Run を失敗させる・成果物を書き出すのは本末転倒なので。
+    if (input.noMatch !== undefined) {
+      const bare = stringify(plain);
+      const bareBytes = byteLength(bare);
+      if (bareBytes <= config.maxBytes) return { delivery: 'agent', value: plain, content: bare, sizeBytes: bareBytes };
+    }
     if (config.overflow === 'store-and-reference') return this.store(input, undefined, true);
     throw new SessionQuotaExceededError(`agent-output exceeds maxBytes (${sizeBytes} > ${config.maxBytes}); reduce rows or use workspace-output`);
   }
@@ -112,6 +127,20 @@ function inlineValue(table: Table, config: AgentOutputConfig): unknown {
   if (config.format === 'markdown-table') return omission === undefined ? markdown(rows, columns) : `${markdown(rows, columns)}\n\n${omission.note}`;
   if (config.format === 'chartjs') return { labels: rows.map((_, index) => String(index + 1)), datasets: columns.map((column) => ({ label: column, data: rows.map((row) => row[column]) })), ...omission };
   return { schema: table.schema, rows, ...omission };
+}
+
+/**
+ * 0 行の理由をモデルへ渡す内容へ添える（`{schema, rows: []}` なら `noMatch` キーを足す）。
+ * - オブジェクト（json / chartjs）: キーを1つ足すだけなので、既存の形を読むコードは影響を受けない。
+ * - 文字列（markdown-table の `(no rows)`）: JSON を混ぜず、読める文章を続ける。
+ * - null（first-row / single-value で行が無いとき）: 理由を運ぶ入れ物が無いので `{ value, noMatch }` に包む。
+ *   包まれるのは 0 行のときだけで、行があるときの形は従来どおり。
+ */
+function withNoMatch(value: unknown, noMatch: RunNoMatch | undefined): unknown {
+  if (noMatch === undefined) return value;
+  if (typeof value === 'string') return `${value}\n\n${noMatchText(noMatch)}`;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return { value, noMatch };
+  return { ...value, noMatch };
 }
 
 /** rows が maxRows で切られたときだけ、全体件数・省略件数と人間可読な注記を返す。 */

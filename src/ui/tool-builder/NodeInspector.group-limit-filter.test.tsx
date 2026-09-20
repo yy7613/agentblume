@@ -8,7 +8,7 @@
  * 単一条件 filter の既存フィールド（Column / Operator / Value / エージェント入力参照）の
  * 回帰は ui-components.test.tsx が担う。
  */
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // domain の正準リスト。UI ソースは domain を import しない方針だが、テストからのピン留め import は可。
@@ -582,5 +582,50 @@ describe('NodeInspector: filter の大文字小文字を区別しない', () => 
     withUpstreamColumns();
     render(<NodeInspector />);
     expect((screen.getByLabelText('Ignore case') as HTMLInputElement).checked).toBe(true);
+  });
+});
+
+/**
+ * 日付列の条件値は日付ピッカーで入れ、ISO文字列（YYYY-MM-DD）で保存する。
+ * config は JSON なので Date を持てず、filter は実行時に ISO 文字列を日付として解釈する。
+ */
+describe('NodeInspector: filter の日付列の値', () => {
+  const dateSchema = { columns: [
+    { name: 'periodStart', type: 'date' as const, nullable: false },
+    { name: 'region', type: 'string' as const, nullable: false },
+  ] };
+
+  function withDateColumns(): void {
+    useToolBuilderStore.getState().setPropagation({
+      ...propagation,
+      nodes: {
+        'source-1': { nodeId: 'source-1', state: 'inferred', issues: [], schema: dateSchema },
+        'filter-1': { nodeId: 'filter-1', state: 'inferred', issues: [], schema: dateSchema },
+      },
+    });
+  }
+
+  it('正常: 日付列を選ぶと値の入力が日付ピッカーになり、ISO文字列でconfigへ書き戻す', async () => {
+    withDateColumns();
+    render(<NodeInspector />);
+    const column = screen.getByLabelText('Column');
+    await userEvent.clear(column);
+    await userEvent.type(column, 'periodStart');
+
+    const value = screen.getByLabelText('Value') as HTMLInputElement;
+    expect(value.type).toBe('date');
+
+    fireEvent.change(value, { target: { value: '2008-01-01' } });
+    expect(configOf('filter-1')).toEqual({ column: 'periodStart', op: 'gte', value: '2008-01-01' });
+  });
+
+  it('境界: 従来どおり — 文字列列では自由入力のテキストのまま', async () => {
+    withDateColumns();
+    render(<NodeInspector />);
+    const column = screen.getByLabelText('Column');
+    await userEvent.clear(column);
+    await userEvent.type(column, 'region');
+
+    expect((screen.getByLabelText('Value') as HTMLInputElement).type).toBe('text');
   });
 });

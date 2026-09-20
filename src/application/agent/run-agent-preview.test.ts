@@ -2133,3 +2133,92 @@ describe('RunAgentPreviewUseCase 実行の中断', () => {
     expect(record?.trace.at(-1)).toMatchObject({ kind: 'error', code: 'RUN_CANCELLED' });
   });
 });
+
+/**
+ * 0 行のツール結果に「なぜ 0 行か」を添える（実測の再現: 年次しか無いデータへ
+ * `time_point="2015年12月31日"` で問い合わせ、空の `[]` を受けたモデルが人口を捏造した）。
+ */
+describe('RunAgentPreviewUseCase: 0行のツール結果', () => {
+  const statsSchema: Schema = { columns: [
+    { name: 'region_name', type: 'string', nullable: false },
+    { name: 'time_point', type: 'string', nullable: false },
+  ] };
+  const rows = ['東京都', '大阪府'].flatMap((地域) => ['2015年', '2016年'].map((時点) => ({ 地域, 時点, 人口: 100 })));
+
+  function populationTool(): Tool {
+    return createTool({
+      metadata: { internalId: 'population-tool', workingName: 'population', displayName: 'Population', publishName: 'get_population_data', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: statsSchema,
+      agentTool: { name: 'get_population_data', description: 'Population by region and time point.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows } },
+        { id: 'narrow', type: 'filter', config: { conditions: [
+          { column: '地域', op: 'eq', value: '東京都', valueBinding: { source: 'agent-input', field: 'region_name' } },
+          { column: '時点', op: 'eq', value: '2015年', valueBinding: { source: 'agent-input', field: 'time_point' } },
+        ], combine: 'and' } },
+        { id: 'arguments', type: 'agent-input', config: { schema: statsSchema, sample: { region_name: '東京都', time_point: '2015年' } } },
+      ], edges: [{ from: 'data', to: 'narrow' }] },
+    });
+  }
+
+  it('正常: 0行なら当たらなかった条件・実在する値・差し戻し文をツール結果へ入れ、traceにも残す', async () => {
+    const model = new QueueModel([toolCall('c1', 'get_population_data', { region_name: '東京都', time_point: '2015年12月31日' }), stop('done')]);
+    const run = await useCase(populationTool(), model).execute({ ...input, toolId: 'population-tool' });
+
+    const content = JSON.parse(model.requests[1]?.messages.at(-1)?.content as string) as { rows: unknown[]; noMatch: { message: string; conditions: { column: string; argument?: string; matchingRows: number; availableValues?: string[] }[] } };
+    expect(content.rows).toEqual([]);
+    expect(content.noMatch.message).toContain('Do not answer from memory');
+    expect(content.noMatch.conditions).toEqual([
+      { column: '地域', op: 'eq', argument: 'region_name', value: '東京都', matchingRows: 2 },
+      { column: '時点', op: 'eq', argument: 'time_point', value: '2015年12月31日', matchingRows: 0, availableValues: ['2015年', '2016年'], distinctValues: 2 },
+    ]);
+    const toolResult = run.trace.find((event) => event.kind === 'tool-result');
+    expect(toolResult?.kind === 'tool-result' ? toolResult.noMatch : undefined).toMatchObject({ nodeId: 'narrow', combine: 'and' });
+  });
+
+  it('正常: 従来どおり — 行が返るときは noMatch を足さず、内容も trace も変わらない', async () => {
+    const model = new QueueModel([toolCall('c1', 'get_population_data', { region_name: '東京都', time_point: '2015年' }), stop('done')]);
+    const run = await useCase(populationTool(), model).execute({ ...input, toolId: 'population-tool' });
+
+    const content = model.requests[1]?.messages.at(-1)?.content as string;
+    expect(content).toContain('"地域":"東京都"');
+    expect(content).not.toContain('noMatch');
+    const toolResult = run.trace.find((event) => event.kind === 'tool-result');
+    expect(toolResult?.kind === 'tool-result' ? toolResult.noMatch : 'missing').toBeUndefined();
+  });
+
+  it('境界: 0行でも filter が原因でなければ（元データが空）従来どおり空の結果だけを返す', async () => {
+    const tool = createTool({
+      metadata: { internalId: 'empty-tool', workingName: 'empty', displayName: 'Empty', publishName: 'empty_rows', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only',
+      graph: { nodes: [{ id: 'data', type: 'json-source', config: { rows: [] } }], edges: [] },
+    });
+    const model = new QueueModel([toolCall('c1', 'empty_rows', {}), stop('done')]);
+    const run = await useCase(tool, model).execute({ ...input, toolId: 'empty-tool' });
+
+    expect(model.requests[1]?.messages.at(-1)?.content).not.toContain('noMatch');
+    const toolResult = run.trace.find((event) => event.kind === 'tool-result');
+    expect(toolResult?.kind === 'tool-result' ? toolResult.noMatch : 'missing').toBeUndefined();
+  });
+
+  it('正常: 日付列への ISO 文字列引数がそのまま範囲指定として効く（0行にならない）', async () => {
+    const rangeSchema: Schema = { columns: [{ name: 'since', type: 'string', nullable: false }] };
+    const tool = createTool({
+      metadata: { internalId: 'range-tool', workingName: 'range', displayName: 'Range', publishName: 'rows_since', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: rangeSchema,
+      agentTool: { name: 'rows_since', description: 'Rows on or after a date.' },
+      graph: { nodes: [
+        { id: 'data', type: 'csv-source', config: { text: 'day,value\n2019-01-01,1\n2021-06-01,2\n', delimiter: ',', header: true, inferTypes: true } },
+        { id: 'narrow', type: 'filter', config: { column: 'day', op: 'gte', value: '2020-01-01', valueBinding: { source: 'agent-input', field: 'since' } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: rangeSchema, sample: { since: '2020-01-01' } } },
+      ], edges: [{ from: 'data', to: 'narrow' }] },
+    });
+    const model = new QueueModel([toolCall('c1', 'rows_since', { since: '2021-01-01' }), stop('done')]);
+    await useCase(tool, model).execute({ ...input, toolId: 'range-tool' });
+
+    const content = model.requests[1]?.messages.at(-1)?.content as string;
+    expect(content).toContain('"value":2');
+    expect(content).not.toContain('"value":1');
+    expect(content).not.toContain('noMatch');
+  });
+});

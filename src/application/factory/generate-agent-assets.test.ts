@@ -20,7 +20,8 @@ import { EtlEngine } from '../etl/engine';
 import { ModelProviderError, type ModelCompletion, type ModelCompletionRequest } from '../model/model-provider';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
-import { agentToolArgumentsOf, GenerateAgentAssetsUseCase, makeArgumentsOptional, mergeAgentInputDeclarations, replaceGuideSections, resolveReuseTarget } from './generate-agent-assets';
+import { agentToolArgumentsOf, describeGraphShapeViolations, describeToolSemanticViolations, extractAnswerGuardBlock, factoryAnswerGuardBlock, FACTORY_ANSWER_GUARD_HEADING, GenerateAgentAssetsUseCase, hasOmittableFilters, makeArgumentsOptional, mergeAgentInputDeclarations, replaceGuideSections, resolveReuseTarget, withAnswerGuard } from './generate-agent-assets';
+import { MAX_TOOL_CALLS } from '../agent/run-agent-preview';
 import { ProfileDataSourcesUseCase } from './profile-data-sources';
 import { buildExistingToolCatalog, type ExistingToolCatalogEntry } from './tool-catalog';
 import { AssemblerRole } from './roles/assembler-role';
@@ -163,9 +164,9 @@ function validAssemblerProposalJson(): string {
   });
 }
 
-async function setup(options?: { readonly model?: ScriptedModelProvider }) {
+async function setup(options?: { readonly model?: ScriptedModelProvider; readonly csv?: string }) {
   const dataSources = new InMemoryDataSourceRepository();
-  await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Sales', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 30, createdAt: '', updatedAt: '' }, 'id,amount\n1,100\n2,200');
+  await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Sales', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: 30, createdAt: '', updatedAt: '' }, options?.csv ?? 'id,amount\n1,100\n2,200');
   const engine = new EtlEngine(createDefaultRegistry());
   const resolver = new ResolveDataSourceGraphUseCase(dataSources);
   const profiler = new ProfileDataSourcesUseCase(dataSources, resolver, engine);
@@ -211,7 +212,8 @@ describe('GenerateAgentAssetsUseCase', () => {
     expect(tool?.metadata.state).toBe('draft');
     expect(tool?.sideEffect).toBe('read-only');
     expect(tool?.agentTool?.name).toBe('lookup_sales');
-    expect(result.toolKeyToPublishName.get('lookup')).toBe(tool?.metadata.publishName);
+    // 期待Tool名は publishName ではなく、エージェントが呼ぶ関数名（agentTool.name）で持つ（ADR-0047）。
+    expect(result.toolKeyToToolName.get('lookup')).toBe(tool?.agentTool?.name);
 
     const skillRef = result.skillRefs[0];
     if (skillRef === undefined) throw new Error('expected a skill ref');
@@ -341,8 +343,8 @@ describe('GenerateAgentAssetsUseCase', () => {
     expect(result.toolRefs).toHaveLength(1);
     expect(result.toolKeyToRef.has('lookup')).toBe(true);
     expect(result.toolKeyToRef.has('broken')).toBe(false);
-    expect(result.toolKeyToPublishName.has('lookup')).toBe(true);
-    expect(result.toolKeyToPublishName.has('broken')).toBe(false);
+    expect(result.toolKeyToToolName.has('lookup')).toBe(true);
+    expect(result.toolKeyToToolName.has('broken')).toBe(false);
     expect(events.filter((kind) => kind === 'tool_repair_attempted')).toHaveLength(2);
 
     expect(result.skillRefs).toHaveLength(1);
@@ -374,7 +376,7 @@ describe('GenerateAgentAssetsUseCase', () => {
     expect(model.requests).toHaveLength(3);
     expect(await toolRepo.listVersions(scope, BUILTIN_DATETIME_ID)).toHaveLength(1);
     expect(result.toolKeyToRef.get('today')).toEqual({ internalId: BUILTIN_DATETIME_ID, version: '1.0.0' });
-    expect(result.toolKeyToPublishName.get('today')).toBe('current_datetime');
+    expect(result.toolKeyToToolName.get('today')).toBe('current_datetime');
     expect(result.toolRefs).toHaveLength(2);
     expect(events.filter((event) => event.kind === 'tool_reused')).toEqual([{ kind: 'tool_reused', message: 'today: current_datetime' }]);
     expect(events.filter((event) => event.kind === 'tool_generated')).toHaveLength(1);
@@ -514,7 +516,9 @@ describe('GenerateAgentAssetsUseCase（強化モードの promptStrategy）', ()
     const enhanced = await agentRepo.findVersion(scope, BASE_AGENT_ID, SemVer.of(1, 0, 1));
     // 役割文 → Skillガイド → Tool使用ガイド → 実行規則（生成モードと同じ組み立て）。
     expect(enhanced?.systemPrompt.startsWith('# Role\nYou are the Sales Assistant')).toBe(true);
-    expect(enhanced?.systemPrompt.endsWith('# Extra rules\nAlways cite the rows returned by the lookup tool.')).toBe(true);
+    expect(enhanced?.systemPrompt).toContain('# Extra rules\nAlways cite the rows returned by the lookup tool.');
+    // 回答の規律は決定的合成の最後尾に必ず付く（Assemblerの起草物ではない・ADR-0047）。
+    expect(enhanced?.systemPrompt.endsWith(factoryAnswerGuardBlock('ja'))).toBe(true);
     expect(enhanced?.systemPrompt).toContain('lookup_sales@1.0.0');
     // 書き直しなので、既存の役割文・利用者の節は残らない（それが rewrite を選んだ意味）。
     expect(enhanced?.systemPrompt).not.toContain('独自メモ');
@@ -572,7 +576,8 @@ describe('GenerateAgentAssetsUseCase（強化モードの promptStrategy）', ()
     const { model, agentRepo, profiles, useCase } = await setup();
     const role = '# 役割\nあなたは「Base Assistant」です。';
     const rules = '# 実行規則\n- 数字には必ず出典を添える。';
-    const baseAgent = await seedBaseAgent(agentRepo, [role, '# Skillガイド\n適用するSkillはありません。', '# Tool使用ガイド\n利用可能なToolはありません。', rules].join('\n\n'));
+    // 回答の規律ブロックも既存側に持たせる（rewrite の決定的合成は必ずこれを最後尾へ付けるため・ADR-0047）。
+    const baseAgent = await seedBaseAgent(agentRepo, [role, '# Skillガイド\n適用するSkillはありません。', '# Tool使用ガイド\n利用可能なToolはありません。', rules, factoryAnswerGuardBlock('ja')].join('\n\n'));
     model.enqueue({ message: { role: 'assistant', content: JSON.stringify({ role, rules }) }, finishReason: 'stop' });
 
     const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: noAdditionPlan, profiles, maxRepairAttempts: 2, baseAgent, promptStrategy: 'rewrite' });
@@ -909,5 +914,462 @@ describe('replaceGuideSections（既存Agent強化モードのsystem prompt再�
     const result = replaceGuideSections(prompt, { skillGuide, toolUsageGuide });
     expect(result.strategy).toBe('appended');
     expect(result.systemPrompt).toBe(['# 役割\nR', toolUsageGuide, skillGuide, '# 実行規則\n- ルール。'].join('\n\n'));
+  });
+});
+
+// ─── ADR-0047: 生成Toolの構造検査・既定呼び出しの溢れ・回答の規律 ──────────────────────────
+/** 終端 agent-output の maxRows を差し替えた提案（既定呼び出しで溢れる形を作るため）。 */
+function boundedToolProposalJson(options: { readonly maxRows: number; readonly limit?: number; readonly shape?: string }): string {
+  const limitNodes = options.limit === undefined ? [] : [{ id: 'cap', type: 'limit', config: { count: options.limit } }];
+  const limitEdges = options.limit === undefined
+    ? [{ from: 'src', to: 'out' }]
+    : [{ from: 'src', to: 'cap' }, { from: 'cap', to: 'out' }];
+  return JSON.stringify({
+    graph: {
+      nodes: [
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+        ...limitNodes,
+        { id: 'out', type: 'agent-output', config: { shape: options.shape ?? 'rows', format: 'json', maxRows: options.maxRows, maxBytes: 65536, overflow: 'error' } },
+      ],
+      edges: limitEdges,
+    },
+    agentTool: { name: 'lookup_sales', description: 'Look up sales rows.' },
+  });
+}
+
+describe('describeGraphShapeViolations（ノード語彙・単一チェーンの構造検査）', () => {
+  const expected = { sourceType: 'csv-source', dataSourceId: 'ds-1' };
+  const node = (id: string, type: string, config: unknown = {}): { id: string; type: string; config: unknown } => ({ id, type, config });
+  const sink = node('out', 'agent-output', { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' });
+
+  it('正常: source → 許可された変換 → agent-output の単一チェーンは違反なし', () => {
+    const graph = {
+      nodes: [node('src', 'csv-source', { dataSourceId: 'ds-1' }), node('p', 'parse-period', { column: 'id' }), node('l', 'limit', { count: 10 }), sink],
+      edges: [{ from: 'src', to: 'p' }, { from: 'p', to: 'l' }, { from: 'l', to: 'out' }],
+    } as unknown as ToolGraph;
+    expect(describeGraphShapeViolations(graph, expected)).toBeUndefined();
+  });
+
+  it('異常: 語彙外のノード型は、許可語彙を添えて差し戻す', () => {
+    const graph = {
+      nodes: [node('src', 'csv-source', { dataSourceId: 'ds-1' }), node('j', 'join', {}), sink],
+      edges: [{ from: 'src', to: 'j' }, { from: 'j', to: 'out' }],
+    } as unknown as ToolGraph;
+    const message = describeGraphShapeViolations(graph, expected);
+    expect(message).toMatch(/node type\(s\) not allowed: join/);
+    expect(message).toContain('parse-period');
+  });
+
+  it('異常: 計画と違うdataSourceId・違うsource種別は具体的に差し戻す', () => {
+    const wrongId = { nodes: [node('src', 'csv-source', { dataSourceId: 'other' }), sink], edges: [{ from: 'src', to: 'out' }] } as unknown as ToolGraph;
+    expect(describeGraphShapeViolations(wrongId, expected)).toMatch(/must read config.dataSourceId "ds-1" exactly/);
+    const wrongType = { nodes: [node('src', 'json-source', { dataSourceId: 'ds-1' }), sink], edges: [{ from: 'src', to: 'out' }] } as unknown as ToolGraph;
+    expect(describeGraphShapeViolations(wrongType, expected)).toMatch(/use 'csv-source'/);
+  });
+
+  it('異常: agent-input をデータ経路へ繋いだら「引数の宣言であってデータ源ではない」と差し戻す', () => {
+    const graph = {
+      nodes: [node('src', 'csv-source', { dataSourceId: 'ds-1' }), node('args', 'agent-input', { schema: { columns: [] } }), sink],
+      edges: [{ from: 'src', to: 'out' }, { from: 'args', to: 'out' }],
+    } as unknown as ToolGraph;
+    expect(describeGraphShapeViolations(graph, expected)).toMatch(/must stay unconnected/);
+  });
+
+  it('境界: 枝分かれ・合流するデータ経路は単一チェーン違反として差し戻す', () => {
+    const graph = {
+      nodes: [node('src', 'csv-source', { dataSourceId: 'ds-1' }), node('a', 'select', { columns: ['id'] }), node('b', 'select', { columns: ['id'] }), sink],
+      edges: [{ from: 'src', to: 'a' }, { from: 'src', to: 'b' }, { from: 'a', to: 'out' }, { from: 'b', to: 'out' }],
+    } as unknown as ToolGraph;
+    const message = describeGraphShapeViolations(graph, expected);
+    expect(message).toMatch(/single linear chain/);
+    expect(message).toMatch(/feeds more than one node/);
+    expect(message).toMatch(/receives more than one input/);
+  });
+
+  it('例外: agent-output が無い / 2つある提案も差し戻す', () => {
+    const none = { nodes: [node('src', 'csv-source', { dataSourceId: 'ds-1' })], edges: [] } as unknown as ToolGraph;
+    expect(describeGraphShapeViolations(none, expected)).toMatch(/exactly one 'agent-output' node, found 0/);
+    const two = {
+      nodes: [node('src', 'csv-source', { dataSourceId: 'ds-1' }), sink, node('out2', 'agent-output', sink.config)],
+      edges: [{ from: 'src', to: 'out' }],
+    } as unknown as ToolGraph;
+    expect(describeGraphShapeViolations(two, expected)).toMatch(/exactly one 'agent-output' node, found 2/);
+  });
+});
+
+describe('GenerateAgentAssetsUseCase（既定呼び出しの溢れガードと構造検査を修復ループへ回す）', () => {
+  it('異常: 引数なしの呼び出しが maxRows を超えるToolは、直し方を添えて修復ループへ回す', async () => {
+    const { model, toolRepo, profiles, useCase } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: boundedToolProposalJson({ maxRows: 1 }) }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: boundedToolProposalJson({ maxRows: 1, limit: 1 }) }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const messages: string[] = [];
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, onEvent: (event) => { if (event.kind === 'tool_repair_attempted') messages.push(event.message ?? ''); } });
+
+    expect(messages[0]).toMatch(/calling this tool with no arguments returns 2 rows, which overflows/);
+    expect(messages[0]).toMatch(/append a 'limit' node with count <= 1/);
+    // 2回目の提案（limitで縛った形）は通る。
+    expect(result.toolRefs).toHaveLength(1);
+    const toolRef = result.toolRefs[0]!;
+    const tool = await toolRepo.findVersion(scope, toolRef.internalId, SemVer.parse(toolRef.version));
+    expect(tool?.graph.nodes.some((node) => node.type === 'limit')).toBe(true);
+    // 差し戻し文言はそのまま次の提案へ priorError として渡る。
+    expect(String(model.requests[1]?.messages.find((message) => message.role === 'user')?.content)).toContain('priorValidationError');
+  });
+
+  it('境界(回帰固定): 行数がちょうど maxRows なら溢れとみなさず、従来どおり保存できる', async () => {
+    const { model, profiles, useCase } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: boundedToolProposalJson({ maxRows: 2 }) }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const messages: string[] = [];
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, onEvent: (event) => { if (event.kind === 'tool_repair_attempted') messages.push(event.message ?? ''); } });
+
+    expect(messages).toEqual([]);
+    expect(result.toolRefs).toHaveLength(1);
+  });
+
+  it('境界(回帰固定): shape が summary のToolは行数を載せないので、従来どおり溢れガードに掛からない', async () => {
+    const { model, profiles, useCase } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: boundedToolProposalJson({ maxRows: 1, shape: 'summary' }) }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const messages: string[] = [];
+
+    await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, onEvent: (event) => { if (event.kind === 'tool_repair_attempted') messages.push(event.message ?? ''); } });
+
+    expect(messages).toEqual([]);
+  });
+
+  it('異常: 語彙外ノードを含む提案は、エンジン検証より手前で構造違反として差し戻す', async () => {
+    const { model, profiles, useCase } = await setup();
+    const withWorkspaceOutput = JSON.stringify({
+      graph: {
+        nodes: [
+          { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+          { id: 'ws', type: 'workspace-output', config: { name: 'x', artifactKind: 'table', writeMode: 'create', onConflict: 'new-revision', previewRows: 10 } },
+        ],
+        edges: [{ from: 'src', to: 'ws' }],
+      },
+      agentTool: { name: 'lookup_sales', description: 'Look up sales rows.' },
+    });
+    model.enqueue(
+      { message: { role: 'assistant', content: withWorkspaceOutput }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const messages: string[] = [];
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2, onEvent: (event) => { if (event.kind === 'tool_repair_attempted') messages.push(event.message ?? ''); } });
+
+    expect(messages[0]).toMatch(/tool graph shape is invalid: node type\(s\) not allowed: workspace-output/);
+    expect(result.toolRefs).toHaveLength(1);
+  });
+});
+
+describe('回答の規律ブロック（決定的・プロンプト改訂で消えない）', () => {
+  it('正常: 生成Agentのsystem promptの末尾へ必ず入り、0行・時点/単位・注記の規律を含む', async () => {
+    const { model, agentRepo, profiles, useCase } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2 });
+
+    const agent = await agentRepo.findVersion(scope, result.agentRef.internalId, SemVer.parse(result.agentRef.version));
+    expect(agent?.systemPrompt.endsWith(factoryAnswerGuardBlock('ja'))).toBe(true);
+    expect(agent?.systemPrompt).toContain(FACTORY_ANSWER_GUARD_HEADING);
+    expect(agent?.systemPrompt).toMatch(/ツールが返した行から引き写す/);
+    expect(agent?.systemPrompt).toMatch(/0 件を「値が 0 である」と書き換えない/);
+    expect(agent?.systemPrompt).toMatch(/時点（期間）と単位を必ず併記/);
+    expect(agent?.systemPrompt).toMatch(/注記（備考）/);
+  });
+
+  it('正常: goal.language が en なら英語の規律ブロックを使う', () => {
+    expect(factoryAnswerGuardBlock('en')).toContain('Take every number, count and ranking verbatim');
+    expect(factoryAnswerGuardBlock('en').startsWith(FACTORY_ANSWER_GUARD_HEADING)).toBe(true);
+  });
+
+  it('境界: 既に規律ブロックを含む合成結果には二重に付けない', () => {
+    const composed = withAnswerGuard(['# Role\nx', factoryAnswerGuardBlock('ja'), '# Extra rules\ny']);
+    expect(composed.split(FACTORY_ANSWER_GUARD_HEADING)).toHaveLength(2);
+  });
+
+  it('境界: 後続のトップレベル見出しで規律ブロックの範囲が切れる（利用者の節を巻き込まない）', () => {
+    const prompt = [factoryAnswerGuardBlock('ja'), '# 独自メモ\n利用者が書いた節。'].join('\n\n');
+    const extracted = extractAnswerGuardBlock(prompt);
+    expect(extracted).toBe(factoryAnswerGuardBlock('ja'));
+    expect(extracted).not.toContain('独自メモ');
+  });
+
+  it('例外: 規律ブロックが無いプロンプトからは undefined を返す', () => {
+    expect(extractAnswerGuardBlock('# Role\nx')).toBeUndefined();
+  });
+});
+
+// ─── ADR-0047 round 2: 証拠列の保全・範囲で引けること・1回で複数カテゴリ ────────────────────
+/** e-Stat 風のCSV（粒度混在の期間列・48地域に見立てた3地域・値の列・注記列）。 */
+const ESTAT_CSV = [
+  '時点,地域,総人口（総数）【人】,注記',
+  '2022年,東京都,14038000,推計値',
+  '2023年,東京都,14212596,推計値',
+  '2022年,大阪府,8782000,推計値',
+  '2023年,大阪府,8763000,推計値',
+  '2023年10月,全国,124352000,月次の参考値',
+].join('\n');
+
+const ESTAT_COLUMNS = ['時点', '地域', '総人口（総数）【人】', '注記'];
+
+/**
+ * 期間列を扱うTool提案を組み立てる。既定は「実測で生成された、答えられないTool」の形
+ * （select が 時点/注記 を落とし、同じ引数を gte と lte へ束縛し、string型、sortなし）。
+ */
+function periodToolProposalJson(overrides?: {
+  readonly selectColumns?: readonly string[] | null;
+  readonly argumentType?: string;
+  readonly splitRange?: boolean;
+  readonly sort?: 'asc' | 'desc' | null;
+}): string {
+  const split = overrides?.splitRange === true;
+  const columns = split
+    ? [{ name: 'period_from', type: overrides?.argumentType ?? 'date', nullable: true }, { name: 'period_to', type: overrides?.argumentType ?? 'date', nullable: true }]
+    : [{ name: 'time_point', type: overrides?.argumentType ?? 'string', nullable: true }];
+  const conditions = split
+    ? [
+        { column: 'periodStart', op: 'gte', value: '2022-01-01', valueBinding: { source: 'agent-input', field: 'period_from' } },
+        { column: 'periodStart', op: 'lte', value: '2023-12-31', valueBinding: { source: 'agent-input', field: 'period_to' } },
+      ]
+    : [
+        { column: 'periodStart', op: 'gte', value: '2023-01-01', valueBinding: { source: 'agent-input', field: 'time_point' } },
+        { column: 'periodStart', op: 'lte', value: '2023-01-01', valueBinding: { source: 'agent-input', field: 'time_point' } },
+      ];
+  const sortDirection = overrides?.sort === undefined ? null : overrides.sort;
+  const selectColumns = overrides?.selectColumns === undefined ? ['地域', '総人口（総数）【人】'] : overrides.selectColumns;
+
+  const nodes: unknown[] = [
+    { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+    { id: 'period', type: 'parse-period', config: { column: '時点', startColumn: 'periodStart', granularityColumn: 'periodGranularity', fiscalYearStartMonth: 4 } },
+    { id: 'gran', type: 'filter', config: { column: 'periodGranularity', op: 'eq', value: 'year' } },
+    { id: 'range', type: 'filter', config: { conditions, combine: 'and' } },
+  ];
+  const chain = ['src', 'period', 'gran', 'range'];
+  // 並べ替えは select より前に置く（select が periodStart を落としても sort が成立する現実の形）。
+  if (sortDirection !== null) { nodes.push({ id: 'ord', type: 'sort', config: { keys: [{ column: 'periodStart', direction: sortDirection }] } }); chain.push('ord'); }
+  if (selectColumns !== null) { nodes.push({ id: 'sel', type: 'select', config: { columns: selectColumns } }); chain.push('sel'); }
+  nodes.push({ id: 'cap', type: 'limit', config: { count: 100 } }); chain.push('cap');
+  nodes.push({ id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } }); chain.push('out');
+  nodes.push({ id: 'args', type: 'agent-input', config: { schema: { columns }, sample: {} } });
+
+  const edges = chain.slice(0, -1).map((from, index) => ({ from, to: chain[index + 1]! }));
+  return JSON.stringify({ graph: { nodes, edges }, agentTool: { name: 'lookup_population', description: 'Look up population rows.' } });
+}
+
+/** 期間列を持つ計画（「最新」を求めない既定の目的）。 */
+const periodPlan: FactoryPlan = {
+  agentBrief: { displayName: 'Population Assistant', role: 'Answers population questions.' },
+  tools: [{ key: 'lookup', displayName: 'Lookup Population', purpose: '期間を指定した人口の推移に答える。', dataSourceId: 'ds-1', sideEffect: 'read-only' }],
+  skills: [],
+  personas: [],
+  scenarios: [],
+};
+
+/** 「最新」を求める計画（並べ替えの向きまで検査される）。 */
+const latestPlan: FactoryPlan = {
+  ...periodPlan,
+  tools: [{ ...periodPlan.tools[0]!, purpose: '最新の人口を答える。' }],
+};
+
+/** `describeToolSemanticViolations` を実データのスキーマ伝播つきで呼ぶ（本番と同じ経路）。 */
+async function semanticViolationOf(proposalJson: string, plan: FactoryPlan = periodPlan, csv: string = ESTAT_CSV): Promise<string | undefined> {
+  const dataSources = new InMemoryDataSourceRepository();
+  await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Population', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: csv.length, createdAt: '', updatedAt: '' }, csv);
+  const engine = new EtlEngine(createDefaultRegistry());
+  const resolver = new ResolveDataSourceGraphUseCase(dataSources);
+  const profile = (await new ProfileDataSourcesUseCase(dataSources, resolver, engine).executeAll(scope, ['ds-1']))[0]!;
+  const graph = makeArgumentsOptional(mergeAgentInputDeclarations(JSON.parse(proposalJson).graph as ToolGraph));
+  const propagation = engine.propagateSchemas(await resolver.execute(scope, graph));
+  expect(propagation.hasErrors).toBe(false);
+  return describeToolSemanticViolations({ graph, profile, toolPlan: plan.tools[0]!, inputSchema: agentToolArgumentsOf(graph), propagation });
+}
+
+describe('describeToolSemanticViolations（証拠列の保全・Defect A）', () => {
+  it('異常: selectが期間ラベル列を落としたら、それを残せという文面で差し戻す', async () => {
+    const message = await semanticViolationOf(periodToolProposalJson({ selectColumns: ['地域', '総人口（総数）【人】'], splitRange: true, argumentType: 'date', sort: 'desc' }));
+
+    expect(message).toMatch(/do not contain the period column '時点'/);
+    expect(message).toMatch(/add it to select.columns, or drop the select node/);
+    // periodStart で代替させない（エージェントが引用するのはデータが使っているラベル）。
+    expect(message).toMatch(/'periodStart' is not a replacement/);
+  });
+
+  it('異常: 値の列まで落ちていたら「答えるものが無い」と指摘する', async () => {
+    const message = await semanticViolationOf(periodToolProposalJson({ selectColumns: ['時点', '地域'], splitRange: true, argumentType: 'date', sort: 'desc' }));
+
+    expect(message).toMatch(/contain none of the value columns \('総人口（総数）【人】'\)/);
+  });
+
+  it('正常: 期間ラベル列と値の列を残していれば違反なし（selectを置くこと自体は禁じない）', async () => {
+    const message = await semanticViolationOf(periodToolProposalJson({ selectColumns: ESTAT_COLUMNS, splitRange: true, argumentType: 'date', sort: 'desc' }));
+
+    expect(message).toBeUndefined();
+  });
+
+  it('境界: selectが無い（全列を返す）Toolは証拠列の検査を必ず通る', async () => {
+    const message = await semanticViolationOf(periodToolProposalJson({ selectColumns: null, splitRange: true, argumentType: 'date', sort: 'desc' }));
+
+    expect(message).toBeUndefined();
+  });
+
+  it('境界(回帰固定): 期間列を持たないデータソースでは、従来どおり証拠列の検査を行わない', async () => {
+    const plain = 'id,amount\n1,100\n2,200';
+    const proposal = JSON.stringify({
+      graph: {
+        nodes: [
+          { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-1' } },
+          { id: 'sel', type: 'select', config: { columns: ['id'] } },
+          { id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
+        ],
+        edges: [{ from: 'src', to: 'sel' }, { from: 'sel', to: 'out' }],
+      },
+      agentTool: { name: 'lookup_sales', description: 'Look up sales rows.' },
+    });
+
+    expect(await semanticViolationOf(proposal, periodPlan, plain)).toBeUndefined();
+  });
+});
+
+describe('describeToolSemanticViolations（範囲で引けること・Defect B）', () => {
+  it('異常: 同じ引数を下限と上限の両方へ束縛したら、2つのnullable引数へ分けろと差し戻す', async () => {
+    const message = await semanticViolationOf(periodToolProposalJson({ selectColumns: ESTAT_COLUMNS, sort: 'desc' }));
+
+    expect(message).toMatch(/argument 'time_point' is bound to both a lower bound \(gte\) and an upper bound \(lte\)/);
+    expect(message).toMatch(/only ever matches one exact point in time/);
+    expect(message).toMatch(/'time_point_from'.*'time_point_to'/);
+  });
+
+  it('異常: date列を絞る引数がstring宣言なら、date型で宣言し直せと差し戻す', async () => {
+    const message = await semanticViolationOf(periodToolProposalJson({ selectColumns: ESTAT_COLUMNS, splitRange: true, argumentType: 'string', sort: 'desc' }));
+
+    expect(message).toMatch(/filters the date column 'periodStart' but is declared "type": "string"/);
+    expect(message).toMatch(/"type": "date", "nullable": true/);
+  });
+
+  it('異常: 期間を開いたのに開始日で並べ替えていないToolは「最新が分からない」として差し戻す', async () => {
+    const message = await semanticViolationOf(periodToolProposalJson({ selectColumns: ESTAT_COLUMNS, splitRange: true, argumentType: 'date', sort: null }));
+
+    expect(message).toMatch(/never sorts by 'periodStart'/);
+    expect(message).toMatch(/"direction": "desc"/);
+  });
+
+  it('境界: 目的が「最新」を求めるのに昇順で並べ替えていたら向きまで差し戻す', async () => {
+    const ascending = periodToolProposalJson({ selectColumns: ESTAT_COLUMNS, splitRange: true, argumentType: 'date', sort: 'asc' });
+
+    // 「最新」を求めない目的なら昇順のままでも通す（向きの強制はキーワードがある場合だけ）。
+    expect(await semanticViolationOf(ascending, periodPlan)).toBeUndefined();
+    const message = await semanticViolationOf(ascending, latestPlan);
+    expect(message).toMatch(/sorts 'periodStart' ascending, so a limit keeps the OLDEST rows/);
+  });
+
+  it('例外: 集計して返すTool（shape: summary）には並べ替え・証拠列の検査を掛けない', async () => {
+    const summarised = periodToolProposalJson({ selectColumns: ['地域', '総人口（総数）【人】'], splitRange: true, argumentType: 'date', sort: null })
+      .replace('"shape":"rows"', '"shape":"summary"');
+
+    expect(await semanticViolationOf(summarised, latestPlan)).toBeUndefined();
+  });
+});
+
+describe('GenerateAgentAssetsUseCase（意味の違反は修復ループへ回る）', () => {
+  it('異常: 証拠列を落とした提案は修復ループへ回り、直した2回目の提案が保存される', async () => {
+    const { model, toolRepo, profiles, useCase } = await setup({ csv: ESTAT_CSV });
+    model.enqueue(
+      { message: { role: 'assistant', content: periodToolProposalJson({ selectColumns: ['地域', '総人口（総数）【人】'], splitRange: true, argumentType: 'date', sort: 'desc' }) }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: periodToolProposalJson({ selectColumns: ESTAT_COLUMNS, splitRange: true, argumentType: 'date', sort: 'desc' }) }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+    const messages: string[] = [];
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: periodPlan, profiles, maxRepairAttempts: 2, onEvent: (event) => { if (event.kind === 'tool_repair_attempted') messages.push(event.message ?? ''); } });
+
+    expect(messages[0]).toMatch(/tool cannot answer the plan: the rows this tool returns do not contain the period column '時点'/);
+    expect(result.toolRefs).toHaveLength(1);
+    const toolRef = result.toolRefs[0]!;
+    const tool = await toolRepo.findVersion(scope, toolRef.internalId, SemVer.parse(toolRef.version));
+    expect(tool?.inputSchema?.columns.map((column) => `${column.name}:${column.type}`)).toEqual(['period_from:date', 'period_to:date']);
+  });
+});
+
+describe('回答の規律ブロック（複数カテゴリを1回で・Defect C）', () => {
+  it('正常: 引数を省略できるToolがあるときだけ「1回だけ呼んで行を選ぶ」規律を足す', () => {
+    const withFilters = factoryAnswerGuardBlock('ja', { omittableFilters: true });
+    expect(withFilters).toMatch(/対象ごとにツールを呼び分けない/);
+    expect(withFilters).toMatch(/絞り込み引数を省略して1回だけ呼び/);
+    // 引数なしのTool構成では、守れない指示を書かない。
+    expect(factoryAnswerGuardBlock('ja')).not.toMatch(/呼び分けない/);
+    expect(factoryAnswerGuardBlock('en', { omittableFilters: true })).toMatch(/do NOT call the tool once per item/);
+  });
+
+  it('正常: nullable引数を持つToolを生成したAgentのpromptには、その規律が入る', async () => {
+    const { model, agentRepo, profiles, useCase } = await setup({ csv: ESTAT_CSV });
+    model.enqueue(
+      { message: { role: 'assistant', content: periodToolProposalJson({ selectColumns: ESTAT_COLUMNS, splitRange: true, argumentType: 'date', sort: 'desc' }) }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: periodPlan, profiles, maxRepairAttempts: 2 });
+
+    const agent = await agentRepo.findVersion(scope, result.agentRef.internalId, SemVer.parse(result.agentRef.version));
+    expect(agent?.systemPrompt).toMatch(/対象ごとにツールを呼び分けない/);
+  });
+
+  it('境界: 引数を宣言しないToolだけのAgentには、その規律を足さない', async () => {
+    const { model, agentRepo, profiles, useCase } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+
+    const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2 });
+
+    const agent = await agentRepo.findVersion(scope, result.agentRef.internalId, SemVer.parse(result.agentRef.version));
+    expect(agent?.systemPrompt).toContain(FACTORY_ANSWER_GUARD_HEADING);
+    expect(agent?.systemPrompt).not.toMatch(/呼び分けない/);
+  });
+
+  it('正常: hasOmittableFilters は inputSchema の nullable 宣言だけを根拠にする', () => {
+    const tool = (columns: { name: string; type: 'string'; nullable: boolean }[] | undefined) => ({
+      inputSchema: columns === undefined ? undefined : { columns },
+    } as unknown as Parameters<typeof hasOmittableFilters>[0][number]);
+
+    expect(hasOmittableFilters([tool(undefined)])).toBe(false);
+    expect(hasOmittableFilters([tool([{ name: 'region', type: 'string', nullable: false }])])).toBe(false);
+    expect(hasOmittableFilters([tool([{ name: 'region', type: 'string', nullable: true }])])).toBe(true);
+  });
+
+  it('正常: Assemblerへ会話あたりのツール呼び出し上限を渡し、1対象1呼び出しの規則を書かせない', async () => {
+    const { model, profiles, useCase } = await setup();
+    model.enqueue(
+      { message: { role: 'assistant', content: validToolProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validAssemblerProposalJson() }, finishReason: 'stop' },
+    );
+
+    await useCase.execute({ scope, runId: 'run-1', goal, plan: onePlan, profiles, maxRepairAttempts: 2 });
+
+    const assemblerRequest = model.requests[2];
+    expect(String(assemblerRequest?.messages.find((message) => message.role === 'user')?.content)).toContain(`"toolCallBudget":${MAX_TOOL_CALLS}`);
+    expect(String(assemblerRequest?.messages.find((message) => message.role === 'system')?.content)).toMatch(/Never write a rule that implies one call per item/);
   });
 });

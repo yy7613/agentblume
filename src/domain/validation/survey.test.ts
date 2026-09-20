@@ -49,6 +49,16 @@ describe('buildSurveySchema', () => {
     expect(schema.properties['satisfaction']?.description).toContain('1..5');
     expect(schema.properties['impressions']?.type).toBe('string');
   });
+
+  it('境界: scale は minimum/maximum をスキーマへ出す（説明文だけでは範囲外が返る）', () => {
+    const schema = buildSurveySchema([...questions, { id: 'effort', textJa: '手間', textEn: 'Effort', kind: 'scale', min: 0, max: 10 }]);
+    // 既定（1..5）も明示する。
+    expect(schema.properties['satisfaction']).toMatchObject({ minimum: 1, maximum: 5 });
+    expect(schema.properties['effort']).toMatchObject({ minimum: 0, maximum: 10 });
+    // scale 以外には付けない。
+    expect(schema.properties['achieved']).not.toHaveProperty('minimum');
+    expect(schema.properties['impressions']).not.toHaveProperty('maximum');
+  });
 });
 
 describe('validateSurveyAnswers', () => {
