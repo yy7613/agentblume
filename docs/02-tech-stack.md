@@ -209,7 +209,7 @@ InMemory配線では `NoopUnitOfWork` がそのまま実行する。
 
 | env | 既定 | 内容 |
 |---|---|---|
-| `AGENTCONTEXT_TOOL_TEMPLATES_DIR` | 未設定（同梱の `templates/tools` だけを読む） | ツールテンプレート（[ADR-0049](./adr/0049-tool-templates.md)）の追加の置き場所。`;` 区切りで複数指定できる（Windowsのドライブ接頭辞 `C:\` の `:` は区切りとして扱わない）。同じ `id` は後勝ち（この置き場が同梱の標準テンプレートを上書きできる）。ファイルはリクエスト時に読み、更新時刻とサイズでキャッシュするので再起動なしで反映される |
+| `AGENTCONTEXT_TOOL_TEMPLATES_DIR` | 未設定（同梱の `templates/tools` だけを読む） | ツールテンプレート（[ADR-0049](./adr/0049-tool-templates.md)）の追加の置き場所。`;` か `:` で区切って複数指定できる（Windowsのドライブ接頭辞 `C:\` の `:` は区切りにならない）。同じ `id` は後勝ち（この置き場が同梱の標準テンプレートを上書きできる）。ファイルはリクエスト時に読み、更新時刻とサイズでキャッシュするので再起動なしで反映される |
 
 置き場所が無い（未設定でディレクトリも無い）ときは機能が無効になるだけでエラーにしない。壊れたファイルはそのファイルだけ読み飛ばし、理由と直し方つきで `GET /tool-templates` の `invalid` に出す（[implementation/v43](../implementation/v43-tool-templates.md)）。
 

@@ -657,7 +657,7 @@ POST   /factory-runs/:runId/cancel
 - Repository契約テスト（InMemory / SQLite共通）を `FactoryRunRepository` / `FactoryEventRepository` へ追加する。
 - E2E: testプロファイルでFactory実行 → タイムライン表示 → 生成AgentがAgent画面に現れることをsmokeで確認する。
 - Factory自体の品質は既存指標で観測できる: 生成Runの `goalAchievedRate` 初期値、収束までのイテレーション数、Tool修復率、提案却下率。
-- **実測（e-Stat 実データ + ローカル12B、[ADR-0050](./adr/0050-scenario-grounding.md)）**: 2パターン（完全失業者の前年同月比 / 現金給与総額 ÷ 総実労働時間）とも、検証の前提（scenario grounding）と評点の向きの明示を入れる前は目標達成率 0.5・満足度 2.0〜2.5 で `below-targets`。入れた後は達成率 1.0・満足度 5.0 と 4.0 になり、いずれも1周目から `met-targets`（改善ループが回らないため）。Runの所要時間は約20分 → 4〜6分に縮んだ。ツール生成はテンプレート経路（[ADR-0049](./adr/0049-tool-templates.md)）でモデル呼び出し2回（`select-template` + `fill-slots`）。
+- **実測（e-Stat 実データ + ローカル12B、[ADR-0050](./adr/0050-scenario-grounding.md)）**: 2パターン（完全失業者の前年同月比 / 現金給与総額 ÷ 総実労働時間）とも、検証の前提（scenario grounding）と評点の向きの明示を入れる前は目標達成率 0.5・満足度 2.0〜2.5 で `below-targets`。入れた後は達成率 1.0・満足度 5.0 と 4.0 になり、いずれも1周目から `met-targets`（1周目で満たすため改善ループが回らず）。Runの所要時間は約20分 → 4〜6分に縮んだ。ツール生成はテンプレート経路（[ADR-0049](./adr/0049-tool-templates.md)）でモデル呼び出し2回（`select-template` + `fill-slots`。この2パターンは意図文つきテンプレートではないので式提案の分は増えない。§4 の会計を参照）。
   なお各数値は**各条件 1 Run ずつ**の実測で、平均ではない（擬似ユーザーも生成も確率的なので同じ設定でも振れる）。
 
 ## 12. 実装順序
