@@ -163,6 +163,16 @@ interface AuthUiExtension {
 }
 ```
 
+### 2.6 ツールテンプレート
+
+```typescript
+interface ToolTemplateCatalogPort {
+  list(): Promise<ToolTemplateCatalog>; // templates: 読めたテンプレート / invalid: 読めなかったfile（理由と直し方つき）
+}
+```
+
+テンプレートは**外部ファイル**（`templates/tools/*.json` + `AGENTCONTEXT_TOOL_TEMPLATES_DIR`）なので、壊れたfileは黙って落とさず`invalid[]`へ理由付きで残す。代表Adapterはファイルシステム（`FsToolTemplateCatalog`）で、要求時に読みファイルの更新時刻・サイズでキャッシュする。詳細は[ADR-0049](./adr/0049-tool-templates.md) / [implementation/v43](../implementation/v43-tool-templates.md) §1。
+
 > **契約テスト**: 各Portには契約テストを用意し、実SDKアダプターとFakeが同じ契約を満たすことを検証する（[01-architecture.md](./01-architecture.md#5-composition-root-と依存性注入)）。
 
 ---

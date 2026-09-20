@@ -23,6 +23,7 @@ flowchart TB
     A_STORE["@app/adapter-storage"]
     A_SEC["@app/adapter-secret"]
     A_TEL["@app/adapter-telemetry"]
+    A_TMPL["@app/adapter-templates<br/>ツールテンプレート(ファイル読込)"]
   end
 
   subgraph edges2["外殻"]
@@ -43,20 +44,21 @@ flowchart TB
   A_STORE --> DOMAIN
   A_SEC --> DOMAIN
   A_TEL --> DOMAIN
+  A_TMPL --> DOMAIN
   FAKES --> DOMAIN
 
   API --> APP
   UI --> API
 
   ROOT --> APP
-  ROOT --> A_MASTRA & A_MODEL & A_MCP & A_AUTH & A_STORE & A_SEC & A_TEL
+  ROOT --> A_MASTRA & A_MODEL & A_MCP & A_AUTH & A_STORE & A_SEC & A_TEL & A_TMPL
   ROOT --> FAKES
 
   classDef corepkg fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
   classDef adapterpkg fill:#fce4ec,stroke:#ad1457,color:#880e4f;
   classDef rootpkg fill:#ede7f6,stroke:#4527a0,color:#311b92;
   class DOMAIN,APP corepkg;
-  class A_MASTRA,A_MODEL,A_MCP,A_AUTH,A_STORE,A_SEC,A_TEL adapterpkg;
+  class A_MASTRA,A_MODEL,A_MCP,A_AUTH,A_STORE,A_SEC,A_TEL,A_TMPL adapterpkg;
   class ROOT rootpkg;
 ```
 
@@ -64,6 +66,7 @@ flowchart TB
 - すべての矢印は「依存する先」を指す。`@app/domain` は何も指さない（最内核）。
 - アダプターは `domain` が定義した **Port（interface）を実装** するために `domain` へ依存する。SDKへの依存はアダプター内部に閉じる。
 - `composition-root` だけがアダプターとFakeの両方を知り、実行時に注入する。
+- ツールテンプレートの**実体化**（スロットを埋めてノード・エッジを組む処理）は `domain` の純関数が行い、`adapter-templates` はファイルの読み込みと一覧化だけを担う（[ADR-0049](./adr/0049-tool-templates.md)）。
 
 ---
 

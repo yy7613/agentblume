@@ -184,6 +184,12 @@ classDiagram
 
 ノード分類の詳細は [06-etl-tool-builder.md](./06-etl-tool-builder.md) を参照。
 
+### Tool の作られ方: 1から組む / テンプレートから作る
+
+`Tool`（上記）を作る経路は、空のノードフローから1つずつ組む従来の経路に加え、外部ファイル（`templates/tools/*.json`）の **`ToolTemplate`** を選んでスロット（データソース・列・少数の選択肢）を埋める経路がある（[ADR-0049](./adr/0049-tool-templates.md) / [implementation/v43](../implementation/v43-tool-templates.md)）。Agent Factory とTool Builderの「テンプレートから作成」は同じファイル・同じ実体化を使う。`ToolTemplate` は**エンティティではない**: DBへ保存せず版管理もしない。ファイル（JSON）そのものが正本で、スロットの値を埋めてノード・エッジへ展開する「実体化」は副作用のない純関数である。
+
+Agent Factory の段階的ツール生成（[ADR-0048](./adr/0048-staged-tool-generation.md) / [implementation/v42](../implementation/v42-staged-tool-generation.md)）はテンプレートに当てはまる形が無いときの経路で、モデルには `ToolSpec`（結合・期間・カテゴリ絞り込み・計算列・出力の**決定だけ**を持つ閉じた語彙）の断片だけを決めさせ、決定的なコンパイラがグラフを組む。`ToolSpec` も**エンティティではない**: 保存されるのは生成後の`Tool`であり、`ToolSpec`は生成過程の中間表現（要約は`tool_generated`イベントに残る）。
+
 ---
 
 ## 4. スキーマ状態の遷移
@@ -275,7 +281,7 @@ classDiagram
   PseudoUserAgent --> ValidationCase : drives
 ```
 
-検証指標の一覧は [09-roadmap.md](./09-roadmap.md#検証指標) を参照。
+検証指標の一覧は [09-roadmap.md §4](./09-roadmap.md#4-検証指標) を参照。
 
 ---
 

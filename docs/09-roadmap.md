@@ -105,6 +105,8 @@ flowchart TB
 ```
 
 > 契約テストとPort/Adapterの骨格（`F12`）はPhase 1から用意し、Phase 2で実Adapterを充実させる。サブフロー化（`F13`）はコアが安定してから。
+>
+> `F9`（テンプレートギャラリー / レシピ）は、Toolについて外部ファイル形式のツールテンプレートとして実装済み（[06-etl-tool-builder.md §3.16](./06-etl-tool-builder.md#316-テンプレートから作成外部ファイル) / [ADR-0049](./adr/0049-tool-templates.md)）。Agent Factoryのツール生成もテンプレート → 段階的生成 → 一括生成の順で同じファイルを使う（[16-agent-factory.md](./16-agent-factory.md) §4 Stage 2）。Agent Factory自体（生成・自動改善ループ）はこのv1機能チェックリストの対象外（`ideas-v2.md §6` 策定後の増分）で、実装状況は[16-agent-factory.md](./16-agent-factory.md)側で管理する。
 
 ---
 

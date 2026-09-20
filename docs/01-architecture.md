@@ -40,15 +40,17 @@ flowchart LR
   UC --> MODEL["Model provider\nLM Studio / OpenAI互換"]
   UC --> DB["PostgreSQL read adapter\nallowlist + read-only + row limit"]
   UC --> SEARCH["Web search adapters\nTavily / TinyFish / Google legacy\nexplicit fetch + TTL cache"]
+  UC --> TEMPLATES["Tool templates\ntemplates/tools + 環境変数の追加置き場"]
   ENV["Backend environment\nDB接続情報・passwordEnv・allowedTables"] --> DB
   ENV --> SEARCH
+  ENV --> TEMPLATES
 
   classDef boundary fill:#e8f0fe,stroke:#5167d6,color:#182a6b;
   classDef core fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
   classDef store fill:#fff4e5,stroke:#b56b00,color:#6b4000;
   class UI,API boundary;
   class UC,ETL,DOMAIN core;
-  class SQLITE,FILES,SESSION,DB,MODEL store;
+  class SQLITE,FILES,SESSION,DB,MODEL,TEMPLATES store;
 ```
 
 要点は次のとおり。
@@ -57,6 +59,7 @@ flowchart LR
 - Tool実行時は、保存された`dataSourceId`をbackendが解決する。CSV/JSON本文とDB接続情報はTool定義へ複製しない。
 - DB読取はPostgreSQL adapterに限定し、環境変数の`allowedTables`に一致するtable/viewを読み取り専用・行数上限付きで取得する。詳細は[ADR-0029](./adr/0029-data-source-registry.md)。
 - Web検索は環境変数のキーが揃うproviderだけをUIへ公開する。明示取得結果は15分のサーバー内キャッシュで参照し、Toolの自動previewは外部検索を起動しない。詳細は[ADR-0030](./adr/0030-optional-web-search-providers.md)。
+- ツールテンプレートは外部ファイル（`templates/tools/*.json` + `AGENTCONTEXT_TOOL_TEMPLATES_DIR`で足す置き場）で持ち、利用者はJSONを置くだけでコード変更なしに構成を増やせる。同じ`id`は後から読んだ置き場が勝ち、壊れたファイルは理由と直し方つきで読み飛ばす。詳細は[ADR-0049](./adr/0049-tool-templates.md) / [implementation/v43](../implementation/v43-tool-templates.md)。
 
 ---
 
@@ -184,6 +187,7 @@ flowchart LR
 | `StoragePort` | ワークスペース・定義・実行履歴の永続化 | RDB / Object Storage |
 | `TelemetryPort` | メトリクス・トレース・ログ | OpenTelemetry |
 | `AuditSink` | 監査イベントの外部転送 | SIEM / ログ基盤 |
+| `ToolTemplateCatalogPort` | 外部ファイルのツールテンプレートの読み込みと一覧（読めなかったファイルは理由つきで別掲） | ファイルシステム（[ADR-0049](./adr/0049-tool-templates.md)） |
 
 > SDK境界の実装ルールの詳細は [04-api-spec.md](./04-api-spec.md) と [08-security-auth.md](./08-security-auth.md) を参照。
 
