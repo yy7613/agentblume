@@ -14,6 +14,11 @@ export interface JsonSchemaProperty {
   readonly additionalProperties?: boolean;
   readonly minimum?: number;
   readonly maximum?: number;
+  /** 配列の要素数の下限 / 上限（テンプレートの `multiple` スロットのように「N〜M 個選ぶ」を閉じる）。 */
+  readonly minItems?: number;
+  readonly maxItems?: number;
+  /** 文字列の長さの上限（自由記述スロットが長文を返さないように縛る）。 */
+  readonly maxLength?: number;
 }
 
 export interface JsonSchemaObject {

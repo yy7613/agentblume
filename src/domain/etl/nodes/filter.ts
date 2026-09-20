@@ -38,10 +38,26 @@
  * inferSchema が error issue、execute が SchemaError にする（黙って 0 行にはしない）。
  *
  * 各条件は `caseInsensitive?: boolean` を持てる（既定 false = 従来どおり区別する）。
- * true のとき、文字列比較（eq/neq は両辺が string の場合のみ・contains は String 化後）を
+ * true のとき、文字列比較（eq/neq/in/notIn は両辺が string の場合のみ・contains は String 化後）を
  * 大文字小文字を区別せず判定する。折り畳みは `toLowerCase()`（ロケール非依存の既定変換）。
  * 数値・日付・boolean の比較や isNull/notNull、大小比較には作用しない（value と同様、
  * 演算子に無関係な設定キーは黙って無視する既存の規約に従う）。
+ *
+ * **複数値の一致（`in` / `notIn`）**。これらの演算子は `value` ではなく `values`（1〜100件）を読む。
+ * 「東京都・大阪府・北海道」を1条件・1回のツール呼び出しで絞り込むための形で、単値演算子しか
+ * 無かった頃は Agent が県ごとにツールを呼び、実測で per-run のツール呼び出し上限に当たっていた。
+ * - `in` = セルが `values` のいずれかと等しい（等価判定は `eq` と同じ。caseInsensitive も効く）。
+ *   **null セルは `in` に一致しない**（`values` に null があっても一致しない。`eq` との唯一の差で、
+ *   「列挙した値のどれか」という意図に揃える）。
+ * - `notIn` = `neq` と対称で `in` の単純否定（`!values.some(equals)`）。したがって **null セルは
+ *   `values` に null が無ければ一致する**（`neq` が null セルを残すのと同じ扱い）。
+ * - 日付列・数値列の `values` は文字列で書ける（単値の ISO 解釈と同じ理由。JSON の config も
+ *   Agent 引数も文字列しか運べない）。読めない要素は**その要素を名指しして**エラーにする。
+ * - `valueBinding` を持つ `in` / `notIn` は、実行時に**区切り文字で連結した1つの文字列引数**から
+ *   値の並びを受け取る（分解は application 層の `graphWithArguments`）。設計時の `values` は
+ *   プレビュー用サンプルとして残る。
+ * - `opBinding.allowed` に `in` / `notIn` は入れられない（値の形が `value` と異なり、1つの文字列
+ *   引数を単値としても並びとしても解釈できないため）。設計時検証で error にする。
  */
 import { z } from 'zod';
 import type { Cell, Row, Schema, Table } from '../../data/types';
@@ -55,7 +71,7 @@ import { zodMessage } from './zod-error';
  * UI（NodeInspector）は独立レイヤーのため表示用の複製を別途持つ — UI 側テストが
  * このリストとの一致をピン留めしている。
  */
-export const FILTER_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull'] as const;
+export const FILTER_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'in', 'notIn', 'isNull', 'notNull'] as const;
 
 /** フィルタ演算子。 */
 export type FilterOp = (typeof FILTER_OPS)[number];
@@ -69,7 +85,35 @@ export function isFilterOp(value: unknown): value is FilterOp {
 export const VALUELESS_OPS: ReadonlySet<FilterOp> = new Set(['isNull', 'notNull']);
 
 /** `caseInsensitive` が作用する演算子（文字列比較を行うもの）。UIのチェックボックス表示判定が共有する。 */
-export const CASE_FOLD_OPS: ReadonlySet<FilterOp> = new Set(['eq', 'neq', 'contains']);
+export const CASE_FOLD_OPS: ReadonlySet<FilterOp> = new Set(['eq', 'neq', 'contains', 'in', 'notIn']);
+
+/** `value` ではなく `values`（複数値）を読む演算子。application層・UIの値エディタ切替が共有する。 */
+export const MULTI_VALUE_OPS: ReadonlySet<FilterOp> = new Set(['in', 'notIn']);
+
+/**
+ * `opBinding` で Agent に選ばせられる演算子（`allowed` 省略時の既定でもある）。
+ * `in` / `notIn` は値の形（`values` の並び）が他と違うため、1つの引数で演算子だけを差し替える
+ * この仕組みには載せられない — 演算子引数の公開 enum からも常に外す。
+ */
+export const OPERATOR_BINDABLE_OPS: readonly FilterOp[] = FILTER_OPS.filter((op) => !MULTI_VALUE_OPS.has(op));
+
+/** `values` に置ける値の上限（設計時の静的な並びも、実行時に引数から分解した並びも同じ上限）。 */
+export const MAX_FILTER_VALUES = 100;
+
+/**
+ * 1つの文字列引数に詰めた値の並びを分ける区切り（半角/全角カンマ・読点・セミコロン・改行）。
+ * LLM は「東京都, 大阪府」とも「東京都、大阪府」とも書くため、どれでも同じ並びに読めるようにする。
+ */
+const VALUE_LIST_SEPARATOR = /[,、，;\r\n]+/;
+
+/**
+ * 区切り文字で連結された文字列を値の並びへ分解する（前後の空白を落とし、空要素を捨て、重複を除く）。
+ * 上限は掛けない — 何件まで許すか（と超過時のエラー文）は呼び出し側の関心なので `MAX_FILTER_VALUES`
+ * と合わせて application 層が判定する。UI は独立レイヤーのため同じ規則の複製を別途持つ。
+ */
+export function parseFilterValueList(text: string): string[] {
+  return [...new Set(text.split(VALUE_LIST_SEPARATOR).map((item) => item.trim()).filter((item) => item !== ''))];
+}
 
 /** 複数条件の結合方法。 */
 export type FilterCombine = 'and' | 'or';
@@ -90,7 +134,12 @@ export interface FilterCondition {
   readonly column: string;
   readonly op: FilterOp;
   readonly value?: Cell;
-  /** 実行時に Agent Tool の引数で value を上書きする参照。設計時は value をsampleに使う。 */
+  /**
+   * `in` / `notIn` が読む値の並び（1〜100件）。他の演算子では無視する。
+   * `valueBinding` を持つ条件では設計時プレビューのサンプルで、実行時は引数から分解した並びで置き換わる。
+   */
+  readonly values?: readonly Cell[];
+  /** 実行時に Agent Tool の引数で value（`in`/`notIn` では values）を上書きする参照。設計時は sample に使う。 */
   readonly valueBinding?: { readonly source: 'agent-input'; readonly field: string };
   /** 実行時に Agent Tool の引数で op を上書きする参照。設計時は op を既定値として使う。 */
   readonly opBinding?: OperatorBinding;
@@ -124,10 +173,27 @@ const cellSchema: z.ZodType<Cell> = z.union([
   z.null(),
 ]);
 
-const conditionSchema = z.object({
+/**
+ * in / notIn は `values` だけを読み、`value` は無視する契約。ところが手書きでも LLM でも
+ * `value` に同じ配列を重ねて書かれやすく（実測: `{"op":"in","value":["東京都"],"values":["東京都"]}`）、
+ * 「無視する」はずの項目の型で設定ごと弾いていた。検証の前に受け流す:
+ * `values` が無く `value` が配列ならそれを `values` として読み、どちらの場合も配列の `value` は落とす。
+ */
+function tolerateListValue(condition: unknown): unknown {
+  if (condition === null || typeof condition !== 'object' || Array.isArray(condition)) return condition;
+  const record = condition as Record<string, unknown>;
+  if ((record['op'] !== 'in' && record['op'] !== 'notIn') || !Array.isArray(record['value'])) return condition;
+  const { value, ...rest } = record;
+  return Array.isArray(rest['values']) ? rest : { ...rest, values: value };
+}
+
+const conditionSchema = z.preprocess(tolerateListValue, z.object({
   column: z.string(),
   op: z.enum(FILTER_OPS),
   value: cellSchema.optional(),
+  // 空配列は zod では通し、設計時検証（conditionIssues）で「値を列挙してください」と案内する
+  // （UI で最後の値を消した瞬間に ConfigError で画面を塞がないため）。上限だけはここで弾く。
+  values: z.array(cellSchema).max(MAX_FILTER_VALUES, `filter: at most ${MAX_FILTER_VALUES} values are allowed for 'in'/'notIn'`).optional(),
   valueBinding: z.object({ source: z.literal('agent-input'), field: z.string().min(1) }).optional(),
   opBinding: z.object({
     source: z.literal('agent-input'),
@@ -136,7 +202,7 @@ const conditionSchema = z.object({
   }).optional(),
   caseInsensitive: z.boolean().optional(),
   disabled: z.boolean().optional(),
-});
+}));
 
 const conditionsSchema = z.object({
   conditions: z.array(conditionSchema).min(1),
@@ -195,29 +261,78 @@ function isoDateMessage(column: string, value: string): string {
   return `filter: value for date column '${column}' must be an ISO date (YYYY-MM-DD): ${value}`;
 }
 
-/**
- * 実データ側で列が日付か。スキーマが date と言っていればそれ、型が未知ならセルの実体で判定する
- * （型が date 以外と確定している列は日付扱いしない）。
- */
-function isDateColumn(input: Table, column: string): boolean {
-  const col = findColumn(input.schema, column);
-  if (col?.type === 'date') return true;
-  if (col !== undefined && col.type !== 'unknown') return false;
-  for (const row of input.rows) {
-    const cell = row[column];
-    if (cell === undefined || cell === null) continue;
-    return cell instanceof Date;
-  }
-  return false;
+/** `in`/`notIn` の値の並びに、日付として読めない要素が混ざっていたときのメッセージ（要素を名指しする）。 */
+function isoDateListMessage(column: string, value: string): string {
+  return `filter: values for date column '${column}' must be ISO dates (YYYY-MM-DD): ${value}`;
+}
+
+/** `in`/`notIn` の値の並びに、数値として読めない要素が混ざっていたときのメッセージ（要素を名指しする）。 */
+function numberListMessage(column: string, value: string): string {
+  return `filter: values for number column '${column}' must be numbers: ${value}`;
+}
+
+/** `in`/`notIn` なのに値が1つも無いときのメッセージ（inferSchema と execute で同一文）。 */
+function emptyValuesMessage(column: string, op: FilterOp): string {
+  return `filter: operator '${op}' requires a non-empty 'values' list for column '${column}'`;
+}
+
+/** 数値として読める文字列ならその数値（空文字は `Number('')===0` になるので除く）。読めなければ undefined。 */
+function numberValue(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (trimmed === '') return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 /**
- * 実行時の条件を整える（日付列の ISO 文字列 value を Date へ寄せる）。
+ * 実データ側での列の種別。スキーマが型を言っていればそれ、型が未知ならセルの実体で判定する
+ * （型が確定している列はその型として扱う）。`values` の文字列要素をどう寄せるかもこれで決める。
+ */
+function columnKind(input: Table, column: string): 'date' | 'number' | 'other' {
+  const col = findColumn(input.schema, column);
+  if (col?.type === 'date') return 'date';
+  if (col?.type === 'number') return 'number';
+  if (col !== undefined && col.type !== 'unknown') return 'other';
+  for (const row of input.rows) {
+    const cell = row[column];
+    if (cell === undefined || cell === null) continue;
+    if (cell instanceof Date) return 'date';
+    return typeof cell === 'number' ? 'number' : 'other';
+  }
+  return 'other';
+}
+
+/**
+ * `values` の文字列要素を列の型へ寄せる（日付列は ISO → Date、数値列は数値文字列 → number）。
+ * 読めない要素は**その要素を名指しした** SchemaError にする（黙って 0 行にしない）。
+ */
+function preparedValues(kind: 'date' | 'number' | 'other', column: string, values: readonly Cell[]): readonly Cell[] {
+  if (kind === 'other') return values;
+  return values.map((item) => {
+    if (typeof item !== 'string') return item;
+    const coerced: Cell | undefined = kind === 'date' ? isoDateValue(item) : numberValue(item);
+    if (coerced === undefined) {
+      throw new SchemaError(kind === 'date' ? isoDateListMessage(column, item) : numberListMessage(column, item));
+    }
+    return coerced;
+  });
+}
+
+/**
+ * 実行時の条件を整える（日付列の ISO 文字列 value / 日付・数値列の `values` 要素を寄せる）。
  * execute と、0 件の理由を説明する application 層の診断が**同じ関数**で整えることで、
  * 「診断が数えた件数」と「実行が残した行」が食い違わないようにする。
  */
 export function prepareFilterCondition(input: Table, condition: FilterCondition): FilterCondition {
-  if (!hasDateStringValue(condition) || !isDateColumn(input, condition.column)) return condition;
+  if (MULTI_VALUE_OPS.has(condition.op)) {
+    const values = condition.values ?? [];
+    // 空の並びは `in` なら全滅・`notIn` なら素通しと、静かに意味が変わってしまうのでここで止める
+    // （実行時に引数から空の並びが来る場合は、条件ごと無効化されてここへは届かない）。
+    if (values.length === 0) throw new SchemaError(emptyValuesMessage(condition.column, condition.op));
+    const prepared = preparedValues(columnKind(input, condition.column), condition.column, values);
+    return prepared.every((item, index) => item === values[index]) ? condition : { ...condition, values: prepared };
+  }
+  if (!hasDateStringValue(condition) || columnKind(input, condition.column) !== 'date') return condition;
   const value = isoDateValue(condition.value);
   if (value === undefined) throw new SchemaError(isoDateMessage(condition.column, condition.value));
   return { ...condition, value };
@@ -241,8 +356,8 @@ function cellEquals(a: Cell, b: Cell, caseInsensitive: boolean): boolean {
   return a === b;
 }
 
-/** 1セルに対して述語を評価する。 */
-function evaluate(cell: Cell, op: FilterOp, value: Cell, caseInsensitive: boolean): boolean {
+/** 1セルに対して述語を評価する。`values` は `in`/`notIn` だけが読む。 */
+function evaluate(cell: Cell, op: FilterOp, value: Cell, values: readonly Cell[], caseInsensitive: boolean): boolean {
   switch (op) {
     case 'isNull':
       return cell === null;
@@ -252,6 +367,12 @@ function evaluate(cell: Cell, op: FilterOp, value: Cell, caseInsensitive: boolea
       return cellEquals(cell, value, caseInsensitive);
     case 'neq':
       return !cellEquals(cell, value, caseInsensitive);
+    // null セルは「列挙したどれか」に含まれない（`eq null` との唯一の差。上部コメント参照）。
+    case 'in':
+      return cell !== null && values.some((candidate) => cellEquals(cell, candidate, caseInsensitive));
+    // `neq` と対称の単純否定。よって null セルは values に null が無ければ残る。
+    case 'notIn':
+      return !values.some((candidate) => cellEquals(cell, candidate, caseInsensitive));
     case 'contains':
       return caseInsensitive
         ? String(cell).toLowerCase().includes(String(value).toLowerCase())
@@ -273,7 +394,38 @@ function evaluate(cell: Cell, op: FilterOp, value: Cell, caseInsensitive: boolea
   }
 }
 
-/** 1条件のスキーマ検証（列存在 / 順序演算子の列型 / opBinding の整合）。 */
+/**
+ * `values`（複数値）まわりの設計時検証。
+ * - `in`/`notIn` で値が空: `valueBinding` があれば実行時に引数から届くので warning（プレビューは 0 行）、
+ *   無ければ実行時も救えないので error。
+ * - 値の型: 日付列・数値列の文字列要素は寄せられること（読めない要素を名指しして error）。
+ * - `in`/`notIn` 以外に `values` が残っている: 演算子に無関係な設定キーを黙って無視する既存の規約に
+ *   合わせて実行は続けるが、「効いていない」ことが画面から分かるよう warning で知らせる。
+ */
+function valuesIssues(columnType: string, condition: FilterCondition): SchemaIssue[] {
+  const column = condition.column;
+  if (!MULTI_VALUE_OPS.has(condition.op)) {
+    return condition.values === undefined
+      ? []
+      : [{ severity: 'warning', message: `filter: 'values' is ignored by operator '${condition.op}' on column '${column}'`, column }];
+  }
+  const values = condition.values ?? [];
+  if (values.length === 0) {
+    return condition.valueBinding?.source === 'agent-input'
+      ? [{ severity: 'warning', message: `filter: operator '${condition.op}' on column '${column}' has no design-time 'values' sample, so the preview matches no rows`, column }]
+      : [{ severity: 'error', message: emptyValuesMessage(column, condition.op), column }];
+  }
+  if (columnType !== 'date' && columnType !== 'number') return [];
+  return values.flatMap((item) => {
+    if (typeof item !== 'string') return [];
+    const coerced = columnType === 'date' ? isoDateValue(item) : numberValue(item);
+    if (coerced !== undefined) return [];
+    const message = columnType === 'date' ? isoDateListMessage(column, item) : numberListMessage(column, item);
+    return [{ severity: 'error' as const, message, column }];
+  });
+}
+
+/** 1条件のスキーマ検証（列存在 / 順序演算子の列型 / values の整合 / opBinding の整合）。 */
 function conditionIssues(input: Schema, condition: FilterCondition): SchemaIssue[] {
   const col = findColumn(input, condition.column);
   if (col === undefined) {
@@ -288,9 +440,10 @@ function conditionIssues(input: Schema, condition: FilterCondition): SchemaIssue
   if (col.type === 'date' && hasDateStringValue(condition) && isoDateValue(condition.value) === undefined) {
     issues.push({ severity: 'error', message: isoDateMessage(condition.column, condition.value), column: condition.column });
   }
+  issues.push(...valuesIssues(col.type, condition));
   const binding = condition.opBinding;
   // 実行時にどの許可演算子が選ばれても成立するよう、順序演算子を許すなら列型 number|date を要求する。
-  const orderable = binding === undefined ? [] : (binding.allowed ?? FILTER_OPS).filter((op) => ORDER_OPS.has(op));
+  const orderable = binding === undefined ? [] : (binding.allowed ?? OPERATOR_BINDABLE_OPS).filter((op) => ORDER_OPS.has(op));
   const orderableIssue = orderable.length > 0 && col.type !== 'number' && col.type !== 'date';
   // 静的な op の列型エラーは、opBinding の orderable エラーが出るとき同根（op ∈ orderable）なので統合して1メッセージにする。
   if (!orderableIssue && ORDER_OPS.has(condition.op) && col.type !== 'number' && col.type !== 'date') {
@@ -301,6 +454,15 @@ function conditionIssues(input: Schema, condition: FilterCondition): SchemaIssue
     });
   }
   if (binding !== undefined) {
+    // `in`/`notIn` は値の形（values の並び）が違うので、演算子だけを差し替える opBinding には載せられない。
+    const multi = [...new Set([...(binding.allowed ?? []), condition.op])].filter((op) => MULTI_VALUE_OPS.has(op));
+    if (multi.length > 0) {
+      issues.push({
+        severity: 'error',
+        message: `filter: opBinding on '${condition.column}' cannot use operator(s) ${multi.join('|')} because they take a list of values; use a fixed operator for those conditions`,
+        column: condition.column,
+      });
+    }
     // 既定演算子（設計時の op）は許可リストの中から選ぶ。実行時省略のフォールバック先でもあるため。
     if (binding.allowed !== undefined && !binding.allowed.includes(condition.op)) {
       issues.push({
@@ -328,7 +490,7 @@ export function rowMatchesFilterCondition(row: Row, condition: FilterCondition):
   const cell = Object.prototype.hasOwnProperty.call(row, condition.column)
     ? (row[condition.column] ?? null)
     : null;
-  return evaluate(cell, condition.op, condition.value ?? null, condition.caseInsensitive === true);
+  return evaluate(cell, condition.op, condition.value ?? null, condition.values ?? [], condition.caseInsensitive === true);
 }
 
 class FilterNode implements EtlNode<FilterConfig> {
@@ -350,12 +512,12 @@ class FilterNode implements EtlNode<FilterConfig> {
   inferSchema(inputs: readonly Schema[], config: FilterConfig): SchemaInference {
     const input = inputs[0] ?? { columns: [] };
     const issues = normalizeFilterConfig(config).conditions.flatMap((condition) => conditionIssues(input, condition));
-    if (issues.length > 0) {
-      return { schema: input, state: 'mismatch', issues };
-    }
-
-    // スキーマは不変。
-    return { schema: input, state: 'confirmed', issues: [] };
+    // スキーマは不変。warning（効かない設定キー等）は state を落とさず持ち帰る。
+    return {
+      schema: input,
+      state: issues.some((issue) => issue.severity === 'error') ? 'mismatch' : 'confirmed',
+      issues,
+    };
   }
 
   execute(inputs: readonly Table[], config: FilterConfig): Table {
@@ -399,6 +561,10 @@ export interface ValueBindingSite {
   readonly field: string;
   /** フィルタ対象の列名（未設定の config では空文字）。 */
   readonly column: string;
+  /** 複数値演算子（`in`/`notIn`）の条件か。実行時に1つの文字列引数を値の並びへ分解する対象。 */
+  readonly multiValue: boolean;
+  /** 設計時の `values` サンプル（`multiValue` の条件のみ。公開スキーマの説明文の例に使う）。 */
+  readonly samples?: readonly Cell[];
 }
 
 /** 条件の生データから valueBinding の field を取り出す（形が壊れていれば undefined）。 */
@@ -424,9 +590,11 @@ export function operatorBindingsOf(config: unknown): OperatorBindingSite[] {
     const condition = raw as { column?: unknown; op?: unknown; opBinding?: { source?: unknown; field?: unknown; allowed?: unknown }; valueBinding?: { source?: unknown; field?: unknown } };
     const binding = condition.opBinding;
     if (binding?.source !== 'agent-input' || typeof binding.field !== 'string' || binding.field === '') continue;
+    // 公開 enum・実行時検証に in/notIn が載らないよう、明示リストからも省略時の全演算子からも除く
+    // （設計時検証は allowed に書いてしまった in/notIn を error で差し戻す）。
     const allowed = Array.isArray(binding.allowed) && binding.allowed.length > 0
-      ? binding.allowed.filter(isFilterOp)
-      : FILTER_OPS;
+      ? binding.allowed.filter(isFilterOp).filter((op) => !MULTI_VALUE_OPS.has(op))
+      : OPERATOR_BINDABLE_OPS;
     const valueField = valueFieldOf(condition);
     sites.push({
       field: binding.field,
@@ -446,12 +614,55 @@ export function operatorBindingsOf(config: unknown): OperatorBindingSite[] {
 export function valueBindingsOf(config: unknown): ValueBindingSite[] {
   const sites: ValueBindingSite[] = [];
   for (const raw of rawConditionsOf(config)) {
-    const condition = raw as { column?: unknown; valueBinding?: { source?: unknown; field?: unknown } };
+    const condition = raw as { column?: unknown; op?: unknown; values?: unknown; valueBinding?: { source?: unknown; field?: unknown } };
     const field = valueFieldOf(condition);
     if (field === undefined) continue;
-    sites.push({ field, column: typeof condition.column === 'string' ? condition.column : '' });
+    const multiValue = isFilterOp(condition.op) && MULTI_VALUE_OPS.has(condition.op);
+    const samples = multiValue && Array.isArray(condition.values) ? (condition.values as readonly Cell[]) : undefined;
+    sites.push({
+      field,
+      column: typeof condition.column === 'string' ? condition.column : '',
+      multiValue,
+      ...(samples === undefined ? {} : { samples }),
+    });
   }
   return sites;
+}
+
+/** 同一 field をバインドする全条件を集約した、値の並びを受け取る引数1つ分の要約。 */
+export interface ListValueArgumentSummary {
+  /** Agent 引数名。 */
+  readonly field: string;
+  /** この引数が値の並びを供給する列（重複排除・出現順）。 */
+  readonly columns: readonly string[];
+  /** 設計時サンプルから作った値の例（重複排除・出現順。説明文へ載せる分だけ）。 */
+  readonly samples: readonly string[];
+}
+
+/** 説明文の例に出す値の最大数（引数説明を短く保つ）。 */
+const MAX_LIST_ARGUMENT_SAMPLES = 3;
+
+/**
+ * 複数 filter ノードの config 群から、「値の並び」を受け取る引数（`in`/`notIn` の valueBinding 先）を
+ * field 単位に集約する。Tool 公開スキーマの説明文（カンマ区切りで複数渡せること）と、保存検証の
+ * 「その引数は string でなければならない」がこの1つの集約を共有する。
+ */
+export function listValueArgumentSummaries(configs: readonly unknown[]): ListValueArgumentSummary[] {
+  const byField = new Map<string, ValueBindingSite[]>();
+  for (const config of configs) {
+    for (const site of valueBindingsOf(config)) {
+      if (!site.multiValue) continue;
+      const existing = byField.get(site.field);
+      if (existing === undefined) byField.set(site.field, [site]);
+      else existing.push(site);
+    }
+  }
+  return [...byField.entries()].map(([field, sites]) => ({
+    field,
+    columns: [...new Set(sites.map((site) => site.column).filter((column) => column !== ''))],
+    samples: [...new Set(sites.flatMap((site) => site.samples ?? []).map((sample) => String(sample instanceof Date ? sample.toISOString() : sample)).filter((sample) => sample !== ''))]
+      .slice(0, MAX_LIST_ARGUMENT_SAMPLES),
+  }));
 }
 
 /** 同一 field をバインドする全条件を集約した、演算子引数1つ分の要約。 */
@@ -484,7 +695,7 @@ export function operatorArgumentSummaries(configs: readonly unknown[]): Operator
     }
   }
   return [...byField.entries()].map(([field, sites]) => {
-    const allowed = FILTER_OPS.filter((op) => sites.every((site) => site.allowed.includes(op)));
+    const allowed = OPERATOR_BINDABLE_OPS.filter((op) => sites.every((site) => site.allowed.includes(op)));
     const columns = [...new Set(sites.map((site) => site.column).filter((column) => column !== ''))];
     const defaults = new Set(sites.map((site) => site.defaultOp));
     const uniform = defaults.size === 1 ? sites[0]?.defaultOp : undefined;

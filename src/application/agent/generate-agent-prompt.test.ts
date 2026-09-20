@@ -22,7 +22,18 @@ const optionalArgumentTool = createTool({
   sideEffect: 'read-only', graph: { nodes: [], edges: [] },
   inputSchema: { columns: [{ name: 'month', type: 'string', nullable: false }, { name: 'region', type: 'string', nullable: true }] },
 });
-const catalog: Readonly<Record<string, Tool>> = { scores: tool, regions: optionalArgumentTool };
+/** 複数値（in）の条件へ束縛した引数を持つTool。実行時はカンマ区切りの1引数で複数の値が届く。 */
+const listArgumentTool = createTool({
+  metadata: { internalId: 'prefectures', workingName: 'prefectures', displayName: 'Prefecture search', publishName: 'search_prefectures', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+  sideEffect: 'read-only',
+  graph: { nodes: [
+    { id: 'data', type: 'json-source', config: { rows: [{ 地域: '東京都' }] } },
+    { id: 'narrow', type: 'filter', config: { column: '地域', op: 'in', values: ['東京都'], valueBinding: { source: 'agent-input', field: 'regions' } } },
+    { id: 'arguments', type: 'agent-input', config: { schema: { columns: [{ name: 'regions', type: 'string', nullable: true }] }, sample: { regions: '東京都' } } },
+  ], edges: [{ from: 'data', to: 'narrow' }] },
+  inputSchema: { columns: [{ name: 'regions', type: 'string', nullable: true }] },
+});
+const catalog: Readonly<Record<string, Tool>> = { scores: tool, regions: optionalArgumentTool, prefectures: listArgumentTool };
 class FakeTools implements ToolRepository {
   async findVersion(target: TenantScope, id: string, version: SemVer): Promise<Tool | null> {
     const found = catalog[id];
@@ -56,6 +67,18 @@ describe('GenerateAgentPromptUseCase', () => {
   it('nullable引数を持つToolが無ければ省略可能引数の補足は出さない', async () => {
     const result = await new GenerateAgentPromptUseCase(new FakeTools()).execute({ scope, displayName: 'Judge', kind: 'normal', tools: [{ internalId: 'scores', version: SemVer.of(2, 0, 0) }] });
     expect(result.sections.toolUsageGuide).not.toContain('省略可能');
+  });
+
+  it('正常: 複数値を受け取る引数は「カンマ区切りでまとめて渡す」ことを引数名つきで補足する', async () => {
+    const result = await new GenerateAgentPromptUseCase(new FakeTools()).execute({ scope, displayName: 'Searcher', kind: 'normal', tools: [{ internalId: 'prefectures', version: SemVer.of(1, 0, 0) }] });
+    expect(result.sections.toolUsageGuide).toContain('複数の値をまとめて指定できる');
+    expect(result.sections.toolUsageGuide).toContain('東京都,大阪府,北海道');
+    expect(result.sections.toolUsageGuide).toContain('値ごとにToolを呼び分けない: regions');
+  });
+
+  it('境界: 従来どおり — 複数値の引数を持つToolが無ければその補足は出さない', async () => {
+    const result = await new GenerateAgentPromptUseCase(new FakeTools()).execute({ scope, displayName: 'Judge', kind: 'normal', tools: [{ internalId: 'scores', version: SemVer.of(2, 0, 0) }] });
+    expect(result.sections.toolUsageGuide).not.toContain('複数の値をまとめて指定できる');
   });
 
   it('空displayNameと未存在Toolを拒否する', async () => {

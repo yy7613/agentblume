@@ -34,9 +34,13 @@ export interface RunNoMatchCondition {
   /** この値を供給した Agent Tool の引数名（固定値の条件には無い）。 */
   readonly argument?: string;
   readonly value: string | number | boolean | null;
+  /** 複数値条件（in/notIn）で要求した値の並び（上限あり。単値条件には無い）。 */
+  readonly values?: readonly (string | number | boolean | null)[];
   /** この条件**だけ**を入力行へ当てたときに残る行数。 */
   readonly matchingRows: number;
-  /** その列に実在する値の例（eq/contains の文字列列。要求値に近いものを優先）。 */
+  /** 複数値条件（in）で、要求したのに1行も当たらなかった値（どれが外れたかを名指しする）。 */
+  readonly unmatchedValues?: readonly string[];
+  /** その列に実在する値の例（eq/contains/in の文字列列。要求値に近いものを優先）。 */
   readonly availableValues?: readonly string[];
   readonly distinctValues?: number;
   /** number / date 列の最小・最大（日付は ISO 文字列）。 */

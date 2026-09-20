@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { SideEffect } from '../tool/metadata';
 import { SIDE_EFFECTS } from '../tool/metadata';
 import { FactoryValidationError } from './errors';
-import { FACTORY_EVENT_KINDS, FACTORY_PROMPT_STRATEGIES, FACTORY_REPORT_QUALITIES, FACTORY_RUN_STATUSES, FACTORY_STAGES, type FactoryRun } from './factory-run';
+import { FACTORY_EVENT_KINDS, FACTORY_PROMPT_STRATEGIES, FACTORY_REPORT_QUALITIES, FACTORY_RUN_STATUSES, FACTORY_STAGES, FACTORY_TOOL_GENERATIONS, type FactoryRun } from './factory-run';
 import { FACTORY_PERSONA_ARCHETYPES } from './factory-plan';
 
 const scopeSchema = z.object({ tenantId: z.string(), workspaceId: z.string() });
@@ -25,6 +25,9 @@ const factoryToolPlanSchema = z.object({
   argumentSummary: z.string().optional(),
   // 既存Toolの再利用計画（Stage 1で判断し、Stage 2はToolSmithを呼ばずこのToolを参照する）。
   reuse: z.object({ internalId: z.string(), rationale: z.string().optional() }).optional(),
+  // join で束ねる追加データソース（ADR-0047 round 3）。後付けの任意フィールドなので、
+  // 既存の永続化済みRun（フィールドを持たない）はそのまま読める。
+  additionalDataSourceIds: z.array(z.string()).optional(),
 });
 const factorySkillPlanSchema = z.object({
   key: z.string(),
@@ -103,9 +106,9 @@ const factoryGoalInputSchema = z.object({ goal: z.string(), targetUsers: z.strin
 const factoryTargetsSchema = z.object({ minGoalAchievedRate: z.number(), minAvgSatisfaction: z.number() });
 const factoryBudgetLimitsSchema = z.object({ maxDurationMs: z.number(), maxRoleCalls: z.number(), maxScenarioRuns: z.number(), maxRepairAttempts: z.number(), maxProposalsPerIteration: z.number() });
 const factoryBudgetSnapshotSchema = z.object({ roleCalls: z.number(), scenarioRuns: z.number(), elapsedMs: z.number() });
-// `promptStrategy` は後から足したオプションのため、既存の永続化済みRun（フィールドを持たない）を
-// 読めるよう既定値付きにする（読み出し時に 'preserve' = 従来の挙動へ落ちる）。
-const factoryOptionsSchema = z.object({ maxIterations: z.number(), personaCount: z.number(), scenarioCount: z.number(), requirePlanApproval: z.boolean(), targets: factoryTargetsSchema, budget: factoryBudgetLimitsSchema, promptStrategy: z.enum(FACTORY_PROMPT_STRATEGIES).default('preserve') });
+// `promptStrategy` / `toolGeneration` は後から足したオプションのため、既存の永続化済みRun
+// （フィールドを持たない）を読めるよう既定値付きにする（読み出し時に 'preserve' / 'staged' へ落ちる）。
+const factoryOptionsSchema = z.object({ maxIterations: z.number(), personaCount: z.number(), scenarioCount: z.number(), requirePlanApproval: z.boolean(), targets: factoryTargetsSchema, budget: factoryBudgetLimitsSchema, promptStrategy: z.enum(FACTORY_PROMPT_STRATEGIES).default('preserve'), toolGeneration: z.enum(FACTORY_TOOL_GENERATIONS).default('staged') });
 
 const usageSchema = z.object({ promptTokens: z.number().optional(), completionTokens: z.number().optional(), totalTokens: z.number().optional() });
 // `surveyMissingCount` は後から足した指標なので、既存の永続化済みRun（フィールドを持たない）を

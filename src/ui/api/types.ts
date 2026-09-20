@@ -236,8 +236,12 @@ export interface RunNoMatchConditionDto {
   /** この値を供給したツール引数名（固定値の条件には無い）。 */
   readonly argument?: string;
   readonly value: string | number | boolean | null;
+  /** 複数値条件（in/notIn）で要求した値の並び。 */
+  readonly values?: readonly (string | number | boolean | null)[];
   /** この条件だけを入力行へ当てたときに残る行数。 */
   readonly matchingRows: number;
+  /** 複数値条件（in）で、要求したのに1行も当たらなかった値。 */
+  readonly unmatchedValues?: readonly string[];
   readonly availableValues?: readonly string[];
   readonly distinctValues?: number;
   readonly min?: string | number;
@@ -901,12 +905,18 @@ export interface FactoryGoalInputDto {
  * `rewrite` = モデル（Assembler）に役割文・実行規則を書き直させる。生成モード（0→1）では無関係。
  */
 export type FactoryPromptStrategyDto = 'preserve' | 'rewrite';
+/**
+ * 新規Toolの作り方。`staged` = 小さなタスクへ分けて決定的に組む（既定・計算列を作れる）、
+ * `one-shot` = 従来どおりモデルがグラフ全体を1回で書く。`staged` が失敗したら自動で `one-shot` に落ちる。
+ */
+export type FactoryToolGenerationDto = 'staged' | 'one-shot';
 export interface FactoryOptionsDto {
   readonly maxIterations: number;
   readonly personaCount: number;
   readonly scenarioCount: number;
   readonly requirePlanApproval: boolean;
   readonly promptStrategy: FactoryPromptStrategyDto;
+  readonly toolGeneration: FactoryToolGenerationDto;
   readonly targets: { readonly minGoalAchievedRate: number; readonly minAvgSatisfaction: number };
   readonly budget: { readonly maxDurationMs: number; readonly maxRoleCalls: number; readonly maxScenarioRuns: number; readonly maxRepairAttempts: number; readonly maxProposalsPerIteration: number };
 }
@@ -918,6 +928,8 @@ export interface FactoryToolPlanDto {
   readonly sideEffect: SideEffectDto;
   readonly outputShape?: string;
   readonly argumentSummary?: string;
+  /** このToolが主データソースへ join で束ねる追加データソース（未指定なら単一ソースのTool）。 */
+  readonly additionalDataSourceIds?: readonly string[];
 }
 export interface FactorySkillPlanDto {
   readonly key: string;
@@ -1048,6 +1060,8 @@ export interface CreateFactoryRunDto {
     readonly requirePlanApproval?: boolean;
     /** 強化モード（`baseAgent` 指定）でのみ効く。省略時はサーバー既定の `preserve`。 */
     readonly promptStrategy?: FactoryPromptStrategyDto;
+    /** 新規Toolの作り方。省略時はサーバー既定の `staged`。 */
+    readonly toolGeneration?: FactoryToolGenerationDto;
     readonly targets?: { readonly minGoalAchievedRate: number; readonly minAvgSatisfaction: number };
     readonly budget?: FactoryOptionsDto['budget'];
   };
@@ -1537,3 +1551,117 @@ export interface AnswerJournalHearingDto { readonly answers: readonly { readonly
 export interface AcceptJournalHearingDto { readonly registerAccountIds?: readonly string[]; readonly registerDimensionValueIds?: readonly string[]; readonly registerTaxCodes?: readonly string[]; readonly rule?: SaveJournalRuleDto; readonly entry?: JournalEntryDraftDto }
 /** accept の応答。登録したマスタ（chart）とルール・仕訳をまとめて返すので、画面は 1 往復で描き直せる。 */
 export interface AcceptJournalHearingResultDto { readonly hearing: JournalHearingDto; readonly rule: JournalRuleDto; readonly entry: JournalEntryDto; readonly chart: JournalChartOfAccountsDto }
+
+// ---------------------------------------------------------------------------
+// ツールテンプレート（v43 実装契約 §5 / ADR-0049）
+// Tool Builder の「テンプレートから作成」と Agent Factory が同じ外部ファイルを読む。
+// ---------------------------------------------------------------------------
+
+/** 日本語 / 英語の 1 行（テンプレートは必ず両方を持つ）。 */
+export interface LocalizedTextDto { readonly ja: string; readonly en: string }
+export interface LocalizedListDto { readonly ja: readonly string[]; readonly en: readonly string[] }
+
+export type ToolTemplateSlotKindDto = 'dataSource' | 'column' | 'joinKeys' | 'choice' | 'number' | 'text' | 'intent';
+
+/** テンプレートが宣言する「埋める場所」1 つ。画面はこの宣言から入力欄を組み立てる。 */
+export interface ToolTemplateSlotDto {
+  readonly name: string;
+  readonly kind: ToolTemplateSlotKindDto;
+  readonly label: LocalizedTextDto;
+  readonly help?: LocalizedTextDto;
+  readonly optional: boolean;
+  readonly source?: string;
+  readonly role?: string;
+  readonly types?: readonly string[];
+  readonly multiple?: { readonly min: number; readonly max: number };
+  readonly distinctFrom?: readonly string[];
+  readonly left?: string;
+  readonly right?: string;
+  readonly options?: readonly { readonly value: string; readonly label: LocalizedTextDto }[];
+  readonly optionsFrom?: string;
+  readonly default?: string | number;
+  readonly min?: number;
+  readonly max?: number;
+  readonly integer?: boolean;
+  readonly maxLength?: number;
+  readonly pattern?: string;
+}
+
+export interface ToolTemplateDto {
+  readonly id: string;
+  readonly version: string;
+  readonly title: LocalizedTextDto;
+  readonly summary: LocalizedTextDto;
+  readonly whenToUse: LocalizedListDto;
+  readonly notFor?: LocalizedListDto;
+  readonly tags: readonly string[];
+  readonly sources: { readonly min: number; readonly max: number };
+  readonly slots: readonly ToolTemplateSlotDto[];
+}
+
+/** 読み込めなかったテンプレートファイル 1 件（問題文は直し方を含む）。 */
+export interface InvalidToolTemplateDto {
+  readonly file: string;
+  readonly id?: string;
+  readonly problems: readonly string[];
+}
+
+export interface ToolTemplateCatalogDto {
+  readonly templates: readonly ToolTemplateDto[];
+  readonly invalid: readonly InvalidToolTemplateDto[];
+}
+
+/** 候補 1 件。「なぜこれを選べるのか」を人が読める材料つき（種類ごとに持つ項目が違う）。 */
+export interface TemplateSlotOptionDto {
+  readonly value: string;
+  readonly label?: LocalizedTextDto;
+  /** dataSource: データソースの表示名。 */
+  readonly name?: string;
+  /** column: 列の型。 */
+  readonly type?: string;
+  /** column（カテゴリ列）: 実在値の例と相異なる値の総数。 */
+  readonly examples?: readonly string[];
+  readonly distinctCount?: number;
+  /** column（期間列）: 粒度ごとの行数と、解釈できた開始日の範囲。 */
+  readonly granularities?: Readonly<Record<string, number>>;
+  readonly minStart?: string;
+  readonly maxStart?: string;
+  /** joinKeys: 値の重なり（0..1）と、キー全部を使ったときの一意性。 */
+  readonly overlap?: number;
+  readonly uniqueLeft?: boolean;
+  readonly uniqueRight?: boolean;
+}
+
+export interface TemplateSlotCandidatesDto {
+  readonly slot: string;
+  readonly kind: ToolTemplateSlotKindDto;
+  readonly options?: readonly TemplateSlotOptionDto[];
+  readonly range?: { readonly min: number; readonly max: number };
+  readonly freeText?: true;
+}
+
+export interface TemplateSlotCandidatesResultDto {
+  readonly templateId: string;
+  readonly version: string;
+  readonly candidates: readonly TemplateSlotCandidatesDto[];
+}
+
+/** スロットへ入れられる値（文字列 / 数値 / 文字列の配列）。 */
+export type TemplateSlotValueDto = string | number | readonly string[];
+export type TemplateSlotValuesDto = Readonly<Record<string, TemplateSlotValueDto | undefined>>;
+
+/** 実体化の結果。保存はされていない（画面がキャンバスへ展開する）。 */
+export interface InstantiatedTemplateDto {
+  readonly template: { readonly id: string; readonly version: string };
+  readonly graph: ToolGraphDto;
+  readonly inputSchema?: SchemaDto;
+  readonly agentTool: { readonly name: string; readonly description: string };
+  /** 式が空の calculate ノード（画面が「AI に式を書かせる」へ意図文を入れておく）。 */
+  readonly pendingExpressions: readonly { readonly nodeId: string; readonly intent: string }[];
+}
+
+/** 422 TOOL_TEMPLATE_SLOTS が本文に載せる「どの欄を直せばよいか」。 */
+export interface TemplateSlotProblemDto {
+  readonly slot?: string;
+  readonly message: string;
+}

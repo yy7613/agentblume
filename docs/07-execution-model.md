@@ -126,7 +126,8 @@ AgentのTool callも同じエンジンで実行するが、**計算は常に全�
 - 判定: トポロジカル順で「入力には行があるのに出力が0行」になった最初のノードを探す。それが `filter` なら、**有効な**条件（`disabled` は除く）を1つずつ入力表へ当てて件数を数える。実行が行を残した規則そのもの（domainの `prepareFilterCondition` / `rowMatchesFilterCondition`）で数えるので、診断と実行が食い違わない。
 - 内訳: 各条件について列・演算子・使った値・供給元の引数名・単独での一致行数を返す。単独で0件の条件（どれも単独では当たるのにANDで0件になる場合は全条件）には、文字列列なら**実在する値の例**（要求値を含む/含まれる値・先頭一致を優先。`2015年12月31日` → `2015年`）と異なり数、数値・日付列なら最小・最大を添える。
 - 形: `{"rows":[], "noMatch":{"message":"No rows matched. Do not answer from memory: …","nodeId":"narrow","combine":"and","conditions":[{"column":"時点","op":"eq","argument":"time_point","value":"2015年12月31日","matchingRows":0,"availableValues":["2015年","2016年"],"distinctValues":2}]}}`。`agent-output.format` が `markdown-table` のときは同じ内容を読める文章として本文の後ろに続ける。値は**JSONの値としてのみ**運び、指示文には混ぜない。
-- 上限: 値の例は8個 × 80文字、診断全体で約1.5KB（超えたら値の数 → 条件の数の順に削る）。
+- 複数値条件（`in` / `notIn`）: 使った値は単値の `value` ではなく `values`（要求した並び）で返し、`in` では**そのうち1行も当たらなかった値**を `unmatchedValues` に並べる。実在値の例は空振りした値に近いものを優先する。`{"column":"地域","op":"in","argument":"regions","values":["東京市","大阪市"],"matchingRows":0,"unmatchedValues":["東京市","大阪市"],"availableValues":["東京都","大阪府",…]}`。一部の値だけが当たった呼び出しは0行にならないので、noMatch は付かない（当たった分の行がそのまま返る）。`notIn` は「除外した値」なので空振りという概念が無く、`unmatchedValues` を付けない。
+- 上限: 値の例・要求値・空振りした値はいずれも8個 × 80文字、診断全体で約1.5KB（超えたら値の数 → 条件の数の順に削る）。
 - 記録: 同じ内容を実行トレースの `tool-result.noMatch` に残す（Inspectorの行に「該当0件: 時点 eq "…" → 2015年 / 2016年」として出る）。0行だった実行だけが持つ任意フィールドで、旧Runのトレースには無い。
 - ツール検証（Tool Check）の結果は変えない。モデルへ返す本文とトレースにだけ足す。
 

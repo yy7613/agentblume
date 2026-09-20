@@ -482,3 +482,40 @@ describe('ToolApiClient の実行環境機能と判定エラーの rubric', () =
     expect(malformed.code).toBe('JUDGE_TRACE_UNAVAILABLE');
   });
 });
+
+/** ツールテンプレート（v43 / ADR-0049）の 3 本。 */
+describe('ToolApiClient: ツールテンプレート', () => {
+  it('正常: 一覧は scope をクエリで送り、templates と invalid をそのまま返す', async () => {
+    const catalog = { templates: [{ id: 'period-series' }], invalid: [{ file: 'broken.json', problems: ['x'] }] };
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse(catalog));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    await expect(client.listToolTemplates(scope)).resolves.toEqual(catalog);
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/tool-templates?tenantId=tenant+a&workspaceId=workspace%2F1');
+  });
+
+  it('正常: 候補は id を URL へ、部分的なスロット値を本文へ送る', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ templateId: 'period-series', version: '1.0.0', candidates: [] }));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    await client.toolTemplateSlotCandidates({ templateId: 'period-series', scope, dataSourceIds: ['ds-a'], values: { periodColumn: '時点' } });
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/tool-templates/period-series/slot-candidates');
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ scope, dataSourceIds: ['ds-a'], values: { periodColumn: '時点' } });
+  });
+
+  it('境界: id はエスケープする（利用者のテンプレートが記号を含んでも壊れない）', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ candidates: [] }));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    await client.toolTemplateSlotCandidates({ templateId: 'a/b', scope, dataSourceIds: ['ds-a'] });
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/tool-templates/a%2Fb/slot-candidates');
+  });
+
+  it('異常: 422 のスロット指摘は details へ載って届く（画面が欄の下に出せる）', async () => {
+    const slots = [{ slot: 'valueColumns', message: "slot 'valueColumns' is set to '世帯数'" }];
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'TOOL_TEMPLATE_SLOTS', message: 'bad slots', slots } }, 422));
+    const client = new ToolApiClient('', fetcher as typeof fetch);
+    const error = await client.instantiateToolTemplate({ templateId: 'period-series', scope, dataSourceIds: ['ds-a'], values: {}, language: 'ja' })
+      .catch((cause: unknown) => cause) as ApiError;
+    expect(error.status).toBe(422);
+    expect(error.code).toBe('TOOL_TEMPLATE_SLOTS');
+    expect(error.details).toEqual({ slots });
+  });
+});

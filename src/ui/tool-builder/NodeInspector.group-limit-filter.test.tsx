@@ -12,10 +12,11 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // domain の正準リスト。UI ソースは domain を import しない方針だが、テストからのピン留め import は可。
-import { CASE_FOLD_OPS as DOMAIN_CASE_FOLD_OPS, FILTER_OPS as DOMAIN_FILTER_OPS, ORDER_OPS as DOMAIN_ORDER_OPS, VALUELESS_OPS as DOMAIN_VALUELESS_OPS } from '../../domain/etl/nodes/filter';
+import { CASE_FOLD_OPS as DOMAIN_CASE_FOLD_OPS, FILTER_OPS as DOMAIN_FILTER_OPS, MAX_FILTER_VALUES as DOMAIN_MAX_FILTER_VALUES, MULTI_VALUE_OPS as DOMAIN_MULTI_VALUE_OPS, OPERATOR_BINDABLE_OPS as DOMAIN_OPERATOR_BINDABLE_OPS, ORDER_OPS as DOMAIN_ORDER_OPS, parseFilterValueList, VALUELESS_OPS as DOMAIN_VALUELESS_OPS } from '../../domain/etl/nodes/filter';
 import type { PropagationResultDto } from '../api/types';
 import { I18nProvider } from '../i18n';
-import { FILTER_CASE_FOLD_OPS, FILTER_OPS, FILTER_ORDER_OPS, FILTER_VALUELESS_OPS, NodeInspector } from './NodeInspector';
+import { FILTER_CASE_FOLD_OPS, FILTER_MAX_VALUES, FILTER_MULTI_VALUE_OPS, FILTER_OPERATOR_BINDABLE_OPS, FILTER_OPS, FILTER_ORDER_OPS, FILTER_VALUELESS_OPS, NodeInspector } from './NodeInspector';
+import { parseFilterValues } from './node-config-utils';
 import { useToolBuilderStore } from './store';
 
 const upstream = { columns: [
@@ -158,7 +159,8 @@ describe('NodeInspector: filter の演算子ラベル', () => {
     render(<NodeInspector />);
     expect(operatorOptions()).toEqual([
       ['eq', '='], ['neq', '≠'], ['gt', '>'], ['gte', '≥'], ['lt', '<'], ['lte', '≤'],
-      ['contains', 'contains'], ['isNull', 'is empty'], ['notNull', 'is not empty'],
+      ['contains', 'contains'], ['in', 'matches any of'], ['notIn', 'matches none of'],
+      ['isNull', 'is empty'], ['notNull', 'is not empty'],
     ]);
   });
 
@@ -167,7 +169,8 @@ describe('NodeInspector: filter の演算子ラベル', () => {
     render(<I18nProvider initialLanguage="ja"><NodeInspector /></I18nProvider>);
     expect(operatorOptions(0, '演算子')).toEqual([
       ['eq', '='], ['neq', '≠'], ['gt', '>'], ['gte', '≥'], ['lt', '<'], ['lte', '≤'],
-      ['contains', '含む'], ['isNull', 'が空'], ['notNull', 'が空でない'],
+      ['contains', '含む'], ['in', 'いずれかに一致'], ['notIn', 'いずれにも一致しない'],
+      ['isNull', 'が空'], ['notNull', 'が空でない'],
     ]);
   });
 
@@ -547,6 +550,18 @@ describe('NodeInspector: filter 演算子定数のピン留め（domain との�
     expect([...FILTER_ORDER_OPS].sort()).toEqual([...DOMAIN_ORDER_OPS].sort());
     expect([...FILTER_CASE_FOLD_OPS].sort()).toEqual([...DOMAIN_CASE_FOLD_OPS].sort());
   });
+
+  it('正常: 複数値まわりの複製（MULTI_VALUE_OPS / OPERATOR_BINDABLE_OPS / 上限）も domain と一致する', () => {
+    expect([...FILTER_MULTI_VALUE_OPS].sort()).toEqual([...DOMAIN_MULTI_VALUE_OPS].sort());
+    expect([...FILTER_OPERATOR_BINDABLE_OPS]).toEqual([...DOMAIN_OPERATOR_BINDABLE_OPS]);
+    expect(FILTER_MAX_VALUES).toBe(DOMAIN_MAX_FILTER_VALUES);
+  });
+
+  it('正常: UI の値分解は domain の parseFilterValueList と同じ並びを返す', () => {
+    for (const text of ['東京都, 大阪府,北海道', '東京都、大阪府；;x', ' a\n b , a ', '', ',,,']) {
+      expect(parseFilterValues(text)).toEqual(parseFilterValueList(text));
+    }
+  });
 });
 
 describe('NodeInspector: filter の大文字小文字を区別しない', () => {
@@ -627,5 +642,110 @@ describe('NodeInspector: filter の日付列の値', () => {
     await userEvent.type(column, 'region');
 
     expect((screen.getByLabelText('Value') as HTMLInputElement).type).toBe('text');
+  });
+});
+
+describe('NodeInspector: filter の複数値（いずれかに一致 / いずれにも一致しない）', () => {
+  /** starter の filter-1 を任意の config にしてインスペクタを描画する。 */
+  function withFilter(config: Record<string, unknown>): void {
+    withUpstreamColumns();
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', config);
+  }
+
+  /** agent-input ノードを足してから filter-1 を選び直す（値のAI引数化の候補を作る）。 */
+  function withAgentInput(schemaColumns?: readonly { name: string; type: 'string' | 'number'; nullable: boolean }[]): void {
+    withUpstreamColumns();
+    const agentInputId = addNode('agent-input');
+    if (schemaColumns !== undefined) useToolBuilderStore.getState().updateNodeConfig(agentInputId, { schema: { columns: schemaColumns } });
+    useToolBuilderStore.getState().selectNode('filter-1');
+  }
+
+  it('正常: 演算子を「いずれかに一致」にすると値の並びの入力欄が出る', async () => {
+    withFilter({ column: 'region', op: 'eq', value: 'Tokyo' });
+    render(<NodeInspector />);
+    expect(screen.queryByLabelText('Values')).toBeNull();
+    await userEvent.selectOptions(screen.getByLabelText('Operator'), 'in');
+    expect(screen.getByLabelText('Values')).toBeTruthy();
+    expect(screen.getByText('Separate values with commas, 、, ; or line breaks.')).toBeTruthy();
+  });
+
+  it('正常: カンマ区切りで入力すると values へ書き戻し、解析した件数と値を見せる', async () => {
+    withFilter({ column: 'region', op: 'in' });
+    render(<NodeInspector />);
+    fireEvent.change(screen.getByLabelText('Values'), { target: { value: '東京都, 大阪府,北海道' } });
+    expect(configOf('filter-1')).toEqual({ column: 'region', op: 'in', values: ['東京都', '大阪府', '北海道'] });
+    expect(screen.getByText('values: 3 · 東京都 / 大阪府 / 北海道')).toBeTruthy();
+  });
+
+  it('境界: 打っている途中の区切り文字は消さず、重複・空白は書き戻しの時点で落とす', async () => {
+    withFilter({ column: 'region', op: 'in' });
+    render(<NodeInspector />);
+    const field = screen.getByLabelText('Values') as HTMLTextAreaElement;
+    fireEvent.change(field, { target: { value: '東京都,' } });
+    expect(field.value).toBe('東京都,'); // 整形し直して末尾のカンマを消さない。
+    expect(configOf('filter-1')['values']).toEqual(['東京都']);
+    fireEvent.change(field, { target: { value: ' 東京都 、大阪府, 東京都 ' } });
+    expect(configOf('filter-1')['values']).toEqual(['東京都', '大阪府']);
+  });
+
+  it('境界: 数値列では数値へ寄せて書き戻す（単値の入力欄と同じ扱い）', async () => {
+    withFilter({ column: 'amount', op: 'in' });
+    render(<NodeInspector />);
+    fireEvent.change(screen.getByLabelText('Values'), { target: { value: '100, 200' } });
+    expect(configOf('filter-1')['values']).toEqual([100, 200]);
+  });
+
+  it('異常: 値が空なら「1つ以上入力してください」を出し、上限超過も知らせる', async () => {
+    withFilter({ column: 'region', op: 'in' });
+    render(<NodeInspector />);
+    expect(screen.getByText('Enter at least one value.')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Values'), { target: { value: Array.from({ length: FILTER_MAX_VALUES + 1 }, (_, index) => `v${index}`).join(',') } });
+    expect(screen.getByText(`At most ${FILTER_MAX_VALUES} values are allowed.`)).toBeTruthy();
+  });
+
+  it('境界: 演算子を単値へ戻すと values を書き戻さない（見えない残留値を残さない）', async () => {
+    withFilter({ column: 'region', op: 'eq' });
+    render(<NodeInspector />);
+    await userEvent.selectOptions(screen.getByLabelText('Operator'), 'in');
+    fireEvent.change(screen.getByLabelText('Values'), { target: { value: '東京都' } });
+    expect(configOf('filter-1')).toEqual({ column: 'region', op: 'in', values: ['東京都'] });
+    await userEvent.selectOptions(screen.getByLabelText('Operator'), 'eq');
+    expect(configOf('filter-1')).toEqual({ column: 'region', op: 'eq' });
+  });
+
+  it('正常: 値をAI引数にすると、カンマ区切りで届くことを案内しサンプルの並びを別に編集できる', async () => {
+    withAgentInput([{ name: 'regions', type: 'string', nullable: true }]);
+    useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'region', op: 'in', values: ['東京都'] });
+    render(<NodeInspector />);
+    await userEvent.selectOptions(screen.getByLabelText('Condition value'), 'agent-input');
+    expect(screen.getByText('Declare this argument as string: the agent passes several values in it at once, separated by commas (for example "Tokyo,Osaka").')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Sample values'), { target: { value: '東京都,大阪府' } });
+    expect(configOf('filter-1')).toEqual({
+      column: 'region', op: 'in', values: ['東京都', '大阪府'],
+      valueBinding: { source: 'agent-input', field: 'regions' },
+    });
+  });
+
+  it('境界: 演算子をAI引数化するチェックボックスに複数値の演算子は出ない（値の形が違う）', async () => {
+    withAgentInput([{ name: 'query', type: 'string', nullable: false }]);
+    render(<NodeInspector />);
+    await userEvent.selectOptions(screen.getByLabelText('Operator source'), 'agent-input');
+    expect(screen.queryByRole('checkbox', { name: 'matches any of' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'matches none of' })).toBeNull();
+    expect(screen.getByText('Multi-value operators (matches any of / none of) take a list of values, so the agent cannot choose them here. Use a fixed operator for those conditions.')).toBeTruthy();
+  });
+
+  it('正常: 日本語表示では「値の並び」「いずれかに一致」で見せる', async () => {
+    withFilter({ column: 'region', op: 'in', values: ['東京都'] });
+    render(<I18nProvider initialLanguage="ja"><NodeInspector /></I18nProvider>);
+    expect(screen.getByLabelText('値の並び')).toBeTruthy();
+    expect((screen.getByLabelText('演算子') as HTMLSelectElement).value).toBe('in');
+  });
+
+  it('境界: 大文字小文字を区別しないチェックは複数値の演算子でも出る（文字列比較だから）', async () => {
+    withFilter({ column: 'region', op: 'in', values: ['tokyo'] });
+    render(<NodeInspector />);
+    await userEvent.click(screen.getByLabelText('Ignore case'));
+    expect(configOf('filter-1')).toEqual({ column: 'region', op: 'in', values: ['tokyo'], caseInsensitive: true });
   });
 });

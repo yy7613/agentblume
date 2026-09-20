@@ -73,7 +73,7 @@ flowchart TB
   S0["Stage 0: Profile<br/>決定的・LLMなし"] --> S1["Stage 1: Plan<br/>Planner"]
   S1 -->|"requirePlanApproval=true"| CP["waiting-approval<br/>checkpoint（approve/revise/reject）"]
   CP --> S2
-  S1 -->|"false（既定）"| S2["Stage 2: Tools<br/>ToolSmith × Tool計画数"]
+  S1 -->|"false（既定）"| S2["Stage 2: Tools<br/>テンプレート → 段階的生成 → 一括ToolSmith"]
   S2 --> S3["Stage 3: Skills<br/>SkillWriter"]
   S3 --> S4["Stage 4: Agent<br/>決定的合成 + Assembler"]
   S4 --> S5["Stage 5: 検証資産<br/>ScenarioDesigner"]
@@ -91,12 +91,25 @@ flowchart TB
 | `rowCount` | データソース全体の行数 | 「引数なしの呼び出しが `agent-output` を溢れさせないか」の判断材料 |
 | `periodColumns[]` | `parsePeriodLabel`（`parse-period` ノードと同じ関数）が非nullの値の**90%以上**を解釈できた文字列列。`{ column, granularities: 粒度別件数, minStart, maxStart, mixed }` | 期間列は文字列なので完全一致しか引けない。範囲・時系列順が要るなら `parse-period` を挟ませる。`mixed: true` なら粒度フィルタを必須にする |
 | `categoricalColumns[]` | distinctが**60以下**の文字列列と、その全値（例: `全国` + 47都道府県） | Tool説明へ「有効な値」を書かせ、存在しない値で0行を引かせない |
+| `joinCandidates[]` | **ソースをまたぐ**結合候補。同名・同型で値が**50%以上**重なる列を結合キーとして挙げ、`overlap`（重なり）と `uniqueLeft` / `uniqueRight`（そのキーで行が一意に決まるか）を持つ。期間列・コードらしい列（`コード`/`code`/`id`/`番号`）を先に並べる。**どちらかの側に空の値がある列は候補にしない**（null のキーは結合でマッチせず行が黙って落ちる。e-Stat の `注記`） | 「1ソース1Tool」に割らず、1つのToolで結合させる（§4 Stage 1）。一意でないキーは結合で行が増えるため警告として渡す |
+
+`joinCandidates` は **Run全体で1つの一覧**で、`executeAll` が返す全プロファイルが同じ内容を持つ（単体の `execute` では空。1ソースだけでは相手が分からない）。Plannerへは1回だけ載せる。
 
 これらはPlanner（Stage 1）とToolSmith（Stage 2）のプロンプトへ、他のプロファイル同様 untrusted data として渡す。
 
 ### Stage 1: 構成計画（Planner）
 
 `FactoryPlan` を得る。検証規則: Tool計画は各データソースを最低1回参照する必要はないが、**参照はすべて入力の `dataSourceIds` 内**であること。Tool数・Skill数・Scenario数は上限（既定: Tool ≤ 4、Skill ≤ 3、Persona ≤ 3、Scenario ≤ 6）内であること。`write` / `external-action` を要する計画は拒否する。
+
+#### 複数データソースを結合するTool計画（`additionalDataSourceIds`）
+
+Tool計画は `dataSourceId`（主ソース）に加えて `additionalDataSourceIds`（**最大2件**）を持てる。指定すると Stage 2 は「各ソースを読んで共有キーで結合し、値を同じ行に並べて返す」1つのToolを作る（[ADR-0047](./adr/0047-factory-lessons-from-estat.md) 第3ラウンド）。
+
+- 検証規則: 全て Run の `dataSourceIds` 内・重複なし・`dataSourceId` 自身を含まない・再利用計画（`reuse`）とは併用できない。
+- Plannerの構造化出力では、主idと同じく**列挙（enum）**で縛り、緩いプロバイダ向けに編集距離での写し間違い補正（`repairDataSourceIds`）も主idと同じ規則で掛ける。
+- 結合先の書き忘れは決定的に補う（`inferAdditionalDataSources`）: 再利用でも結合でもないToolの displayName / purpose / argumentSummary が、**別のソースにしか無い列名**（単位の注記 `【円】` を外した名前でも照合）を名指ししていれば、結合候補のあるそのソースを `additionalDataSourceIds` に足してから検証する。実測で、文章に「A ÷ B」と書きながら結合先を出さず、A だけを返すToolができてエージェントが誤答した（[ADR-0047](./adr/0047-factory-lessons-from-estat.md) 第6ラウンド）。
+- 判断材料は Stage 0 の `joinCandidates`。**同じキー（同じ時点・同じ地域）で値を並べる**答えが要るときだけ結合し、無関係なソースは従来どおり別Toolにする。
+- 後付けの任意フィールドなので、これを持たない既存の保存済みRunはそのまま読める。
 
 `requirePlanApproval: true` の場合、計画を `waiting-approval` checkpointとして停止する（Magentic計画承認と同じ応答型: `approve` / `revise(feedback)` / `reject`）。既定は `false`（全自動）。
 
@@ -108,19 +121,155 @@ Plannerへは、同じworkspaceに保存済みのToolの要約（**既存ツー�
 - 判断: 計画する各Toolについて「既存カタログに目的を満たすToolがあるか」を先に考える。説明が目的に合致し、引数が過不足なく使えるなら**新規作成せず再利用**し、`tools[].reuse = { internalId, rationale }` を設定する（迷ったら新規作成）。現在日時が必要な場合は組み込みの `current_datetime` を再利用する。
 - 再利用計画は既存Toolのグラフをそのまま使うため、`dataSourceId` は空文字を許す（データソースを読まないToolも選べる）。カタログ本体は利用者が書いた表示名・説明を含むため、プロファイル同様 untrusted data として user message 側へ隔離する。
 
-### Stage 2: Tool生成（ToolSmith + 修復ループ）
+### Stage 2: Tool生成（テンプレート → 段階的生成 → 一括ToolSmith）
 
 Tool計画に `reuse.internalId` があり、渡された既存ツールカタログで解決できる場合はToolSmithを呼ばず、その既存Toolの**最新版**を `toolRefs` / Tool契約 / 公開名の対応へそのまま載せる（`tool_reused` イベント。既存Toolに新版は作らない）。解決できない場合（削除済み・カタログ外・再利用できない副作用）は理由をイベントへ残して、以下の新規生成へフォールバックする。
 
+新規作成は**3つの経路**を順に試す: **テンプレート → 段階的生成 → 一括ToolSmith**。前の経路が諦めるたびに理由をイベントへ残して次へ落ちる。`FactoryOptions.toolGeneration` の `'one-shot'` を指定すると、テンプレートも段階的生成も使わず従来の一括ToolSmithだけになる（既定は `'staged'` = テンプレートを先に試す。`'template'` という値は足さない）。
+
+#### テンプレート経路（最初に試す・[ADR-0049](./adr/0049-tool-templates.md) / [implementation/v43](../implementation/v43-tool-templates.md)）
+
+前年比・期間内の統計・相関・2ソースの比のような構成は、ノードとしては既にあるのに Factory からは作れなかった（`ToolSpec` の語彙に無いため）。これらは**外部ファイルのテンプレート**（`templates/tools/*.json`）が構成ごと持っているので、モデルの仕事は「どれを使うか」と「スロットを候補から埋めるか」の2つだけになる。
+
+```
+FactoryToolPlan + DataProfile[]
+  └─ applicableTemplates（決定的）… 必須スロットに候補が無いテンプレートは外す。0件なら段階的生成へ
+  └─ select-template    候補の id / summary / whenToUse / notFor だけを見て 1 つ選ぶ（"none" も選べる）
+  └─ fill-slots         スロットごとの候補（enum・件数・範囲）から埋める。dataSource スロットは訊かない
+       ↓  instantiateTemplate（純関数・LLMなし）→ ToolGraph + inputSchema + Tool契約
+       ↓  `intent` スロットがあれば v41 の式提案が calculate の式を書く
+  既存の決定的検査（スキーマ伝播 → 設計時プレビュー → 構造 → 結合の設計 → 意味 → 既定呼び出しの溢れ）
+       ↓ 違反をスロットへ引けたら fill-slots へ1回だけ差し戻す
+       ↓ それでも駄目なら段階的生成へフォールバック
+```
+
+| タスク | 決めること | 渡す材料（最小） | 選択肢の閉じ方 |
+|---|---|---|---|
+| `select-template` | どのテンプレートで作るか（`none` 可） | 目的・目標と、候補ごとの `id` / `summary` / `whenToUse` / `notFor`（目標の言語） | `templateId` は候補の id + `"none"` の `enum` |
+| `fill-slots` | スロットごとの値 | 目的・目標と、スロットの `label` / `help` / 種類 / 任意か + 候補（カテゴリ列は実在値8件、期間列は粒度内訳と範囲、結合キーは重なりと一意性） | 列・キー・選択肢は `enum`（複数選ぶ列は `minItems`/`maxItems` つきの配列）、数値は `minimum`/`maximum`、自由記述は `maxLength` |
+
+- **どのソースを読むかは訊かない**。`dataSource` スロットは計画の順（主ソース → `additionalDataSourceIds` の順）で決定的に割り当てる。
+- **実体化は純関数**（`instantiateTemplate`）。置換（`$slot` / `{{ }}` / `$each` / `$concat` / `$number` / `$profile` / `$argument` / `$intent`）と `when`（任意スロットが空ならノードを外して前後を繋ぐ）だけで、テンプレートに式や制御構文は持たせない。
+- **抜け道は作らない**。実体化したグラフは手で組んだToolと同じ検査を通す。テンプレートが使うノード種別（`calculate` / `time-series-analysis` / `summary-statistics` / `correlation-analysis` / `group-by` …）はそのグラフが実際に使っている種別として形の検査へ渡し、残りの形の規則（ソースを1回ずつ・終端は `agent-output` 1つ・合流は `join` だけ・枝分かれ禁止）はそのまま効かせる。集計・分析ノードを持つToolは「期間ラベル列と値の列が終端まで残ること」「`periodStart` で並べ替えること」の対象から外す（統計・相関・前期比は正しく落とすため）。
+- **意図文の式が書けなければ、そのToolはテンプレート経路を失敗にする**（計算列だけ落とすことはしない。式はテンプレートの中心だから）。段階的生成へ落ちる。
+- **差し戻しは `fill-slots` へ1回だけ**。違反の文面から直すべきスロットを引く（列名 → その列を選んだスロット、結合の違反 → `joinKeys` スロット）。引けない違反・2回目の失敗は諦める。
+- **フォールバック**: `tool_repair_attempted` に `template <id> failed: <理由>; falling back to staged generation` を残す。テンプレートを選ぶ前に諦めた場合は `no template fits this tool: <理由>; …`、当てはまるテンプレートが0件でモデルを一度も呼んでいない場合はイベントを出さない（試していないものを「失敗した」と書かない）。
+- **会計**: タスク1回 = ロール呼び出し1回。テンプレートで作ったToolは **2回**（選ぶ + 埋める）、意図文つきのテンプレートは +1〜2回（式提案）。
+- **イベント**: `tool_generated` の message は `<key> (template: period-change@1.1.0; slots: periodColumn=時点, valueColumns=[売上]; repaired: fill-slots)`。どの構成の・どの版から作られたToolかを後から追える。
+- **Planner へのヒント**: Stage 1 の材料に「このデータで使えるテンプレートの `id` と要約（目標の言語）」を足し、「テンプレートで作れる形のToolを優先する／2ソースのテンプレートには `additionalDataSourceIds` が要る」という規則を1行だけ足す（計画の形は変えない）。適用可否は決定的かつ小さく数える: 1ソースずつ・結合候補が挙げた2ソースの組・結合できるソースの先頭3件。
+
+#### 段階的生成（テンプレートが使えないとき・[ADR-0048](./adr/0048-staged-tool-generation.md) / [implementation/v42](../implementation/v42-staged-tool-generation.md)）
+
+一括ToolSmithは1回のプロンプトで**グラフ全体**（ノード・エッジ・config・引数宣言・説明文）を書く。ローカル12Bでは試行のたびに別の機械的な書き間違いが出て、3試行でToolが1本もできないRunが続いた（ADR-0047）。書かせる範囲が広すぎるのが原因なので、**モデルには決定だけを書かせ、グラフはコードが組む**。
+
+```
+FactoryToolPlan + DataProfile[]
+  └─ decide-join       （結合するToolだけ）どのキーで・どう結合するか
+  └─ decide-filters    期間の扱い（粒度・範囲）/ どのカテゴリ列を引数にするか
+  └─ decide-computations 計算列が要るか（名前と「何を計算したいか」の1文だけ。式は書かせない）
+  └─ decide-output     返す列 / 並び / 件数
+       ↓  ToolSpec（宣言的な仕様。グラフではない）
+  compileToolSpec（決定的・LLMなし）→ ToolGraph + inputSchema + 説明文
+       ↓  calculate ノードは式が空のまま置かれる
+  write-expression × 計算列の数（v41 の式提案ユースケースを再利用）
+       ↓
+  既存の決定的検査（構造 → 結合の設計 → スキーマ伝播 → 意味 → 既定呼び出しの溢れ）
+       ↓ 違反したら担当タスクへ1回だけ差し戻して再コンパイル
+       ↓ それでも駄目なら一括ToolSmithへフォールバック
+```
+
+| タスク | 決めること | 渡す材料（最小） | 選択肢の閉じ方 |
+|---|---|---|---|
+| `decide-join` | 結合キーと `inner`/`left` | 目的・各ソース名・`joinCandidates` | キーは候補の列名の `enum` |
+| `decide-filters` | 期間列・粒度（固定 / `argument`）・範囲引数の有無・カテゴリ引数 | 目的・目標・期間列の粒度内訳と範囲・カテゴリ列の値の先頭8件 | 列名と粒度は `enum`。自由記述は引数名だけ |
+| `decide-computations` | 計算列の名前と「何を計算したいか」の1文 | 目的・目標・数値列の名前 | 0件を明示的に許す。**式は書かせない** |
+| `decide-output` | 返す列・並び・件数 | 目的・結合/計算後の列一覧・行数の目安 | 列名と並びは `enum` |
+
+- **組み立ては決定的**（`compileToolSpec`）。ノードid・エッジ・`toInput`・`valueBinding`・引数の型と nullable・設計時サンプル・説明文はコードが作る。同じ入力なら必ず同じグラフになり、既存の構造検査・意味検査を**必ず通る**（通らない組み合わせは `validateToolSpec` が先に弾く）。説明文には引数の意味と形式・実在値の例・データの期間範囲・返す列を機械的に書く。
+- **粒度が混ざるデータでは `granularity` を必須引数にする**。省略できる引数にすると、省略時に条件が無効化されて月次と年次が混ざった数字が返る。必須にして構造的に防ぐ（説明文に選べる値と「迷ったら既定」を書く）。
+- **式は専用プロンプトへ**（v41 / ADR-0046）。計算列ごとに式提案ユースケースを呼び、文法・関数表・検証・標本試算つきで式を作ってノードへ入れる。辞退・検証失敗・モデル失敗のときは**その計算列だけを落として**Toolは作る（`tool_generated` の message に `dropped computation: <列> (<理由>)` が残る）。式提案が使えない構成では計算列を全て落とす。計算列は段階的経路だけの機能で、一括ToolSmithには許可しない（式をグラフのプロンプトに混ぜない）。
+- **差し戻しは担当タスクへ1回だけ**。`validateToolSpec` の違反はその決定を下したタスクへ、検査の違反は下表に従って戻す。全体で `maxRepairAttempts + 1` 回のコンパイルを超えたら諦める。
+
+| 違反 | 差し戻すタスク |
+|---|---|
+| `validateToolSpec` の issue | issue が持つタスク名 |
+| 結合で行が増えた / キーが無い・型が違う | `decide-join` |
+| 引数なし（必須引数だけ）の呼び出しが `maxRows` を超える | `decide-output`（`limit`）→ それでも超えるなら `decide-filters` |
+| 形・スキーマ伝播・証拠列の欠落 | 差し戻さない（コンパイラのバグとして失敗させ、単体テストで防ぐ） |
+
+- **フォールバック**: `ok: false` になった / 中断以外の例外が出た場合は `tool_repair_attempted` に `staged generation failed: <理由>; falling back to one-shot ToolSmith` を残して、以下の一括経路をそのまま回す。
+- **会計**: タスク1回 = ロール呼び出し1回として `budget.maxRoleCalls` に数える。単一ソース・計算列1つのToolは 4 回（decide-filters / decide-computations / decide-output / write-expression）。
+- **イベント**: `tool_generated` の message に `<key> (staged: decide-filters, decide-computations, decide-output, write-expression×1; repaired: decide-output)` の形で「走ったタスク・やり直したタスク・落とした計算列」を残す。
+
+#### 一括ToolSmith + 修復ループ（フォールバック経路 / `toolGeneration: 'one-shot'`）
+
 新規作成するTool計画ごとに:
 
-1. ToolSmithへノードカタログ（登録済みノード型・config契約）・対象データソースのプロファイル・引数計画を渡し、`ToolGraph` を提案させる。許可する変換ノードは `SAFE_TRANSFORM_TYPES` = `select` / `filter` / `sort` / `distinct` / `limit` / `parse-period` / `summary-statistics`。各ノードのconfig契約をプロンプトへカタログとして列挙する。
-2. source ノードは計画の `dataSourceId` を参照する。sink は `agent-output`（必要に応じ `chart-output` / `workspace-output`）。
-3. **構造検査**（決定的・エンジンより手前）: 許可ノード語彙内か、source が計画どおりの種別と `dataSourceId` か、`agent-output` がちょうど1つか、`agent-input` が未接続か、データ経路が枝分かれ・合流の無い単一チェーンか。違反は「何が違反で、どう直すか」を添えて修復ループへ回す（エンジンのスキーマエラーだけでは直し方が伝わらず修復が空回りする）。
-4. `EtlEngine.propagateSchemas` + `preview(rowLimit)` で検証する。エラー時はエラー内容を添えて再提案させる（`maxRepairAttempts` 回、既定2）。
-5. **意味の検査**（決定的・スキーマ確定後）: 構造とスキーマが通っても「答えに使えないTool」はできる。下表を検査し、違反は直し方を添えて修復ループへ回す。
-6. **既定呼び出しの溢れガード**: 生成Toolの引数は全て省略可能なので、エージェントの最初の呼び出しは「引数なし」になる。実行時と同じ `graphWithArguments` で全引数を省略した2本目のプレビューを回し、終端 `agent-output` が `shape:'rows'` かつ `overflow:'error'` で `rows > maxRows` になるなら、直し方（末尾に `limit` を足す / 集計する / `shape:"summary"` にする）を添えて修復ループへ回す（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。
-7. 検証を通過したら `SaveToolUseCase` でdraft保存する。`sideEffect` は `read-only` または `session-write` のみ許可する。
+1. ToolSmithへノードカタログ（登録済みノード型・config契約）・対象データソースのプロファイル・引数計画を渡し、`ToolGraph` を提案させる。許可する変換ノードは `SAFE_TRANSFORM_TYPES` = `select` / `filter` / `sort` / `distinct` / `limit` / `parse-period` / `rename` / `join` / `summary-statistics`。各ノードのconfig契約をプロンプトへカタログとして列挙する。
+2. source ノードは計画の `dataSourceId`（結合Toolでは `additionalDataSourceIds` も）を参照する。sink は `agent-output`（必要に応じ `chart-output` / `workspace-output`）。
+3. **正規化**（決定的・検査より手前。`normalizeProposedGraph`）: 機械的な書き間違いだけを直す（下記）。直した内容は `tool_generated` イベントの message に `normalized: …` として残す。
+4. **構造検査**（決定的・エンジンより手前）: 許可ノード語彙内か、計画の各データソースを**ちょうど1回ずつ**読んでいるか（種別も計画どおりか）、`agent-output` がちょうど1つか、`agent-input` が1つ以下で未接続か、データ経路が下記の木になっているか。違反は「どのノード・どのエッジをどう直すか」を添えて修復ループへ回す（エンジンのスキーマエラーだけでは直し方が伝わらず修復が空回りする）。
+5. `EtlEngine.propagateSchemas` + `preview(rowLimit)` で検証する。エラー時はエラー内容を添えて再提案させる（`maxRepairAttempts` 回、既定2）。
+6. **意味の検査**（決定的・スキーマ確定後）: 構造とスキーマが通っても「答えに使えないTool」はできる。下表を検査し、違反は直し方を添えて修復ループへ回す。
+7. **既定呼び出しの溢れガード**: 生成Toolの引数は全て省略可能なので、エージェントの最初の呼び出しは「引数なし」になる。実行時と同じ `graphWithArguments` で全引数を省略した2本目のプレビューを回し、終端 `agent-output` が `shape:'rows'` かつ `overflow:'error'` で `rows > maxRows` になるなら、直し方（末尾に `limit` を足す / 集計する / `shape:"summary"` にする）を添えて修復ループへ回す（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。
+8. 検証を通過したら `SaveToolUseCase` でdraft保存する。`sideEffect` は `read-only` または `session-write` のみ許可する。
+
+#### 正規化（`normalizeProposedGraph`）— 書き間違いは差し戻さずに直す
+
+ローカル12Bモデルの実測（ADR-0047 第4ラウンド）では、**計画は正しいのに** ToolSmith が修復試行を「書き方の癖」で使い切った。意味が一意に決まる崩れ方は、モデルへ差し戻す前にここで直す。
+
+| 直すもの | 規則 |
+|---|---|
+| `join` のポート | 片方だけ `toInput` が無ければ残りのポートを入れる。両方無ければ**計画の主データソースから伸びる枝**を左（0）に（辿れなければエッジ順）。同じポートが2本なら2本目を空いている側へ。 |
+| `join` の左右（推測時のみ） | 推測したポートでキー列が片側に見つからず伝播が落ちる場合、左右を入れ替えた版を1回だけ試し、通ればそちらを採る。**モデルが 0/1 を明示していた場合は入れ替えない**（`left` 結合の向き・列順という意味に関わるため）。 |
+| `in` / `notIn` の `values` | `values` が空で `value` に文字列/配列があれば、実行時と同じ区切り（`parseFilterValueList`）で `values` へ移す。引数バインド済みで値が無ければ、Stage 0 プロファイルの**実在値を最大2件**だけ種として置く（実行時は引数で上書き）。 |
+| filter config の別名 | `operator`→`op`、`field`/`columnName`→`column`、1条件を包んだ `condition`/`filters`/`where`/`criteria`→`conditions`。 |
+| 演算子の別表記 | `equals`/`=`/`==`→`eq`、`!=`→`neq`、`>=`→`gte`、`<=`→`lte`、`>`→`gt`、`<`→`lt`、`includes`→`contains`、`IN`→`in`（大文字だけの違いも吸収）。 |
+| ノード種別の綴り | `parse_period` / `parsePeriod` / `Parse-Period` / `csv_source` / `agent_output` / `agentInput` → 正規の種別。小文字化し `_`・空白・camelCase の切れ目を `-` と見なして**完全一致**した場合だけ。**許可語彙の外へは寄せない**（寄せた先で構造検査に落ちるだけ）。 |
+| source の `dataSourceId` | 書かれていない source へ、計画の並び（主ソース先頭）で id を割り当てる。ソース数が計画と一致し、未記入の数と残りの計画idの数が合うときだけ。**書かれているが計画外の id は上書きしない**（Planner と同じ編集距離 ≤3 の写し間違いだけ直す）。 |
+| `agent-input` の形 | `schema` の中に書かれた `sample` を外へ出す。`sample` が無ければ `{}`（全引数が省略可能なので有効）。 |
+| `agent-input` の欠落 | `valueBinding` / `opBinding` があるのに宣言ノードが無ければ、バインドから**合成**する。引数名は `field`、型は `in`/`notIn`・`opBinding` なら `string`、それ以外はバインド先の列型、すべて `nullable: true`、`sample` は条件の設計時の値（並びはカンマ連結）。 |
+| 引数の宣言型（伝播後） | 引数が**同じ型の列だけ**にバインドされているなら、宣言型をその型へ直す（`periodStart` の gte/lte に繋いだ `string` 引数 → `date`）。`parse-period` が足す列はスキーマ伝播後でないと型が分からないので、この1つだけ伝播の後で走る。型が混ざる引数は意味検査へ委ねる。 |
+
+**正規化しないもの**（意味を触らない）: ノードを足さない・消さない、列名を変えない、**値を発明しない**（実在値が分からなければ何も置かない）、認識できない崩れ方は触らずに修復ループへ流す。純粋関数で、二度掛けても結果は変わらない。
+
+#### 差し戻し文面（何を書いたか・正しい形・繰り返しの指摘）
+
+- ノード設定の検証に落ちたときは、エラー文面に加えて**そのノードに実際に書かれた config JSON**（約400文字で切り詰め、`<untrusted-data>` で隔離）と、その種別の**最小の正しい config 例**を添える。「`column: expected string, received undefined`」だけでは何を直すか分からず、実測では同じ崩し方が繰り返された。
+- 直前の試行と**同じ違反**を繰り返したら、文面の先頭に「同じ間違いを繰り返している」と明示する（同じ文面をそのまま返すと同じ出力が返ってくる）。
+- **違反はまとめて1回で返す**。構造検査と結合の設計検査は同じ段で、意味検査と既定呼び出しの溢れガードは同じプレビューから、それぞれ全違反を連結して差し戻す（1回の試行で複数直せるようにする）。
+- **結合するTool（`additionalDataSourceIds` あり）は修復試行を1回多く回す**（単一ソースは従来どおり）。枝の数・ポート・キー・suffix と部品が多く、実測では試行ごとに**別の**問題へ進んでいた（同じ失敗の反復ではない）。Run全体は `budget.maxRoleCalls` が引き続き縛る。
+
+#### グラフの形（木）と結合（`join`）
+
+データ経路は「各データソースが自分の短い枝を持ち、枝は `join` でだけ合流し、最後は1本になって `agent-output` へ落ちる**木**」とする。単一ソースのToolはその特殊形（枝が1本＝従来どおりの単一チェーン）。
+
+- **分岐（fan-out）は禁止**: 1つのノードが2つ以上のノードへ流れてはならない。枝は合流するだけで、分かれない。
+- **合流できるのは `join` だけ**: 2入力で、2本のエッジが `toInput: 0`（左）/ `1`（右）を明示すること。
+- `agent-input`（引数宣言）は1つまでで、従来どおりデータ経路の外（未接続）。
+- 孤立ノードは許さない。
+
+結合の規律（ToolSmithへのプロンプト）:
+
+| 規律 | 理由 |
+|---|---|
+| 共有キーを**全部**使って結合する（`時点` だけでなく `地域コード` も） | 片方だけで結合すると、同じ期間の全地域×全地域に増える |
+| 既定は `mode: "inner"`（片側にしか無い行が要るときだけ `left`） | 「並べて答える」は両側に値がある行のこと |
+| `select` / `rename` は結合の**前**に置く | 両側の値列が同名だと `値` と `値_right` になって読めない。不要な `注記_right` も持ち回らない |
+| 引数のfilterは最後の結合の**後**（または全枝に同一条件で） | 1つの引数が結合後の表を1回だけ絞る |
+| `uniqueLeft` / `uniqueRight` が false の側は先に絞る | キーが一意でないと結合で行が増え、出力が溢れる |
+| `parse-period` は**最後の結合の後で1回だけ** | 枝ごとに走らせると各枝へ `periodStart` が増え、2つ目の結合が `still conflicts after suffix` で落ちる。期間ラベル列はキーとして結合後も残る |
+| 枝の中は `select` / `rename` だけ | それ以外は結合の後に置く。枝が短いほど衝突も行の増殖も起きにくい |
+| キーは `joinCandidates[].keys` から採る | `注記` のような自由記述列をキーにすると、値が揃わない行が**黙って**消える（「データなし」に見える）。コードと名前が両方あるならコードだけで足りる |
+| 3ソースは2段の結合で、各結合に**別の** `rightSuffix` | 同じ suffix だと2つ目の結合で名前が再び衝突する |
+
+#### 複数カテゴリを1回の呼び出しで（`in` 演算子）
+
+カテゴリ列（`categoricalColumns` の列）を絞る引数は、`filter` の複数値演算子 `in` で束縛する。引数は **nullable な string 1つ**で、実行時はカンマ区切りの一覧（`東京都,大阪府,北海道`）を受け取る。省略・空文字なら条件ごと無効化されて全カテゴリが返る。`agentTool.description` には「カンマ区切りの一覧（例つき）」と「省略すれば全カテゴリ」の両方を書かせる。
+
+`in` / `notIn` は `opBinding.allowed` には入れない（値の演算子であって、選ばせる演算子ではない）。
+
+> **この配線の `filter` が複数値演算子を持たない場合**、ToolSmithへ `in` を勧める規則も、「カテゴリ引数を `in` で束縛せよ」という検査も**出さない**（`supportsMultiValueFilterOps()` が `FILTER_OPS` から決定的に判定する）。エンジンが受け付けない演算子を書かせると、生成Toolが毎回修復ループで落ちてRunごと失敗するため。その場合は round 2 の言い回し（「カテゴリ引数は省略可能にし、省略すれば全件返す」）に留まる。
 
 #### 意味の検査（`describeToolSemanticViolations`）
 
@@ -129,7 +278,10 @@ Tool計画に `reuse.internalId` があり、渡された既存ツールカタ�
 | 検査 | 内容 | 直し方として返す文面 |
 |---|---|---|
 | 証拠列（期間） | プロファイルに期間列があるなら、終端の表に**元の期間ラベル列**（`時点` 等）が残っていること。`periodStart` は代替にならない | `select.columns` へ加える / `select` を外す |
-| 証拠列（値） | ソースに数値列があるなら、終端の表に最低1つ残っていること（`distinct` を使うToolは対象外） | 目的が問う値の列を残す |
+| 証拠列（値） | **結合する各ソースについて**、その数値列が終端の表に最低1つ残っていること（`rename` の写像と `join` の `rightSuffix` を追って判定する。`distinct` を使うToolは対象外） | 目的が問う値の列を残す／同名なら結合前に改名する |
+| 結合キー | `join` のキー列が左右の枝に実在し、型が一致すること（キー0件も拒否） | キー列を直す／型を揃える |
+| 行の増殖 | inner / left の `join` が、設計時プレビューで入力行数の最大を超える行を出していないこと | `key is not unique: join also on <列>`（不足キーを結合候補から名指し） |
+| カテゴリ引数 | `in` / `notIn` で束縛する引数は `type: "string"` で宣言されていること。`filter` が複数値演算子を持つビルドでは、カテゴリ列を `eq` で束縛していないこと | 複数値で受ける形へ直す |
 | 引数の型 | `date` 列を絞る引数は `type: "date"` で宣言されていること（`string` だと日付比較が文字列比較になる） | `{ "type": "date", "nullable": true }` で宣言し直す |
 | 範囲 | 同じ引数を下限（`gt`/`gte`）と上限（`lt`/`lte`）の**両方**へ束縛していないこと（完全一致の変装になる） | `*_from` / `*_to` の2つのnullable引数へ分ける |
 | 並べ替え | `parse-period` を使うなら開始日列で `sort` していること。目的が「最新・直近・latest」を求めるならその向きが `desc` であること | `{ "keys": [{ "column": "periodStart", "direction": "desc" }] }` を `limit` の前へ |
@@ -154,9 +306,8 @@ source → parse-period → filter(periodGranularity eq <粒度: 固定または
 
 1会話で呼べるツールは `MAX_TOOL_CALLS`（現行4回）までである。「東京都・大阪府・北海道を比較」を県ごとに1回ずつ呼ぶ設計は、この上限に当たって**会話ごと失敗**する（実測: `RunFailedError: tool call limit exceeded: maximum 4`）。
 
-- カテゴリ引数（地域・区分など）は nullable のままにし、**省略すればその期間の全カテゴリが返る**こと。比較は「1回呼んで行を選ぶ」で済む。
+- カテゴリ引数（地域・区分など）は `in` で束縛し、**カンマ区切りの一覧を1回で渡せる**こと。nullable のままなので、省略すればその期間の全カテゴリが返る（上記「複数カテゴリを1回の呼び出しで」）。
 - 「一度に一つの都道府県のみ」のような説明・規則を書かせない（ToolSmith・Analyst・Assemblerの全てで禁じる）。
-- `filter` に `in` 演算子は無い。複数値の明示指定は将来の課題として [ADR-0047](./adr/0047-factory-lessons-from-estat.md) に残す。
 - 上限の数字は Analyst / Assembler のペイロードへ `toolCallBudget` として渡し、ロールが「1対象1呼び出し」の設計を提案しないようにする。
 
 修復上限まで失敗したToolは欠落として記録し、計画から除外して続行する（依存するSkill計画も縮退）。全Toolが欠落した場合はRunを失敗させる。
@@ -182,7 +333,13 @@ Skill計画ごとにinstructions等を起草し、依存Toolを**生成済み版
 
 **回答の規律ブロック（決定的・LLM非関与）** — 合成の最後尾へ、言語非依存の見出し `# Answer discipline / 回答の規律 (factory-managed)` を持つブロックを必ず付ける（[ADR-0047](./adr/0047-factory-lessons-from-estat.md)）。内容は「数値はツールが返した行から引き写す」「0件なら0件と伝え、実在する値を挙げて次の条件を提案する（0件を『値が0』に書き換えない）」「数値には時点と単位を併記する（粒度が混ざるデータでは粒度も）」「注記があれば引用する」「引数は説明が示す書式・値で渡し、分からなければ利用者に確認する」。
 
-このRunで保存したToolの `inputSchema` に nullable な引数が1つでもあれば（`hasOmittableFilters`）、「複数の対象を比べるときは対象ごとに呼び分けず、絞り込み引数を省略して1回だけ呼び、返った行から選ぶ」という規律を**そのときだけ**足す。守れない指示（引数を省略できないTool構成）を書くと他の規律まで薄まるため、条件は契約（nullable宣言）から決定的に導く。
+「複数の対象を比べるときの頼み方」は、このRunで保存したToolの契約から `describeMultiCategoryStrategy` が決定的に選ぶ（グラフは防御的に読む）。守れない指示を書くと他の規律まで薄まるため、条件は契約から導く。
+
+| 判定 | 条件 | 書く規律 |
+|---|---|---|
+| `in-list` | `in` / `notIn` で束縛された **nullable** な引数がある | 「カテゴリの引数に対象をカンマ区切りで並べて1回だけ呼ぶ。省略すれば全カテゴリ」 |
+| `omit-filter` | 省略できる引数はあるが単一値（`eq`）しか受けない | 「絞り込み引数を省略して1回だけ呼び、返った行から選ぶ」（round 2 の言い回し） |
+| なし | 省略できる引数が無い | どちらも書かない |
 
 このブロックはAssemblerの起草物ではないため、§5.3 の `system-prompt-revision`（役割文・実行規則をまるごと差し替える提案）を適用しても残る。`ApplyImprovementsUseCase` は、起点Agentが持っていた文面があればそれを引き継ぐ（利用者が手を入れた規律を既定文へ戻さない）。強化モードの `rewrite` でも同じ規律で付ける。
 
@@ -445,9 +602,11 @@ POST   /factory-runs/:runId/cancel
 }
 ```
 
-`options` 省略時の既定: `maxIterations: 3` / `personaCount: 2` / `scenarioCount: 4` / `requirePlanApproval: false` / `promptStrategy: 'preserve'` / `targets: { minGoalAchievedRate: 0.75, minAvgSatisfaction: 4 }` / `budget: { maxDurationMs: 30分, maxRoleCalls: 40, maxScenarioRuns: 20, maxRepairAttempts: 2, maxProposalsPerIteration: 4 }`。
+`options` 省略時の既定: `maxIterations: 3` / `personaCount: 2` / `scenarioCount: 4` / `requirePlanApproval: false` / `promptStrategy: 'preserve'` / `toolGeneration: 'staged'` / `targets: { minGoalAchievedRate: 0.75, minAvgSatisfaction: 4 }` / `budget: { maxDurationMs: 30分, maxRoleCalls: 40, maxScenarioRuns: 20, maxRepairAttempts: 2, maxProposalsPerIteration: 4 }`。
 
 `options.promptStrategy`（`'preserve' | 'rewrite'`）は**強化モードでのみ効く**、既存Agentの systemPrompt の扱い（§4「既存Agentの強化モード」）。`'rewrite'` はAssembler呼び出しを1回追加で消費する。生成モードでは無視される。
+
+`options.toolGeneration`（`'staged' | 'one-shot'`、既定 `'staged'`）は新規Toolの作り方（§4 Stage 2）。`'staged'` は**まずツールテンプレート**（構成ごと外部ファイルが持つ。選んでスロットを埋めるだけ）を試し、当てはまらなければ小さな目的別タスク + 決定的コンパイラで組み、それも駄目なら `'one-shot'`（従来の一括ToolSmith）へ自動でフォールバックする。`'one-shot'` はテンプレートも段階的生成も使わない。改善ループの `add-tool` 提案は当面いつでも一括ToolSmithを使う。
 
 ## 10. UI（Factory画面）
 
@@ -466,7 +625,7 @@ POST   /factory-runs/:runId/cancel
 └──────────────────────┴──────────────────────────────────┴─────────────────────┘
 ```
 
-1. 入力はgoal必須・データソース1件以上（強化モードでは対象Agent必須・データソース任意）。`requirePlanApproval` 有効時は計画カードに承認・修正・却下ボタンを表示する。詳細オプションには、強化モードのときだけ systemPrompt の扱い（`promptStrategy`: 既存プロンプトを保つ / モデルに役割・ルールを書き直させる）を出す。
+1. 入力はgoal必須・データソース1件以上（強化モードでは対象Agent必須・データソース任意）。`requirePlanApproval` 有効時は計画カードに承認・修正・却下ボタンを表示する。詳細オプションには、ツールの作り方（`toolGeneration`: 段階的（推奨）/ 一括）を常に出し、強化モードのときだけ systemPrompt の扱い（`promptStrategy`: 既存プロンプトを保つ / モデルに役割・ルールを書き直させる）を足す。
 2. タイムラインはevents購読（ポーリング）で更新し、各StageからArtifact（Tool / Agent / ScenarioRun）の既存画面へリンクする。
 3. レポートは**品質判定（`report.quality` とその理由）**を先頭に出し、続けてイテレーション別メトリクスの推移（アンケート未回収件数を含む）、最良候補版、未解決Findingを表示する。Runの状態（成功）と成果物の質を同じ画面で必ず並べて読ませる（§6.1）。**昇格ボタンは置かない**（既存のQuality画面へ誘導する）。
 

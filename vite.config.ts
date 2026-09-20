@@ -14,6 +14,7 @@ export default defineConfig({
       '/auth': apiTarget,
       '/tools': apiTarget,
       '/tool-drafts': apiTarget,
+      '/tool-templates': apiTarget,
       '/tool-checks': apiTarget,
       '/runs': apiTarget,
       '/agents': apiTarget,

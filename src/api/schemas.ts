@@ -13,7 +13,7 @@ import type { PublishState, SideEffect } from '../domain/tool/metadata';
 import { AGENT_KINDS, AGENT_MAX_MCP_SERVERS, AGENT_MCP_SERVER_NAME_MAX_LENGTH } from '../domain/agent/agent';
 import { STRUCTURED_OUTPUT_TYPES } from '../domain/agent/structured-output';
 import { HARNESS_PATTERNS } from '../domain/harness/agent-harness';
-import { FACTORY_PROMPT_STRATEGIES } from '../domain/factory/factory-run';
+import { FACTORY_PROMPT_STRATEGIES, FACTORY_TOOL_GENERATIONS } from '../domain/factory/factory-run';
 import { PERSONA_ARCHETYPES, PERSONA_LANGUAGES, PERSONA_LEVELS, PERSONA_VERBOSITIES } from '../domain/validation/persona';
 import { SURVEY_QUESTION_KINDS } from '../domain/validation/survey';
 import { CODE_SCORERS } from '../domain/evaluation/evaluator-profile';
@@ -583,6 +583,8 @@ const factoryOptionsInputSchema = z.object({
   requirePlanApproval: z.boolean().optional(),
   // 強化モード（baseAgent指定）でのみ効く。省略時はサーバー既定の 'preserve'（既存プロンプトを保つ）。
   promptStrategy: z.enum(FACTORY_PROMPT_STRATEGIES).optional(),
+  // 新規Toolの作り方。省略時はサーバー既定の 'staged'（段階的生成 → 失敗時は一括へフォールバック）。
+  toolGeneration: z.enum(FACTORY_TOOL_GENERATIONS).optional(),
   targets: z.object({ minGoalAchievedRate: z.number().min(0).max(1), minAvgSatisfaction: z.number().min(1).max(5) }).optional(),
   budget: z.object({
     maxDurationMs: z.number().int().min(1_000),
@@ -769,4 +771,32 @@ export const suggestToolCheckCasesBodySchema = z.object({
   version: z.string().optional(),
   perCategory: z.number().int().min(1).max(5).optional(),
   focus: z.string().max(500).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// ツールテンプレート（v43 実装契約 §5 / ADR-0049）
+// スロット値は「文字列 / 数値 / 文字列の配列」だけ（テンプレートのスロットが取りうる値の全体）。
+// どの値が成立するかはデータ次第なので、ここでは**形だけ**を見て、中身の検証は
+// domain の `validateSlotValues` に任せる（同じ判断をサーバーが 2 か所に持たない）。
+// ---------------------------------------------------------------------------
+export const templateSlotValuesSchema = z.record(
+  z.string().min(1),
+  z.union([z.string(), z.number(), z.array(z.string())]),
+);
+/** このテンプレートが読むデータソース（主 → 追加の順）。上限は sources.max の最大値（5）。 */
+const templateDataSourceIdsSchema = z.array(z.string().min(1)).min(1).max(5);
+export const toolTemplateCandidatesBodySchema = z.object({
+  scope: tenantScopeSchema,
+  dataSourceIds: templateDataSourceIdsSchema,
+  /** 既に決まっているスロット（部分でよい）。依存する候補がこれに合わせて絞られる。 */
+  values: templateSlotValuesSchema.optional(),
+});
+export const toolTemplateInstantiateBodySchema = z.object({
+  scope: tenantScopeSchema,
+  dataSourceIds: templateDataSourceIdsSchema,
+  values: templateSlotValuesSchema,
+  /** 説明文の言語（既定 ja）。テンプレートは日英の説明文を持つ。 */
+  language: z.enum(['ja', 'en']).optional(),
+  /** エージェントへ公開する function 名（省略するとテンプレート id）。 */
+  toolName: z.string().min(1).max(64).optional(),
 });

@@ -42,7 +42,7 @@ export const MAX_VALUE_CHARS = 80;
 export const MAX_DIAGNOSIS_BYTES = 1_500;
 
 /** 値の例を添える演算子（文字列の一致・包含だけ。大小比較は min/max で示す）。 */
-const VALUE_HINT_OPS: ReadonlySet<string> = new Set(['eq', 'neq', 'contains']);
+const VALUE_HINT_OPS: ReadonlySet<string> = new Set(['eq', 'neq', 'contains', 'in', 'notIn']);
 
 /** 0 件の条件があるときの差し戻し文。データの値そのものは JSON 側にだけ置く。 */
 const NO_MATCH_MESSAGE = 'No rows matched. Do not answer from memory: tell the user no data matched, or call the tool again with one of the available values.';
@@ -116,17 +116,46 @@ function firstEmptyNode(graph: ToolGraph, tables: ReadonlyMap<string, Table>): {
   return undefined;
 }
 
-/** 条件 1 つの内訳。`hint` が true のときだけ、その列に実在する値（または最小・最大）を添える。 */
+/**
+ * 条件 1 つの内訳。`hint` が true のときだけ、その列に実在する値（または最小・最大）を添える。
+ * 複数値条件（in/notIn）では要求した値の並びと、**そのうち 1 行も当たらなかった値**を添える
+ * （「3 県のうち北海道だけが空振りした」と分かれば、モデルは残り 2 県の結果を使って答えられる）。
+ */
 function describeCondition(input: Table, condition: FilterCondition, matchingRows: number, hint: boolean): RunNoMatchCondition {
   const argument = condition.valueBinding?.source === 'agent-input' ? condition.valueBinding.field : undefined;
+  const values = condition.values;
   const base: RunNoMatchCondition = {
     column: condition.column,
     op: condition.op,
     ...(argument === undefined ? {} : { argument }),
     value: jsonValue(condition.value ?? null),
+    ...(values === undefined ? {} : { values: values.slice(0, MAX_AVAILABLE_VALUES).map(jsonValue) }),
     matchingRows,
   };
-  return hint ? { ...base, ...valueHints(input, condition) } : base;
+  if (!hint) return base;
+  const unmatched = unmatchedValues(input, condition);
+  return { ...base, ...(unmatched === undefined ? {} : { unmatchedValues: unmatched }), ...valueHints(input, condition) };
+}
+
+/**
+ * `in` の要求値のうち、その値**だけ**で当ててみても 1 行も残らなかったもの（上限まで）。
+ * `notIn` は「除外した値」なので空振りという概念が無く、undefined を返す。
+ */
+function unmatchedValues(input: Table, condition: FilterCondition): readonly string[] | undefined {
+  if (condition.op !== 'in' || condition.values === undefined) return undefined;
+  const missed = condition.values.filter((value) =>
+    !input.rows.some((row) => rowMatchesFilterCondition(row, { ...condition, values: [value] })));
+  return missed.slice(0, MAX_AVAILABLE_VALUES).map((value) => truncate(String(jsonValue(value))));
+}
+
+/** 手がかりの近さを測る基準値（単値は value、複数値は空振りした値 → 無ければ全要求値）。 */
+function requestedValues(input: Table, condition: FilterCondition): readonly string[] {
+  if (condition.values !== undefined) {
+    const missed = unmatchedValues(input, condition);
+    const targets = missed !== undefined && missed.length > 0 ? missed : condition.values.map((value) => String(jsonValue(value)));
+    return targets.map((value) => String(value));
+  }
+  return [condition.value === undefined || condition.value === null ? '' : String(jsonValue(condition.value))];
 }
 
 /** 列の実在値の手がかり（文字列は値の例 + 異なり数、数値・日付は最小最大 + 異なり数）。 */
@@ -148,17 +177,20 @@ function valueHints(input: Table, condition: FilterCondition): Partial<RunNoMatc
   }
   if (!VALUE_HINT_OPS.has(condition.op)) return {};
   const distinct = [...new Set(cells.map((cell) => String(jsonValue(cell))))];
-  const requested = condition.value === undefined || condition.value === null ? '' : String(jsonValue(condition.value));
-  return { availableValues: rankValues(distinct, requested), distinctValues: distinct.length };
+  return { availableValues: rankValues(distinct, requestedValues(input, condition)), distinctValues: distinct.length };
 }
 
-/** 要求値に「近い」値を先に出す: 包含し合う値 → 先頭が一致する値 → 出現順。 */
-function rankValues(values: readonly string[], requested: string): readonly string[] {
-  const target = requested.toLowerCase();
+/**
+ * 要求値に「近い」値を先に出す: 包含し合う値 → 先頭が一致する値 → 出現順。
+ * 複数値条件では空振りした要求値すべてに対して測り、いちばん近い1つの点数を採る
+ * （「北海道」が外れたなら北海道に近い値を先に出す）。
+ */
+function rankValues(values: readonly string[], requested: readonly string[]): readonly string[] {
+  const targets = requested.map((value) => value.toLowerCase());
   const scored = values.map((value, index) => {
     const lower = value.toLowerCase();
-    const related = target !== '' && (lower.includes(target) || target.includes(lower));
-    const prefix = commonPrefixLength(lower, target);
+    const related = targets.some((target) => target !== '' && (lower.includes(target) || target.includes(lower)));
+    const prefix = Math.max(0, ...targets.map((target) => commonPrefixLength(lower, target)));
     return { value, index, score: related ? 2 : prefix > 0 ? 1 : 0, prefix };
   });
   scored.sort((left, right) => right.score - left.score || right.prefix - left.prefix || left.index - right.index);
@@ -211,12 +243,16 @@ function withValueLimit(noMatch: RunNoMatch, limit: number): RunNoMatch {
   return {
     ...noMatch,
     conditions: noMatch.conditions.map((condition) => {
-      if (condition.availableValues === undefined) return condition;
-      if (limit === 0) {
-        const { availableValues: _dropped, ...rest } = condition;
-        return rest;
-      }
-      return { ...condition, availableValues: condition.availableValues.slice(0, limit) };
+      // 実在値の例・要求値・空振りした値は同じ上限で削る（いずれもデータ由来の可変長）。
+      const trimmed = {
+        ...condition,
+        ...(condition.availableValues === undefined ? {} : { availableValues: condition.availableValues.slice(0, limit) }),
+        ...(condition.unmatchedValues === undefined ? {} : { unmatchedValues: condition.unmatchedValues.slice(0, limit) }),
+        ...(condition.values === undefined ? {} : { values: condition.values.slice(0, Math.max(limit, 1)) }),
+      };
+      if (limit > 0) return trimmed;
+      const { availableValues: _values, unmatchedValues: _unmatched, ...rest } = trimmed;
+      return rest;
     }),
   };
 }
@@ -232,12 +268,17 @@ function byteLength(value: unknown): number {
 export function noMatchText(noMatch: RunNoMatch): string {
   const lines = noMatch.conditions.map((condition) => {
     const argument = condition.argument === undefined ? '' : ` (argument ${condition.argument})`;
+    // 複数値条件は要求した並びをそのまま見せる（単値の value は null で意味を持たない）。
+    const requested = JSON.stringify(condition.values ?? condition.value);
+    const unmatched = condition.unmatchedValues === undefined || condition.unmatchedValues.length === 0
+      ? ''
+      : `; no rows for: ${condition.unmatchedValues.join(', ')}`;
     const examples = condition.availableValues === undefined || condition.availableValues.length === 0
       ? ''
       : `; values in this column include: ${condition.availableValues.join(', ')}`;
     const range = condition.min === undefined || condition.max === undefined ? '' : `; range: ${String(condition.min)} .. ${String(condition.max)}`;
     const distinct = condition.distinctValues === undefined ? '' : ` (${condition.distinctValues} distinct)`;
-    return `- ${condition.column} ${condition.op} ${JSON.stringify(condition.value)}${argument} matched ${condition.matchingRows} rows${examples}${range}${examples === '' && range === '' ? '' : distinct}`;
+    return `- ${condition.column} ${condition.op} ${requested}${argument} matched ${condition.matchingRows} rows${unmatched}${examples}${range}${examples === '' && range === '' ? '' : distinct}`;
   });
   return [noMatch.message, ...lines].join('\n');
 }

@@ -1,0 +1,103 @@
+{
+  "$schema": "./tool-template.schema.json",
+  "formatVersion": 1,
+  "id": "join-three-side-by-side",
+  "version": "1.0.1",
+  "title": { "ja": "3 つのデータを横に並べる", "en": "Three sources side by side" },
+  "summary": {
+    "ja": "3 つのデータソースを同じ時点（と地域）で結合し、3 つの値を 1 行に並べて新しい順に返す。",
+    "en": "Joins three sources on the same period (and region) and returns all three sets of values in one row, newest first."
+  },
+  "whenToUse": {
+    "ja": ["3 つの指標を同じ時点・同じ地域で見比べたい", "3 つのデータソースが同じ期間の列（と地域コード）を持つ"],
+    "en": ["Comparing three indicators for the same period and region", "All three sources share a period column (and a region code)"]
+  },
+  "notFor": {
+    "ja": ["2 つで足りる（join-side-by-side を使う）", "比や割合が要る（ratio-of-two-sources を使う）"],
+    "en": ["Two sources are enough (use join-side-by-side)", "A ratio (use ratio-of-two-sources)"]
+  },
+  "tags": ["join", "comparison"],
+  "sources": { "min": 3, "max": 3 },
+  "slots": [
+    { "name": "primarySource", "kind": "dataSource", "label": { "ja": "主のデータソース", "en": "Primary data source" } },
+    { "name": "secondSource", "kind": "dataSource", "label": { "ja": "2 つ目のデータソース", "en": "Second data source" } },
+    { "name": "thirdSource", "kind": "dataSource", "label": { "ja": "3 つ目のデータソース", "en": "Third data source" } },
+    {
+      "name": "joinKeys", "kind": "joinKeys", "left": "primarySource", "right": "secondSource", "multiple": { "min": 1, "max": 3 },
+      "label": { "ja": "結合キー（3 つのデータに共通の列すべて）", "en": "Join keys (shared by all three sources)" },
+      "help": { "ja": "3 つとも同じキーで結ぶ。片方だけで結ぶと行が増える", "en": "All three are joined on the same keys; joining on only one of them multiplies rows" }
+    },
+    { "name": "periodColumn", "kind": "column", "source": "primarySource", "role": "period", "label": { "ja": "期間の列", "en": "Period column" } },
+    { "name": "primaryValues", "kind": "column", "source": "primarySource", "role": "value", "multiple": { "min": 1, "max": 3 }, "label": { "ja": "主のデータの値の列", "en": "Value columns of the primary source" } },
+    { "name": "secondValues", "kind": "column", "source": "secondSource", "role": "value", "multiple": { "min": 1, "max": 3 }, "label": { "ja": "2 つ目の値の列", "en": "Value columns of the second source" } },
+    { "name": "thirdValues", "kind": "column", "source": "thirdSource", "role": "value", "multiple": { "min": 1, "max": 3 }, "label": { "ja": "3 つ目の値の列", "en": "Value columns of the third source" } },
+    { "name": "defaultGranularity", "kind": "choice", "optionsFrom": "granularities:periodColumn", "label": { "ja": "既定の粒度", "en": "Default granularity" } },
+    { "name": "limit", "kind": "number", "min": 1, "max": 100, "integer": true, "default": 24, "label": { "ja": "返す最大行数", "en": "Maximum rows" } }
+  ],
+  "arguments": [
+    {
+      "name": "granularity", "type": "string", "nullable": false, "sample": { "$slot": "defaultGranularity" },
+      "description": { "ja": "期間の粒度。month / quarter / half / year / fiscal-year のうちデータにあるものを、この綴りのまま渡す（monthly・yearly・月次・年次 などは不可）。必ず指定する。", "en": "Period granularity: one of month / quarter / half / year / fiscal-year that exists in the data, spelled exactly like this (not monthly, yearly or a translation). Required." }
+    },
+    {
+      "name": "period_from", "type": "date", "nullable": true, "sample": { "$profile": "periodMin:periodColumn" },
+      "description": { "ja": "この日以降に始まる期間（ISO 日付）。省略で最初から。", "en": "Periods starting on or after this ISO date. Omit for no lower bound." }
+    },
+    {
+      "name": "period_to", "type": "date", "nullable": true, "sample": { "$profile": "periodMax:periodColumn" },
+      "description": { "ja": "この日以前に始まる期間（ISO 日付）。省略で最新まで。", "en": "Periods starting on or before this ISO date. Omit for no upper bound." }
+    }
+  ],
+  "nodes": [
+    { "id": "src_a", "type": { "$sourceType": "primarySource" }, "config": { "dataSourceId": { "$slot": "primarySource" } } },
+    { "id": "src_b", "type": { "$sourceType": "secondSource" }, "config": { "dataSourceId": { "$slot": "secondSource" } } },
+    { "id": "src_c", "type": { "$sourceType": "thirdSource" }, "config": { "dataSourceId": { "$slot": "thirdSource" } } },
+    { "id": "sel_b", "type": "select", "config": { "columns": { "$concat": [{ "$slot": "joinKeys" }, { "$slot": "secondValues" }] } } },
+    { "id": "sel_c", "type": "select", "config": { "columns": { "$concat": [{ "$slot": "joinKeys" }, { "$slot": "thirdValues" }] } } },
+    {
+      "id": "join_1", "type": "join",
+      "config": { "mode": "inner", "keys": { "$each": "joinKeys", "as": "k", "item": { "left": "{{k}}", "right": "{{k}}" } }, "rightSuffix": "_2" }
+    },
+    {
+      "id": "join_2", "type": "join",
+      "config": { "mode": "inner", "keys": { "$each": "joinKeys", "as": "k", "item": { "left": "{{k}}", "right": "{{k}}" } }, "rightSuffix": "_3" }
+    },
+    { "id": "period", "type": "parse-period", "config": { "column": { "$slot": "periodColumn" }, "startColumn": "periodStart", "granularityColumn": "periodGranularity", "fiscalYearStartMonth": 4 } },
+    {
+      "id": "f_granularity", "type": "filter",
+      "config": { "column": "periodGranularity", "op": "eq", "value": { "$slot": "defaultGranularity" }, "valueBinding": { "$argument": "granularity" } }
+    },
+    {
+      "id": "f_range", "type": "filter",
+      "config": {
+        "combine": "and",
+        "conditions": [
+          { "column": "periodStart", "op": "gte", "value": { "$profile": "periodMin:periodColumn" }, "valueBinding": { "$argument": "period_from" } },
+          { "column": "periodStart", "op": "lte", "value": { "$profile": "periodMax:periodColumn" }, "valueBinding": { "$argument": "period_to" } }
+        ]
+      }
+    },
+    { "id": "sort", "type": "sort", "config": { "keys": [{ "column": "periodStart", "direction": "desc", "nulls": "last" }] } },
+    { "id": "limit", "type": "limit", "config": { "count": { "$slot": "limit" } } },
+    { "id": "out", "type": "agent-output", "config": { "shape": "rows", "format": "json", "maxRows": { "$slot": "limit" }, "maxBytes": 65536, "overflow": "error" } }
+  ],
+  "edges": [
+    { "from": "src_a", "to": "join_1", "toInput": 0 },
+    { "from": "src_b", "to": "sel_b" },
+    { "from": "sel_b", "to": "join_1", "toInput": 1 },
+    { "from": "join_1", "to": "join_2", "toInput": 0 },
+    { "from": "src_c", "to": "sel_c" },
+    { "from": "sel_c", "to": "join_2", "toInput": 1 },
+    { "from": "join_2", "to": "period" },
+    { "from": "period", "to": "f_granularity" },
+    { "from": "f_granularity", "to": "f_range" },
+    { "from": "f_range", "to": "sort" },
+    { "from": "sort", "to": "limit" },
+    { "from": "limit", "to": "out" }
+  ],
+  "description": {
+    "ja": "同じ時点（と結合キー）の {{primaryValues}} と {{secondValues}} と {{thirdValues}} を 1 行に並べて返します（新しい順、最大 {{limit}} 行）。同じ名前の列は 2 つ目に _2、3 つ目に _3 が付きます。粒度 granularity は必須です。",
+    "en": "Returns {{primaryValues}}, {{secondValues}} and {{thirdValues}} for the same period (and join keys) in one row (newest first, up to {{limit}} rows). A column name shared with the primary source keeps '_2' on the second source and '_3' on the third. granularity is required."
+  },
+  "notes": "2 ソース版と 3 ソース版を別のテンプレートに分けている: `when` でノードを落とす仕組みは「入次数 1・出次数 1」のノードにしか使えず、結合の枝（source → select → join の入力 1）は join が 2 入力なので橋渡しできないため。結合キーは 3 つのデータに共通のものを選ぶ。"
+}

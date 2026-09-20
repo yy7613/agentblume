@@ -21,6 +21,8 @@ import type { DraftToolRouteDeps } from './draft-tool-routes';
 import { toHttpError } from './error-mapping';
 import { registerToolRoutes } from './tool-routes';
 import type { ToolRouteDeps } from './tool-routes';
+import { registerToolTemplateRoutes } from './tool-template-routes';
+import type { ToolTemplateRouteDeps } from './tool-template-routes';
 import { registerRunRoutes } from './run-routes';
 import type { RunRouteDeps } from './run-routes';
 import { registerAgentRoutes, type AgentRouteDeps } from './agent-routes';
@@ -168,7 +170,7 @@ function messageOf(error: unknown): string {
 
 /** ルート・エラーハンドラ設定済みの Fastify インスタンスを組み立てる（listen しない）。 */
 export function buildServer(
-  deps: ToolRouteDeps & DraftToolRouteDeps & RunRouteDeps & AgentRouteDeps & HarnessRouteDeps & HarnessRunRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps & FactoryRouteDeps & McpRouteDeps & ModelSettingsRouteDeps & SampleDataRouteDeps & ToolCheckRouteDeps & JournalRouteDeps & ExpenseRouteDeps & ReceivablesRouteDeps & ContractRouteDeps,
+  deps: ToolRouteDeps & DraftToolRouteDeps & ToolTemplateRouteDeps & RunRouteDeps & AgentRouteDeps & HarnessRouteDeps & HarnessRunRouteDeps & SkillRouteDeps & ValidationRouteDeps & EvaluationRouteDeps & EvaluationAssetRouteDeps & ExperimentRouteDeps & QualityGateRouteDeps & MemoryRouteDeps & OperationsRouteDeps & SessionRouteDeps & DataSourceRouteDeps & FactoryRouteDeps & McpRouteDeps & ModelSettingsRouteDeps & SampleDataRouteDeps & ToolCheckRouteDeps & JournalRouteDeps & ExpenseRouteDeps & ReceivablesRouteDeps & ContractRouteDeps,
   options?: ServerOptions,
 ): FastifyInstance {
   const app = Fastify({
@@ -250,6 +252,7 @@ export function buildServer(
 
   registerToolRoutes(app, deps);
   registerDraftToolRoutes(app, deps);
+  registerToolTemplateRoutes(app, deps);
   registerRunRoutes(app, deps);
   registerAgentRoutes(app, deps);
   registerHarnessRoutes(app, deps);

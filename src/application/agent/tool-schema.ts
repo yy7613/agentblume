@@ -1,8 +1,8 @@
 import { schemaIncompatibility } from '../../domain/data/schema';
 import type { Cell, Column, Row, Schema, Table } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
-import { operatorArgumentSummaries } from '../../domain/etl/nodes/filter';
-import type { OperatorArgumentSummary } from '../../domain/etl/nodes/filter';
+import { listValueArgumentSummaries, operatorArgumentSummaries } from '../../domain/etl/nodes/filter';
+import type { ListValueArgumentSummary, OperatorArgumentSummary } from '../../domain/etl/nodes/filter';
 import type { Tool } from '../../domain/tool/tool';
 import { AgentRunError, ToolArgumentsError } from './errors';
 import type { JsonObject, JsonSchemaObject, JsonSchemaProperty, JsonValue, ModelToolDefinition } from '../model/model-provider';
@@ -76,6 +76,38 @@ function withOperatorEnums(schema: JsonSchemaObject, graph: ToolGraph, inputSche
   return { ...schema, properties };
 }
 
+/**
+ * 値の並びを受け取る引数（`in`/`notIn` の valueBinding 先）の LLM 向け説明文（英語）。
+ * 「カンマ区切りで一度に複数渡せる」ことを**例つきで**言い切る — 実測では、単値しか渡せないと
+ * 思ったモデルが県ごとにツールを呼び、1 実行あたりのツール呼び出し上限に当たっていた。
+ */
+function listValueDescription(summary: ListValueArgumentSummary, nullable: boolean): string {
+  const columns = summary.columns.map((column) => `'${column}'`).join(', ');
+  const example = summary.samples.length === 0 ? '' : ` For example: "${summary.samples.join(',')}".`;
+  const target = summary.columns.length === 0 ? 'the filtered column' : `${summary.columns.length > 1 ? 'columns' : 'column'} ${columns}`;
+  const base = `Comma-separated list of values to match in ${target}. Pass every value you need in one call (for example "A,B,C") instead of calling the tool once per value.${example}`;
+  return nullable ? `${base} Omit it to skip this filter.` : base;
+}
+
+/**
+ * 値の並びを受け取る引数プロパティへ説明文を足す（型は string のまま。enum は付けない）。
+ * inputSchema に列が無い・string 型でない（いずれも保存時に拒否される不整合な旧 Tool）は触らない。
+ */
+function withListValueDescriptions(schema: JsonSchemaObject, graph: ToolGraph, inputSchema: Schema | undefined): JsonSchemaObject {
+  const summaries = listValueArgumentSummaries(graph.nodes.filter((node) => node.type === 'filter').map((node) => node.config));
+  if (summaries.length === 0) return schema;
+  const properties: Record<string, JsonSchemaProperty> = { ...schema.properties };
+  for (const summary of summaries) {
+    const column = inputSchema?.columns.find((candidate) => candidate.name === summary.field);
+    if (column === undefined || column.type !== 'string') continue;
+    const description = listValueDescription(summary, column.nullable);
+    properties[summary.field] = column.nullable
+      ? { anyOf: [{ type: 'string' }, { type: 'null' }], description }
+      : { type: 'string', description };
+  }
+  return { ...schema, properties };
+}
+
 /** LLMへ公開する function 名の形式（OpenAI 互換 API の制約: 英数字・`_`・`-` で 1〜64 文字）。 */
 const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -90,7 +122,8 @@ export function isValidFunctionName(name: string): boolean {
 /**
  * Tool を LLM へ公開する function definition へ変換する。
  * filter の opBinding が参照する引数プロパティには、許可演算子の enum と英語の説明文を付与する
- * （Agent は enum の中から演算子を選んで引数として渡す）。
+ * （Agent は enum の中から演算子を選んで引数として渡す）。`in`/`notIn` の valueBinding が参照する
+ * 引数には「カンマ区切りで複数の値を一度に渡せる」説明文を付与する。
  */
 export function toolToModelDefinition(tool: Tool): ModelToolDefinition {
   const name = tool.agentTool?.name ?? tool.metadata.publishName;
@@ -100,7 +133,7 @@ export function toolToModelDefinition(tool: Tool): ModelToolDefinition {
   return {
     name,
     description: tool.agentTool?.description ?? `${tool.metadata.displayName} (${tool.sideEffect})`,
-    parameters: withOperatorEnums(schemaToJsonSchema(tool.inputSchema), tool.graph, tool.inputSchema),
+    parameters: withListValueDescriptions(withOperatorEnums(schemaToJsonSchema(tool.inputSchema), tool.graph, tool.inputSchema), tool.graph, tool.inputSchema),
   };
 }
 

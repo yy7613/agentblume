@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { describeMcpServerSkipped, detectErrorLanguage, isJudgeModelNotConfigured, localizeApiErrorMessage, localizeDiagnosticDetail, localizeJudgeFailure, localizeRunFailure, localizeRunTraceError, localizeSchemaIssueMessage, localizeToolCheckAssertion, splitFailureMessage } from './error-messages';
+import { describeMcpServerSkipped, detectErrorLanguage, isJudgeModelNotConfigured, localizeApiErrorMessage, localizeDiagnosticDetail, localizeJudgeFailure, localizeRunFailure, localizeRunTraceError, localizeSchemaIssueMessage, localizeTemplateSlotMessage, localizeToolCheckAssertion, splitFailureMessage, toolTemplateSlotProblems } from './error-messages';
 
 function ja(status: number, code: string, serverMessage: string): string {
   return localizeApiErrorMessage({ status, code, serverMessage }, 'ja');
@@ -1462,5 +1462,120 @@ describe('AI判定ノード（ai-judge）', () => {
   it('[回帰固定] ai-judge 以外のノードの同形メッセージは従来どおり扱う', () => {
     expect(localizeSchemaIssueMessage('select: column(s) not found: memo', 'ja')).toContain('列が見つかりません');
     expect(localizeSchemaIssueMessage('filter: invalid config: op: is required', 'ja')).toContain('filter: 設定が不正です');
+  });
+});
+
+describe('複数値フィルタ（in / notIn）のメッセージ日本語化', () => {
+  it('正常: 値の並びの型エラーは、読めなかった要素を名指ししたまま日本語にする', () => {
+    expect(localizeSchemaIssueMessage("filter: values for date column '年' must be ISO dates (YYYY-MM-DD): 2016/01/01", 'ja'))
+      .toBe('日付列「年」の値「2016/01/01」が日付として読めません。絞り込み(filter)ノードの値の並びを ISO 形式（例: 2008-01-01）で入力してください');
+    expect(localizeSchemaIssueMessage("filter: values for number column '人口' must be numbers: たくさん", 'ja'))
+      .toBe('数値列「人口」の値「たくさん」が数値として読めません。絞り込み(filter)ノードの値の並びを数値で入力してください（桁区切りのカンマは値の区切りとして扱われます）');
+  });
+
+  it('正常: 値が空・サンプルが無い・無視される values を、直し方つきで日本語にする', () => {
+    expect(localizeSchemaIssueMessage("filter: operator 'in' requires a non-empty 'values' list for column '地域'", 'ja'))
+      .toBe('列「地域」の「いずれかに一致」には値が1つ以上必要です。絞り込み(filter)ノードの値の並びを入力してください');
+    expect(localizeSchemaIssueMessage("filter: operator 'notIn' on column '地域' has no design-time 'values' sample, so the preview matches no rows", 'ja'))
+      .toContain('設計時のサンプル値がないため、プレビューは0件になります');
+    expect(localizeSchemaIssueMessage("filter: 'values' is ignored by operator 'eq' on column '地域'", 'ja'))
+      .toContain('値の並びを使いません');
+  });
+
+  it('正常: opBinding に複数値演算子を入れた（セミコロンを含む1文）issue を丸ごと日本語にする', () => {
+    expect(localizeSchemaIssueMessage("filter: opBinding on '地域' cannot use operator(s) in|notIn because they take a list of values; use a fixed operator for those conditions", 'ja'))
+      .toBe('列「地域」の複数値の演算子（in|notIn）はAIに選ばせられません。その条件は演算子の取得元を「固定」にしてください');
+  });
+
+  it('異常: 値を渡しすぎた引数エラー（セミコロンを含む1文）を丸ごと日本語にする', () => {
+    expect(ja(422, 'TOOL_ARGUMENTS', "argument 'regions' has too many values (101); pass at most 100 values separated by commas"))
+      .toContain('モデルが引数「regions」に101件の値を渡しました（上限は100件）');
+  });
+
+  it('正常: 値引数の型・宣言に関する保存時/診断メッセージを日本語にする', () => {
+    expect(ja(400, 'TOOL_VALIDATION', "SaveTool: value binding for argument 'regions' supplies a list of values (in/notIn), so it must be a string argument, but it is declared as 'number'"))
+      .toContain('複数の値をまとめて受け取る引数「regions」は string 型で宣言する必要があります');
+    expect(localizeDiagnosticDetail("list argument 'regions' must be declared as a string argument to carry a comma-separated list, but it is 'number'", 'ja'))
+      .toContain('複数の値を受け取る引数「regions」は string 型で宣言する必要があります');
+    expect(localizeDiagnosticDetail("list argument 'ghost' is not declared in the input schema, so the binding is inactive at run time", 'ja'))
+      .toContain('実行時にこの束縛は無効になります');
+  });
+
+  it('境界: 従来どおり — 英語UIでは原文のまま返す（情報量が落ちない）', () => {
+    const raw = "filter: values for number column '人口' must be numbers: たくさん";
+    expect(localizeSchemaIssueMessage(raw, 'en')).toBe(raw);
+  });
+});
+
+/**
+ * ツールテンプレート（v43 / ADR-0049）のスロット違反。原文は必ず「何が悪いか + どう直すか」を
+ * 持つので、訳もそこまで含める。訳せないものは原文を残す（直し方を握りつぶさない）。
+ */
+describe('localizeTemplateSlotMessage', () => {
+  it('正常: 必須スロットが空なら、ラベルと候補を出す', () => {
+    expect(localizeTemplateSlotMessage("slot 'periodColumn' (Period column) has no value; choose one of 時点, 年月", 'ja'))
+      .toBe('「Period column」を選んでください（候補: 時点, 年月）');
+  });
+
+  it('正常: 役割の合わない列は、正しい候補を挙げて差し戻す', () => {
+    expect(localizeTemplateSlotMessage("slot 'valueColumns' is set to '世帯数', which is not a value column of that data source; choose one of 人口", 'ja'))
+      .toBe('列「世帯数」はこのデータソースの数値の列ではありません。人口 から選んでください');
+  });
+
+  it('境界: 件数の範囲外は「何個にするか」を言う', () => {
+    expect(localizeTemplateSlotMessage("slot 'valueColumns' has 7 column(s), but it takes between 1 and 5; add or remove columns from 人口, 世帯数", 'ja'))
+      .toBe('列を7個選んでいますが、1〜5個にしてください（選べる列: 人口, 世帯数）');
+    expect(localizeTemplateSlotMessage("slot 'limit' is 500, which is outside 1..100; pass a value inside that range", 'ja'))
+      .toBe('500 は範囲外です。1〜100 の値にしてください');
+  });
+
+  it('異常: 結合できないデータソースの組は、その旨を言う', () => {
+    expect(localizeTemplateSlotMessage("slot 'joinKeys' has 0 key(s), but it takes between 1 and 3; the shared key columns are none — these two sources cannot be joined", 'ja'))
+      .toContain('共通のキー列がありません');
+  });
+
+  it('異常: データソースの数が合わなければ、いくつ選ぶかを言う', () => {
+    expect(localizeTemplateSlotMessage("the template 'ratio-of-two-sources' reads exactly 2 data source(s), but 1 were given; pick exactly 2 data source(s) and try again", 'ja'))
+      .toBe('テンプレート「ratio-of-two-sources」が読むデータソースは2個ですが、1個選ばれています。数を合わせて選び直してください');
+  });
+
+  it('従来どおり: 英語UIでは原文のまま（原文も直し方を含む）', () => {
+    const raw = "slot 'limit' is 500, which is outside 1..100; pass a value inside that range";
+    expect(localizeTemplateSlotMessage(raw, 'en')).toBe(raw);
+  });
+
+  it('例外: 知らない形の問題文は原文を残す', () => {
+    expect(localizeTemplateSlotMessage('something entirely new happened', 'ja')).toBe('something entirely new happened');
+  });
+});
+
+describe('toolTemplateSlotProblems', () => {
+  it('正常: 422 の本文から「どの欄を直すか」を取り出し、文言を訳す', () => {
+    const problems = toolTemplateSlotProblems({
+      code: 'TOOL_TEMPLATE_SLOTS',
+      details: { slots: [{ slot: 'limit', message: "slot 'limit' is 500, which is outside 1..100; pass a value inside that range" }] },
+    }, 'ja');
+    expect(problems).toEqual([{ slot: 'limit', message: '500 は範囲外です。1〜100 の値にしてください' }]);
+  });
+
+  it('境界: 欄に紐づかない指摘は slot を持たない', () => {
+    expect(toolTemplateSlotProblems({ details: { slots: [{ message: 'the design-time preview failed' }] } }, 'en'))
+      .toEqual([{ message: 'the design-time preview failed' }]);
+  });
+
+  it('異常: slots を載せない（古い）応答では空（画面は見出しだけを出す）', () => {
+    expect(toolTemplateSlotProblems({ code: 'TOOL_TEMPLATE_SLOTS' }, 'ja')).toEqual([]);
+    expect(toolTemplateSlotProblems({ details: { slots: 'broken' } }, 'ja')).toEqual([]);
+    expect(toolTemplateSlotProblems({ details: { slots: [null, { slot: 'x' }] } }, 'ja')).toEqual([]);
+  });
+});
+
+describe('localizeApiErrorMessage: ツールテンプレート', () => {
+  it('正常: スロット違反の見出しは「印を付けた欄を直す」へ導く', () => {
+    expect(ja(422, 'TOOL_TEMPLATE_SLOTS', 'slots need a different value')).toContain('下に印を付けた欄を直して');
+  });
+
+  it('正常: 未知のテンプレートは一覧の読み直しへ導く', () => {
+    expect(ja(404, 'TOOL_TEMPLATE_NOT_FOUND', "tool template 'x' was not found; choose one of period-series")).toContain('一覧を読み込み直して');
   });
 });

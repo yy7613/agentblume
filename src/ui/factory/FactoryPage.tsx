@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AgentSummaryDto, CreateFactoryRunDto, DataSourceDto, FactoryEventDto, FactoryPromptStrategyDto, FactoryRunDto } from '../api/types';
+import type { AgentSummaryDto, CreateFactoryRunDto, DataSourceDto, FactoryEventDto, FactoryPlanDto, FactoryPromptStrategyDto, FactoryRunDto, FactoryToolGenerationDto } from '../api/types';
 import { useI18n } from '../i18n';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ScreenLink } from '../navigation';
@@ -58,6 +58,11 @@ function qualityLabel(quality: NonNullable<FactoryRunDto['report']>['quality'], 
     case 'below-targets': return text('Below targets', '目標未達');
     case 'unverified': return text('Not verified', '検証できず');
   }
+}
+
+/** 計画のうち、複数データソースを結合するToolの件数（ADR-0047 round 3）。 */
+function joinedToolCount(plan: FactoryPlanDto): number {
+  return plan.tools.filter((tool) => (tool.additionalDataSourceIds ?? []).length > 0).length;
 }
 
 function stageLabel(stage: FactoryRunDto['stage'], text: Translate): string {
@@ -128,6 +133,8 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
   const [requirePlanApproval, setRequirePlanApproval] = useState(false);
   // 強化モードでのsystemPromptの扱い。既定は既存プロンプトを保つ側（手書きの文言を勝手に書き換えない）。
   const [promptStrategy, setPromptStrategy] = useState<FactoryPromptStrategyDto>('preserve');
+  // 新規ツールの作り方。既定は段階的（小さなタスクへ分けて決定的に組む）。
+  const [toolGeneration, setToolGeneration] = useState<FactoryToolGenerationDto>('staged');
   const [personaCount, setPersonaCount] = useState(2);
   const [scenarioCount, setScenarioCount] = useState(4);
   const [starting, setStarting] = useState(false);
@@ -223,7 +230,7 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
         ...(isEnhanceMode ? { baseAgent: { internalId: baseAgentId } } : {}),
         dataSourceIds: [...selectedSourceIds],
         // promptStrategy は強化モードでしか効かないので、生成モードでは送らない。
-        options: { maxIterations, personaCount, scenarioCount, requirePlanApproval, ...(isEnhanceMode ? { promptStrategy } : {}) },
+        options: { maxIterations, personaCount, scenarioCount, requirePlanApproval, toolGeneration, ...(isEnhanceMode ? { promptStrategy } : {}) },
       };
       const run = await client.createFactoryRun(input);
       setRuns((current) => [run, ...current]);
@@ -326,6 +333,13 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
             <label>{text('Persona count', 'ペルソナ数')}<input aria-label={text('Factory persona count', 'Factoryペルソナ数')} type="number" min={1} max={5} value={personaCount} onChange={(event) => setPersonaCount(Number(event.target.value))} /></label>
             <label>{text('Scenario count', 'シナリオ数')}<input aria-label={text('Factory scenario count', 'Factoryシナリオ数')} type="number" min={1} max={10} value={scenarioCount} onChange={(event) => setScenarioCount(Number(event.target.value))} /></label>
             <label className="checkbox-label"><input type="checkbox" aria-label={text('Factory require plan approval', 'Factory計画承認を必須にする')} checked={requirePlanApproval} onChange={(event) => setRequirePlanApproval(event.target.checked)} /> {text('Require plan approval before generating', '生成前に計画承認を必須にする')}</label>
+            <label>{text('Tool generation', 'ツールの作り方')}
+              <select aria-label={text('Factory tool generation', 'Factoryツールの作り方')} value={toolGeneration} onChange={(event) => setToolGeneration(event.target.value as FactoryToolGenerationDto)}>
+                <option value="staged">{text('Staged (recommended)', '段階的（推奨）')}</option>
+                <option value="one-shot">{text('One-shot', '一括')}</option>
+              </select>
+            </label>
+            <p className="factory-field-hint">{text('Staged splits tool design into small decisions and assembles the graph deterministically, so small local models fail less and difference / ratio columns can be computed by the tool; it falls back to one-shot automatically.', '段階的は「何で絞るか・何を計算するか・何を返すか」の小さな判断に分け、グラフは決定的に組み立てます。小さなモデルでも失敗しにくく、差や比を計算した列も作れます（失敗した場合は自動で一括に切り替わります）。')}</p>
             {/* systemPromptの扱いは強化モードでしか効かない（生成モードは元からモデルが役割・ルールを書く）。 */}
             {isEnhanceMode && <>
               <label>{text('System prompt', 'システムプロンプト')}
@@ -390,6 +404,9 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
                 <li>{text('Personas', 'ペルソナ')}: {selectedRun.checkpoint.plan.personas.length}</li>
                 <li>{text('Scenarios', 'シナリオ')}: {selectedRun.checkpoint.plan.scenarios.length}</li>
               </>}
+              {/* 複数のデータソースを結合するToolは、承認前に件数が見えると計画の妥当性を判断しやすい。 */}
+              {joinedToolCount(selectedRun.checkpoint.plan) > 0
+                && <li>{text('Tools joining several data sources', '複数データソースを結合するTool')}: {joinedToolCount(selectedRun.checkpoint.plan)}</li>}
             </ul>
             <div className="save-actions">
               <button type="button" className="primary" disabled={busy} onClick={() => void respond('approve')}>{text('Approve', '承認')}</button>

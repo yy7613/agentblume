@@ -57,6 +57,12 @@ const CORE_HEADINGS: Record<string, Bilingual> = {
   TOOL_VERSION_CONFLICT: ['That tool version already exists. Bump the version, then save again', '同じツールバージョンが既に存在します。バージョンを上げて保存し直してください'],
   TOOL_VALIDATION: ['Please check the tool definition', 'ツール定義を確認してください'],
   TOOL_ARGUMENTS: ['The agent called the tool with invalid arguments. Review the tool schema and the prompt', 'エージェントがツールを不正な引数で呼び出しました。ツールのスキーマとプロンプトを見直してください'],
+
+  // ツールテンプレート（v43）。スロット違反は**どの欄を直せばよいか**が本文の `slots` に入っており、
+  // 画面はそれを各欄の真下へ出す。ここの見出しは「欄を直せば進める」ことだけを伝える。
+  TOOL_TEMPLATE_NOT_FOUND: ['The template was not found. Reload the list — a template file may have been renamed or removed', 'テンプレートが見つかりませんでした。一覧を読み込み直してください（ファイルが名前変更・削除された可能性があります）'],
+  TOOL_TEMPLATE_SLOTS: ['Some choices do not fit this data. Fix the fields marked below, then create again', 'このデータに合わない選択があります。下に印を付けた欄を直してから、もう一度作成してください'],
+  TOOL_TEMPLATE: ['The template could not be turned into a tool', 'テンプレートからツールを組み立てられませんでした'],
   UNSAFE_TOOL: ['This tool is not allowed to run in the current mode', 'このツールは現在のモードでは実行できません'],
 
   AGENT_NOT_FOUND: ['The agent was not found', 'エージェントが見つかりませんでした'],
@@ -202,6 +208,7 @@ const AGENT_OUTPUT_TOO_LARGE = /^agent-output exceeds maxBytes \(\d+ > \d+\)/;
 const SEMICOLON_WHOLE_SHAPES: readonly RegExp[] = [
   AGENT_OUTPUT_TOO_LARGE,
   /^(?:SaveTool: )?declared output schema does not match the graph's inferred output \(/,
+  /^argument '.+' has too many values \(/,
 ];
 
 /** Zod のフィールド名 → 画面ラベル。src/api/schemas.ts のキーに対応する。 */
@@ -237,7 +244,7 @@ const FIELDS: Record<string, Bilingual> = {
   constraints: ['Constraints', '制約'], budget: ['Budget', '予算'], planning: ['Planning', '計画'],
   approvals: ['Approvals', '承認'], memory: ['Memory', '記憶'], survey: ['Survey', 'アンケート'],
   requirePlanApproval: ['Plan approval requirement', '計画承認の要否'], patience: ['Patience', '忍耐度'],
-  promptStrategy: ['Prompt strategy', 'プロンプトの扱い'],
+  promptStrategy: ['Prompt strategy', 'プロンプトの扱い'], toolGeneration: ['Tool generation', 'ツールの作り方'],
   knowledgeLevel: ['Knowledge level', '知識レベル'], archetype: ['Archetype', 'アーキタイプ'], tone: ['Tone', 'トーン'],
   verbosity: ['Verbosity', '詳細度'], usage: ['Usage', '用途'], assignment: ['Assignment', '割り当て'],
   responsibility: ['Responsibility', '責務'], activationCondition: ['Activation condition', '起動条件'],
@@ -510,6 +517,140 @@ const DATA_TYPE_JA: Record<string, string> = {
   string: '文字列', number: '数値', boolean: '真偽値', date: '日付', null: 'NULL', unknown: '不明',
 };
 
+/** 複数値のフィルタ演算子 → 画面の表示名（NodeInspector のラベルと同じ言い回し）。 */
+const FILTER_OP_JA: Record<string, string> = { in: 'いずれかに一致', notIn: 'いずれにも一致しない' };
+
+/**
+ * ツールテンプレート（v43）のスロット違反・実体化失敗の日本語化。
+ *
+ * 原文（`src/domain/tool-template/instantiate.ts`）は例外なく「何が悪いか」と「どう直すか」を
+ * 1 文で持つので、訳も必ず**直し方**まで含める。テンプレートから作成ダイアログは、この文を
+ * 該当スロットの入力欄の真下へ出す（どの欄を直すかは本文の `slots[].slot` が持つ）。
+ *
+ * 英語UIでは原文で十分なので ja のときだけ変換し、en は undefined を返して原文を残す。
+ */
+function localizeTemplateSlotDetail(message: string, language: ErrorLanguage): string | undefined {
+  if (language !== 'ja') return undefined;
+
+  // 必須スロットが空。候補があればそのまま挙げる（「何を選べばよいか」が最優先）。
+  let matched = /^slot '(?:.+)' \((.+)\) has no value; choose one of (.+)$/.exec(message);
+  if (matched !== null) return `「${matched[1]}」を選んでください（候補: ${matched[2]}）`;
+  matched = /^slot '(?:.+)' \((.+)\) has no value; this data source offers no column that fits, so this template cannot be used here$/.exec(message);
+  if (matched !== null) return `「${matched[1]}」に選べる列がこのデータソースにありません。別のデータソースを選ぶか、別のテンプレートを使ってください`;
+  matched = /^slot '(?:.+)' \((.+)\) has no value; fill it in$/.exec(message);
+  if (matched !== null) return `「${matched[1]}」を入力してください`;
+
+  // 列の選択。
+  matched = /^slot '(?:.+)' is set to '(.+)', which is not a (.+) column of that data source; choose one of (.+)$/.exec(message);
+  if (matched !== null) {
+    const role = TEMPLATE_COLUMN_ROLE_JA[matched[2] ?? ''] ?? matched[2];
+    return matched[3] === 'none — this template does not fit this data'
+      ? `列「${matched[1]}」は使えません（このデータソースに${role}の列がありません）。別のデータソースかテンプレートを選んでください`
+      : `列「${matched[1]}」はこのデータソースの${role}の列ではありません。${matched[3]} から選んでください`;
+  }
+  matched = /^slot '(?:.+)' has (\d+) column\(s\), but it takes between (\d+) and (\d+); add or remove columns from (.+)$/.exec(message);
+  if (matched !== null) return `列を${matched[1]}個選んでいますが、${matched[2]}〜${matched[3]}個にしてください（選べる列: ${matched[4]}）`;
+  if (message.endsWith('lists the same column twice; keep each column once')) return '同じ列を 2 回選んでいます。重複を外してください';
+  matched = /^slot '(?:.+)' takes a single column name, got a list; pass one of (.+) as a string$/.exec(message);
+  if (matched !== null) return `この欄は列を 1 つだけ選びます（${matched[1]} のいずれか）`;
+  matched = /^slot '(?:.+)' takes a list of column names, got (?:.+); pass an array such as (.+)$/.exec(message);
+  if (matched !== null) return `この欄は列を配列で選びます（例: ${matched[1]}）`;
+  matched = /^the column '(.+)' cannot be used in a formula because its name contains '\]'; rename the column upstream \(a 'rename' node before the calculation\) and pick the new name here$/.exec(message);
+  if (matched !== null) return `列「${matched[1]}」は名前に ] を含むため式で参照できません。計算の手前に「列名変更」ノードを置いて改名し、新しい名前をここで選んでください`;
+  matched = /^slot '(?:.+)' and slot '(.+)' both use (.+); pick a different column for one of them$/.exec(message);
+  if (matched !== null) return `${matched[2]} を「${matched[1]}」でも使っています。どちらかに別の列を選んでください`;
+
+  // 結合キー。
+  matched = /^slot '(?:.+)' has (\d+) key\(s\), but it takes between (\d+) and (\d+); the shared key columns are (.+)$/.exec(message);
+  if (matched !== null) {
+    return matched[4] === 'none — these two sources cannot be joined'
+      ? 'この 2 つのデータソースには共通のキー列がありません。結合できる別のデータソースを選んでください'
+      : `結合キーを${matched[1]}個選んでいますが、${matched[2]}〜${matched[3]}個にしてください（共通のキー列: ${matched[4]}）`;
+  }
+  if (message.endsWith('lists the same key twice; keep each key once')) return '同じ結合キーを 2 回選んでいます。重複を外してください';
+  matched = /^slot '(?:.+)' joins on '(.+)', which the data profile did not list as a shared key of those two sources; choose from (.+)$/.exec(message);
+  if (matched !== null) {
+    return matched[2] === 'none — these two sources cannot be joined'
+      ? `「${matched[1]}」では結合できません（この 2 つのデータソースに共通のキー列がありません）`
+      : `「${matched[1]}」は 2 つのデータソースの共通キーではありません。${matched[2]} から選んでください`;
+  }
+
+  // 選択肢・数値・自由記述。
+  matched = /^slot '(?:.+)' is set to '(.+)', which is not one of its options; choose one of (.+)$/.exec(message);
+  if (matched !== null) {
+    return matched[2] === 'none — the data has no value for this choice'
+      ? `「${matched[1]}」は選べません（データにこの選択肢に当たる値がありません）`
+      : `「${matched[1]}」は選択肢にありません。${matched[2]} から選んでください`;
+  }
+  matched = /^slot '(?:.+)' is set to '(.+)', which is not one of this tool's data sources; choose one of (.+)$/.exec(message);
+  if (matched !== null) return `データソース「${matched[1]}」はこのツールが読むデータソースではありません。${matched[2]} から選んでください`;
+  matched = /^slot '(?:.+)' is set to '(.+)', which is not a number; pass a number between (.+) and (.+)$/.exec(message);
+  if (matched !== null) return `「${matched[1]}」は数値ではありません。${matched[2]}〜${matched[3]} の数値を入力してください`;
+  matched = /^slot '(?:.+)' is (.+), but it must be a whole number; round it to an integer between (.+) and (.+)$/.exec(message);
+  if (matched !== null) return `${matched[1]} は整数ではありません。${matched[2]}〜${matched[3]} の整数にしてください`;
+  matched = /^slot '(?:.+)' is (.+), which is outside (.+)\.\.(.+); pass a value inside that range$/.exec(message);
+  if (matched !== null) return `${matched[1]} は範囲外です。${matched[2]}〜${matched[3]} の値にしてください`;
+  matched = /^slot '(?:.+)' is (\d+) characters long, at most (\d+) are allowed; shorten it$/.exec(message);
+  if (matched !== null) return `${matched[1]}文字あります。${matched[2]}文字以内に短くしてください`;
+  matched = /^slot '(?:.+)' is (\d+) characters long, at most (\d+) are allowed; say what to compute in one shorter sentence$/.exec(message);
+  if (matched !== null) return `${matched[1]}文字あります。${matched[2]}文字以内で、何を計算するかを 1 文で書いてください`;
+  matched = /^slot '(?:.+)' is '(.+)', which does not match (.+); rewrite it to match that shape$/.exec(message);
+  if (matched !== null) return `「${matched[1]}」は決められた形（${matched[2]}）に合いません。その形に書き直してください`;
+  matched = /^this template has no slot named '(.+)'; remove it — the slots are (.+)$/.exec(message);
+  if (matched !== null) return `このテンプレートに「${matched[1]}」という項目はありません（項目: ${matched[2]}）。一覧を読み込み直してください`;
+
+  // 実体化そのものの失敗（データソースの数）。
+  matched = /^the template '(.+)' reads (.+) data source\(s\), but (\d+) were given; pick (?:.+) data source\(s\) and try again$/.exec(message);
+  if (matched !== null) return `テンプレート「${matched[1]}」が読むデータソースは${TEMPLATE_SOURCE_COUNT_JA(matched[2] ?? '')}ですが、${matched[3]}個選ばれています。数を合わせて選び直してください`;
+  matched = /^the calculate node '(?:.+)' still has an empty expression \("(.+)"\); write the formula into it before validating \(the expression suggester fills it\)$/.exec(message);
+  if (matched !== null) return `計算ノードの式がまだ空です（「${matched[1]}」）。関数電卓の「AIに式を書かせる」で式を入れてから検証してください`;
+
+  return undefined;
+}
+
+/** `column.role` → 画面の言い回し（テンプレートの問題文に出てくる役割名）。 */
+const TEMPLATE_COLUMN_ROLE_JA: Record<string, string> = {
+  period: '期間',
+  category: 'カテゴリ',
+  value: '数値',
+  text: '文字列',
+  any: '任意',
+};
+
+/** `exactly 2` / `between 1 and 3` を日本語の数の言い回しへ。 */
+function TEMPLATE_SOURCE_COUNT_JA(text: string): string {
+  const exact = /^exactly (\d+)$/.exec(text);
+  if (exact !== null) return `${exact[1]}個`;
+  const range = /^between (\d+) and (\d+)$/.exec(text);
+  return range === null ? text : `${range[1]}〜${range[2]}個`;
+}
+
+/**
+ * ツールテンプレートのスロット違反 1 件の表示文言（画面がスロットの真下へ出す）。
+ * 変換できなければ原文を残す（原文も直し方を含んでいるので、握りつぶさない）。
+ */
+export function localizeTemplateSlotMessage(message: string, language: ErrorLanguage = detectErrorLanguage()): string {
+  return localizeTemplateSlotDetail(message.trim(), language) ?? message;
+}
+
+/**
+ * 422 `TOOL_TEMPLATE_SLOTS` の本文から「どの欄を直せばよいか」を取り出す。
+ * サーバーが `slots` を載せない（古い）応答では空配列（画面は見出しだけを出す）。
+ */
+export function toolTemplateSlotProblems(
+  error: { readonly code?: string; readonly details?: Readonly<Record<string, unknown>> },
+  language: ErrorLanguage = detectErrorLanguage(),
+): readonly { readonly slot?: string; readonly message: string }[] {
+  const slots = error.details?.['slots'];
+  if (!Array.isArray(slots)) return [];
+  return slots.flatMap((entry) => {
+    if (entry === null || typeof entry !== 'object') return [];
+    const { slot, message } = entry as { slot?: unknown; message?: unknown };
+    if (typeof message !== 'string') return [];
+    return [{ ...(typeof slot === 'string' && slot !== '' ? { slot } : {}), message: localizeTemplateSlotMessage(message, language) }];
+  });
+}
+
 /**
  * ETL（Tool Builder）固有の定型文の日本語化。src/domain/etl の GraphError / ConfigError /
  * SchemaError、および SchemaIssue.message（ノード単位の伝播issue）が生成する英語定型文をここで拾う。
@@ -587,6 +728,26 @@ function localizeEtlDetail(message: string, language: ErrorLanguage): string | u
   // 日付列の比較値（src/domain/etl/nodes/filter.ts）。ISO として読めない文字列は 0 行ではなくエラーにする。
   matched = /^filter: value for date column '(.+)' must be an ISO date \(YYYY-MM-DD\): (.*)$/.exec(message);
   if (matched !== null) return `日付列「${matched[1]}」と比べる値「${matched[2]}」が日付として読めません。絞り込み(filter)ノードの値を ISO 形式（例: 2008-01-01 や 2008-01-01T00:00:00Z）で入力してください`;
+
+  // 複数値条件（in / notIn）の値の並び（src/domain/etl/nodes/filter.ts）。読めない要素は名指しする。
+  matched = /^filter: values for date column '(.+)' must be ISO dates \(YYYY-MM-DD\): (.*)$/.exec(message);
+  if (matched !== null) return `日付列「${matched[1]}」の値「${matched[2]}」が日付として読めません。絞り込み(filter)ノードの値の並びを ISO 形式（例: 2008-01-01）で入力してください`;
+
+  matched = /^filter: values for number column '(.+)' must be numbers: (.*)$/.exec(message);
+  if (matched !== null) return `数値列「${matched[1]}」の値「${matched[2]}」が数値として読めません。絞り込み(filter)ノードの値の並びを数値で入力してください（桁区切りのカンマは値の区切りとして扱われます）`;
+
+  matched = /^filter: operator '(.+)' requires a non-empty 'values' list for column '(.+)'$/.exec(message);
+  if (matched !== null) return `列「${matched[2]}」の「${FILTER_OP_JA[matched[1] ?? ''] ?? matched[1]}」には値が1つ以上必要です。絞り込み(filter)ノードの値の並びを入力してください`;
+
+  matched = /^filter: operator '(.+)' on column '(.+)' has no design-time 'values' sample, so the preview matches no rows$/.exec(message);
+  if (matched !== null) return `列「${matched[2]}」の「${FILTER_OP_JA[matched[1] ?? ''] ?? matched[1]}」に設計時のサンプル値がないため、プレビューは0件になります。サンプルの値を入力してください（実行時はAIの引数で置き換わります）`;
+
+  matched = /^filter: 'values' is ignored by operator '(.+)' on column '(.+)'$/.exec(message);
+  if (matched !== null) return `列「${matched[2]}」の演算子「${FILTER_OP_JA[matched[1] ?? ''] ?? matched[1]}」は値の並びを使いません（入力済みの並びは無視されます）。演算子を「いずれかに一致」に変えるか、値の並びを消してください`;
+
+  // セミコロンを含む1つの文。localizeDetail の `;` 分割より先の丸ごと判定（etlWhole）で拾う。
+  matched = /^filter: opBinding on '(.+)' cannot use operator\(s\) (.+) because they take a list of values; use a fixed operator for those conditions$/.exec(message);
+  if (matched !== null) return `列「${matched[1]}」の複数値の演算子（${matched[2]}）はAIに選ばせられません。その条件は演算子の取得元を「固定」にしてください`;
 
   // filter の opBinding（演算子のAI引数化）の検証（src/domain/etl/nodes/filter.ts）。
   matched = /^filter: default operator '(.+)' is not in opBinding\.allowed \((.+)\)$/.exec(message);
@@ -883,6 +1044,14 @@ function localizeAgentRunDetail(message: string, language: ErrorLanguage): strin
       : `the operator-bound argument '${matched[1]}' must be a string argument, but it is declared as '${matched[2]}'. Change its type to string on the Agent Input node`;
   }
 
+  // in/notIn の値引数は「カンマ区切りの並び」を1つの文字列で受け取る（application/tool/save-tool.ts）。
+  matched = /^SaveTool: value binding for argument '(.+)' supplies a list of values \(in\/notIn\), so it must be a string argument, but it is declared as '(.+)'$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `複数の値をまとめて受け取る引数「${matched[1]}」は string 型で宣言する必要がありますが、${matched[2]} 型になっています。Agent Inputノードで型を string に変更してください（AIはカンマ区切りで複数の値を渡します）`
+      : `the argument '${matched[1]}' carries a comma-separated list of values, so it must be a string argument, but it is declared as '${matched[2]}'. Change its type to string on the Agent Input node`;
+  }
+
   matched = /^SaveTool: operator binding for argument '(.+)' has no operator that every condition allows$/.exec(message);
   if (matched !== null) {
     return ja
@@ -980,6 +1149,14 @@ function localizeAgentRunDetail(message: string, language: ErrorLanguage): strin
     return ja
       ? `モデルが引数「${matched[2]}」に許可されていない演算子「${matched[1]}」を渡しました（許可: ${matched[3]}）。ツールの引数の説明で使える演算子を明示するか、フィルタ条件の「AIに許可する演算子」を広げてください`
       : `the model passed the operator '${matched[1]}' for argument '${matched[2]}', which is not allowed (allowed: ${matched[3]}). Describe the allowed operators in the tool argument, or widen the allowed operators on the filter condition`;
+  }
+
+  // 複数値の引数: モデルが上限を超える数の値を渡した（TOOL_ARGUMENTS）。セミコロンを含む1文。
+  matched = /^argument '(.+)' has too many values \((\d+)\); pass at most (\d+) values separated by commas$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `モデルが引数「${matched[1]}」に${matched[2]}件の値を渡しました（上限は${matched[3]}件）。ツールの説明で値を絞るよう促すか、条件を分けて呼び出させてください`
+      : `the model passed ${matched[2]} values for argument '${matched[1]}', but at most ${matched[3]} are allowed. Ask for fewer values in the tool description, or split the call`;
   }
 
   // agent-output の上限超過。SessionQuotaExceededError（413）で届くが、成果物の削除では直らない。
@@ -1120,6 +1297,21 @@ function localizeAgentRunDetail(message: string, language: ErrorLanguage): strin
       : `the operator argument '${matched[1]}' must be declared as a string argument, but it is '${matched[2]}'. Change its type to string on the Agent Input node`;
   }
 
+  // in/notIn の値引数の診断（diagnose-tool.ts checkListArguments の2形）。
+  matched = /^list argument '(.+)' is not declared in the input schema, so the binding is inactive at run time$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `複数の値を受け取る引数「${matched[1]}」がツールの引数に宣言されていないため、実行時にこの束縛は無効になります。Agent Inputノードに string 型の引数「${matched[1]}」を追加してください`
+      : `the list argument '${matched[1]}' is not declared in the tool's arguments, so the binding is inactive at run time. Add a string argument '${matched[1]}' on the Agent Input node`;
+  }
+
+  matched = /^list argument '(.+)' must be declared as a string argument to carry a comma-separated list, but it is '(.+)'$/.exec(message);
+  if (matched !== null) {
+    return ja
+      ? `複数の値を受け取る引数「${matched[1]}」は string 型で宣言する必要がありますが、${matched[2]} 型になっています。Agent Inputノードで型を string に変更してください（AIはカンマ区切りで値を並べて渡します）`
+      : `the list argument '${matched[1]}' must be declared as a string argument to carry a comma-separated list, but it is '${matched[2]}'. Change its type to string on the Agent Input node`;
+  }
+
   if (message === 'run cancelled by the user') return ja ? '実行を中断しました' : 'the run was cancelled';
 
   return undefined;
@@ -1246,6 +1438,11 @@ function localizeMessageText(message: string, language: ErrorLanguage): string |
   const etl = localizeEtlDetail(message, language);
   if (etl !== undefined) return etl;
 
+  // ツールテンプレート（v43）の定型文。`slot '...' ... ; <直し方>` はセミコロンを含む1文なので
+  // ETL と同じく、後段の `;` 分割より先に丸ごと判定する必要がある（localizeDetail からも呼ぶ）。
+  const template = localizeTemplateSlotDetail(message, language);
+  if (template !== undefined) return template;
+
   const permission = localizePermissionDetail(message, language);
   if (permission !== undefined) return permission;
 
@@ -1366,6 +1563,9 @@ function localizeDetail(raw: string, language: ErrorLanguage): string {
   // が原文のまま別セグメントとして残り、日本語訳と重複した表示になる。
   const etlWhole = localizeEtlDetail(stripped, language);
   if (etlWhole !== undefined) return etlWhole;
+  // テンプレートの問題文も「直し方」をセミコロンの後ろに持つ 1 文なので、分割前に丸ごと判定する。
+  const templateWhole = localizeTemplateSlotDetail(stripped, language);
+  if (templateWhole !== undefined) return templateWhole;
   // 実行エラー・診断の定型文にもセミコロンを含む1文がある（`agent-output exceeds maxBytes (...); reduce rows ...` /
   // `declared output schema ... — the run fails after the tool executes; re-save ...`）。その形だけ分割前に丸ごと判定する。
   // 全メッセージで丸ごと判定すると、`; ` 連結された診断の複数 detail を貪欲な `(.+)` が1件として飲み込む。

@@ -26,7 +26,7 @@ function baseRun(overrides: Partial<FactoryRunDto> = {}): FactoryRunDto {
       goal: { goal: 'Answer sales questions', language: 'ja' },
       dataSourceIds: ['ds-sales'],
       options: {
-        maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false, promptStrategy: 'preserve',
+        maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false, promptStrategy: 'preserve', toolGeneration: 'staged',
         targets: { minGoalAchievedRate: 0.75, minAvgSatisfaction: 4 },
         budget: { maxDurationMs: 1_800_000, maxRoleCalls: 40, maxScenarioRuns: 20, maxRepairAttempts: 2, maxProposalsPerIteration: 4 },
       },
@@ -91,9 +91,36 @@ describe('FactoryPage', () => {
       scope,
       goal: { goal: 'Answer sales questions', language: 'ja' },
       dataSourceIds: ['ds-sales'],
-      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false },
+      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false, toolGeneration: 'staged' },
     }));
     expect(await screen.findByText('run-1')).toBeTruthy();
+  });
+
+  it('ツールの作り方は既定で段階的で、一括を選ぶと options に載る', async () => {
+    const created = baseRun();
+    const createFactoryRun = vi.fn().mockResolvedValue(created);
+    const client = stubClient({
+      createFactoryRun,
+      getFactoryRun: vi.fn().mockResolvedValue(created),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+    });
+    render(<FactoryPage client={client} />);
+    await screen.findByText('Sales CSV');
+
+    // 生成モードでも強化モードでも効く設定なので、詳細オプションに常に出す。
+    const generation = await screen.findByLabelText('Factory tool generation');
+    expect((generation as HTMLSelectElement).value).toBe('staged');
+    expect(screen.getByRole('option', { name: 'Staged (recommended)' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'One-shot' })).toBeTruthy();
+
+    await userEvent.type(screen.getByLabelText('Factory goal'), 'Answer sales questions');
+    await userEvent.click(screen.getByRole('checkbox', { name: /Sales CSV/ }));
+    await userEvent.selectOptions(generation, 'one-shot');
+    await userEvent.click(screen.getByRole('button', { name: 'Start factory run' }));
+
+    await waitFor(() => expect(createFactoryRun).toHaveBeenCalledWith(expect.objectContaining({
+      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false, toolGeneration: 'one-shot' },
+    })));
   });
 
   it('waiting-approvalのrunで計画カードを表示し、Approveをクリックするとrespondが呼ばれる', async () => {
@@ -407,7 +434,7 @@ describe('FactoryPage', () => {
       baseAgent: { internalId: 'agent-sales' },
       dataSourceIds: [],
       // 強化モードでは systemPrompt の扱いも送る（既定は既存プロンプトを保つ側）。
-      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false, promptStrategy: 'preserve' },
+      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false, toolGeneration: 'staged', promptStrategy: 'preserve' },
     }));
   });
 
@@ -436,7 +463,7 @@ describe('FactoryPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Start factory run' }));
 
     await waitFor(() => expect(createFactoryRun).toHaveBeenCalledWith(expect.objectContaining({
-      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false, promptStrategy: 'rewrite' },
+      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: false, toolGeneration: 'staged', promptStrategy: 'rewrite' },
     })));
   });
 

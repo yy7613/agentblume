@@ -1148,3 +1148,32 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 .analysis-assistant h3, .calc-assistant h3 { margin: 0; font-size: 14px; }
 .assistant-proposal { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid #cfd6e4; border-radius: 8px; background: #fff; }
 .assistant-proposal code { word-break: break-all; }
+
+/* テンプレートから作成（v43 / ADR-0049）。ノード設定ダイアログと同じ作法の重ね表示。 */
+.template-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: #0b102066; }
+.template-dialog { width: min(920px, calc(100vw - 48px)); max-height: calc(100vh - 48px); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border-radius: 14px; background: #fff; box-shadow: 0 22px 72px #0f173b66; }
+.template-dialog header, .template-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid #e1e6ef; }
+.template-dialog header h2 { margin: 2px 0 0; font-size: 18px; }
+.template-dialog footer { border-top: 1px solid #e1e6ef; border-bottom: 0; justify-content: flex-end; }
+.template-dialog-body { overflow: auto; padding: 18px 20px; display: grid; gap: 12px; align-content: start; }
+.template-filter { display: grid; gap: 4px; font-size: 12px; color: #56617a; }
+.template-list { display: grid; gap: 10px; }
+.template-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 12px 14px; border: 1px solid #e1e6ef; border-radius: 10px; }
+.template-card strong { display: block; font-size: 14px; }
+.template-card code { font-size: 11px; color: #56617a; }
+.template-card p { margin: 6px 0; font-size: 12px; }
+.template-card ul { margin: 4px 0; padding-left: 18px; font-size: 12px; color: #3b4559; }
+.template-card small { color: #56617a; font-size: 11px; }
+.template-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.template-tags span { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: #eef1f8; color: #56617a; }
+.template-invalid { border-top: 1px solid #e1e5ee; padding-top: 8px; }
+.template-invalid summary { cursor: pointer; color: #8a5a12; font-size: 12px; }
+.template-invalid-row { margin: 8px 0; font-size: 12px; }
+.template-invalid-row ul { margin: 4px 0; padding-left: 18px; }
+.template-form { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; }
+.template-slot { display: grid; gap: 4px; font-size: 12px; color: #3b4559; align-content: start; }
+.template-slot > small { color: #56617a; font-size: 11px; }
+fieldset.template-slot { border: 1px solid #e1e6ef; border-radius: 8px; padding: 8px 10px; }
+fieldset.template-slot legend { font-size: 12px; padding: 0 4px; }
+.template-slot .check { display: flex; align-items: center; gap: 6px; font-weight: 400; }
+.template-created { display: flex; align-items: center; gap: 10px; margin: 8px 0; padding: 8px 12px; border-radius: 8px; background: #eef5ff; color: #2b3a55; font-size: 12px; }

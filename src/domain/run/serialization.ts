@@ -13,7 +13,10 @@ const noMatchSchema = z.object({
     op: z.string(),
     argument: z.string().optional(),
     value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+    // values / unmatchedValues は複数値条件（in/notIn）だけが持つ。後から足した任意フィールド。
+    values: z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
     matchingRows: z.number().int().nonnegative(),
+    unmatchedValues: z.array(z.string()).optional(),
     availableValues: z.array(z.string()).optional(),
     distinctValues: z.number().int().nonnegative().optional(),
     min: z.union([z.string(), z.number()]).optional(),

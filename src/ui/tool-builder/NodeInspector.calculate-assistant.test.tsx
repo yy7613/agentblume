@@ -406,3 +406,54 @@ describe('NodeInspector: 式提案の日本語UI', () => {
     expect(within(dialog).getByText('ローカルLLMが未設定です。設定 > モデル で main スロットを設定して再読み込みすると、AIに式を書かせられます。')).toBeTruthy();
   });
 });
+
+/**
+ * テンプレートから作成したツール（v43 / ADR-0049）が預ける「何を計算するか」の初期指示文。
+ * 実体化は式を空のまま置き、意図文だけをストアへ預ける。電卓はそれを 1 度だけ受け取り、
+ * AI パネルを開いた状態で入れておく（人は式を書かされず、提案を押すだけでよい）。
+ */
+describe('NodeInspector: テンプレートが預けた意図文', () => {
+  it('正常: そのノードの設定を開くと、AIパネルが開いて意図文が入っている', async () => {
+    const nodeId = addCalculate();
+    useToolBuilderStore.setState({ pendingCalculateIntent: { nodeId, intent: '単価×数量の税込金額' } });
+    render(<NodeInspector client={assistantClient(vi.fn())} />);
+    const dialog = await openDialog();
+
+    await waitFor(() => expect((within(dialog).getByLabelText('What to calculate') as HTMLTextAreaElement).value).toBe('単価×数量の税込金額'));
+    expect((within(dialog).getByRole('button', { name: KEY_EN }) as HTMLButtonElement).getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('境界: 1 度だけ消費する（閉じて開き直しても二度目は入らない）', async () => {
+    const nodeId = addCalculate();
+    useToolBuilderStore.setState({ pendingCalculateIntent: { nodeId, intent: '単価×数量' } });
+    render(<NodeInspector client={assistantClient(vi.fn())} />);
+    const first = await openDialog();
+    await waitFor(() => expect((within(first).getByLabelText('What to calculate') as HTMLTextAreaElement).value).toBe('単価×数量'));
+    expect(useToolBuilderStore.getState().pendingCalculateIntent).toBeUndefined();
+
+    await userEvent.click(within(first).getByRole('button', { name: 'Cancel' }));
+    const second = await openDialog();
+    await openAiPanel(second);
+    expect((within(second).getByLabelText('What to calculate') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('異常: 別のノードあての意図文は受け取らない', async () => {
+    addCalculate();
+    useToolBuilderStore.setState({ pendingCalculateIntent: { nodeId: 'other-node', intent: '別のノード用' } });
+    render(<NodeInspector client={assistantClient(vi.fn())} />);
+    const dialog = await openDialog();
+    await openAiPanel(dialog);
+    expect((within(dialog).getByLabelText('What to calculate') as HTMLTextAreaElement).value).toBe('');
+    expect(useToolBuilderStore.getState().pendingCalculateIntent).toEqual({ nodeId: 'other-node', intent: '別のノード用' });
+  });
+
+  it('例外: モデルが未設定なら消費しない（設定して開き直せば、そのとき入る）', async () => {
+    const nodeId = addCalculate();
+    useToolBuilderStore.setState({ pendingCalculateIntent: { nodeId, intent: '単価×数量' } });
+    const client = fakeClient({ calculateAssistantCapability: vi.fn().mockResolvedValue(false) });
+    render(<NodeInspector client={client} />);
+    await waitFor(() => expect(client.calculateAssistantCapability).toHaveBeenCalled());
+    await openDialog();
+    expect(useToolBuilderStore.getState().pendingCalculateIntent).toEqual({ nodeId, intent: '単価×数量' });
+  });
+});

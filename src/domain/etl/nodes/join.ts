@@ -59,10 +59,12 @@ const configSchema = z.object({
   mode: z.enum(['inner', 'left', 'right', 'full']),
   keys: z
     .array(
-      z.object({
+      // 省略記法: 左右で同じ列名なら文字列 1 つで書ける（`"時点"` ≡ `{ left: "時点", right: "時点" }`）。
+      // 同名キーで結ぶのが大半で、手書きでも LLM が書く設定でも `keys: ["時点", "地域コード"]` と書かれやすい。
+      z.preprocess((key) => (typeof key === 'string' ? { left: key, right: key } : key), z.object({
         left: z.string(),
         right: z.string(),
-      }),
+      })),
     )
     .min(1),
   rightSuffix: z.string().optional(),

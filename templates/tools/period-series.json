@@ -1,0 +1,92 @@
+{
+  "$schema": "./tool-template.schema.json",
+  "formatVersion": 1,
+  "id": "period-series",
+  "version": "1.0.1",
+  "title": { "ja": "時系列の取り出し", "en": "Time series lookup" },
+  "summary": {
+    "ja": "期間の範囲・粒度（月次/年次など）・カテゴリ（地域など）で絞って、値の推移を新しい順に返す。",
+    "en": "Returns a value series filtered by period range, granularity and optional categories, newest first."
+  },
+  "whenToUse": {
+    "ja": ["ある指標の推移・特定の時点の値・期間内の最大/最小を答えたい", "月次と年次が同じ列に混ざっている", "複数の地域を一度に比べたい"],
+    "en": ["Trends, values at a point in time, or max/min within a range", "Monthly and annual rows are mixed in one column", "Several categories should be compared in one call"]
+  },
+  "notFor": {
+    "ja": ["前年比や増減率が要る（period-change を使う）", "別のデータソースの値と並べたい（join-side-by-side を使う）"],
+    "en": ["Year-over-year change (use period-change)", "Values from another source side by side (use join-side-by-side)"]
+  },
+  "tags": ["time-series", "lookup"],
+  "sources": { "min": 1, "max": 1 },
+  "slots": [
+    { "name": "source", "kind": "dataSource", "label": { "ja": "データソース", "en": "Data source" } },
+    { "name": "periodColumn", "kind": "column", "source": "source", "role": "period", "label": { "ja": "期間の列", "en": "Period column" } },
+    { "name": "valueColumns", "kind": "column", "source": "source", "role": "value", "multiple": { "min": 1, "max": 5 }, "label": { "ja": "値の列", "en": "Value columns" } },
+    { "name": "categoryColumn", "kind": "column", "source": "source", "role": "category", "optional": true, "label": { "ja": "絞り込むカテゴリの列（地域など）", "en": "Category column to filter by" } },
+    { "name": "defaultGranularity", "kind": "choice", "optionsFrom": "granularities:periodColumn", "label": { "ja": "既定の粒度", "en": "Default granularity" }, "help": { "ja": "設計時の見本に使う粒度。データに多い粒度を選ぶ", "en": "Used as the design-time sample; pick the most common one" } },
+    { "name": "limit", "kind": "number", "min": 1, "max": 100, "integer": true, "default": 36, "label": { "ja": "返す最大行数", "en": "Maximum rows" } }
+  ],
+  "arguments": [
+    {
+      "name": "granularity", "type": "string", "nullable": false, "sample": { "$slot": "defaultGranularity" },
+      "description": { "ja": "期間の粒度。month / quarter / half / year / fiscal-year のうちデータにあるものを、この綴りのまま渡す（monthly・yearly・月次・年次 などは不可）。必ず指定する。", "en": "Period granularity: one of month / quarter / half / year / fiscal-year that exists in the data, spelled exactly like this (not monthly, yearly or a translation). Required." }
+    },
+    {
+      "name": "period_from", "type": "date", "nullable": true, "sample": { "$profile": "periodMin:periodColumn" },
+      "description": {
+        "ja": "この日以降に始まる期間（ISO 日付。期間の開始日で比べる。2023年 = 2023-01-01、2023年度 = 2023-04-01）。省略で最初から。",
+        "en": "Periods starting on or after this ISO date (compared with the period start). Omit for no lower bound."
+      }
+    },
+    {
+      "name": "period_to", "type": "date", "nullable": true, "sample": { "$profile": "periodMax:periodColumn" },
+      "description": { "ja": "この日以前に始まる期間（ISO 日付）。省略で最新まで。", "en": "Periods starting on or before this ISO date. Omit for no upper bound." }
+    },
+    {
+      "name": "categories", "type": "string", "nullable": true, "when": "categoryColumn", "sample": { "$profile": "firstValuesCsv:categoryColumn:2" },
+      "description": {
+        "ja": "{{categoryColumn}} の値をカンマ区切りで渡す。複数を 1 回で渡す。省略で全件。",
+        "en": "Comma-separated values of {{categoryColumn}}. Pass all you need in one call. Omit for all."
+      }
+    }
+  ],
+  "nodes": [
+    { "id": "src", "type": { "$sourceType": "source" }, "config": { "dataSourceId": { "$slot": "source" } } },
+    { "id": "period", "type": "parse-period", "config": { "column": { "$slot": "periodColumn" }, "startColumn": "periodStart", "granularityColumn": "periodGranularity", "fiscalYearStartMonth": 4 } },
+    {
+      "id": "f_granularity", "type": "filter",
+      "config": { "column": "periodGranularity", "op": "eq", "value": { "$slot": "defaultGranularity" }, "valueBinding": { "$argument": "granularity" } }
+    },
+    {
+      "id": "f_category", "type": "filter", "when": "categoryColumn",
+      "config": { "column": { "$slot": "categoryColumn" }, "op": "in", "values": { "$profile": "firstValues:categoryColumn:2" }, "valueBinding": { "$argument": "categories" }, "caseInsensitive": true }
+    },
+    {
+      "id": "f_range", "type": "filter",
+      "config": {
+        "combine": "and",
+        "conditions": [
+          { "column": "periodStart", "op": "gte", "value": { "$profile": "periodMin:periodColumn" }, "valueBinding": { "$argument": "period_from" } },
+          { "column": "periodStart", "op": "lte", "value": { "$profile": "periodMax:periodColumn" }, "valueBinding": { "$argument": "period_to" } }
+        ]
+      }
+    },
+    { "id": "sort", "type": "sort", "config": { "keys": [{ "column": "periodStart", "direction": "desc", "nulls": "last" }] } },
+    { "id": "limit", "type": "limit", "config": { "count": { "$slot": "limit" } } },
+    { "id": "out", "type": "agent-output", "config": { "shape": "rows", "format": "json", "maxRows": { "$slot": "limit" }, "maxBytes": 65536, "overflow": "error" } }
+  ],
+  "edges": [
+    { "from": "src", "to": "period" },
+    { "from": "period", "to": "f_granularity" },
+    { "from": "f_granularity", "to": "f_category" },
+    { "from": "f_category", "to": "f_range" },
+    { "from": "f_range", "to": "sort" },
+    { "from": "sort", "to": "limit" },
+    { "from": "limit", "to": "out" }
+  ],
+  "description": {
+    "ja": "{{valueColumns}} の推移を返します（新しい順、最大 {{limit}} 行）。粒度 granularity は必須です。期間は period_from / period_to に ISO 日付で渡します（期間の開始日で比較）。",
+    "en": "Returns the series of {{valueColumns}} (newest first, up to {{limit}} rows). granularity is required. Pass ISO dates as period_from / period_to (compared with the period start)."
+  },
+  "notes": "粒度は必須引数にする（省略できると月次と年次が混ざる）。範囲は periodStart（期間の開始日）で比べるので、2023年度 は 2023-04-01 として扱われる。"
+}

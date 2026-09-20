@@ -7,7 +7,7 @@
  */
 import type { Cell, Row, Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
-import { isFilterOp, operatorArgumentSummaries, VALUELESS_OPS, type OperatorArgumentSummary } from '../../domain/etl/nodes/filter';
+import { isFilterOp, MAX_FILTER_VALUES, MULTI_VALUE_OPS, operatorArgumentSummaries, parseFilterValueList, VALUELESS_OPS, type OperatorArgumentSummary } from '../../domain/etl/nodes/filter';
 import type { Tool } from '../../domain/tool/tool';
 import { AgentRunError, ToolArgumentsError } from '../agent/errors';
 import { agentInputInconsistency } from '../agent/tool-schema';
@@ -85,6 +85,11 @@ function conditionWithOperatorArgument(nodeId: string, condition: unknown, row: 
  * `optionalFields`（inputSchema で nullable な引数名）に含まれる引数が省略された／null のときは
  * value を触らず `disabled: true` を注入し、その条件を実行時にスキップさせる（「全リージョン」の
  * ように絞り込み自体が不要なケース）。nullable でない引数は従来どおり欠損をエラーにする。
+ *
+ * 演算子が `in` / `notIn` の条件は `value` ではなく **`values`（値の並び）** を差し替える。
+ * 引数は1つの文字列に区切り文字で値を並べたもの（`"東京都, 大阪府,北海道"`）で、ここで分解して
+ * `values` にする。分解結果が空なら「省略された」と同じくその条件を外し、100 件を超えたら
+ * モデルの引数修復ループへ戻す `ToolArgumentsError` にする。
  */
 function conditionWithArgument(nodeId: string, condition: unknown, row: Row, optionalFields: ReadonlySet<string>, operatorSummaries: ReadonlyMap<string, OperatorArgumentSummary>): unknown {
   const resolved = conditionWithOperatorArgument(nodeId, condition, row, optionalFields, operatorSummaries);
@@ -102,7 +107,30 @@ function conditionWithArgument(nodeId: string, condition: unknown, row: Row, opt
   if (argument === undefined) {
     throw new AgentRunError(`filter node '${nodeId}' references an unavailable Agent input`);
   }
+  const op = (resolved as { op?: unknown } | null)?.op;
+  if (isFilterOp(op) && MULTI_VALUE_OPS.has(op)) {
+    const values = valueListOf(argument);
+    // 分解した結果が空（`""` や区切り文字だけ）なら「渡されなかった」と同じ＝この条件を行わない。
+    // in なら全滅・notIn なら素通しと意味が静かに変わるため、絞り込みごと外す方が意図に近い。
+    if (values.length === 0) return { ...(resolved as Record<string, unknown>), disabled: true };
+    if (values.length > MAX_FILTER_VALUES) {
+      throw new ToolArgumentsError(`argument '${field}' has too many values (${values.length}); pass at most ${MAX_FILTER_VALUES} values separated by commas`);
+    }
+    return { ...(resolved as Record<string, unknown>), values };
+  }
   return { ...(resolved as Record<string, unknown>), value: argument };
+}
+
+/**
+ * `in` / `notIn` の引数を値の並びへ分解する。文字列は区切り（`,` `、` `，` `;` 改行）で分け、
+ * 前後の空白を落とし、空要素を捨て、重複を除く（domain の `parseFilterValueList`）。
+ * 文字列以外（number 型引数などを束縛した古い定義）は 1 要素の並びとして扱う。
+ * 要素の型を列へ寄せる（日付の ISO 解釈・数値化）のは domain の `prepareFilterCondition` の仕事で、
+ * 読めない要素はそこで「どの要素が読めなかったか」を名指ししたエラーになる。
+ */
+function valueListOf(argument: Cell): readonly Cell[] {
+  if (typeof argument === 'string') return parseFilterValueList(argument);
+  return argument === null ? [] : [argument];
 }
 
 /**

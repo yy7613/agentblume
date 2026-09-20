@@ -38,6 +38,8 @@ import { SecretCipherError } from '../application/model-settings/secret-cipher';
 import { ModelCatalogError } from '../application/model-settings/model-catalog';
 import { SharedValidationError } from '../domain/shared/errors';
 import { ToolCheckNotFoundError, ToolCheckValidationError } from '../domain/tool-check/errors';
+import { ToolTemplateError } from '../domain/tool-template/template';
+import { ToolTemplateNotFoundError, ToolTemplateSlotsError } from '../application/tool-template/template-use-cases';
 import { httpError, type HttpError } from './http-error';
 import { journalHttpError } from './journal-error-mapping';
 import { expenseHttpError } from './expense-error-mapping';
@@ -181,6 +183,15 @@ export function toHttpError(err: unknown): HttpError {
   // ツール検証: 未知のケースは404、ケース定義の不変条件違反は400（実行自体の失敗は結果として200で返る）。
   if (err instanceof ToolCheckNotFoundError) return httpError(404, err.code, err.message);
   if (err instanceof ToolCheckValidationError) return httpError(400, err.code, err.message);
+
+  // ツールテンプレート（v43）: 未知のテンプレートは404。スロットの選び直しで直るものは
+  // **どの欄を直せばよいか**を本文へ載せる（画面がその欄の真下へ出す）。実体化そのものの
+  // 失敗（ソース数の不一致・置換できない値）は 422。
+  if (err instanceof ToolTemplateNotFoundError) return httpError(404, err.code, err.message);
+  if (err instanceof ToolTemplateSlotsError) {
+    return { status: 422, body: { error: { code: err.code, message: err.message, slots: err.slots.map((problem) => ({ ...problem })) } } };
+  }
+  if (err instanceof ToolTemplateError) return httpError(422, 'TOOL_TEMPLATE', err.message);
 
   // 業務（仕訳・経費精算・入金消込・契約）のエラーは業務ごとの写像が持つ（ADR-0039）。
   // 業務のエラー型は他と継承関係を持たないので、この位置で順に尋ねれば足りる。

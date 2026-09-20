@@ -181,6 +181,9 @@ Web UI・Webhookからユースケースを駆動する外部API。**すべて�
 | `POST` | `/tools/{id}/preview` | 固定サンプルでプレビュー実行 | `tool:execute` |
 | `POST` | `/tools/{id}/infer-schema` | スキーマ伝播・推論 | `tool:edit` |
 | `POST` | `/tool-drafts/diagnose` | 未保存Toolのプリフライト診断（`POST /tools` と同じbodyを受け、保存せずに検査。§3.1） | `tool:execute` |
+| `GET` | `/tool-templates` | ツールテンプレートの一覧（読めたものと、読めなかったファイルの理由と直し方。§3.8） | `tool:read` |
+| `POST` | `/tool-templates/{id}/slot-candidates` | スロットごとの候補（列の型・実在値の例・粒度・結合キーの重なり付き。§3.8） | `tool:read` |
+| `POST` | `/tool-templates/{id}/instantiate` | テンプレートの実体化（保存しない。手で組んだ Tool と同じ検査を通す。§3.8） | `tool:execute` |
 | `POST` | `/tool-checks/run` | ツール検証: 保存済みToolを引数付きで単体実行し、期待との合否を返す（保存しない。§3.2） | `tool:execute` |
 | `GET` | `/tool-checks/cases` | ツール検証ケースの一覧（`toolId` で絞り込み。新しい定義が先） | `tool:read` |
 | `POST` | `/tool-checks/cases` | ツール検証ケースの保存（`id` 省略で新規、指定で上書き） | `tool:edit` |
@@ -906,6 +909,106 @@ v1の実行上限はTool call 4回、model round 5回であり、実際の呼び
 - `documents`（テキスト添付。最大 2 件・合計 400,000 文字、1 件 300,000 文字まで）: `{ name, text, pageCount? }`。ブラウザで PDF のテキスト層から抜いた本文などを、画像とは別の一覧で渡す。**本文はモデルへのメッセージには載せず、ツールの実行文脈にだけ渡す**（12B 級モデルの文脈をメッセージ本文で埋めないため）。契約書レビューの vision を使わない経路（docs/23-contract.md §9.4 C2）はこれで本文を渡す。
 
 いずれも `runAgentBodySchema`（`src/api/schemas.ts`）が検証する。
+
+---
+
+### 3.8 ツールテンプレート（tool templates）
+
+Tool を 1 から組む代わりに、**テンプレートを選んでスロットを埋める**経路（[ADR-0049](./adr/0049-tool-templates.md) / [implementation/v43](../implementation/v43-tool-templates.md)）。テンプレートは外部ファイル（`templates/tools/*.json`）で、Agent Factory とツール作成画面（[docs/06 §3.16](./06-etl-tool-builder.md)）が同じ 3 本を使う。**保存はしない** — 返すのはキャンバスへ展開するためのグラフである。
+
+```jsonc
+// GET /tool-templates?tenantId=…&workspaceId=…
+{
+  "templates": [
+    {
+      "id": "period-series", "version": "1.0.0",
+      "title":   { "ja": "時系列の取り出し", "en": "Time series lookup" },
+      "summary": { "ja": "期間の範囲・粒度・カテゴリで絞って…", "en": "Returns a value series filtered by…" },
+      "whenToUse": { "ja": ["ある指標の推移を答えたい"], "en": ["Trends over time"] },
+      "notFor":    { "ja": ["前年比が要る（period-change を使う）"], "en": ["Year-over-year change"] },
+      "tags": ["time-series", "lookup"],
+      "sources": { "min": 1, "max": 1 },
+      "slots": [
+        { "name": "source", "kind": "dataSource", "label": { "ja": "データソース", "en": "Data source" }, "optional": false },
+        { "name": "periodColumn", "kind": "column", "source": "source", "role": "period", "label": { … }, "optional": false },
+        { "name": "valueColumns", "kind": "column", "source": "source", "role": "value", "multiple": { "min": 1, "max": 5 }, "label": { … }, "optional": false },
+        { "name": "limit", "kind": "number", "min": 1, "max": 100, "integer": true, "default": 36, "label": { … }, "optional": false }
+      ]
+    }
+  ],
+  // 読めなかったファイル。問題文は必ず「何が悪いか」と「どう直すか」を含む。
+  "invalid": [{ "file": "broken.json", "problems": ["id 'Broken!' does not match …; rename it to lowercase letters, digits and hyphens"] }]
+}
+```
+
+置き場所が 1 つも無い構成でも `{ "templates": [], "invalid": [] }` を返す（機能が無効なだけで、エラーではない）。
+
+```jsonc
+// POST /tool-templates/period-series/slot-candidates
+{ "scope": { … }, "dataSourceIds": ["ds-population"], "values": { "periodColumn": "時点" } }  // values は部分でよい
+// → 200
+{
+  "templateId": "period-series", "version": "1.0.0",
+  "candidates": [
+    { "slot": "source", "kind": "dataSource", "options": [{ "value": "ds-population", "name": "人口" }] },
+    { "slot": "periodColumn", "kind": "column", "options": [
+      { "value": "時点", "type": "string", "granularities": { "year": 4, "month": 1 }, "minStart": "2022-01-01", "maxStart": "2023-05-01" }] },
+    { "slot": "categoryColumn", "kind": "column", "options": [
+      { "value": "地域", "type": "string", "examples": ["北海道", "東京都"], "distinctCount": 2 }] },
+    { "slot": "joinKeys", "kind": "joinKeys", "options": [
+      { "value": "時点", "overlap": 1, "uniqueLeft": false, "uniqueRight": false }] },
+    { "slot": "defaultGranularity", "kind": "choice", "options": [{ "value": "year" }, { "value": "month" }] },
+    { "slot": "limit", "kind": "number", "range": { "min": 1, "max": 100 } },
+    { "slot": "outputColumn", "kind": "text", "freeText": true }
+  ]
+}
+```
+
+候補は**プロファイルから決定的に**作る（LLM を使わない）。`options` には「なぜ選べるか」を添える: 列の型、カテゴリ列の実在値（最大 8 件）と総数、期間列の粒度ごとの行数と開始日の範囲、結合キーの値の重なり（0..1）と、**候補キーを全部使ったときの**左右の一意性。`values` を渡すと、それに依存する候補（どのソースの列か・結合キー・粒度）がその選択に合わせて絞られる。
+
+```jsonc
+// POST /tool-templates/period-series/instantiate
+{
+  "scope": { … }, "dataSourceIds": ["ds-population"], "language": "ja",
+  "values": { "source": "ds-population", "periodColumn": "時点", "valueColumns": ["人口"], "defaultGranularity": "year", "limit": 12 }
+  // "toolName": 省略すると テンプレート id を function 名にする
+}
+// → 200
+{
+  "template": { "id": "period-series", "version": "1.0.0" },
+  "graph": { "nodes": [ … ], "edges": [ … ] },
+  "inputSchema": { "columns": [{ "name": "granularity", "type": "string", "nullable": false }, … ] },
+  "agentTool": { "name": "period-series", "description": "人口 の推移を返します（新しい順、最大 12 行）。…" },
+  // `$intent` を持つテンプレートだけ。式は空のまま返り、画面が関数電卓の「AIに式を書かせる」へ意図文を入れる。
+  "pendingExpressions": [{ "nodeId": "calc", "intent": "人口を千で割る" }]
+}
+```
+
+実体化した結果は**手で組んだ Tool と同じ検査**（スキーマ伝播・設計時プレビュー）を通してから返す（テンプレート経路だけの抜け道を作らない）。ただし `pendingExpressions` が残るグラフは式が空の中間生成物なので、その検査は式が入った後（ツール作成画面の自動プレビュー・保存時の検証）に回す。
+
+**エラー**
+
+| 状況 | status | code | 本文 |
+|---|---|---|---|
+| 知らないテンプレート `id` | 404 | `TOOL_TEMPLATE_NOT_FOUND` | 使える id を挙げる |
+| スロットの値がデータに合わない | 422 | `TOOL_TEMPLATE_SLOTS` | `slots: [{ slot, message }]` |
+| 実体化そのものの失敗（データソースの数が合わない等） | 422 | `TOOL_TEMPLATE` | 何個選べばよいかを言う |
+| 本文の形が違う | 400 | `BAD_REQUEST` | どの項目が悪いか |
+
+```jsonc
+// 422 TOOL_TEMPLATE_SLOTS
+{
+  "error": {
+    "code": "TOOL_TEMPLATE_SLOTS",
+    "message": "1 slot(s) of the template 'period-series' need a different value",
+    "slots": [
+      { "slot": "valueColumns", "message": "slot 'valueColumns' is set to '世帯数', which is not a value column of that data source; choose one of 人口" }
+    ]
+  }
+}
+```
+
+`slots[].slot` は**どの入力欄を直せばよいか**で、画面はその欄の真下にメッセージを出す。欄に紐づけられない問題（グラフ全体の検査で出たもの）は `slot` を持たない。
 
 ---
 

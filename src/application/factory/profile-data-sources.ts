@@ -53,6 +53,25 @@ export interface CategoricalColumnProfile {
   readonly values: readonly string[];
 }
 
+/**
+ * 2つのデータソースを結合できそうな組み合わせ（ADR-0047 round 3）。
+ *
+ * e-Stat のファイル群は `時点, 地域コード, 地域, <値列>, 注記` と同じ形をしており、
+ * 「同じ時点・同じ地域の賃金と労働時間を並べる」には1つのToolで join するのが自然だった。
+ * Plannerが「1ソース1Tool」を選ばずに済むよう、結合できる組み合わせを決定的に提示する。
+ */
+export interface JoinCandidate {
+  readonly leftDataSourceId: DataSourceId;
+  readonly rightDataSourceId: DataSourceId;
+  /** 結合キーの候補（同名・同型で値が十分に重なる列。期間列・コード列を先頭に並べる）。 */
+  readonly keys: readonly string[];
+  /** キー列ごとの値の重なり（小さい方のdistinct集合に対する割合。0..1）。 */
+  readonly overlap: Readonly<Record<string, number>>;
+  /** `keys` の組み合わせが左/右それぞれで行を一意に決めるか。false 側があると結合で行が増える。 */
+  readonly uniqueLeft: boolean;
+  readonly uniqueRight: boolean;
+}
+
 export interface DataProfile {
   readonly dataSourceId: DataSourceId;
   readonly name: string;
@@ -68,6 +87,12 @@ export interface DataProfile {
   readonly periodColumns: readonly PeriodColumnProfile[];
   /** 低カーディナリティ文字列列（distinct が `MAX_CATEGORICAL_VALUES` 以下）。 */
   readonly categoricalColumns: readonly CategoricalColumnProfile[];
+  /**
+   * このRunのデータソース同士で結合できそうな組み合わせ（`executeAll` が全ソースを見て決める）。
+   * **Run内の全プロファイルが同じ一覧を持つ**（ソースごとの部分集合ではない）。
+   * 単体の `execute` では空配列（1ソースだけでは結合相手が分からない）。
+   */
+  readonly joinCandidates: readonly JoinCandidate[];
 }
 
 /** Stage 0 が疑似ユーザー/Plannerへ提示するサンプル行の上限（docs/16 §4 Stage 0）。 */
@@ -137,6 +162,14 @@ export class ProfileDataSourcesUseCase {
   ) {}
 
   async execute(scope: TenantScope, dataSourceId: DataSourceId): Promise<DataProfile> {
+    return (await this.profileWithRows(scope, dataSourceId)).profile;
+  }
+
+  /**
+   * プロファイルと、それを作るのに使った全行を返す（`executeAll` の結合候補判定にだけ使う）。
+   * 行をもう一度読みに行かないための内部経路で、外へは `execute` / `executeAll` だけを公開する。
+   */
+  private async profileWithRows(scope: TenantScope, dataSourceId: DataSourceId): Promise<{ profile: DataProfile; rows: readonly Record<string, unknown>[] }> {
     const source = await this.dataSources.find(scope, dataSourceId);
     if (source === null) throw new FactoryValidationError(`ProfileDataSources: data source not found: ${dataSourceId}`);
     if (source.kind === 'database') throw new FactoryValidationError('ProfileDataSources: database data source profiling is not supported yet');
@@ -166,26 +199,147 @@ export class ProfileDataSourcesUseCase {
       .filter((profile): profile is CategoricalColumnProfile => profile !== undefined);
 
     return {
-      dataSourceId,
-      name: source.name,
-      kind: source.kind,
-      format: source.format,
-      columns,
-      sampleRowCount: sampleRows.length,
-      sampleRows,
-      rowCount: preview.nodes[SOURCE_NODE_ID]?.rowCount ?? allRows.length,
-      periodColumns,
-      categoricalColumns,
+      profile: {
+        dataSourceId,
+        name: source.name,
+        kind: source.kind,
+        format: source.format,
+        columns,
+        sampleRowCount: sampleRows.length,
+        sampleRows,
+        rowCount: preview.nodes[SOURCE_NODE_ID]?.rowCount ?? allRows.length,
+        periodColumns,
+        categoricalColumns,
+        joinCandidates: [],
+      },
+      rows: allRows,
     };
   }
 
-  /** 複数 data source を順にプロファイルする。`signal` は data source の合間で確認する（1件のプロファイルは中断できない同期処理）。 */
+  /**
+   * 複数 data source を順にプロファイルし、**ソースをまたぐ結合候補**を決定的に付ける。
+   * `signal` は data source の合間で確認する（1件のプロファイルは中断できない同期処理）。
+   *
+   * 結合候補は Run 全体で1つの一覧であり、返す全プロファイルが同じ内容を持つ
+   * （Planner へは1回だけ載せる。プロファイルごとに部分集合を持たせると、どちらの向きの
+   * 候補なのかを読む側が組み立て直すことになり、取り違えが起きる）。
+   */
   async executeAll(scope: TenantScope, dataSourceIds: readonly DataSourceId[], signal?: AbortSignal): Promise<DataProfile[]> {
-    const profiles: DataProfile[] = [];
+    const profiled: { profile: DataProfile; rows: readonly Record<string, unknown>[] }[] = [];
     for (const dataSourceId of dataSourceIds) {
       throwIfAborted(signal);
-      profiles.push(await this.execute(scope, dataSourceId));
+      profiled.push(await this.profileWithRows(scope, dataSourceId));
     }
-    return profiles;
+    const joinCandidates = describeJoinCandidates(profiled);
+    return profiled.map((entry) => ({ ...entry.profile, joinCandidates }));
   }
+}
+
+/** 結合キーの候補として値を数えるとき、1列あたり保持する distinct 値の上限（重なりの推定に使う）。 */
+export const MAX_KEY_SAMPLE_VALUES = 2000;
+
+/** 値の重なりがこの割合（小さい方のdistinct集合に対する比）以上なら結合キーの候補とする。 */
+export const JOIN_KEY_OVERLAP_RATIO = 0.5;
+
+/** 結合キーになりうる列型（値を文字列へ写して比較できるもの）。 */
+const JOINABLE_TYPES: readonly string[] = ['string', 'number', 'date', 'unknown'];
+
+/** コードらしい列名（結合キーとして優先する）。 */
+const CODE_LIKE_COLUMN = /コード|code|id$|_id|番号/i;
+
+/** セル1つを結合キーの比較用に文字列化する（`join` ノードの `coerceKeys: 'string'` と同じ発想）。 */
+function encodeKeyValue(value: unknown): string | null {
+  if (isBlank(value)) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  return String(value);
+}
+
+function hasBlankValue(column: string, rows: readonly Record<string, unknown>[]): boolean {
+  return rows.some((row) => encodeKeyValue(row[column]) === null);
+}
+
+/** 1列の distinct 値（上限まで）。上限を超えた場合も `truncated` で分かるようにする。 */
+function distinctValuesOf(column: string, rows: readonly Record<string, unknown>[]): { values: Set<string>; truncated: boolean } {
+  const values = new Set<string>();
+  for (const row of rows) {
+    const encoded = encodeKeyValue(row[column]);
+    if (encoded === null) continue;
+    if (values.size >= MAX_KEY_SAMPLE_VALUES) return { values, truncated: true };
+    values.add(encoded);
+  }
+  return { values, truncated: false };
+}
+
+/** 列の組み合わせが行を一意に決めるか（1行でも重複したら false）。 */
+export function isUniqueKey(columns: readonly string[], rows: readonly Record<string, unknown>[]): boolean {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const parts = columns.map((column) => encodeKeyValue(row[column]));
+    if (parts.some((part) => part === null)) continue; // null を含むキーは join でマッチしない（重複判定からも外す）。
+    const key = JSON.stringify(parts);
+    if (seen.has(key)) return false;
+    seen.add(key);
+  }
+  return true;
+}
+
+/** 結合キーの並び: 期間列 → コードらしい列 → その他（列の出現順）。 */
+function keyPriority(column: string, periodColumns: ReadonlySet<string>): number {
+  if (periodColumns.has(column)) return 0;
+  if (CODE_LIKE_COLUMN.test(column)) return 1;
+  return 2;
+}
+
+/**
+ * プロファイル済みのソース同士から結合候補を決定的に列挙する（ADR-0047 round 3）。
+ *
+ * 候補条件: 同名・同型（片方が `unknown` なら許容）の列で、値の集合が
+ * `JOIN_KEY_OVERLAP_RATIO` 以上重なること。重なりは distinct 値（`MAX_KEY_SAMPLE_VALUES` まで）で測る。
+ * 見つかったキーの組み合わせが各ソースで一意かどうかも併せて返す（一意でなければ結合で行が増える）。
+ */
+export function describeJoinCandidates(profiled: readonly { readonly profile: DataProfile; readonly rows: readonly Record<string, unknown>[] }[]): JoinCandidate[] {
+  const candidates: JoinCandidate[] = [];
+  for (let left = 0; left < profiled.length; left += 1) {
+    for (let right = left + 1; right < profiled.length; right += 1) {
+      const a = profiled[left]!;
+      const b = profiled[right]!;
+      const bColumns = new Map(b.profile.columns.map((column) => [column.name, column] as const));
+      const periodColumns = new Set([...a.profile.periodColumns, ...b.profile.periodColumns].map((column) => column.column));
+
+      const keys: string[] = [];
+      const overlap: Record<string, number> = {};
+      for (const column of a.profile.columns) {
+        const other = bColumns.get(column.name);
+        if (other === undefined) continue;
+        if (!JOINABLE_TYPES.includes(column.type) || !JOINABLE_TYPES.includes(other.type)) continue;
+        if (column.type !== other.type && column.type !== 'unknown' && other.type !== 'unknown') continue;
+        // 空の値を持つ列はキーにしない: null のキーは join でマッチせず、その行が黙って落ちる（e-Stat の「注記」列で実測）。
+        if (hasBlankValue(column.name, a.rows) || hasBlankValue(column.name, b.rows)) continue;
+        const leftValues = distinctValuesOf(column.name, a.rows);
+        const rightValues = distinctValuesOf(column.name, b.rows);
+        const smaller = Math.min(leftValues.values.size, rightValues.values.size);
+        if (smaller === 0) continue;
+        let shared = 0;
+        for (const value of leftValues.values) {
+          if (rightValues.values.has(value)) shared += 1;
+        }
+        const ratio = shared / smaller;
+        if (ratio < JOIN_KEY_OVERLAP_RATIO) continue;
+        keys.push(column.name);
+        overlap[column.name] = Math.round(ratio * 100) / 100;
+      }
+      if (keys.length === 0) continue;
+
+      keys.sort((x, y) => keyPriority(x, periodColumns) - keyPriority(y, periodColumns));
+      candidates.push({
+        leftDataSourceId: a.profile.dataSourceId,
+        rightDataSourceId: b.profile.dataSourceId,
+        keys,
+        overlap,
+        uniqueLeft: isUniqueKey(keys, a.rows),
+        uniqueRight: isUniqueKey(keys, b.rows),
+      });
+    }
+  }
+  return candidates;
 }

@@ -136,6 +136,10 @@ import type {
   JournalEntryDto,
   SaveJournalEntryDto,
   JournalExportResultDto,
+  ToolTemplateCatalogDto,
+  TemplateSlotCandidatesResultDto,
+  TemplateSlotValuesDto,
+  InstantiatedTemplateDto,
 } from './types';
 import { scopeQuery } from './business-api';
 import { localizeApiErrorMessage } from './error-messages';
@@ -271,6 +275,48 @@ export class ToolApiClient {
   /** 上流の列と利用者の指示文から、検証済みの式を1本提案させる（v41）。適用はUIの明示操作。 */
   async suggestCalculateExpression(input: { readonly graph: ToolGraphDto; readonly nodeId: string; readonly intent: string; readonly scope?: TenantScopeDto }): Promise<CalculateExpressionProposalDto> {
     return (await this.request<{ proposal: CalculateExpressionProposalDto }>('/tool-drafts/suggest-calculate-expression', { method: 'POST', body: JSON.stringify(input) })).proposal;
+  }
+
+  /**
+   * ツールテンプレートの一覧（v43）。読めなかったファイルも `invalid` として一緒に返る
+   * （画面は一覧の下に理由と直し方を出す）。置き場所が無いサーバーでは空の一覧。
+   */
+  async listToolTemplates(scope: TenantScopeDto): Promise<ToolTemplateCatalogDto> {
+    const query = new URLSearchParams({ tenantId: scope.tenantId, workspaceId: scope.workspaceId });
+    return this.request<ToolTemplateCatalogDto>(`/tool-templates?${query}`);
+  }
+
+  /**
+   * スロットごとの候補。`values`（部分でよい）を渡すと、それに依存する候補
+   * （どのソースの列か・結合キー・粒度）がその選択に合わせて絞られる。
+   */
+  async toolTemplateSlotCandidates(input: {
+    readonly templateId: string;
+    readonly scope: TenantScopeDto;
+    readonly dataSourceIds: readonly string[];
+    readonly values?: TemplateSlotValuesDto;
+  }): Promise<TemplateSlotCandidatesResultDto> {
+    const { templateId, ...body } = input;
+    return this.request<TemplateSlotCandidatesResultDto>(`/tool-templates/${encodeURIComponent(templateId)}/slot-candidates`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  /** テンプレートを実体化する（保存はしない）。スロット違反は 422 + `slots` で返る。 */
+  async instantiateToolTemplate(input: {
+    readonly templateId: string;
+    readonly scope: TenantScopeDto;
+    readonly dataSourceIds: readonly string[];
+    readonly values: TemplateSlotValuesDto;
+    readonly language: 'ja' | 'en';
+    readonly toolName?: string;
+  }): Promise<InstantiatedTemplateDto> {
+    const { templateId, ...body } = input;
+    return this.request<InstantiatedTemplateDto>(`/tool-templates/${encodeURIComponent(templateId)}/instantiate`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
   }
 
   async saveTool(input: SaveToolDto): Promise<SerializedToolDto> {

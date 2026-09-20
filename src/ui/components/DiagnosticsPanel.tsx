@@ -45,6 +45,7 @@ export const DIAGNOSTIC_CHECK_LABELS: Readonly<Record<string, readonly [string, 
   execution: ['Sample execution', 'サンプル実行'],
   'output-schema': ['Output schema consistency', '出力スキーマ整合'],
   'operator-arguments': ['Operator arguments', '演算子引数'],
+  'list-arguments': ['Multi-value arguments', '複数値の引数'],
   'side-effect': ['Side effect / approval', '副作用と承認'],
   state: ['Tool lifecycle state', 'ツールの公開状態'],
 };
@@ -61,6 +62,7 @@ export function toolCheckTarget(check: DiagnosticCheckDto): LocalTarget {
     case 'function-definition':
     case 'agent-input':
     case 'operator-arguments':
+    case 'list-arguments':
       return { section: TOOL_SECTION.agentContext };
     case 'output-schema':
       return { section: TOOL_SECTION.output };

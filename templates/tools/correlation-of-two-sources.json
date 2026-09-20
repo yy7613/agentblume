@@ -1,0 +1,106 @@
+{
+  "$schema": "./tool-template.schema.json",
+  "formatVersion": 1,
+  "id": "correlation-of-two-sources",
+  "version": "1.0.1",
+  "title": { "ja": "2 つのデータの相関係数", "en": "Correlation of two sources" },
+  "summary": {
+    "ja": "2 つのデータソースを同じ時点（と地域）で結合し、2 つの値の相関係数を決定的に計算して返す（-1〜1）。",
+    "en": "Joins two sources on the same period (and region) and returns the correlation coefficient of the two values (-1..1)."
+  },
+  "whenToUse": {
+    "ja": ["2 つの指標に関係があるか・連動しているかを答えたい", "「相関」「関係がある」「一緒に増えるか」と聞かれた"],
+    "en": ["Whether two indicators move together", "Questions about correlation or relationship"]
+  },
+  "notFor": {
+    "ja": ["値そのものを並べたい（join-side-by-side を使う）", "比が要る（ratio-of-two-sources を使う）", "因果関係の証明（相関は因果ではない）"],
+    "en": ["The values themselves (use join-side-by-side)", "A ratio (use ratio-of-two-sources)", "Proving causation — correlation is not causation"]
+  },
+  "tags": ["join", "analysis", "statistics"],
+  "sources": { "min": 2, "max": 2 },
+  "slots": [
+    { "name": "sourceA", "kind": "dataSource", "label": { "ja": "1 つ目のデータソース", "en": "First data source" } },
+    { "name": "sourceB", "kind": "dataSource", "label": { "ja": "2 つ目のデータソース", "en": "Second data source" } },
+    {
+      "name": "joinKeys", "kind": "joinKeys", "left": "sourceA", "right": "sourceB", "multiple": { "min": 1, "max": 3 },
+      "label": { "ja": "結合キー（共通の列すべて）", "en": "Join keys (every shared key column)" },
+      "help": { "ja": "片方だけで結ぶと行が増え、相関がゆがむ", "en": "Joining on only one of them multiplies rows and distorts the coefficient" }
+    },
+    { "name": "periodColumn", "kind": "column", "source": "sourceA", "role": "period", "label": { "ja": "期間の列", "en": "Period column" } },
+    { "name": "valueA", "kind": "column", "source": "sourceA", "role": "value", "label": { "ja": "1 つ目の値の列", "en": "First value column" } },
+    { "name": "valueB", "kind": "column", "source": "sourceB", "role": "value", "label": { "ja": "2 つ目の値の列", "en": "Second value column" } },
+    { "name": "defaultGranularity", "kind": "choice", "optionsFrom": "granularities:periodColumn", "label": { "ja": "既定の粒度", "en": "Default granularity" } },
+    {
+      "name": "method", "kind": "choice", "default": "pearson", "label": { "ja": "相関の種類", "en": "Method" },
+      "options": [
+        { "value": "pearson", "label": { "ja": "ピアソン（直線的な関係）", "en": "Pearson (linear)" } },
+        { "value": "spearman", "label": { "ja": "スピアマン（順位の関係。外れ値に強い）", "en": "Spearman (rank based, robust to outliers)" } }
+      ]
+    }
+  ],
+  "arguments": [
+    {
+      "name": "granularity", "type": "string", "nullable": false, "sample": { "$slot": "defaultGranularity" },
+      "description": { "ja": "期間の粒度。month / quarter / half / year / fiscal-year のうちデータにあるものを、この綴りのまま渡す（monthly・yearly・月次・年次 などは不可）。必ず指定する。", "en": "Period granularity: one of month / quarter / half / year / fiscal-year that exists in the data, spelled exactly like this (not monthly, yearly or a translation). Required." }
+    },
+    {
+      "name": "period_from", "type": "date", "nullable": true, "sample": { "$profile": "periodMin:periodColumn" },
+      "description": { "ja": "この日以降に始まる期間だけを使う（ISO 日付）。省略で最初から。", "en": "Only periods starting on or after this ISO date. Omit for no lower bound." }
+    },
+    {
+      "name": "period_to", "type": "date", "nullable": true, "sample": { "$profile": "periodMax:periodColumn" },
+      "description": { "ja": "この日以前に始まる期間だけを使う（ISO 日付）。省略で最新まで。", "en": "Only periods starting on or before this ISO date. Omit for no upper bound." }
+    }
+  ],
+  "nodes": [
+    { "id": "src_a", "type": { "$sourceType": "sourceA" }, "config": { "dataSourceId": { "$slot": "sourceA" } } },
+    { "id": "src_b", "type": { "$sourceType": "sourceB" }, "config": { "dataSourceId": { "$slot": "sourceB" } } },
+    { "id": "sel_b", "type": "select", "config": { "columns": { "$concat": [{ "$slot": "joinKeys" }, [{ "$slot": "valueB" }]] } } },
+    {
+      "id": "join", "type": "join",
+      "config": { "mode": "inner", "keys": { "$each": "joinKeys", "as": "k", "item": { "left": "{{k}}", "right": "{{k}}" } }, "rightSuffix": "_2" }
+    },
+    { "id": "period", "type": "parse-period", "config": { "column": { "$slot": "periodColumn" }, "startColumn": "periodStart", "granularityColumn": "periodGranularity", "fiscalYearStartMonth": 4 } },
+    {
+      "id": "f_granularity", "type": "filter",
+      "config": { "column": "periodGranularity", "op": "eq", "value": { "$slot": "defaultGranularity" }, "valueBinding": { "$argument": "granularity" } }
+    },
+    {
+      "id": "f_range", "type": "filter",
+      "config": {
+        "combine": "and",
+        "conditions": [
+          { "column": "periodStart", "op": "gte", "value": { "$profile": "periodMin:periodColumn" }, "valueBinding": { "$argument": "period_from" } },
+          { "column": "periodStart", "op": "lte", "value": { "$profile": "periodMax:periodColumn" }, "valueBinding": { "$argument": "period_to" } }
+        ]
+      }
+    },
+    {
+      "id": "correlation", "type": "correlation-analysis",
+      "config": {
+        "configVersion": 1,
+        "columns": ["{{valueA}}", "{{valueB}}"],
+        "method": { "$slot": "method" },
+        "missing": "pairwise",
+        "minPairs": 3,
+        "includeDiagonal": false
+      }
+    },
+    { "id": "out", "type": "agent-output", "config": { "shape": "rows", "format": "json", "maxRows": 10, "maxBytes": 65536, "overflow": "error" } }
+  ],
+  "edges": [
+    { "from": "src_a", "to": "join", "toInput": 0 },
+    { "from": "src_b", "to": "sel_b" },
+    { "from": "sel_b", "to": "join", "toInput": 1 },
+    { "from": "join", "to": "period" },
+    { "from": "period", "to": "f_granularity" },
+    { "from": "f_granularity", "to": "f_range" },
+    { "from": "f_range", "to": "correlation" },
+    { "from": "correlation", "to": "out" }
+  ],
+  "description": {
+    "ja": "同じ時点（と結合キー）で揃えた {{valueA}} と {{valueB}} の相関係数（{{method}}）を 1 行で返します。列は columnX・columnY・coefficient（-1〜1。正なら一緒に増える）・absoluteCoefficient・pairCount（計算に使った組の数）・method です。pairCount が少ないときは強い主張をしないでください。相関は因果ではありません。粒度 granularity は必須です。",
+    "en": "Returns one row with the {{method}} correlation between {{valueA}} and {{valueB}} for matching periods (and join keys): columnX, columnY, coefficient (-1..1; positive means they rise together), absoluteCoefficient, pairCount and method. Do not claim much when pairCount is small, and remember correlation is not causation. granularity is required."
+  },
+  "notes": "組が minPairs（3）に満たないと coefficient は null になる（黙って 0 にはしない）。両方のデータで列名が同じときは右側に _2 が付き、correlation-analysis の columns もその名前で解決される。"
+}

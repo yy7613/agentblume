@@ -1,0 +1,296 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agentblume.local/schemas/tool-template.schema.json",
+  "title": "Tool template (formatVersion 1)",
+  "description": "ツールテンプレート 1 件。実行時の正本は src/domain/tool-template/template.ts（zod）。この schema はエディタ補完と目視のための写し。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["formatVersion", "id", "version", "title", "summary", "whenToUse", "sources", "slots", "nodes", "description"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "formatVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,48}$" },
+    "version": { "type": "string", "minLength": 1 },
+    "title": { "$ref": "#/definitions/localizedText" },
+    "summary": { "$ref": "#/definitions/localizedText" },
+    "whenToUse": { "$ref": "#/definitions/localizedList" },
+    "notFor": { "$ref": "#/definitions/localizedList" },
+    "tags": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "max": { "type": "integer", "minimum": 1, "maximum": 5 }
+      }
+    },
+    "slots": { "type": "array", "items": { "$ref": "#/definitions/slot" } },
+    "arguments": { "type": "array", "items": { "$ref": "#/definitions/argument" } },
+    "nodes": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/node" } },
+    "edges": { "type": "array", "items": { "$ref": "#/definitions/edge" } },
+    "description": { "$ref": "#/definitions/localizedText" },
+    "notes": { "type": "string" },
+    "implementationNotes": { "type": "string" }
+  },
+  "definitions": {
+    "localizedText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ja", "en"],
+      "properties": { "ja": { "type": "string", "minLength": 1 }, "en": { "type": "string", "minLength": 1 } }
+    },
+    "localizedList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ja", "en"],
+      "properties": {
+        "ja": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "en": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "when": {
+      "description": "ノード・引数・エッジを残すかどうかの条件。",
+      "oneOf": [
+        { "type": "string", "minLength": 1, "description": "そのスロットが埋まっている" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["slot", "equals"],
+          "properties": { "slot": { "type": "string", "minLength": 1 }, "equals": { "type": "string" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["slot", "notEquals"],
+          "properties": { "slot": { "type": "string", "minLength": 1 }, "notEquals": { "type": "string" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["not"],
+          "properties": { "not": { "$ref": "#/definitions/when" } }
+        }
+      ]
+    },
+    "multiple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": { "min": { "type": "integer", "minimum": 0 }, "max": { "type": "integer", "minimum": 1 } }
+    },
+    "slot": {
+      "type": "object",
+      "required": ["name", "kind", "label"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][A-Za-z0-9]{0,39}$" },
+        "kind": { "enum": ["dataSource", "column", "joinKeys", "choice", "number", "text", "intent"] },
+        "label": { "$ref": "#/definitions/localizedText" },
+        "help": { "$ref": "#/definitions/localizedText" },
+        "optional": { "type": "boolean" }
+      },
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "name": {}, "label": {}, "help": {}, "optional": {},
+            "kind": { "const": "dataSource" }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["source", "role"],
+          "properties": {
+            "name": {}, "label": {}, "help": {}, "optional": {},
+            "kind": { "const": "column" },
+            "source": { "type": "string", "minLength": 1, "description": "dataSource スロットの名前" },
+            "role": { "enum": ["period", "category", "value", "text", "any"] },
+            "types": { "type": "array", "minItems": 1, "items": { "enum": ["string", "number", "boolean", "date", "null", "unknown"] } },
+            "multiple": { "$ref": "#/definitions/multiple" },
+            "distinctFrom": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["left", "right", "multiple"],
+          "properties": {
+            "name": {}, "label": {}, "help": {}, "optional": {},
+            "kind": { "const": "joinKeys" },
+            "left": { "type": "string", "minLength": 1 },
+            "right": { "type": "string", "minLength": 1 },
+            "multiple": { "$ref": "#/definitions/multiple" }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "name": {}, "label": {}, "help": {}, "optional": {},
+            "kind": { "const": "choice" },
+            "options": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["value", "label"],
+                "properties": { "value": { "type": "string", "minLength": 1 }, "label": { "$ref": "#/definitions/localizedText" } }
+              }
+            },
+            "optionsFrom": { "type": "string", "pattern": "^granularities:[a-z][A-Za-z0-9]{0,39}$" },
+            "default": { "type": "string" }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["min", "max", "default"],
+          "properties": {
+            "name": {}, "label": {}, "help": {}, "optional": {},
+            "kind": { "const": "number" },
+            "min": { "type": "number" },
+            "max": { "type": "number" },
+            "integer": { "type": "boolean" },
+            "default": { "type": "number" }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["maxLength", "default"],
+          "properties": {
+            "name": {}, "label": {}, "help": {}, "optional": {},
+            "kind": { "const": "text" },
+            "maxLength": { "type": "integer", "minimum": 1, "maximum": 4000 },
+            "pattern": { "type": "string", "minLength": 1 },
+            "default": { "type": "string" }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["maxLength"],
+          "properties": {
+            "name": {}, "label": {}, "help": {}, "optional": {},
+            "kind": { "const": "intent" },
+            "maxLength": { "type": "integer", "minimum": 1, "maximum": 4000 }
+          }
+        }
+      ]
+    },
+    "argument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "nullable", "description", "sample"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$" },
+        "type": { "enum": ["string", "number", "boolean", "date"] },
+        "nullable": { "type": "boolean" },
+        "when": { "$ref": "#/definitions/when" },
+        "description": { "$ref": "#/definitions/localizedText" },
+        "sample": { "description": "リテラル、または $slot / $profile ディレクティブ" }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "config"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "$ref": "#/definitions/directiveSourceType" }
+          ]
+        },
+        "config": { "description": "ノードの設定。中の値に置換ディレクティブを書ける（#/definitions/directive）" },
+        "when": { "$ref": "#/definitions/when" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "string", "minLength": 1 },
+        "to": { "type": "string", "minLength": 1 },
+        "toInput": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "when": { "$ref": "#/definitions/when" }
+      }
+    },
+    "directive": {
+      "description": "config の中に書ける置換。1 つのオブジェクトにつき 1 つだけ。",
+      "oneOf": [
+        { "$ref": "#/definitions/directiveSlot" },
+        { "$ref": "#/definitions/directiveEach" },
+        { "$ref": "#/definitions/directiveIntent" },
+        { "$ref": "#/definitions/directiveProfile" },
+        { "$ref": "#/definitions/directiveArgument" },
+        { "$ref": "#/definitions/directiveNumber" },
+        { "$ref": "#/definitions/directiveConcat" },
+        { "$ref": "#/definitions/directiveSourceType" }
+      ]
+    },
+    "directiveSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$slot"],
+      "properties": { "$slot": { "type": "string", "minLength": 1 } },
+      "description": "スロットの値そのもの（配列・数値・文字列の型を保つ）"
+    },
+    "directiveEach": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$each", "as", "item"],
+      "properties": {
+        "$each": { "type": "string", "minLength": 1 },
+        "as": { "type": "string", "minLength": 1 },
+        "item": { "description": "要素ごとに展開する JSON。{{as}} / {\"$slot\": as} が要素を指す" }
+      },
+      "description": "配列スロットの各要素について item を展開した配列"
+    },
+    "directiveIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$intent"],
+      "properties": { "$intent": { "type": "string", "minLength": 1 } },
+      "description": "calculate の expression にだけ書ける。式は空で置かれ、実体化後に式提案が埋める"
+    },
+    "directiveProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$profile"],
+      "properties": {
+        "$profile": {
+          "type": "string",
+          "pattern": "^(periodMin|periodMax):[a-z][A-Za-z0-9]{0,39}$|^(firstValues|firstValuesCsv):[a-z][A-Za-z0-9]{0,39}:[0-9]{1,3}$"
+        }
+      },
+      "description": "プロファイル由来の値（periodMin / periodMax / firstValues / firstValuesCsv）"
+    },
+    "directiveArgument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$argument"],
+      "properties": { "$argument": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$" } },
+      "description": "filter の valueBinding を作る糖衣: { \"source\": \"agent-input\", \"field\": name }"
+    },
+    "directiveNumber": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$number"],
+      "properties": { "$number": { "type": "string", "minLength": 1 } },
+      "description": "スロット値を数値として入れる（choice の値は文字列なので lag のような数値 config に使う）"
+    },
+    "directiveConcat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$concat"],
+      "properties": { "$concat": { "type": "array", "items": {} } },
+      "description": "配列を連結して 1 つの配列にする（重複は除く）"
+    },
+    "directiveSourceType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$sourceType"],
+      "properties": { "$sourceType": { "type": "string", "minLength": 1 } },
+      "description": "dataSource スロットの形式から csv-source / json-source を選ぶ（ノードの type にだけ書ける）"
+    }
+  }
+}

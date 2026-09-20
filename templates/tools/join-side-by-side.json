@@ -1,0 +1,92 @@
+{
+  "$schema": "./tool-template.schema.json",
+  "formatVersion": 1,
+  "id": "join-side-by-side",
+  "version": "1.0.1",
+  "title": { "ja": "2 つのデータを横に並べる", "en": "Two sources side by side" },
+  "summary": {
+    "ja": "2 つのデータソースを同じ時点（と地域）で結合し、両方の値を 1 行に並べて新しい順に返す。",
+    "en": "Joins two sources on the same period (and region) and returns both sets of values in one row, newest first."
+  },
+  "whenToUse": {
+    "ja": ["2 つの指標を同じ時点・同じ地域で見比べたい", "2 つのデータソースが同じ期間の列（と地域コード）を持つ"],
+    "en": ["Comparing two indicators for the same period and region", "Both sources share a period column (and a region code)"]
+  },
+  "notFor": {
+    "ja": ["比や割合が要る（ratio-of-two-sources を使う）", "3 つのデータを並べたい（join-three-side-by-side を使う）", "相関係数が要る（correlation-of-two-sources を使う）"],
+    "en": ["A ratio (use ratio-of-two-sources)", "Three sources (use join-three-side-by-side)", "A correlation coefficient (use correlation-of-two-sources)"]
+  },
+  "tags": ["join", "comparison"],
+  "sources": { "min": 2, "max": 2 },
+  "slots": [
+    { "name": "primarySource", "kind": "dataSource", "label": { "ja": "主のデータソース", "en": "Primary data source" } },
+    { "name": "secondarySource", "kind": "dataSource", "label": { "ja": "並べるデータソース", "en": "Second data source" } },
+    {
+      "name": "joinKeys", "kind": "joinKeys", "left": "primarySource", "right": "secondarySource", "multiple": { "min": 1, "max": 3 },
+      "label": { "ja": "結合キー（共通の列すべて）", "en": "Join keys (every shared key column)" },
+      "help": { "ja": "片方だけで結ぶと行が増える。共通のキーは全部選ぶ", "en": "Joining on only one of them multiplies rows; pick every shared key" }
+    },
+    { "name": "periodColumn", "kind": "column", "source": "primarySource", "role": "period", "label": { "ja": "期間の列", "en": "Period column" } },
+    { "name": "primaryValues", "kind": "column", "source": "primarySource", "role": "value", "multiple": { "min": 1, "max": 3 }, "label": { "ja": "主のデータの値の列", "en": "Value columns of the primary source" } },
+    { "name": "secondaryValues", "kind": "column", "source": "secondarySource", "role": "value", "multiple": { "min": 1, "max": 3 }, "label": { "ja": "並べるデータの値の列", "en": "Value columns of the second source" } },
+    { "name": "defaultGranularity", "kind": "choice", "optionsFrom": "granularities:periodColumn", "label": { "ja": "既定の粒度", "en": "Default granularity" } },
+    { "name": "limit", "kind": "number", "min": 1, "max": 100, "integer": true, "default": 24, "label": { "ja": "返す最大行数", "en": "Maximum rows" } }
+  ],
+  "arguments": [
+    {
+      "name": "granularity", "type": "string", "nullable": false, "sample": { "$slot": "defaultGranularity" },
+      "description": { "ja": "期間の粒度。month / quarter / half / year / fiscal-year のうちデータにあるものを、この綴りのまま渡す（monthly・yearly・月次・年次 などは不可）。必ず指定する。", "en": "Period granularity: one of month / quarter / half / year / fiscal-year that exists in the data, spelled exactly like this (not monthly, yearly or a translation). Required." }
+    },
+    {
+      "name": "period_from", "type": "date", "nullable": true, "sample": { "$profile": "periodMin:periodColumn" },
+      "description": { "ja": "この日以降に始まる期間（ISO 日付）。省略で最初から。", "en": "Periods starting on or after this ISO date. Omit for no lower bound." }
+    },
+    {
+      "name": "period_to", "type": "date", "nullable": true, "sample": { "$profile": "periodMax:periodColumn" },
+      "description": { "ja": "この日以前に始まる期間（ISO 日付）。省略で最新まで。", "en": "Periods starting on or before this ISO date. Omit for no upper bound." }
+    }
+  ],
+  "nodes": [
+    { "id": "src_a", "type": { "$sourceType": "primarySource" }, "config": { "dataSourceId": { "$slot": "primarySource" } } },
+    { "id": "src_b", "type": { "$sourceType": "secondarySource" }, "config": { "dataSourceId": { "$slot": "secondarySource" } } },
+    { "id": "sel_b", "type": "select", "config": { "columns": { "$concat": [{ "$slot": "joinKeys" }, { "$slot": "secondaryValues" }] } } },
+    {
+      "id": "join", "type": "join",
+      "config": { "mode": "inner", "keys": { "$each": "joinKeys", "as": "k", "item": { "left": "{{k}}", "right": "{{k}}" } }, "rightSuffix": "_2" }
+    },
+    { "id": "period", "type": "parse-period", "config": { "column": { "$slot": "periodColumn" }, "startColumn": "periodStart", "granularityColumn": "periodGranularity", "fiscalYearStartMonth": 4 } },
+    {
+      "id": "f_granularity", "type": "filter",
+      "config": { "column": "periodGranularity", "op": "eq", "value": { "$slot": "defaultGranularity" }, "valueBinding": { "$argument": "granularity" } }
+    },
+    {
+      "id": "f_range", "type": "filter",
+      "config": {
+        "combine": "and",
+        "conditions": [
+          { "column": "periodStart", "op": "gte", "value": { "$profile": "periodMin:periodColumn" }, "valueBinding": { "$argument": "period_from" } },
+          { "column": "periodStart", "op": "lte", "value": { "$profile": "periodMax:periodColumn" }, "valueBinding": { "$argument": "period_to" } }
+        ]
+      }
+    },
+    { "id": "sort", "type": "sort", "config": { "keys": [{ "column": "periodStart", "direction": "desc", "nulls": "last" }] } },
+    { "id": "limit", "type": "limit", "config": { "count": { "$slot": "limit" } } },
+    { "id": "out", "type": "agent-output", "config": { "shape": "rows", "format": "json", "maxRows": { "$slot": "limit" }, "maxBytes": 65536, "overflow": "error" } }
+  ],
+  "edges": [
+    { "from": "src_a", "to": "join", "toInput": 0 },
+    { "from": "src_b", "to": "sel_b" },
+    { "from": "sel_b", "to": "join", "toInput": 1 },
+    { "from": "join", "to": "period" },
+    { "from": "period", "to": "f_granularity" },
+    { "from": "f_granularity", "to": "f_range" },
+    { "from": "f_range", "to": "sort" },
+    { "from": "sort", "to": "limit" },
+    { "from": "limit", "to": "out" }
+  ],
+  "description": {
+    "ja": "同じ時点（と結合キー）の {{primaryValues}} と {{secondaryValues}} を 1 行に並べて返します（新しい順、最大 {{limit}} 行）。両方のデータで同じ名前の列は、2 つ目のデータ側に _2 が付きます。粒度 granularity は必須です。",
+    "en": "Returns {{primaryValues}} and {{secondaryValues}} for the same period (and join keys) in one row (newest first, up to {{limit}} rows). A column that exists in both sources keeps a '_2' suffix on the second source's side. granularity is required."
+  },
+  "notes": "右の枝は結合キーと値の列だけに絞る（相手の地域名や注記を持ち込むと、suffix を付けてもまだ衝突する形が増える）。parse-period は結合の後に 1 回だけ走らせる。"
+}

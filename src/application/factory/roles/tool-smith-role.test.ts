@@ -6,13 +6,13 @@ import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelPro
 import type { DataProfile } from '../profile-data-sources';
 import { PERIOD_GRANULARITIES } from '../../../domain/etl/nodes/parse-period';
 import { MAX_TOOL_CALLS } from '../../agent/run-agent-preview';
-import { SAFE_TRANSFORM_TYPES, ToolSmithRole } from './tool-smith-role';
+import { SAFE_TRANSFORM_TYPES, supportsMultiValueFilterOps, ToolSmithRole } from './tool-smith-role';
 
 const toolPlan: FactoryToolPlan = { key: 'lookup', displayName: 'Lookup Sales', purpose: 'Look up sales rows.', dataSourceId: 'ds-1', sideEffect: 'read-only' };
 const profile: DataProfile = {
   dataSourceId: 'ds-1', name: 'Sales', kind: 'file', format: 'csv',
   columns: [{ name: 'id', type: 'number', nullable: false }, { name: 'amount', type: 'number', nullable: false }],
-  sampleRowCount: 2, sampleRows: [{ id: 1, amount: 100 }, { id: 2, amount: 200 }], rowCount: 2, periodColumns: [], categoricalColumns: [],
+  sampleRowCount: 2, sampleRows: [{ id: 1, amount: 100 }, { id: 2, amount: 200 }], rowCount: 2, periodColumns: [], categoricalColumns: [], joinCandidates: [],
 };
 
 function validProposalJson(): string {
@@ -242,6 +242,7 @@ describe('ToolSmithRole（期間列・出力の上限・引数の値域）', () 
     rowCount: 1191,
     periodColumns: [{ column: '時点', granularities: { month: 600, quarter: 200, year: 300, 'fiscal-year': 91 }, minStart: '1975-01-01', maxStart: '2024-04-01', mixed: true }],
     categoricalColumns: [{ column: '地域', distinctCount: 3, values: ['全国', '北海道', '青森県'] }],
+    joinCandidates: [],
   };
 
   function systemPromptFor(profile: DataProfile): Promise<string> {
@@ -337,11 +338,12 @@ describe('ToolSmithRole（証拠列の保全・範囲・カテゴリ引数）', 
     expect(system).toMatch(/"direction": "desc"/);
   });
 
-  it('正常: カテゴリ引数は省略可能のまま・1回で全カテゴリを返す設計を、呼び出し上限つきで指示する', async () => {
+  it('正常: カテゴリ引数は in 演算子で複数値を受け、1回で複数カテゴリを返す設計を呼び出し上限つきで指示する', async () => {
     const system = await systemPrompt();
 
     expect(system).toContain(`the conversation has a budget of ${MAX_TOOL_CALLS} tool calls`);
-    expect(system).toMatch(/A category argument \(region, category, segment\) MUST stay nullable/);
+    expect(system).toMatch(/MUST be bound with the 'in' operator, not 'eq'/);
+    expect(system).toMatch(/COMMA-SEPARATED LIST/);
     expect(system).toMatch(/Never design a tool that accepts only one category value per call/);
     expect(system).toMatch(/never say "one region at a time" in the description/);
   });
@@ -352,5 +354,108 @@ describe('ToolSmithRole（証拠列の保全・範囲・カテゴリ引数）', 
     expect(system).toMatch(/State which granularity the rows come back as/);
     expect(system).toMatch(/State the range the data actually covers \(dataSource.periodColumns gives minStart \/ maxStart\)/);
     expect(system).toMatch(/especially: omitting the category returns every category/);
+  });
+});
+
+// ─── ADR-0047 round 3: 結合ノードのカタログ・複数ソースの型・複数値カテゴリ引数 ─────────────
+describe('ToolSmithRole（複数データソースの結合）', () => {
+  const hoursProfile: DataProfile = {
+    dataSourceId: 'ds-hours', name: 'Hours', kind: 'file', format: 'csv',
+    columns: [{ name: '時点', type: 'string', nullable: false }, { name: '地域コード', type: 'string', nullable: false }, { name: '総実労働時間【時間】', type: 'number', nullable: true }],
+    sampleRowCount: 1, sampleRows: [{ 時点: '2023年', 地域コード: '13000' }], rowCount: 96,
+    periodColumns: [], categoricalColumns: [], joinCandidates: [],
+  };
+  const wageProfile: DataProfile = {
+    dataSourceId: 'ds-wage', name: 'Wage', kind: 'file', format: 'csv',
+    columns: [{ name: '時点', type: 'string', nullable: false }, { name: '地域コード', type: 'string', nullable: false }, { name: '現金給与総額【円】', type: 'number', nullable: true }],
+    sampleRowCount: 1, sampleRows: [{ 時点: '2023年', 地域コード: '13000' }], rowCount: 96,
+    periodColumns: [], categoricalColumns: [],
+    joinCandidates: [
+      { leftDataSourceId: 'ds-wage', rightDataSourceId: 'ds-hours', keys: ['時点', '地域コード'], overlap: { 時点: 1, 地域コード: 1 }, uniqueLeft: true, uniqueRight: true },
+      // このToolが束ねないソースの候補は渡してはならない（別の表を読みに行かせない）。
+      { leftDataSourceId: 'ds-wage', rightDataSourceId: 'ds-other', keys: ['時点'], overlap: { 時点: 1 }, uniqueLeft: false, uniqueRight: false },
+    ],
+  };
+  const joinPlan: FactoryToolPlan = {
+    key: 'joined', displayName: 'Wage and hours', purpose: '同じ時点・同じ地域の賃金と労働時間を並べる。',
+    dataSourceId: 'ds-wage', sideEffect: 'read-only', additionalDataSourceIds: ['ds-hours'],
+  };
+
+  async function joinedRequest(): Promise<{ system: string; user: string }> {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
+    await new ToolSmithRole(model).propose({ toolPlan: joinPlan, profile: wageProfile, additionalProfiles: [hoursProfile] });
+    return {
+      system: String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content),
+      user: String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content),
+    };
+  }
+
+  it('正常: join を許可ノード語彙へ入れ、config契約（keys / mode / toInput）をカタログに書く', async () => {
+    const { system } = await joinedRequest();
+
+    expect(SAFE_TRANSFORM_TYPES).toContain('join');
+    expect(SAFE_TRANSFORM_TYPES).toContain('rename');
+    expect(system).toMatch(/the ONLY node that takes TWO inputs/);
+    expect(system).toMatch(/"toInput": 0 \(left\) and "toInput": 1 \(right\)/);
+    expect(system).toMatch(/"mode": "inner" \| "left" \| "right" \| "full"/);
+    expect(system).toMatch(/"rightSuffix"/);
+    expect(system).toMatch(/- rename: \{ "renames": \[\{ "from"/);
+  });
+
+  it('正常: 結合するToolには全ソース分のsourceノードを要求し、木の形と結合の規律を教える', async () => {
+    const { system } = await joinedRequest();
+
+    expect(system).toMatch(/This is a JOINED tool. The graph MUST contain exactly 2 source nodes/);
+    expect(system).toContain('"dataSourceId": "ds-wage"');
+    expect(system).toContain('"dataSourceId": "ds-hours"');
+    expect(system).toMatch(/The graph is a TREE, not a single chain/);
+    expect(system).toMatch(/Join on ALL the key columns the sources share/);
+    expect(system).toMatch(/Use "mode": "inner" unless/);
+    expect(system).toMatch(/Do the select \/ rename BEFORE the join/);
+    expect(system).toMatch(/Put the argument filters AFTER the last join/);
+  });
+
+  it('正常: 追加ソースのプロファイルと、このToolに関係する結合候補だけをuntrusted data側で渡す', async () => {
+    const { user } = await joinedRequest();
+
+    expect(user).toContain('"additionalDataSources"');
+    expect(user).toContain('総実労働時間【時間】');
+    expect(user).toContain('"joinCandidates"');
+    expect(user).toContain('地域コード');
+    // 束ねないソース（ds-other）の候補は落とす。
+    expect(user).not.toContain('ds-other');
+  });
+
+  it('境界(回帰固定): 単一ソースのToolには、従来どおり結合の規律を出さない', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
+
+    await new ToolSmithRole(model).propose({ toolPlan, profile });
+
+    const system = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
+    const user = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
+    expect(system).toMatch(/MUST contain exactly one source node/);
+    expect(system).not.toMatch(/The graph is a TREE/);
+    expect(user).not.toContain('"additionalDataSources"');
+  });
+
+  it('正常: カテゴリ引数の言い回しは、この配線の filter が複数値演算子を持つかで決まる', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
+
+    await new ToolSmithRole(model).propose({ toolPlan, profile });
+
+    const system = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
+    if (supportsMultiValueFilterOps()) {
+      // `in` を持つビルド: カンマ区切りの一覧で複数カテゴリを1回で頼ませる。
+      expect(system).toMatch(/MUST be bound with the 'in' operator, not 'eq'/);
+      expect(system).toMatch(/COMMA-SEPARATED LIST/);
+      expect(system).toMatch(/Never use 'in' \/ 'notIn' inside an opBinding/);
+    } else {
+      // まだ持たないビルド: エンジンが受け付けない演算子を書かせず、round 2 の「省略して全件」に留める。
+      expect(system).toMatch(/MUST stay nullable, and omitting it MUST return every category/);
+      expect(system).not.toMatch(/'in' operator/);
+    }
   });
 });

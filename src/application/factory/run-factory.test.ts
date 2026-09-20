@@ -35,14 +35,14 @@ import { ApplyImprovementsUseCase, type ApplyImprovementsInput } from './apply-i
 import { CancelFactoryRunUseCase } from './cancel-factory-run';
 import { CreateFactoryRunUseCase } from './create-factory-run';
 import { GenerateAgentAssetsUseCase } from './generate-agent-assets';
-import { ProfileDataSourcesUseCase } from './profile-data-sources';
+import { ProfileDataSourcesUseCase, type DataProfile } from './profile-data-sources';
 import { AnalystRole } from './roles/analyst-role';
 import { AssemblerRole } from './roles/assembler-role';
 import { PlannerRole } from './roles/planner-role';
 import { SkillWriterRole } from './roles/skill-writer-role';
 import { ToolSmithRole } from './roles/tool-smith-role';
 import { ResumeFactoryRunUseCase } from './resume-factory-run';
-import { assessReportQuality, describeRegressions, LOOP_STOPPED_NO_PROPOSALS, RunFactoryUseCase, selectBestIteration } from './run-factory';
+import { assessReportQuality, candidateSourceSets, describeRegressions, LOOP_STOPPED_NO_PROPOSALS, RunFactoryUseCase, selectBestIteration } from './run-factory';
 import { MAX_TOOL_CALLS } from '../agent/run-agent-preview';
 import type { ScenarioRunnerInput, ScenarioRunnerPort } from './scenario-runner-port';
 
@@ -235,7 +235,8 @@ async function setup(options?: {
   const saveAgent = new SaveAgentUseCase(agentRepo, toolRepo, skillRepo);
   const generateAgentPrompt = new GenerateAgentPromptUseCase(toolRepo, skillRepo, agentRepo);
   // 決定的id発行: 1件のtool/skill/plan構成では tool="asset-1" / skill="asset-2" / agent="asset-3" に固定される。
-  const generateAgentAssets = new GenerateAgentAssetsUseCase(toolSmith, skillWriter, assembler, saveTool, saveSkill, saveAgent, generateAgentPrompt, engine, resolver, makeSequentialId('asset'));
+  // 第10・11引数（段階的経路 / テンプレート経路）は未注入 = 従来どおり一括 ToolSmith だけを使う。
+  const generateAgentAssets = new GenerateAgentAssetsUseCase(toolSmith, skillWriter, assembler, saveTool, saveSkill, saveAgent, generateAgentPrompt, engine, resolver, undefined, undefined, makeSequentialId('asset'));
   const savePersona = new SavePersonaUseCase(personaRepo);
   const registerPseudoUser = new RegisterPseudoUserAgentUseCase(personaRepo, saveAgent);
   const saveScenario = new SaveScenarioUseCase(scenarioRepo, agentRepo, personaRepo);
@@ -1628,5 +1629,41 @@ describe('RunFactoryUseCase（悪化と呼び出し予算をAnalystへ渡す）'
 
     const analystRequest = context.model.requests.find((request) => request.responseFormat?.name === 'factory_analyst_proposal');
     expect(String(analystRequest?.messages.find((message) => message.role === 'user')?.content)).toContain(`"toolCallBudget":${MAX_TOOL_CALLS}`);
+  });
+});
+
+describe('candidateSourceSets: テンプレートの適用可否を数えるソースの組み（v43 / ADR-0049）', () => {
+  /** 結合候補だけを持つ最小のプロファイル（この関数は id と joinCandidates しか見ない）。 */
+  function profileOf(dataSourceId: string, joinCandidates: DataProfile['joinCandidates'] = []): DataProfile {
+    return {
+      dataSourceId, name: dataSourceId, kind: 'file', columns: [], sampleRowCount: 0, sampleRows: [],
+      rowCount: 0, periodColumns: [], categoricalColumns: [], joinCandidates,
+    };
+  }
+  function candidate(left: string, right: string): DataProfile['joinCandidates'][number] {
+    return { leftDataSourceId: left, rightDataSourceId: right, keys: ['時点'], overlap: { 時点: 1 }, uniqueLeft: true, uniqueRight: true };
+  }
+
+  it('正常: 結合候補が無ければ、1 ソースずつの組だけを返す', () => {
+    expect(candidateSourceSets([profileOf('ds-1'), profileOf('ds-2')])).toEqual([['ds-1'], ['ds-2']]);
+  });
+
+  it('正常: 結合候補が挙げた組だけを 2 ソースの組として足す（総当たりにしない）', () => {
+    const joins = [candidate('ds-1', 'ds-2')];
+    const profiles = [profileOf('ds-1', joins), profileOf('ds-2', joins), profileOf('ds-3', joins)];
+    expect(candidateSourceSets(profiles)).toEqual([['ds-1'], ['ds-2'], ['ds-3'], ['ds-1', 'ds-2']]);
+  });
+
+  it('境界: 結合できるソースが 3 件以上あれば、先頭 3 件の組も 1 つだけ足す', () => {
+    const joins = [candidate('ds-1', 'ds-2'), candidate('ds-2', 'ds-3')];
+    const profiles = [profileOf('ds-1', joins), profileOf('ds-2', joins), profileOf('ds-3', joins)];
+    expect(candidateSourceSets(profiles)).toEqual([
+      ['ds-1'], ['ds-2'], ['ds-3'], ['ds-1', 'ds-2'], ['ds-2', 'ds-3'], ['ds-1', 'ds-2', 'ds-3'],
+    ]);
+  });
+
+  it('異常: このRunに無いデータソースを指す結合候補は無視する', () => {
+    const joins = [candidate('ds-1', 'ds-gone')];
+    expect(candidateSourceSets([profileOf('ds-1', joins)])).toEqual([['ds-1']]);
   });
 });

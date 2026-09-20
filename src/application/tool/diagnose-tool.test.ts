@@ -331,6 +331,44 @@ describe('DiagnoseToolUseCase 境界・異常系', () => {
     });
   });
 
+  describe('list-arguments（in/notIn の値引数）', () => {
+    const listSource = { id: 'data', type: 'json-source', config: { rows: [{ name: 'Alice', region: '東京都' }] } };
+    const listGraph = (field: string, declared?: Schema): ToolGraph => ({
+      nodes: [
+        listSource,
+        { id: 'filter', type: 'filter', config: { column: 'region', op: 'in', values: ['東京都'], valueBinding: { source: 'agent-input', field } } },
+        ...(declared === undefined ? [] : [{ id: 'arguments', type: 'agent-input' as const, config: { schema: declared, sample: { [field]: '東京都' } } }]),
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    });
+
+    it('正常: filter に in が無ければ項目自体を出さない（従来どおり）', async () => {
+      const diagnostics = await diagnose(makeTool());
+      expect(check(diagnostics, 'list-arguments')).toBeUndefined();
+    });
+
+    it('正常: 宣言済みの string 引数へのバインドは ok', async () => {
+      const declared: Schema = { columns: [{ name: 'regions', type: 'string', nullable: false }] };
+      const diagnostics = await diagnose(makeTool({ graph: listGraph('regions', declared), inputSchema: declared }));
+      expect(check(diagnostics, 'list-arguments')).toEqual({ id: 'list-arguments', status: 'ok' });
+    });
+
+    it('異常: string でない引数へのバインドは error（値を1つしか渡せなくなる）', async () => {
+      const declared: Schema = { columns: [{ name: 'regions', type: 'number', nullable: false }] };
+      const diagnostics = await diagnose(makeTool({ graph: listGraph('regions', declared), inputSchema: declared }));
+      expect(check(diagnostics, 'list-arguments')).toMatchObject({ id: 'list-arguments', status: 'error' });
+      expect(check(diagnostics, 'list-arguments')?.detail)
+        .toContain("list argument 'regions' must be declared as a string argument to carry a comma-separated list, but it is 'number'");
+    });
+
+    it('境界: 未宣言の引数は warning（実行時に束縛が効かない）', async () => {
+      const declared: Schema = { columns: [{ name: 'regions', type: 'string', nullable: false }] };
+      const diagnostics = await diagnose(makeTool({ graph: listGraph('ghost', declared), inputSchema: declared }));
+      expect(check(diagnostics, 'list-arguments')).toMatchObject({ status: 'warning' });
+      expect(check(diagnostics, 'list-arguments')?.detail).toContain("list argument 'ghost' is not declared in the input schema");
+    });
+  });
+
   describe('agent-input', () => {
     it('inputSchema が空列で agent-input ノードも無ければ ok', async () => {
       const diagnostics = await diagnose(makeTool({ graph: { nodes: [source], edges: [] }, inputSchema: { columns: [] } }));

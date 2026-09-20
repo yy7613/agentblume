@@ -534,7 +534,12 @@ function noMatchDetail(noMatch: RunNoMatchDto, text: Translate): string {
   const missed = noMatch.conditions.filter((condition) => condition.matchingRows === 0);
   const shown = (missed.length > 0 ? missed : noMatch.conditions).slice(0, 2).map((condition) => {
     const examples = condition.availableValues === undefined || condition.availableValues.length === 0 ? '' : ` → ${condition.availableValues.slice(0, 3).join(' / ')}`;
-    return `${condition.column} ${condition.op} ${JSON.stringify(condition.value)}${examples}`;
+    // 複数値条件（in/notIn）は要求した並びを見せ、空振りした値が分かっていればそれを添える。
+    const requested = JSON.stringify(condition.values ?? condition.value);
+    const unmatched = condition.unmatchedValues === undefined || condition.unmatchedValues.length === 0
+      ? ''
+      : ` (${text('no rows for', '該当なし')}: ${condition.unmatchedValues.slice(0, 3).join(' / ')})`;
+    return `${condition.column} ${condition.op} ${requested}${unmatched}${examples}`;
   });
   return `${text('no rows matched', '該当0件')}: ${shown.join(' · ')}`;
 }

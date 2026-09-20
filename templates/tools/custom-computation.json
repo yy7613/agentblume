@@ -1,0 +1,97 @@
+{
+  "$schema": "./tool-template.schema.json",
+  "formatVersion": 1,
+  "id": "custom-computation",
+  "version": "1.0.1",
+  "title": { "ja": "計算列を足す（式は意図文から）", "en": "Add a computed column" },
+  "summary": {
+    "ja": "1 つのデータソースから期間・カテゴリで絞った表に、意図文から書き起こした固定の式で計算列を 1 つ足して返す。",
+    "en": "Adds one computed column, written from a plain-language instruction, to a table filtered by period and category."
+  },
+  "whenToUse": {
+    "ja": ["合計・差・割合・単価のような、既存の列から決まる数値が要る", "他のテンプレートの形に当てはまらない計算をしたい"],
+    "en": ["A number derived from existing columns (total, difference, share, unit price)", "A computation none of the other templates covers"]
+  },
+  "notFor": {
+    "ja": ["2 つのデータソースの比（ratio-of-two-sources を使う）", "前年比（period-change を使う）", "平均や合計だけが要る（period-statistics を使う）"],
+    "en": ["A ratio of two sources (use ratio-of-two-sources)", "Year-over-year change (use period-change)", "Plain averages or totals (use period-statistics)"]
+  },
+  "tags": ["calculation"],
+  "sources": { "min": 1, "max": 1 },
+  "slots": [
+    { "name": "source", "kind": "dataSource", "label": { "ja": "データソース", "en": "Data source" } },
+    { "name": "periodColumn", "kind": "column", "source": "source", "role": "period", "label": { "ja": "期間の列", "en": "Period column" } },
+    { "name": "valueColumns", "kind": "column", "source": "source", "role": "value", "multiple": { "min": 1, "max": 4 }, "label": { "ja": "計算に使う値の列", "en": "Value columns the formula may use" } },
+    { "name": "categoryColumn", "kind": "column", "source": "source", "role": "category", "optional": true, "label": { "ja": "絞り込むカテゴリの列（地域など）", "en": "Category column to filter by" } },
+    { "name": "outputColumn", "kind": "text", "maxLength": 40, "default": "計算値", "label": { "ja": "計算結果の列名", "en": "Name of the computed column" } },
+    {
+      "name": "computationIntent", "kind": "intent", "maxLength": 200,
+      "label": { "ja": "何を計算するか（日本語で 1 文）", "en": "What to compute (one sentence)" },
+      "help": { "ja": "式ではなく意図を書く（例: 「就業者数を人口で割った割合を百分率で」）。式は AI が列名から書く", "en": "Describe the intent, not the formula; the formula is written from the column names" }
+    },
+    { "name": "defaultGranularity", "kind": "choice", "optionsFrom": "granularities:periodColumn", "label": { "ja": "既定の粒度", "en": "Default granularity" } },
+    { "name": "limit", "kind": "number", "min": 1, "max": 100, "integer": true, "default": 24, "label": { "ja": "返す最大行数", "en": "Maximum rows" } }
+  ],
+  "arguments": [
+    {
+      "name": "granularity", "type": "string", "nullable": false, "sample": { "$slot": "defaultGranularity" },
+      "description": { "ja": "期間の粒度。month / quarter / half / year / fiscal-year のうちデータにあるものを、この綴りのまま渡す（monthly・yearly・月次・年次 などは不可）。必ず指定する。", "en": "Period granularity: one of month / quarter / half / year / fiscal-year that exists in the data, spelled exactly like this (not monthly, yearly or a translation). Required." }
+    },
+    {
+      "name": "period_from", "type": "date", "nullable": true, "sample": { "$profile": "periodMin:periodColumn" },
+      "description": { "ja": "この日以降に始まる期間（ISO 日付）。省略で最初から。", "en": "Periods starting on or after this ISO date. Omit for no lower bound." }
+    },
+    {
+      "name": "period_to", "type": "date", "nullable": true, "sample": { "$profile": "periodMax:periodColumn" },
+      "description": { "ja": "この日以前に始まる期間（ISO 日付）。省略で最新まで。", "en": "Periods starting on or before this ISO date. Omit for no upper bound." }
+    },
+    {
+      "name": "categories", "type": "string", "nullable": true, "when": "categoryColumn", "sample": { "$profile": "firstValuesCsv:categoryColumn:2" },
+      "description": { "ja": "{{categoryColumn}} の値をカンマ区切りで。省略で全件。", "en": "Comma-separated values of {{categoryColumn}}. Omit for all." }
+    }
+  ],
+  "nodes": [
+    { "id": "src", "type": { "$sourceType": "source" }, "config": { "dataSourceId": { "$slot": "source" } } },
+    { "id": "period", "type": "parse-period", "config": { "column": { "$slot": "periodColumn" }, "startColumn": "periodStart", "granularityColumn": "periodGranularity", "fiscalYearStartMonth": 4 } },
+    {
+      "id": "f_granularity", "type": "filter",
+      "config": { "column": "periodGranularity", "op": "eq", "value": { "$slot": "defaultGranularity" }, "valueBinding": { "$argument": "granularity" } }
+    },
+    {
+      "id": "f_category", "type": "filter", "when": "categoryColumn",
+      "config": { "column": { "$slot": "categoryColumn" }, "op": "in", "values": { "$profile": "firstValues:categoryColumn:2" }, "valueBinding": { "$argument": "categories" }, "caseInsensitive": true }
+    },
+    {
+      "id": "f_range", "type": "filter",
+      "config": {
+        "combine": "and",
+        "conditions": [
+          { "column": "periodStart", "op": "gte", "value": { "$profile": "periodMin:periodColumn" }, "valueBinding": { "$argument": "period_from" } },
+          { "column": "periodStart", "op": "lte", "value": { "$profile": "periodMax:periodColumn" }, "valueBinding": { "$argument": "period_to" } }
+        ]
+      }
+    },
+    {
+      "id": "calc", "type": "calculate",
+      "config": { "outputColumn": { "$slot": "outputColumn" }, "expression": { "$intent": "computationIntent" }, "onError": "null", "precision": 4 }
+    },
+    { "id": "sort", "type": "sort", "config": { "keys": [{ "column": "periodStart", "direction": "desc", "nulls": "last" }] } },
+    { "id": "limit", "type": "limit", "config": { "count": { "$slot": "limit" } } },
+    { "id": "out", "type": "agent-output", "config": { "shape": "rows", "format": "json", "maxRows": { "$slot": "limit" }, "maxBytes": 65536, "overflow": "error" } }
+  ],
+  "edges": [
+    { "from": "src", "to": "period" },
+    { "from": "period", "to": "f_granularity" },
+    { "from": "f_granularity", "to": "f_category" },
+    { "from": "f_category", "to": "f_range" },
+    { "from": "f_range", "to": "calc" },
+    { "from": "calc", "to": "sort" },
+    { "from": "sort", "to": "limit" },
+    { "from": "limit", "to": "out" }
+  ],
+  "description": {
+    "ja": "{{valueColumns}} から計算した {{outputColumn}} 列を、元の値と一緒に返します（新しい順、最大 {{limit}} 行）。{{outputColumn}} は「{{computationIntent}}」を式にしたものです。この列から答え、暗算しないでください。粒度 granularity は必須です。",
+    "en": "Returns a computed column {{outputColumn}} derived from {{valueColumns}}, next to the original values (newest first, up to {{limit}} rows). {{outputColumn}} implements \"{{computationIntent}}\". Read the number from that column. granularity is required."
+  },
+  "notes": "calculate の式は空のまま置かれ、実体化のあと式提案（v41）が意図文から書く。式が書けなければこのツールはテンプレート経路では作れない（段階的生成へ落ちる）。"
+}

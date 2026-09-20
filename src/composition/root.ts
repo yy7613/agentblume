@@ -168,6 +168,8 @@ import type { FactoryRunRepository } from '../domain/factory/factory-run-reposit
 import { InProcessFactoryWorker } from '../adapters/factory/in-process-factory-worker';
 import { ApplyImprovementsUseCase } from '../application/factory/apply-improvements';
 import { GenerateAgentAssetsUseCase } from '../application/factory/generate-agent-assets';
+import { StagedToolGeneration } from '../application/factory/staged-tool-generation';
+import { TemplateToolGeneration } from '../application/factory/template-tool-generation';
 import { ProfileDataSourcesUseCase } from '../application/factory/profile-data-sources';
 import { AnalystRole } from '../application/factory/roles/analyst-role';
 import { AssemblerRole } from '../application/factory/roles/assembler-role';
@@ -195,6 +197,12 @@ import { SqliteModelSettingsRepository } from '../adapters/storage/sqlite-model-
 import { AesGcmSecretCipher } from '../adapters/security/aes-gcm-secret-cipher';
 import { MastraModelProviderFactory } from '../adapters/model/mastra-model-provider-factory';
 import { RegistryModelCatalog } from '../adapters/model/registry-model-catalog';
+import { FsToolTemplateCatalog } from '../adapters/templates/fs-tool-template-catalog';
+import {
+  InstantiateToolTemplateUseCase,
+  ListToolTemplatesUseCase,
+  TemplateSlotCandidatesUseCase,
+} from '../application/tool-template/template-use-cases';
 import type { ModelSettingsRepository } from '../domain/model-settings/model-settings-repository';
 import type { SecretCipherPort } from '../application/model-settings/secret-cipher';
 import type { ModelCatalogPort } from '../application/model-settings/model-catalog';
@@ -354,6 +362,10 @@ export interface App extends JournalAppFeature, ExpenseAppFeature, ReceivablesAp
   readonly deleteAgent: DeleteAgentUseCase;
   readonly diagnoseAgentTools: DiagnoseAgentToolsUseCase;
   readonly diagnoseTool: DiagnoseToolUseCase;
+  /** ツールテンプレート（v43）: 一覧・スロット候補・実体化。Tool Builder の「テンプレートから作成」。 */
+  readonly listToolTemplates: ListToolTemplatesUseCase;
+  readonly templateSlotCandidates: TemplateSlotCandidatesUseCase;
+  readonly instantiateToolTemplate: InstantiateToolTemplateUseCase;
   readonly saveHarness: SaveHarnessUseCase;
   readonly queryHarnesses: QueryHarnessesUseCase;
   readonly validateHarness: ValidateHarnessUseCase;
@@ -627,7 +639,14 @@ export function createApp(options?: AppOptions): App {
    */
   const errorLogger: LoggerPort = options?.errorLogger ?? (profile === 'test' ? NOOP_LOGGER : new ConsoleLogger());
 
-  const engine = new EtlEngine(createDefaultRegistry());
+  // registry は engine とツールテンプレートのカタログ（ノード種別の検査）で共有する。
+  const nodeRegistry = createDefaultRegistry();
+  const engine = new EtlEngine(nodeRegistry);
+  /**
+   * ツールテンプレート（v43 / ADR-0049）。Agent Factory とツール作成画面が**同じ 1 つの**
+   * カタログを読む（別々に読むと、片方だけ古いキャッシュを見る）。置き場所が無ければ空の一覧。
+   */
+  const toolTemplateCatalog = new FsToolTemplateCatalog({ registry: nodeRegistry, logger: errorLogger });
   const modelMaxTokens = resolveModelMaxTokens();
 
   // モデル設定（v34）: 設定は暗号化してDBへ、鍵はDBの外（鍵ファイル）へ置く。
@@ -806,7 +825,14 @@ export function createApp(options?: AppOptions): App {
   const skillWriterRole = new SkillWriterRole(modelProvider);
   const assemblerRole = new AssemblerRole(modelProvider);
   const analystRole = new AnalystRole(modelProvider);
-  const generateAgentAssets = new GenerateAgentAssetsUseCase(toolSmithRole, skillWriterRole, assemblerRole, saveTool, saveSkill, saveAgent, generateAgentPrompt, engine, resolveDataSources);
+  // 式の提案は draft ツールの画面経路と**同じインスタンス**を使う（有効判定・モデル設定を1箇所に保つ）。
+  const suggestCalculateExpression = new SuggestCalculateExpressionUseCase(engine, modelProvider, assistantEnabled);
+  // 段階的ツール生成（ADR-0048）。Factory の新規Toolは既定でこちらを先に試す。
+  const stagedToolGeneration = new StagedToolGeneration(modelProvider, engine, suggestCalculateExpression, resolveDataSources);
+  // ツールテンプレート経路（ADR-0049）。Factory の新規Toolは「テンプレート → 段階的 → 一括」の順に試す。
+  // カタログは Tool Builder / API と**同じインスタンス**（更新時刻キャッシュを共有する）。
+  const templateToolGeneration = new TemplateToolGeneration(modelProvider, engine, toolTemplateCatalog, suggestCalculateExpression, resolveDataSources);
+  const generateAgentAssets = new GenerateAgentAssetsUseCase(toolSmithRole, skillWriterRole, assemblerRole, saveTool, saveSkill, saveAgent, generateAgentPrompt, engine, resolveDataSources, stagedToolGeneration, templateToolGeneration);
   // Stage 5（検証資産）が使うSave系ユースケース。既存の疑似ユーザー検証（validation-routes）と同じ配線を再利用する。
   const savePersona = new SavePersonaUseCase(personaAdapter.repo);
   const registerPseudoUserAgent = new RegisterPseudoUserAgentUseCase(personaAdapter.repo, saveAgent);
@@ -818,7 +844,8 @@ export function createApp(options?: AppOptions): App {
     { toolSmith: toolSmithRole, resolveDataSources, profiler: profileDataSources }, undefined, unitOfWork,
   );
   // 第14引数の Run リポジトリは Analyst へ「実際のツール呼び出し（引数・行数）」を渡すために読む（ADR-0047）。
-  const runFactory = new RunFactoryUseCase(factoryRunAdapter.repo, profileDataSources, plannerRole, generateAgentAssets, runScenario, savePersona, registerPseudoUserAgent, saveScenario, analystRole, applyImprovements, agentAdapter.repo, skillAdapter.repo, repo, runAdapter.repo);
+  // 第15引数のテンプレートカタログは Stage 1 の Planner へ「使えるテンプレート」を渡すために読む（ADR-0049）。
+  const runFactory = new RunFactoryUseCase(factoryRunAdapter.repo, profileDataSources, plannerRole, generateAgentAssets, runScenario, savePersona, registerPseudoUserAgent, saveScenario, analystRole, applyImprovements, agentAdapter.repo, skillAdapter.repo, repo, runAdapter.repo, toolTemplateCatalog);
   const factoryWorker = new InProcessFactoryWorker(runFactory, errorLogger);
   const createFactoryRun = new CreateFactoryRunUseCase(factoryRunAdapter.repo, factoryWorker);
   const resumeFactoryRun = new ResumeFactoryRunUseCase(factoryRunAdapter.repo, runFactory, factoryWorker);
@@ -915,6 +942,9 @@ export function createApp(options?: AppOptions): App {
     generateAgentPrompt,
     deleteAgent: new DeleteAgentUseCase(agentAdapter.repo),
     diagnoseTool,
+    listToolTemplates: new ListToolTemplatesUseCase(toolTemplateCatalog),
+    templateSlotCandidates: new TemplateSlotCandidatesUseCase(toolTemplateCatalog, profileDataSources),
+    instantiateToolTemplate: new InstantiateToolTemplateUseCase(toolTemplateCatalog, profileDataSources, engine, resolveDataSources),
     diagnoseAgentTools: new DiagnoseAgentToolsUseCase(repo, engine, skillAdapter.repo, agentAdapter.repo, resolveDataSources, {
       diagnoseTool,
       mcpServers: mcpServerAdapter.repo,
@@ -1018,7 +1048,7 @@ export function createApp(options?: AppOptions): App {
     resolveAiJudgments,
     suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, assistantEnabled),
     // 式の提案も分析アシスタントと同じ有効判定・同じモデルを使う（別スロットを増やさない）。
-    suggestCalculateExpression: new SuggestCalculateExpressionUseCase(engine, modelProvider, assistantEnabled),
+    suggestCalculateExpression,
     judgeReadiness,
     // ツール検証のケース提案は分析アシスタントと同じ有効判定・同じモデルを使う（別スロットを増やさない）。
     suggestToolCheckCases: new SuggestToolCheckCasesUseCase(repo, engine, modelProvider, assistantEnabled, resolveDataSources, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot(), resolveAiJudgments),

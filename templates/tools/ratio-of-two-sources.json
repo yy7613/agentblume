@@ -1,0 +1,106 @@
+{
+  "$schema": "./tool-template.schema.json",
+  "formatVersion": 1,
+  "id": "ratio-of-two-sources",
+  "version": "1.1.1",
+  "title": { "ja": "2 つのデータの比（一人当たり・率）", "en": "Ratio of two sources" },
+  "summary": {
+    "ja": "2 つのデータソースを同じ時点（と地域）で結合し、分子 ÷ 分母 を固定の式で計算して返す（時間当たり給与・人口当たり件数など）。",
+    "en": "Joins two sources on the same period (and region) and returns numerator / denominator with a fixed formula."
+  },
+  "whenToUse": {
+    "ja": ["一人当たり・時間当たり・人口比・構成比のような 2 指標の比が要る", "2 つのデータソースが同じ期間の列（と地域コード）を持つ"],
+    "en": ["Per-capita, per-hour or share-style ratios of two indicators", "Both sources share a period column (and a region code)"]
+  },
+  "notFor": {
+    "ja": ["並べるだけで比は要らない（join-side-by-side を使う）", "結合できる共通の列が無い"],
+    "en": ["Side by side without a ratio (use join-side-by-side)", "No shared key columns"]
+  },
+  "tags": ["join", "calculation"],
+  "sources": { "min": 2, "max": 2 },
+  "slots": [
+    { "name": "numeratorSource", "kind": "dataSource", "label": { "ja": "分子のデータソース", "en": "Numerator source" } },
+    { "name": "denominatorSource", "kind": "dataSource", "label": { "ja": "分母のデータソース", "en": "Denominator source" } },
+    {
+      "name": "joinKeys", "kind": "joinKeys", "left": "numeratorSource", "right": "denominatorSource", "multiple": { "min": 1, "max": 3 },
+      "label": { "ja": "結合キー（期間と地域コードなど、共通の列すべて）", "en": "Join keys (all shared key columns)" },
+      "help": { "ja": "片方だけで結ぶと行が増える。共通のキーは全部選ぶ", "en": "Joining on only one of them multiplies rows; pick every shared key" }
+    },
+    { "name": "periodColumn", "kind": "column", "source": "numeratorSource", "role": "period", "label": { "ja": "期間の列", "en": "Period column" } },
+    { "name": "numerator", "kind": "column", "source": "numeratorSource", "role": "value", "label": { "ja": "分子の値の列", "en": "Numerator column" } },
+    { "name": "denominator", "kind": "column", "source": "denominatorSource", "role": "value", "label": { "ja": "分母の値の列", "en": "Denominator column" } },
+    { "name": "ratioColumn", "kind": "text", "maxLength": 40, "default": "比率", "label": { "ja": "計算結果の列名", "en": "Name of the computed column" } },
+    {
+      "name": "scale", "kind": "choice", "default": "1", "label": { "ja": "倍率", "en": "Scale" },
+      "options": [
+        { "value": "1", "label": { "ja": "そのまま（分子 ÷ 分母）", "en": "As is" } },
+        { "value": "100", "label": { "ja": "百分率（×100）", "en": "Percent (×100)" } },
+        { "value": "1000", "label": { "ja": "千あたり（×1000）", "en": "Per thousand (×1000)" } }
+      ]
+    },
+    { "name": "defaultGranularity", "kind": "choice", "optionsFrom": "granularities:periodColumn", "label": { "ja": "既定の粒度", "en": "Default granularity" } },
+    { "name": "limit", "kind": "number", "min": 1, "max": 100, "integer": true, "default": 24, "label": { "ja": "返す最大行数", "en": "Maximum rows" } }
+  ],
+  "arguments": [
+    {
+      "name": "granularity", "type": "string", "nullable": false, "sample": { "$slot": "defaultGranularity" },
+      "description": { "ja": "期間の粒度。month / quarter / half / year / fiscal-year のうちデータにあるものを、この綴りのまま渡す（monthly・yearly・月次・年次 などは不可）。必ず指定する。", "en": "Period granularity: one of month / quarter / half / year / fiscal-year that exists in the data, spelled exactly like this (not monthly, yearly or a translation). Required." }
+    },
+    {
+      "name": "period_from", "type": "date", "nullable": true, "sample": { "$profile": "periodMin:periodColumn" },
+      "description": { "ja": "この日以降に始まる期間（ISO 日付）。", "en": "Periods starting on or after this ISO date." }
+    },
+    {
+      "name": "period_to", "type": "date", "nullable": true, "sample": { "$profile": "periodMax:periodColumn" },
+      "description": { "ja": "この日以前に始まる期間（ISO 日付）。", "en": "Periods starting on or before this ISO date." }
+    }
+  ],
+  "nodes": [
+    { "id": "src_n", "type": { "$sourceType": "numeratorSource" }, "config": { "dataSourceId": { "$slot": "numeratorSource" } } },
+    { "id": "src_d", "type": { "$sourceType": "denominatorSource" }, "config": { "dataSourceId": { "$slot": "denominatorSource" } } },
+    { "id": "sel_d", "type": "select", "config": { "columns": { "$concat": [{ "$slot": "joinKeys" }, [{ "$slot": "denominator" }]] } } },
+    {
+      "id": "join", "type": "join",
+      "config": { "mode": "inner", "keys": { "$each": "joinKeys", "as": "k", "item": { "left": "{{k}}", "right": "{{k}}" } }, "rightSuffix": "_2" }
+    },
+    { "id": "period", "type": "parse-period", "config": { "column": { "$slot": "periodColumn" }, "startColumn": "periodStart", "granularityColumn": "periodGranularity", "fiscalYearStartMonth": 4 } },
+    {
+      "id": "f_granularity", "type": "filter",
+      "config": { "column": "periodGranularity", "op": "eq", "value": { "$slot": "defaultGranularity" }, "valueBinding": { "$argument": "granularity" } }
+    },
+    {
+      "id": "f_range", "type": "filter",
+      "config": {
+        "combine": "and",
+        "conditions": [
+          { "column": "periodStart", "op": "gte", "value": { "$profile": "periodMin:periodColumn" }, "valueBinding": { "$argument": "period_from" } },
+          { "column": "periodStart", "op": "lte", "value": { "$profile": "periodMax:periodColumn" }, "valueBinding": { "$argument": "period_to" } }
+        ]
+      }
+    },
+    {
+      "id": "ratio", "type": "calculate",
+      "config": { "outputColumn": { "$slot": "ratioColumn" }, "expression": "[{{numerator}}] / [{{denominator}}] * {{scale}}", "onError": "null", "precision": 4 }
+    },
+    { "id": "sort", "type": "sort", "config": { "keys": [{ "column": "periodStart", "direction": "desc", "nulls": "last" }] } },
+    { "id": "limit", "type": "limit", "config": { "count": { "$slot": "limit" } } },
+    { "id": "out", "type": "agent-output", "config": { "shape": "rows", "format": "json", "maxRows": { "$slot": "limit" }, "maxBytes": 65536, "overflow": "error" } }
+  ],
+  "edges": [
+    { "from": "src_n", "to": "join", "toInput": 0 },
+    { "from": "src_d", "to": "sel_d" },
+    { "from": "sel_d", "to": "join", "toInput": 1 },
+    { "from": "join", "to": "period" },
+    { "from": "period", "to": "f_granularity" },
+    { "from": "f_granularity", "to": "f_range" },
+    { "from": "f_range", "to": "ratio" },
+    { "from": "ratio", "to": "sort" },
+    { "from": "sort", "to": "limit" },
+    { "from": "limit", "to": "out" }
+  ],
+  "description": {
+    "ja": "{{numerator}} ÷ {{denominator}} × {{scale}} を {{ratioColumn}} 列として、同じ時点の両方の値と一緒に返します（新しい順、最大 {{limit}} 行）。両方のデータで同じ名前の列は、後から結合した側に _2 が付きます。比はこの列から答え、暗算しないでください。",
+    "en": "Returns {{numerator}} / {{denominator}} × {{scale}} as {{ratioColumn}} together with both values for the same period (newest first, up to {{limit}} rows). A column that exists in both sources keeps a '_2' suffix on the joined side. Read the ratio from that column."
+  },
+  "notes": "分子と分母が同じ列名のとき、結合後の右側は _2 が付く。実体化は join より下流のノードでだけスロットを suffix 付きへ読み替えるので、テンプレートは素の列名で書いてよい。列名に ] を含む列は式で参照できず、validateSlotValues が「上流で列名を変える」直し方つきで弾く。"
+}

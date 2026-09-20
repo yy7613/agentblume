@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { SerializedToolDto } from '../api/types';
-import { buildSaveDto, currentGraph, declaredInputSchema, effectiveFunctionName, flowToGraph, missingRequiredMetadata, requiresSessionWrite, saveBlocker, toolBuilderDraft, useToolBuilderStore } from './store';
+import type { InstantiatedTemplateDto } from '../api/types';
+import { buildSaveDto, currentGraph, layoutByDepth, declaredInputSchema, effectiveFunctionName, flowToGraph, missingRequiredMetadata, requiresSessionWrite, saveBlocker, toolBuilderDraft, useToolBuilderStore } from './store';
 
 const okPropagation = {
   order: ['source-1', 'filter-1'], terminalId: 'filter-1', hasErrors: false,
@@ -583,5 +584,119 @@ describe('tool builder store', () => {
     useToolBuilderStore.getState().setDiagnostics('loading');
     useToolBuilderStore.getState().reset();
     expect(useToolBuilderStore.getState().diagnostics).toBeUndefined();
+  });
+});
+
+/**
+ * テンプレートの実体化結果をキャンバスへ展開する（v43 / ADR-0049）。
+ * 配置はサーバーから来ないので、ここでトポロジカルな深さに沿って左→右へ並べる。
+ */
+describe('layoutByDepth', () => {
+  it('正常: 直列のグラフは 1 行で左から右へ並ぶ', () => {
+    const nodes = [{ id: 'a', type: 'csv-source', config: {} }, { id: 'b', type: 'filter', config: {} }, { id: 'c', type: 'agent-output', config: {} }];
+    const positions = layoutByDepth(nodes, [{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }]);
+    expect(positions[0]!.x).toBeLessThan(positions[1]!.x);
+    expect(positions[1]!.x).toBeLessThan(positions[2]!.x);
+    expect(new Set(positions.map((position) => position.y)).size).toBe(1);
+  });
+
+  it('境界: 合流（join）は両方の枝より右へ置き、同じ列の枝は縦にずらす', () => {
+    const nodes = [
+      { id: 'left', type: 'csv-source', config: {} },
+      { id: 'right', type: 'csv-source', config: {} },
+      { id: 'select', type: 'select', config: {} },
+      { id: 'join', type: 'join', config: {} },
+    ];
+    const positions = layoutByDepth(nodes, [
+      { from: 'left', to: 'join', toInput: 0 },
+      { from: 'right', to: 'select' },
+      { from: 'select', to: 'join', toInput: 1 },
+    ]);
+    const at = (id: string) => positions[nodes.findIndex((node) => node.id === id)]!;
+    expect(at('left').y).not.toBe(at('right').y);
+    expect(at('join').x).toBeGreaterThan(at('select').x);
+    expect(at('join').x).toBeGreaterThan(at('left').x);
+  });
+
+  it('異常: 繋がっていないノードも重ならずに置かれる（先頭列の別の行）', () => {
+    const nodes = [{ id: 'a', type: 'csv-source', config: {} }, { id: 'args', type: 'agent-input', config: {} }];
+    const positions = layoutByDepth(nodes, []);
+    expect(positions[0]!.x).toBe(positions[1]!.x);
+    expect(positions[0]!.y).not.toBe(positions[1]!.y);
+  });
+});
+
+describe('loadTemplate', () => {
+  const instantiated: InstantiatedTemplateDto = {
+    template: { id: 'period-series', version: '1.0.0' },
+    graph: {
+      nodes: [
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-a' } },
+        { id: 'args', type: 'agent-input', config: { schema: { columns: [{ name: 'granularity', type: 'string', nullable: false }] }, sample: { granularity: 'year' } } },
+        { id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 10, maxBytes: 65536, overflow: 'error' } },
+      ],
+      edges: [{ from: 'src', to: 'out' }],
+    },
+    agentTool: { name: 'period-series', description: '推移を返します。' },
+    pendingExpressions: [],
+  };
+
+  beforeEach(() => useToolBuilderStore.getState().reset());
+
+  it('正常: 新しい下書きとして展開し、メタデータと Agent Tool 契約を埋める（版は付けない）', () => {
+    useToolBuilderStore.getState().loadTemplate(instantiated, '時系列の取り出し');
+    const state = useToolBuilderStore.getState();
+    expect(state.metadata).toMatchObject({
+      internalId: 'period-series', workingName: '時系列の取り出し', displayName: '時系列の取り出し',
+      publishName: 'period-series', agentName: 'period-series', agentDescription: '推移を返します。', owner: '',
+    });
+    expect(state.currentVersion).toBeUndefined();
+    expect(state.versions).toEqual([]);
+    expect(state.createdFromTemplate).toBe('period-series@1.0.0');
+    // 引数は agent-input ノードの宣言から保存 DTO へ渡る（保存済み Tool を開いたときと同じ経路）。
+    expect(declaredInputSchema(state.nodes).schema?.columns.map((column) => column.name)).toEqual(['granularity']);
+  });
+
+  it('正常: 展開直後は検証待ちで、前の推論結果・プレビュー・失敗は残さない', () => {
+    useToolBuilderStore.getState().setPropagation(okPropagation);
+    useToolBuilderStore.getState().setSaveError('前の失敗');
+    useToolBuilderStore.getState().loadTemplate(instantiated, 'x');
+    const state = useToolBuilderStore.getState();
+    expect(state.propagation).toBeUndefined();
+    expect(state.propagationPending).toBe(true);
+    expect(state.saveError).toBeUndefined();
+  });
+
+  it('正常: 式が空の calculate があれば、そのノードを選び意図文を預ける', () => {
+    useToolBuilderStore.getState().loadTemplate({
+      ...instantiated,
+      graph: { nodes: [...instantiated.graph.nodes, { id: 'calc', type: 'calculate', config: { expression: '' } }], edges: instantiated.graph.edges },
+      pendingExpressions: [{ nodeId: 'calc', intent: '人口を千で割る' }],
+    }, 'x');
+    expect(useToolBuilderStore.getState().selectedNodeId).toBe('calc');
+    expect(useToolBuilderStore.getState().pendingCalculateIntent).toEqual({ nodeId: 'calc', intent: '人口を千で割る' });
+  });
+
+  it('境界: 意図文は同じノードで 1 度だけ返る', () => {
+    useToolBuilderStore.getState().loadTemplate({
+      ...instantiated,
+      graph: { nodes: [...instantiated.graph.nodes, { id: 'calc', type: 'calculate', config: { expression: '' } }], edges: instantiated.graph.edges },
+      pendingExpressions: [{ nodeId: 'calc', intent: '人口を千で割る' }],
+    }, 'x');
+    expect(useToolBuilderStore.getState().consumePendingCalculateIntent('calc')).toBe('人口を千で割る');
+    expect(useToolBuilderStore.getState().consumePendingCalculateIntent('calc')).toBeUndefined();
+  });
+
+  it('異常: 別のノードを名指しても意図文は渡さない', () => {
+    useToolBuilderStore.getState().loadTemplate({ ...instantiated, pendingExpressions: [{ nodeId: 'calc', intent: 'x' }] }, 'x');
+    expect(useToolBuilderStore.getState().consumePendingCalculateIntent('src')).toBeUndefined();
+    expect(useToolBuilderStore.getState().pendingCalculateIntent).toEqual({ nodeId: 'calc', intent: 'x' });
+  });
+
+  it('従来どおり: reset はテンプレート由来の状態も消す', () => {
+    useToolBuilderStore.getState().loadTemplate(instantiated, 'x');
+    useToolBuilderStore.getState().reset();
+    expect(useToolBuilderStore.getState().createdFromTemplate).toBeUndefined();
+    expect(useToolBuilderStore.getState().pendingCalculateIntent).toBeUndefined();
   });
 });

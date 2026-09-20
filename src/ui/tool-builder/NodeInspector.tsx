@@ -6,7 +6,7 @@ import { catalogItem, toInputOf, type ToolNodeType } from './node-catalog';
 import { useToolBuilderStore } from './store';
 import { useModalBehavior } from '../hooks/useModalBehavior';
 import { useI18n } from '../i18n';
-import { DATA_TYPES, cellText, coerceCell, coerceScalar, columnsText, parseColumns, parsePairs, parseReplaceRules, parseSortKeys, splitList, type FillRuleDraft, type JoinKeyDraft, type ReplaceRuleDraft, type SortKeyDraft } from './node-config-utils';
+import { DATA_TYPES, cellText, coerceCell, coerceScalar, columnsText, parseColumns, parseFilterValues, parsePairs, parseReplaceRules, parseSortKeys, splitList, type FillRuleDraft, type JoinKeyDraft, type ReplaceRuleDraft, type SortKeyDraft } from './node-config-utils';
 import { scope } from '../scope';
 
 const EMPTY_COLUMNS: readonly ColumnDto[] = [];
@@ -368,7 +368,7 @@ function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvail
         {type === 'chart-output' && <ChartOutputFields config={draft} setConfig={patch} columns={columns} />}
         {type === 'rename' && <RenameRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'cast' && <CastRuleEditor config={draft} setConfig={patch} columns={columns} />}
-        {type === 'calculate' && <CalculateFields config={draft} setConfig={patch} columns={columns} samples={samples} assistant={calculateAssistant} />}
+        {type === 'calculate' && <CalculateFields nodeId={nodeId} config={draft} setConfig={patch} columns={columns} samples={samples} assistant={calculateAssistant} />}
         {type === 'sort' && <SortRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'replace' && <ReplaceRuleEditor config={draft} setConfig={patch} columns={columns} />}
         {type === 'agent-input' && <SchemaTableEditor config={draft} setConfig={patch} />}
@@ -549,13 +549,19 @@ function CurrentDatetimeFields({ config, setConfig }: { config: Readonly<Record<
  * （src/domain/etl/nodes/filter.ts の FILTER_OPS / VALUELESS_OPS / ORDER_OPS）との一致を
  * ピン留めしている。export はそのピン留めテスト用。
  */
-export const FILTER_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull', 'notNull'] as const;
+export const FILTER_OPS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'in', 'notIn', 'isNull', 'notNull'] as const;
 /** 値を要さない演算子。 */
 export const FILTER_VALUELESS_OPS: readonly string[] = ['isNull', 'notNull'];
 /** caseInsensitive が作用する文字列比較の演算子（チェックボックスの表示・書き戻し判定に使う）。 */
-export const FILTER_CASE_FOLD_OPS: readonly string[] = ['eq', 'neq', 'contains'];
+export const FILTER_CASE_FOLD_OPS: readonly string[] = ['eq', 'neq', 'contains', 'in', 'notIn'];
 /** number|date 列を要する大小比較の演算子（opBinding 許可リストの初期値の絞り込みに使う）。 */
 export const FILTER_ORDER_OPS: readonly string[] = ['gt', 'gte', 'lt', 'lte'];
+/** 値を1つではなく「並び」で受け取る演算子（値エディタを複数値入力へ切り替える）。 */
+export const FILTER_MULTI_VALUE_OPS: readonly string[] = ['in', 'notIn'];
+/** 演算子をAI引数化（opBinding）できる演算子。複数値の演算子は値の形が違うため選ばせない。 */
+export const FILTER_OPERATOR_BINDABLE_OPS: readonly string[] = FILTER_OPS.filter((op) => !FILTER_MULTI_VALUE_OPS.includes(op));
+/** 1条件に置ける値の数の上限（サーバーの MAX_FILTER_VALUES と同じ）。 */
+export const FILTER_MAX_VALUES = 100;
 /** 記号で表せる演算子の表示ラベル（option の value = op コードは変えない）。 */
 const FILTER_OP_SYMBOLS: Readonly<Record<string, string>> = { eq: '=', neq: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤' };
 
@@ -564,6 +570,8 @@ interface FilterConditionDraft {
   readonly column: string;
   readonly op: string;
   readonly value?: unknown;
+  /** in / notIn が読む値の並び（他の演算子では書き戻さない）。 */
+  readonly values?: readonly unknown[];
   readonly valueBinding?: { readonly source?: string; readonly field?: string };
   readonly opBinding?: { readonly source?: string; readonly field?: string; readonly allowed?: readonly string[] };
   readonly caseInsensitive?: boolean;
@@ -575,8 +583,13 @@ interface FilterConditionDraft {
  * 実行対象が食い違わないよう全演算子へフォールバックし、broken で警告表示を促す。
  */
 function normalizeAllowedOps(allowed: readonly string[] | undefined): { readonly ops: readonly string[]; readonly broken: boolean } {
-  const recognized: readonly string[] = FILTER_OPS.filter((candidate) => (allowed ?? FILTER_OPS).includes(candidate));
-  return recognized.length === 0 ? { ops: FILTER_OPS, broken: true } : { ops: recognized, broken: false };
+  const recognized: readonly string[] = FILTER_OPERATOR_BINDABLE_OPS.filter((candidate) => (allowed ?? FILTER_OPERATOR_BINDABLE_OPS).includes(candidate));
+  return recognized.length === 0 ? { ops: FILTER_OPERATOR_BINDABLE_OPS, broken: true } : { ops: recognized, broken: false };
+}
+
+/** 条件が値の並び（in / notIn）を取るか。固定演算子のときだけ — opBinding に複数値演算子は載らない。 */
+function conditionTakesValueList(condition: FilterConditionDraft): boolean {
+  return condition.opBinding?.source !== 'agent-input' && FILTER_MULTI_VALUE_OPS.includes(condition.op);
 }
 
 /** 条件が値（value / valueBinding）を要し得るか。opBinding 有効時はどの許可演算子が来ても値不要のときだけ false。 */
@@ -601,10 +614,13 @@ function filterConditionConfig(condition: FilterConditionDraft): Record<string, 
   // valueBinding を書き戻さない。UIに見えない残留バインディングが後の保存検証を塞ぐのを防ぐ
   // （value キーは設計時プレビューのサンプルとしてそのまま残す）。
   const keepValueBinding = condition.valueBinding !== undefined && conditionNeedsValue(condition);
+  // 値の並びは in / notIn でだけ書き戻す（演算子を戻したときに見えない残留値を残さない）。
+  const values = conditionTakesValueList(condition) ? condition.values ?? [] : [];
   return {
     column: condition.column,
     op: condition.op,
     ...(condition.value === undefined ? {} : { value: condition.value }),
+    ...(values.length === 0 ? {} : { values }),
     ...(keepValueBinding ? { valueBinding: condition.valueBinding } : {}),
     ...(condition.opBinding === undefined ? {} : { opBinding: condition.opBinding }),
     // 文字列比較になり得ない条件（大小比較のみ等）ではフラグを書き戻さない（見えない残留設定を防ぐ）。
@@ -624,6 +640,7 @@ function filterConditionDrafts(config: Readonly<Record<string, unknown>>): Filte
       column: typeof raw['column'] === 'string' ? raw['column'] : '',
       op: typeof raw['op'] === 'string' ? raw['op'] : 'eq',
       ...(raw['value'] === undefined ? {} : { value: raw['value'] }),
+      ...(Array.isArray(raw['values']) ? { values: raw['values'] as readonly unknown[] } : {}),
       ...(binding === undefined ? {} : { valueBinding: binding }),
       ...(opBinding === undefined ? {} : { opBinding }),
       ...(raw['caseInsensitive'] === true ? { caseInsensitive: true } : {}),
@@ -640,6 +657,35 @@ function isoDateInputValue(value: unknown): string {
 }
 
 /**
+ * 複数値（`in` / `notIn`）の値入力欄。カンマ・読点・セミコロン・改行のどれで区切っても同じ並びになる。
+ *
+ * 編集中のテキストはそのまま保つ（「東京都,」と打っている途中で区切りが消えない）。整形し直すのは
+ * 外から値が入れ替わったとき（別のノード・別の条件を開いたとき）だけ。
+ */
+function MultiValueField({ values, columnType, onChange, label, hint }: { values: readonly unknown[]; columnType?: DataType; onChange(next: readonly unknown[]): void; label: string; hint?: ReactNode }) {
+  const { text } = useI18n();
+  const display = values.map((value) => String(value)).join(', ');
+  const canonical = values.map((value) => String(value)).join('\u0000');
+  const [draft, setDraft] = useState(display);
+  useEffect(() => {
+    setDraft((current) => parseFilterValues(current).join('\u0000') === canonical ? current : display);
+  }, [canonical, display]);
+  const parsed = parseFilterValues(draft);
+  return <>
+    <label>{label}<textarea aria-label={label} rows={3} value={draft} placeholder={text('Tokyo, Osaka, Hokkaido', '東京都、大阪府、北海道')} onChange={(event) => {
+      setDraft(event.target.value);
+      onChange(parseFilterValues(event.target.value).map((item) => coerceScalar(item, columnType)));
+    }} /></label>
+    <small>{text('Separate values with commas, 、, ; or line breaks.', 'カンマ・読点(、)・セミコロン・改行のどれで区切っても構いません。')}</small>
+    {parsed.length === 0
+      ? <small className="field-error">{text('Enter at least one value.', '値を1つ以上入力してください。')}</small>
+      : <small>{`${text('values', '値')}: ${parsed.length} · ${parsed.slice(0, 5).join(' / ')}${parsed.length > 5 ? ' …' : ''}`}</small>}
+    {parsed.length > FILTER_MAX_VALUES && <small className="field-error">{text(`At most ${FILTER_MAX_VALUES} values are allowed.`, `値は最大${FILTER_MAX_VALUES}件までです。`)}</small>}
+    {hint}
+  </>;
+}
+
+/**
  * filter の設定UI。1条件のときは旧形式のフラットconfigを書き戻し（保存済みTool・
  * agent-input バインディングの互換を保つ）、2条件以上で `{ conditions, combine }` へ切り替える。
  * 各条件は valueBinding（値のAI引数化）と対称の opBinding（演算子のAI引数化）を持てる。
@@ -649,8 +695,10 @@ function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { c
   /** 記号があるものは記号、無いものは両言語テキストで表示する。 */
   const opLabel = (op: string): string => FILTER_OP_SYMBOLS[op]
     ?? (op === 'contains' ? text('contains', '含む')
-      : op === 'isNull' ? text('is empty', 'が空')
-        : op === 'notNull' ? text('is not empty', 'が空でない') : op);
+      : op === 'in' ? text('matches any of', 'いずれかに一致')
+        : op === 'notIn' ? text('matches none of', 'いずれにも一致しない')
+          : op === 'isNull' ? text('is empty', 'が空')
+            : op === 'notNull' ? text('is not empty', 'が空でない') : op);
   const conditions = filterConditionDrafts(config);
   const combine = config['combine'] === 'or' ? 'or' : 'and';
   const multiple = conditions.length > 1;
@@ -682,10 +730,12 @@ function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { c
       const { ops: allowedOps, broken: allowedBroken } = normalizeAllowedOps(opBinding?.allowed);
       // opBindingが有効な条件は実行時にどの許可演算子が来ても値が要り得るため、許可演算子のすべてが値不要のときだけ値エリアを消す。
       const needsValue = conditionNeedsValue(condition);
+      /** in / notIn は値を1つではなく並びで取る（固定演算子のときだけ。opBinding には載らない）。 */
+      const takesValueList = conditionTakesValueList(condition);
       /** 既定の演算子selectの候補。保存済みopが許可リスト外でも、表示とconfigを食い違わせないためop自身を含める。 */
       const defaultOpOptions: readonly string[] = allowedOps.includes(condition.op) ? allowedOps : [...allowedOps, condition.op];
       /** 許可リストを書き戻す。全チェックならallowedキーを省き、現在のopが外れたら先頭の許可演算子へsnapする。 */
-      const setAllowed = (next: readonly string[]) => patch(index, { op: next.includes(condition.op) ? condition.op : (next[0] ?? condition.op), opBinding: { source: 'agent-input', field: opBinding?.field ?? '', ...(next.length === FILTER_OPS.length ? {} : { allowed: next }) } });
+      const setAllowed = (next: readonly string[]) => patch(index, { op: next.includes(condition.op) ? condition.op : (next[0] ?? condition.op), opBinding: { source: 'agent-input', field: opBinding?.field ?? '', ...(next.length === FILTER_OPERATOR_BINDABLE_OPS.length ? {} : { allowed: next }) } });
       /**
        * 取得元をエージェント入力へ切り替えた瞬間の初期値。
        * - 列型が未解決（プレビュー未ロード・loadTool直後・推論失敗時）: 絞り込みもopの書き換えもしない
@@ -698,8 +748,8 @@ function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { c
         const field = stringInputColumns[0]?.name ?? '';
         if (columnType === undefined) return { opBinding: { source: 'agent-input', field } };
         const allowed: readonly string[] = columnType === 'number' || columnType === 'date'
-          ? FILTER_OPS.filter((op) => op !== 'contains')
-          : FILTER_OPS.filter((op) => !FILTER_ORDER_OPS.includes(op));
+          ? FILTER_OPERATOR_BINDABLE_OPS.filter((op) => op !== 'contains')
+          : FILTER_OPERATOR_BINDABLE_OPS.filter((op) => !FILTER_ORDER_OPS.includes(op));
         return { op: allowed.includes(condition.op) ? condition.op : (allowed[0] ?? condition.op), opBinding: { source: 'agent-input', field, allowed } };
       };
       return <Fragment key={index}>
@@ -711,7 +761,8 @@ function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { c
               <label>{text('Agent input field (operator)', 'エージェント入力フィールド（演算子）')}<select aria-label={text('Agent input field (operator)', 'エージェント入力フィールド（演算子）')} value={opBinding?.field ?? ''} onChange={(event) => patch(index, { opBinding: { ...opBinding, source: 'agent-input', field: event.target.value } })}><option value="">{text('Select an input field', '入力フィールドを選択')}</option>{stringInputColumns.map((input) => <option key={input.name} value={input.name}>{input.name} · {input.type}</option>)}</select>{stringInputColumns.length === 0 && <small className="field-error">{text('Declare a string-typed argument on the Agent Input node first.', '先にAgent Inputノードで string 型の引数を宣言してください。')}</small>}{(opBinding?.field ?? '') === '' && <small className="field-error">{text('Select an agent input field.', 'エージェント入力フィールドを選択してください。')}</small>}</label>
               <strong className="rule-title">{text('Operators the agent may choose', 'AIに許可する演算子')}</strong>
               {allowedBroken && <small className="field-error">{text('The saved allowed-operator list was invalid, so all operators are shown.', '許可リストが壊れていたため全演算子を表示しています。')}</small>}
-              {FILTER_OPS.map((op) => <label className="check" key={op}><input type="checkbox" checked={allowedOps.includes(op)} disabled={allowedOps.length === 1 && allowedOps.includes(op)} onChange={(event) => setAllowed(FILTER_OPS.filter((candidate) => candidate === op ? event.target.checked : allowedOps.includes(candidate)))} /> {opLabel(op)}</label>)}
+              {FILTER_OPERATOR_BINDABLE_OPS.map((op) => <label className="check" key={op}><input type="checkbox" checked={allowedOps.includes(op)} disabled={allowedOps.length === 1 && allowedOps.includes(op)} onChange={(event) => setAllowed(FILTER_OPERATOR_BINDABLE_OPS.filter((candidate) => candidate === op ? event.target.checked : allowedOps.includes(candidate)))} /> {opLabel(op)}</label>)}
+              <small>{text('Multi-value operators (matches any of / none of) take a list of values, so the agent cannot choose them here. Use a fixed operator for those conditions.', '複数値の演算子（いずれかに一致／いずれにも一致しない）は値の並びを取るため、ここでAIには選ばせられません。その条件は固定の演算子にしてください。')}</small>
               {columnType !== 'number' && columnType !== 'date' && <small>{text('Order operators need a number or date column.', '大小比較の演算子は number または date 列でのみ使えます。')}</small>}
               {(columnType === 'number' || columnType === 'date') && <small>{text('The contains operator is meant for string columns.', 'contains は文字列列向けです。')}</small>}
               <label>{text('Default operator', '既定の演算子')}<select aria-label={text('Default operator', '既定の演算子')} value={condition.op} onChange={(event) => patch(index, { op: event.target.value })}>{defaultOpOptions.map((op) => <option key={op} value={op}>{opLabel(op)}</option>)}</select><small>{text('The default operator is the design-time preview sample. If the argument is optional (nullable), omitting it at run time falls back to this default.', '既定の演算子は設計時プレビューのサンプルです。引数が任意 (nullable) の場合、実行時に省略されるとこの既定が使われます。')}</small></label>
@@ -724,8 +775,16 @@ function FilterFields({ config, replaceConfig, columns, agentInputColumns }: { c
         {needsValue && <>
           <label>{text('Condition value', '条件値の取得元')}<select value={valueSource} onChange={(event) => patch(index, event.target.value === 'agent-input' ? { valueBinding: { source: 'agent-input', field: agentInputColumns[0]?.name ?? '' } } : { valueBinding: undefined })}><option value="constant">{text('Fixed value', '固定値')}</option><option value="agent-input">{text('Agent input', 'エージェント入力')}</option></select></label>
           {valueSource === 'agent-input'
-            ? <label>{text('Agent input field', 'エージェント入力フィールド')}<select aria-label={text('Agent input field', 'エージェント入力フィールド')} value={binding?.field ?? ''} onChange={(event) => patch(index, { valueBinding: { source: 'agent-input', field: event.target.value } })}><option value="">{text('Select an input field', '入力フィールドを選択')}</option>{agentInputColumns.map((input) => <option key={input.name} value={input.name}>{input.name} · {input.type}</option>)}</select>{agentInputColumns.length === 0 && <small className="field-error">{text('Add an Agent Input node and define its schema first.', '先にAgent Inputノードを追加し、スキーマを定義してください。')}</small>}<small>{text('The fixed value remains the design-time preview sample.', '固定値は設計時プレビューのサンプルとして残ります。')}</small><small>{text('If the argument is optional (nullable), leaving it out at run time skips this condition.', '引数が任意 (nullable) の場合、未指定ならこの条件はスキップされます。')}</small></label>
-            : valueField}
+            ? <>
+                <label>{text('Agent input field', 'エージェント入力フィールド')}<select aria-label={text('Agent input field', 'エージェント入力フィールド')} value={binding?.field ?? ''} onChange={(event) => patch(index, { valueBinding: { source: 'agent-input', field: event.target.value } })}><option value="">{text('Select an input field', '入力フィールドを選択')}</option>{agentInputColumns.map((input) => <option key={input.name} value={input.name}>{input.name} · {input.type}</option>)}</select>{agentInputColumns.length === 0 && <small className="field-error">{text('Add an Agent Input node and define its schema first.', '先にAgent Inputノードを追加し、スキーマを定義してください。')}</small>}<small>{text('The fixed value remains the design-time preview sample.', '固定値は設計時プレビューのサンプルとして残ります。')}</small><small>{text('If the argument is optional (nullable), leaving it out at run time skips this condition.', '引数が任意 (nullable) の場合、未指定ならこの条件はスキップされます。')}</small></label>
+                {takesValueList && <>
+                  <small>{text('Declare this argument as string: the agent passes several values in it at once, separated by commas (for example "Tokyo,Osaka").', 'この引数は string 型で宣言してください。AIは1つの引数にカンマ区切りで複数の値をまとめて渡します（例: 東京都,大阪府）。')}</small>
+                  <MultiValueField label={text('Sample values', 'サンプルの値')} values={condition.values ?? []} columnType={columnType} onChange={(next) => patch(index, { values: next })} hint={<small>{text('These values are only the design-time preview sample, and they are shown to the agent as an example.', 'ここの値は設計時プレビューのサンプルで、AIへの説明文の例としても使われます。')}</small>} />
+                </>}
+              </>
+            : takesValueList
+              ? <MultiValueField label={text('Values', '値の並び')} values={condition.values ?? []} columnType={columnType} onChange={(next) => patch(index, { values: next })} />
+              : valueField}
         </>}
         {multiple && <div className="rule-row"><button type="button" aria-label={text('Remove condition', '条件を削除')} onClick={() => write(conditions.filter((_, position) => position !== index))}>×</button></div>}
       </Fragment>;
@@ -899,7 +958,7 @@ interface CalculateAssistant {
   readonly suggest: (intent: string) => Promise<CalculateExpressionProposalDto>;
 }
 
-function CalculateFields({ config, setConfig, columns, samples = {}, assistant }: { readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[]; readonly samples?: Readonly<Record<string, readonly JsonCell[]>>; readonly assistant?: CalculateAssistant }) {
+function CalculateFields({ nodeId, config, setConfig, columns, samples = {}, assistant }: { readonly nodeId?: string; readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[]; readonly samples?: Readonly<Record<string, readonly JsonCell[]>>; readonly assistant?: CalculateAssistant }) {
   const { text } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const expression = String(config['expression'] ?? '');
@@ -930,6 +989,22 @@ function CalculateFields({ config, setConfig, columns, samples = {}, assistant }
     node.setSelectionRange(caret, caret);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expression]);
+
+  /**
+   * テンプレートから作成したツールの「式は AI が書く」計算ノード（v43）。
+   * 実体化が預けた意図文を 1 度だけ受け取り、AI パネルを開いた状態で入れておく
+   * （人は式を書かされず、「何を計算するか」を読み直して提案を押すだけで済む）。
+   * モデルが未設定のときは消費しない（設定してから開き直せば、そのとき入る）。
+   */
+  useEffect(() => {
+    if (nodeId === undefined || !aiAvailable) return;
+    const seeded = useToolBuilderStore.getState().consumePendingCalculateIntent(nodeId);
+    if (seeded === undefined) return;
+    setIntent(seeded);
+    setIntentCaret(seeded.length);
+    setAiOpen(true);
+    setInsertTarget('intent');
+  }, [nodeId, aiAvailable]);
 
   /** 入力キー（[列名]）の挿入。AI への指示文を編集中ならそちらへ入れる（列名を正確に指示へ書けるように）。 */
   const insertInput = (fragment: string) => {

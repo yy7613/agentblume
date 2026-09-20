@@ -156,6 +156,32 @@ describe('AgentInspectorPage', () => {
     expect(await screen.findByText('get_population_data · narrow:0 · 該当0件: 時点 eq "2015年12月31日" → 2015年 / 2016年')).toBeTruthy();
   });
 
+  async function renderNoMatch(condition: Record<string, unknown>): Promise<void> {
+    const zero = {
+      runId: 'run-nomatch-list', mode: 'preview', response: '該当データはありません', usage: {},
+      trace: [{ sequence: 1, kind: 'tool-result', name: 'get_population', terminalId: 'narrow', nodes: [{ nodeId: 'narrow', rowCount: 0, truncated: false }], outputPreview: [], noMatch: { message: 'No rows matched.', nodeId: 'narrow', combine: 'and', conditions: [condition] } }],
+    } as unknown as AgentPreviewRunDto;
+    render(<I18nProvider initialLanguage="ja"><AgentInspectorPage client={makeClient({ runSavedAgent: vi.fn().mockResolvedValue(zero) })} /></I18nProvider>);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.type(screen.getByLabelText('動作確認メッセージ'), 'go');
+    await userEvent.click(screen.getByRole('button', { name: '送信' }));
+  }
+
+  it('正常: 複数値の条件（in）は渡した並びを見せ、空振りした値を「該当なし」として添える', async () => {
+    await renderNoMatch({ column: '地域', op: 'in', argument: 'regions', values: ['東京', '大阪'], matchingRows: 0, unmatchedValues: ['東京', '大阪'], availableValues: ['東京都', '大阪府'], distinctValues: 48 });
+
+    expect(await screen.findByText('get_population · narrow:0 · 該当0件: 地域 in ["東京","大阪"] (該当なし: 東京 / 大阪) → 東京都 / 大阪府')).toBeTruthy();
+  });
+
+  it('境界: 空振りした値は 3 件まで出す。空の一覧なら「該当なし」の括弧ごと出さない', async () => {
+    await renderNoMatch({ column: '地域', op: 'in', values: ['a', 'b', 'c', 'd'], matchingRows: 0, unmatchedValues: ['a', 'b', 'c', 'd'] });
+    expect(await screen.findByText('get_population · narrow:0 · 該当0件: 地域 in ["a","b","c","d"] (該当なし: a / b / c)')).toBeTruthy();
+    cleanup();
+
+    await renderNoMatch({ column: '地域', op: 'notIn', values: ['a'], matchingRows: 0, unmatchedValues: [] });
+    expect(await screen.findByText('get_population · narrow:0 · 該当0件: 地域 notIn ["a"]')).toBeTruthy();
+  });
+
   it('英語UIでは再試行の注記を原文の形で残し、mcp-server-skipped の detail を添える', async () => {
     const failed: AgentPreviewRunDto = {
       runId: 'run-retry-en', mode: 'preview', response: '', usage: {},

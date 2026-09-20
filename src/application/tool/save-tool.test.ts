@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { EtlEngine } from '../etl/engine';
 import { GraphError } from '../../domain/etl/errors';
+import type { Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { createDefaultRegistry } from '../../domain/etl/nodes/index';
 import { ToolValidationError, VersionConflictError } from '../../domain/tool/errors';
@@ -193,6 +194,54 @@ describe('SaveToolUseCase', () => {
       .rejects.toThrow(/Agent input binding references unknown field 'scoreOp'/);
     await expect(usecase.execute(makeInput({ internalId: 'op-no-schema', graph })))
       .rejects.toThrow(/Agent input bindings require an inputSchema/);
+  });
+
+  it('in/notIn の値引数は string 型でなければ保存を拒否する（カンマ区切りの並びを運べない）', async () => {
+    const { usecase } = makeSut();
+    const listGraph = (schema: Schema): ToolGraph => ({
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ region: '東京都' }] } },
+        { id: 'filter', type: 'filter', config: { column: 'region', op: 'in', values: ['東京都'], valueBinding: { source: 'agent-input', field: 'regions' } } },
+        { id: 'arguments', type: 'agent-input', config: { schema, sample: { regions: '東京都' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    });
+    const asNumber: Schema = { columns: [{ name: 'regions', type: 'number', nullable: false }] };
+    await expect(usecase.execute(makeInput({ graph: listGraph(asNumber), inputSchema: asNumber })))
+      .rejects.toThrow(/SaveTool: value binding for argument 'regions' supplies a list of values \(in\/notIn\), so it must be a string argument, but it is declared as 'number'/);
+
+    const asString: Schema = { columns: [{ name: 'regions', type: 'string', nullable: false }] };
+    await expect(usecase.execute(makeInput({ internalId: 'list-ok', graph: listGraph(asString), inputSchema: asString })))
+      .resolves.toMatchObject({ inputSchema: { columns: [{ name: 'regions', type: 'string' }] } });
+  });
+
+  it('従来どおり — 単値演算子の値引数は string 以外の型でも保存できる', async () => {
+    const { usecase } = makeSut();
+    const declared: Schema = { columns: [{ name: 'minimumScore', type: 'number', nullable: false }] };
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ score: 42 }] } },
+        { id: 'filter', type: 'filter', config: { column: 'score', op: 'gte', value: 0, valueBinding: { source: 'agent-input', field: 'minimumScore' } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: declared, sample: { minimumScore: 0 } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph, inputSchema: declared }))).resolves.toBeDefined();
+  });
+
+  it('opBinding.allowed に in/notIn を入れたグラフはスキーマ検証で保存を拒否する', async () => {
+    const { usecase } = makeSut();
+    const declared: Schema = { columns: [{ name: 'regionOp', type: 'string', nullable: false }] };
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ region: '東京都' }] } },
+        { id: 'filter', type: 'filter', config: { column: 'region', op: 'eq', value: '東京都', opBinding: { source: 'agent-input', field: 'regionOp', allowed: ['eq', 'in'] } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: declared, sample: { regionOp: 'eq' } } },
+      ],
+      edges: [{ from: 'data', to: 'filter' }],
+    };
+    await expect(usecase.execute(makeInput({ graph, inputSchema: declared })))
+      .rejects.toThrow(/cannot use operator\(s\) in because they take a list of values/);
   });
 
   it('string以外の型の引数へのopBindingは保存を拒否する', async () => {

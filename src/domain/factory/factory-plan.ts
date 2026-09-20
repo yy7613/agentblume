@@ -22,6 +22,9 @@ export interface FactoryToolReuse {
   readonly rationale?: string;
 }
 
+/** 1つのToolが結合してよい追加データソースの上限（主データソースを含めて最大3ソース）。 */
+export const MAX_ADDITIONAL_DATA_SOURCES = 2;
+
 export interface FactoryToolPlan {
   readonly key: string;
   readonly displayName: string;
@@ -31,6 +34,15 @@ export interface FactoryToolPlan {
   readonly outputShape?: string;
   readonly argumentSummary?: string;
   readonly reuse?: FactoryToolReuse;
+  /**
+   * 主データソース（`dataSourceId`）へ **join で束ねる** 追加のデータソース（ADR-0047 round 3）。
+   *
+   * 同じ時点・同じ地域の値を並べて答えるには、ソースごとに別のToolを作って
+   * エージェントに行を突き合わせさせるのではなく、1つのToolで結合して返す方が確実だった。
+   * 未指定（既定）は従来どおりの単一ソースTool。Runの `dataSourceIds` 内・重複なし・
+   * `dataSourceId` 自身を含まない・最大 `MAX_ADDITIONAL_DATA_SOURCES` 件。
+   */
+  readonly additionalDataSourceIds?: readonly DataSourceId[];
 }
 
 export interface FactorySkillPlan {
@@ -157,6 +169,25 @@ export function validateFactoryPlan(plan: FactoryPlan, ctx: { readonly dataSourc
     const omitsDataSource = reuse !== undefined && tool.dataSourceId === '';
     if (!omitsDataSource && !dataSourceIds.has(tool.dataSourceId)) throw new FactoryValidationError(`validateFactoryPlan: tools.${index}.dataSourceId references unknown data source: ${tool.dataSourceId}`);
     if (tool.sideEffect === 'write' || tool.sideEffect === 'external-action') throw new FactoryValidationError(`validateFactoryPlan: tools.${index}.sideEffect must be 'read-only' or 'session-write', got '${tool.sideEffect}'`);
+    // 結合する追加データソース（ADR-0047 round 3）。件数・参照整合・重複を計画の段階で弾く。
+    const additional = tool.additionalDataSourceIds;
+    if (additional !== undefined) {
+      if (additional.length > MAX_ADDITIONAL_DATA_SOURCES) {
+        throw new FactoryValidationError(`validateFactoryPlan: tools.${index}.additionalDataSourceIds count ${additional.length} exceeds limit ${MAX_ADDITIONAL_DATA_SOURCES}`);
+      }
+      const seen = new Set<string>();
+      additional.forEach((id, additionalIndex) => {
+        nonEmpty(id, `validateFactoryPlan: tools.${index}.additionalDataSourceIds.${additionalIndex}`);
+        if (!dataSourceIds.has(id)) throw new FactoryValidationError(`validateFactoryPlan: tools.${index}.additionalDataSourceIds.${additionalIndex} references unknown data source: ${id}`);
+        if (id === tool.dataSourceId) throw new FactoryValidationError(`validateFactoryPlan: tools.${index}.additionalDataSourceIds.${additionalIndex} repeats the primary dataSourceId: ${id}`);
+        if (seen.has(id)) throw new FactoryValidationError(`validateFactoryPlan: tools.${index}.additionalDataSourceIds has a duplicate: ${id}`);
+        seen.add(id);
+      });
+      // 再利用計画は既存Toolのグラフをそのまま使うため、結合の追加は意味を持たない。
+      if (reuse !== undefined && additional.length > 0) {
+        throw new FactoryValidationError(`validateFactoryPlan: tools.${index} cannot combine reuse with additionalDataSourceIds`);
+      }
+    }
   });
 
   const skillKeys = new Set<string>();

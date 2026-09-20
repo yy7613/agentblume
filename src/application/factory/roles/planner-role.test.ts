@@ -4,13 +4,14 @@ import { DEFAULT_FACTORY_OPTIONS, type FactoryGoalInput } from '../../../domain/
 import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../../model/model-provider';
 import type { DataProfile } from '../profile-data-sources';
 import type { ExistingToolCatalog } from '../tool-catalog';
-import { PlannerRole, planSchemaFor, repairDataSourceIds } from './planner-role';
+import { inferAdditionalDataSources, normalizePlan, PlannerRole, planSchemaFor, repairDataSourceIds } from './planner-role';
+import type { FactoryPlan } from '../../../domain/factory/factory-plan';
 
 const goal: FactoryGoalInput = { goal: 'Answer sales questions and summarize trends.', language: 'ja' };
 const profiles: readonly DataProfile[] = [{
   dataSourceId: 'ds-1', name: 'Sales', kind: 'file',
   columns: [{ name: 'amount', type: 'number', nullable: false }],
-  sampleRowCount: 1, sampleRows: [{ amount: 100 }], rowCount: 1, periodColumns: [], categoricalColumns: [],
+  sampleRowCount: 1, sampleRows: [{ amount: 100 }], rowCount: 1, periodColumns: [], categoricalColumns: [], joinCandidates: [],
 }];
 
 function validPlanJson(overrides?: { readonly dataSourceId?: string; readonly sideEffect?: string }): string {
@@ -125,6 +126,7 @@ describe('PlannerRole', () => {
   it('空のreuseを剥がした結果dataSourceIdが空なら、dataSourceIdエラーとして拒否する', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: reusePlanJson('  ') }, finishReason: 'stop' });
+    model.enqueue({ message: { role: 'assistant', content: reusePlanJson('  ') }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
     const role = new PlannerRole(model);
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS, existingTools })).rejects.toThrow(/dataSourceId/);
   });
@@ -132,6 +134,7 @@ describe('PlannerRole', () => {
   it('壊れたJSONはFactoryValidationErrorになる', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: '{not json' }, finishReason: 'stop' });
+    model.enqueue({ message: { role: 'assistant', content: '{not json' }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
     const role = new PlannerRole(model);
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/invalid JSON/);
   });
@@ -144,6 +147,7 @@ describe('PlannerRole', () => {
   ] as const)('構造化出力が計画の形をしていない場合（%s）はFactoryValidationErrorになる', async (_label, content, expected) => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content }, finishReason: 'stop' });
+    model.enqueue({ message: { role: 'assistant', content }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
     const role = new PlannerRole(model);
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(expected);
   });
@@ -151,6 +155,7 @@ describe('PlannerRole', () => {
   it('入力にないdataSourceIdを参照する計画は拒否する', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: 'ds-unknown' }) }, finishReason: 'stop' });
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: 'ds-unknown' }) }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
     const role = new PlannerRole(model);
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/unknown data source/);
   });
@@ -158,6 +163,7 @@ describe('PlannerRole', () => {
   it("write副作用のtool計画は拒否する（read-only/session-writeのみ許可）", async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson({ sideEffect: 'write' }) }, finishReason: 'stop' });
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson({ sideEffect: 'write' }) }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
     const role = new PlannerRole(model);
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/sideEffect must be/);
   });
@@ -203,6 +209,7 @@ describe('PlannerRole: データソース id の写し間違い（e-Stat 実測:
   it('異常: 近い id が無い（別物の id）なら直さず、従来どおり未知のデータソースとして落とす', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: 'totally-different-source' }) }, finishReason: 'stop' });
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: 'totally-different-source' }) }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
     await expect(new PlannerRole(model).propose({ goal, profiles, dataSourceIds: [A, B], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/references unknown data source/);
   });
 
@@ -214,5 +221,225 @@ describe('PlannerRole: データソース id の写し間違い（e-Stat 実測:
   it('従来どおり: 既知の id と再利用計画の空文字には触らない', () => {
     expect(repairDataSourceIds(planWith(A), [A, B]).tools[0]?.dataSourceId).toBe(A);
     expect(repairDataSourceIds(planWith(''), [A, B]).tools[0]?.dataSourceId).toBe('');
+  });
+});
+
+// ─── ADR-0047 round 3: 結合する追加データソースの計画 ───────────────────────────────────
+describe('PlannerRole（複数データソースを結合するTool計画）', () => {
+  const ids = ['ds-wage', 'ds-hours', 'ds-price'];
+
+  it('正常: 追加データソースidも構造化出力の enum で縛る（写し間違いを起こさせない）', () => {
+    const schema = planSchemaFor(ids);
+    const additional = schema.properties?.['tools']?.items?.properties?.['additionalDataSourceIds'];
+
+    expect(additional?.items?.enum).toEqual(ids);
+    // 主idは「再利用計画（データソースを読まない）」のために空文字も選べるが、結合先は実在のidだけ。
+    expect(schema.properties?.['tools']?.items?.properties?.['dataSourceId']?.enum).toEqual([...ids, '']);
+    expect(additional?.items?.enum).not.toContain('');
+  });
+
+  it('正常: 結合先idの写し間違いも編集距離で直す（主idと同じ規則）', () => {
+    const plan: FactoryPlan = {
+      agentBrief: { displayName: 'A', role: 'r' },
+      tools: [{ key: 't', displayName: 'T', purpose: 'p', dataSourceId: 'ds-wage', sideEffect: 'read-only', additionalDataSourceIds: ['ds-hour'] }],
+      skills: [], personas: [], scenarios: [],
+    };
+
+    expect(repairDataSourceIds(plan, ids).tools[0]?.additionalDataSourceIds).toEqual(['ds-hours']);
+  });
+
+  it('境界(回帰固定): 候補が同距離で複数ある結合先idは、主idと従来どおり同じ規律で直さない（当て推量で別の表を読ませない）', () => {
+    const plan: FactoryPlan = {
+      agentBrief: { displayName: 'A', role: 'r' },
+      tools: [{ key: 't', displayName: 'T', purpose: 'p', dataSourceId: 'ds-aaaa', sideEffect: 'read-only', additionalDataSourceIds: ['ds-xxxxx'] }],
+      skills: [], personas: [], scenarios: [],
+    };
+
+    const repaired = repairDataSourceIds(plan, ['ds-aaaaa', 'ds-bbbbb']).tools[0];
+    // 主idは一意に近いので直り、結合先は同距離の候補が2つあるので触らない（検証が「未知」として落とす）。
+    expect(repaired?.dataSourceId).toBe('ds-aaaaa');
+    expect(repaired?.additionalDataSourceIds).toEqual(['ds-xxxxx']);
+  });
+
+  it('境界(回帰固定): 結合先を持たない計画は、従来どおり主idだけが直される', () => {
+    const plan: FactoryPlan = {
+      agentBrief: { displayName: 'A', role: 'r' },
+      tools: [{ key: 't', displayName: 'T', purpose: 'p', dataSourceId: 'ds-wag', sideEffect: 'read-only' }],
+      skills: [], personas: [], scenarios: [],
+    };
+
+    const repaired = repairDataSourceIds(plan, ids).tools[0];
+    expect(repaired?.dataSourceId).toBe('ds-wage');
+    expect(repaired?.additionalDataSourceIds).toBeUndefined();
+  });
+
+  it('正常: 結合候補と「1ソース1Toolに割らない」規律をプロンプトへ含める', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
+    const joined: DataProfile = {
+      ...profiles[0]!,
+      joinCandidates: [{ leftDataSourceId: 'ds-1', rightDataSourceId: 'ds-2', keys: ['時点', '地域コード'], overlap: { 時点: 1, 地域コード: 1 }, uniqueLeft: true, uniqueRight: false }],
+    };
+
+    await new PlannerRole(model).propose({ goal, profiles: [joined], dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
+
+    const system = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
+    const user = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
+    expect(system).toMatch(/plan ONE tool that joins them/);
+    expect(system).toMatch(/Do NOT plan one tool per source/);
+    expect(system).toMatch(/key is not unique on a side/);
+    // 候補はuntrusted data側に1回だけ載る。
+    expect(user).toContain('"joinCandidates"');
+    expect(user).toContain('地域コード');
+    expect(user).toContain('"uniqueRight":false');
+  });
+});
+
+describe('PlannerRole: 計画の検証に落ちたら、理由を添えて 1 回だけ出し直させる', () => {
+  const rejected = validPlanJson({ sideEffect: 'write' });
+
+  it('正常: 1 回目が規則違反でも、2 回目が正しければ計画を返す（依頼には前回の応答と違反理由が入る）', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: rejected }, finishReason: 'stop' }, { message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
+    const plan = await new PlannerRole(model).propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
+    expect(plan.tools[0]?.sideEffect).toBe('read-only');
+    expect(model.requests).toHaveLength(2);
+    const retry = model.requests[1]?.messages ?? [];
+    expect(retry.at(-2)).toEqual({ role: 'assistant', content: rejected });
+    expect(String(retry.at(-1)?.content)).toMatch(/rejected by validation: .*sideEffect/);
+    expect(model.requests[1]?.responseFormat).toEqual(model.requests[0]?.responseFormat);
+  });
+
+  it('異常: 2 回目も規則違反なら従来どおり FactoryValidationError（3 回目は呼ばない）', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: rejected }, finishReason: 'stop' }, { message: { role: 'assistant', content: rejected }, finishReason: 'stop' });
+    await expect(new PlannerRole(model).propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/sideEffect/);
+    expect(model.requests).toHaveLength(2);
+  });
+
+  it('従来どおり: 1 回目が正しければ再提案はしない', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
+    await new PlannerRole(model).propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
+    expect(model.requests).toHaveLength(1);
+  });
+});
+
+describe('normalizePlan: 任意項目を埋めてしまう癖を受け流す（実測: 再利用と結合先の併記で Run が計画段階で失敗）', () => {
+  const base = JSON.parse(validPlanJson()) as Parameters<typeof normalizePlan>[0];
+  const withTool = (tool: Record<string, unknown>) => ({ ...base, tools: [{ ...base.tools[0], ...tool }] }) as Parameters<typeof normalizePlan>[0];
+
+  it('正常: カタログに無い Tool の再利用指定は「再利用なし」にする（結合先は残す）', () => {
+    const plan = normalizePlan(withTool({ reuse: { internalId: 'ghost', rationale: 'x' }, additionalDataSourceIds: ['ds-2'] }), existingTools);
+    expect(plan.tools[0]?.reuse).toBeUndefined();
+    expect(plan.tools[0]?.additionalDataSourceIds).toEqual(['ds-2']);
+  });
+
+  it('正常: 実在する Tool の再利用計画に付いた結合先は落とす（再利用は既存のグラフをそのまま使う）', () => {
+    const internalId = existingTools.entries[0]?.internalId ?? '';
+    const plan = normalizePlan(withTool({ reuse: { internalId, rationale: 'x' }, additionalDataSourceIds: ['ds-2'] }), existingTools);
+    expect(plan.tools[0]?.reuse?.internalId).toBe(internalId);
+    expect(plan.tools[0]?.additionalDataSourceIds).toBeUndefined();
+  });
+
+  it('境界: カタログ未指定なら、どの再利用指定も実在しない扱いで外す', () => {
+    expect(normalizePlan(withTool({ reuse: { internalId: 'any', rationale: 'x' } }), undefined).tools[0]?.reuse).toBeUndefined();
+  });
+
+  it('従来どおり: 再利用も結合先も無い計画には触らない', () => {
+    expect(normalizePlan(base, existingTools)).toEqual(base);
+  });
+});
+
+describe('inferAdditionalDataSources: 文章が別ソースの列を名指ししているのに結合先が無い計画を補う（実測: 給与総額を「円/時間」と誤答）', () => {
+  const candidate = (left: string, right: string) => ({ leftDataSourceId: left, rightDataSourceId: right, keys: ['時点'], overlap: { 時点: 1 }, uniqueLeft: true, uniqueRight: true });
+  const profileOf = (id: string, valueColumn: string, joinCandidates: DataProfile['joinCandidates']): DataProfile => ({
+    dataSourceId: id, name: id, kind: 'file',
+    columns: [{ name: '時点', type: 'string', nullable: false }, { name: valueColumn, type: 'number', nullable: false }],
+    sampleRowCount: 0, sampleRows: [], rowCount: 0, periodColumns: [], categoricalColumns: [], joinCandidates,
+  });
+  const joins = [candidate('wage', 'hours'), candidate('wage', 'overtime')];
+  const three = [profileOf('wage', '現金給与総額【円】', joins), profileOf('hours', '総実労働時間【時間】', joins), profileOf('overtime', '所定外労働時間【時間】', joins)];
+  const base = JSON.parse(validPlanJson({ dataSourceId: 'wage' })) as FactoryPlan;
+  const withTool = (tool: Record<string, unknown>) => ({ ...base, tools: [{ ...base.tools[0], ...tool }] }) as FactoryPlan;
+
+  it('正常: purpose が別ソースにしか無い列を名指ししていれば、そのソースを結合先に補う', () => {
+    const plan = inferAdditionalDataSources(withTool({ purpose: '現金給与総額【円】 ÷ 総実労働時間【時間】 で時給を出す' }), three);
+    expect(plan.tools[0]?.additionalDataSourceIds).toEqual(['hours']);
+  });
+
+  it('正常: 単位の注記を外した列名でも照合する（計画の文章は単位抜きで列を呼ぶ）', () => {
+    const plan = inferAdditionalDataSources(withTool({ purpose: '給与と所定外労働時間を並べる', argumentSummary: '総実労働時間も返す' }), three);
+    expect(plan.tools[0]?.additionalDataSourceIds).toEqual(['hours', 'overtime']);
+  });
+
+  it('異常: 結合候補が無い相手は、名指しされていても補わない（結合できないソースを足すと生成が必ず落ちる）', () => {
+    const unjoinable = [profileOf('wage', '現金給与総額【円】', []), profileOf('hours', '総実労働時間【時間】', [])];
+    expect(inferAdditionalDataSources(withTool({ purpose: '総実労働時間で割る' }), unjoinable).tools[0]?.additionalDataSourceIds).toBeUndefined();
+  });
+
+  it('異常: 両方のソースにある列名（時点）だけの言及では補わない', () => {
+    expect(inferAdditionalDataSources(withTool({ purpose: '時点を指定して給与を返す' }), three).tools[0]?.additionalDataSourceIds).toBeUndefined();
+  });
+
+  it('境界: 単位を外すと 3 文字未満になる列名は、完全一致のときだけ手掛かりにする（偶然の一致を避ける）', () => {
+    const short = [profileOf('wage', '現金給与総額【円】', [candidate('wage', 'idx')]), profileOf('idx', '指数【%】', [candidate('wage', 'idx')])];
+    expect(inferAdditionalDataSources(withTool({ purpose: '給与の指数的な伸びを見る' }), short).tools[0]?.additionalDataSourceIds).toBeUndefined();
+    expect(inferAdditionalDataSources(withTool({ purpose: '給与と 指数【%】 を並べる' }), short).tools[0]?.additionalDataSourceIds).toEqual(['idx']);
+  });
+
+  it('従来どおり: モデルが結合先を書いた計画・再利用計画・ソースが 1 つの Run には触らない', () => {
+    const written = withTool({ purpose: '総実労働時間と所定外労働時間', additionalDataSourceIds: ['overtime'] });
+    expect(inferAdditionalDataSources(written, three)).toEqual(written);
+    const reuse = withTool({ purpose: '総実労働時間', reuse: { internalId: 'x', rationale: 'y' } });
+    expect(inferAdditionalDataSources(reuse, three)).toEqual(reuse);
+    const single = withTool({ purpose: '総実労働時間' });
+    expect(inferAdditionalDataSources(single, [three[0]!])).toEqual(single);
+  });
+
+  it('正常: PlannerRole は検証の前に補う（書き忘れた計画がそのまま通らない）', async () => {
+    const model = new ScriptedModelProvider();
+    const forgotten = JSON.parse(validPlanJson({ dataSourceId: 'wage' })) as { tools: Record<string, unknown>[] };
+    forgotten.tools[0] = { ...forgotten.tools[0], purpose: '現金給与総額を総実労働時間で割る' };
+    model.enqueue({ message: { role: 'assistant', content: JSON.stringify(forgotten) }, finishReason: 'stop' });
+    const plan = await new PlannerRole(model).propose({ goal, profiles: three.slice(0, 2), dataSourceIds: ['wage', 'hours'], options: DEFAULT_FACTORY_OPTIONS });
+    expect(plan.tools[0]?.additionalDataSourceIds).toEqual(['hours']);
+  });
+});
+
+describe('PlannerRole: 使えるツールテンプレートを材料に足す（v43 / ADR-0049）', () => {
+  const templates = [
+    { id: 'period-series', summary: '期間の範囲・粒度・カテゴリで絞って、値の推移を新しい順に返す。' },
+    { id: 'ratio-of-two-sources', summary: '2 つのデータソースを同じ時点で結合し、分子 ÷ 分母 を計算して返す。' },
+  ];
+
+  it('正常: テンプレートの id と要約を untrusted data 側へ載せ、規則を 1 行だけ足す', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
+    const role = new PlannerRole(model);
+
+    await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS, templates });
+
+    // 要約はテンプレートファイル（利用者が足せる外部ファイル）由来なので、材料側に置く。
+    const userMessage = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
+    expect(userMessage).toContain('toolTemplates');
+    expect(userMessage).toContain('period-series');
+    expect(userMessage).toContain('ratio-of-two-sources');
+    // 規則は system 側（指示）で、計画の形は変えない。
+    const systemMessage = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
+    expect(systemMessage).toContain('toolTemplates in the user message');
+    expect(systemMessage).toContain('additionalDataSourceIds');
+    expect(systemMessage.split('\n').filter((line) => line.includes('toolTemplates'))).toHaveLength(1);
+  });
+
+  it('従来どおり: テンプレートが無い（未配線・0 件）なら材料も規則も足さない', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
+    const role = new PlannerRole(model);
+
+    await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS, templates: [] });
+
+    expect(String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content)).not.toContain('toolTemplates');
+    expect(String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content)).not.toContain('toolTemplates');
   });
 });

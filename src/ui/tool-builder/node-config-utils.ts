@@ -15,6 +15,16 @@ export function splitList(value: string): string[] {
   return value.split(',').map((item) => item.trim()).filter(Boolean);
 }
 
+/**
+ * フィルタの複数値（`in` / `notIn`）入力を値の並びへ分ける。区切りは半角/全角カンマ・読点・
+ * セミコロン・改行で、前後の空白を落とし、空要素を捨て、重複を除く。
+ * サーバー側（src/domain/etl/nodes/filter.ts の `parseFilterValueList`）と**同じ規則**の複製
+ * （UI層は domain を import しない方針。一致はテストでピン留めする）。
+ */
+export function parseFilterValues(value: string): string[] {
+  return [...new Set(value.split(/[,、，;\r\n]+/).map((item) => item.trim()).filter((item) => item !== ''))];
+}
+
 export function coerceScalar(raw: string, type?: DataType): Exclude<JsonCell, null> {
   if (type === 'number' && raw !== '' && !Number.isNaN(Number(raw))) return Number(raw);
   if (type === 'boolean' && (raw === 'true' || raw === 'false')) return raw === 'true';

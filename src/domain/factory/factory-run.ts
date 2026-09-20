@@ -78,6 +78,17 @@ export interface FactoryBudgetSnapshot {
 export const FACTORY_PROMPT_STRATEGIES = ['preserve', 'rewrite'] as const;
 export type FactoryPromptStrategy = (typeof FACTORY_PROMPT_STRATEGIES)[number];
 
+/**
+ * 新規作成するToolの作り方（v42 実装契約 §7 / [ADR-0048](../../../docs/adr/0048-staged-tool-generation.md)）。
+ *
+ * - `staged`（既定）: 小さな目的別タスク（何で絞るか / 何を計算したいか / 何を返すか）へ分け、
+ *   グラフは決定的なコンパイラが組む。計算列（差・比・率）を作れるのはこちらだけ。
+ *   失敗したら自動で `one-shot` へフォールバックする（理由はイベントに残る）。
+ * - `one-shot`: 従来どおり ToolSmith が1回のプロンプトでグラフ全体を書く。
+ */
+export const FACTORY_TOOL_GENERATIONS = ['staged', 'one-shot'] as const;
+export type FactoryToolGeneration = (typeof FACTORY_TOOL_GENERATIONS)[number];
+
 export interface FactoryOptions {
   readonly maxIterations: number;
   readonly personaCount: number;
@@ -93,6 +104,12 @@ export interface FactoryOptions {
    * 生成モード（0→1）では無関係な設定として無視される（元からAssemblerが役割文・実行規則を起草するため）。
    */
   readonly promptStrategy: FactoryPromptStrategy;
+  /**
+   * 新規作成Toolの作り方（既定 `'staged'`）。`'staged'` は小さなタスク + 決定的コンパイラで組み、
+   * 失敗したら `'one-shot'`（従来の一括 ToolSmith）へ自動でフォールバックする。
+   * `'one-shot'` を選ぶと段階的経路を試さない（従来どおりの挙動）。
+   */
+  readonly toolGeneration: FactoryToolGeneration;
 }
 
 export interface IterationMetrics {
@@ -211,6 +228,8 @@ export const DEFAULT_FACTORY_OPTIONS: FactoryOptions = {
   budget: DEFAULT_FACTORY_BUDGET_LIMITS,
   // 既定は「既存プロンプトを保つ」: 本番Agentのペルソナ・業務ルールがLLMの再起草で黙って変わらない側へ倒す。
   promptStrategy: 'preserve',
+  // 既定は段階的生成（ADR-0048）。小さいモデルでの失敗が局所化し、計算列も作れる。
+  toolGeneration: 'staged',
 };
 
 function cloneFactoryOptions(options: FactoryOptions): FactoryOptions {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateFactoryPlan, type FactoryPlan } from './factory-plan';
+import { MAX_ADDITIONAL_DATA_SOURCES, validateFactoryPlan, type FactoryPlan } from './factory-plan';
 import { FactoryValidationError } from './errors';
 
 const validPlan: FactoryPlan = {
@@ -87,5 +87,45 @@ describe('validateFactoryPlan', () => {
   it('persona.archetypeが不正な場合は例外を投げる', () => {
     const plan: FactoryPlan = { ...validPlan, personas: [{ ...validPlan.personas[0]!, archetype: 'unknown' as never }] };
     expect(() => validateFactoryPlan(plan, ctx)).toThrow(/archetype/);
+  });
+});
+
+// ─── ADR-0047 round 3: 複数データソースを結合するTool計画 ──────────────────────────────
+describe('validateFactoryPlan（結合する追加データソース）', () => {
+  const basePlan = (additionalDataSourceIds?: readonly string[]): FactoryPlan => ({
+    agentBrief: { displayName: 'A', role: 'r' },
+    tools: [{
+      key: 'joined', displayName: 'Joined', purpose: '賃金と労働時間を同じ時点で並べる。', dataSourceId: 'ds-1', sideEffect: 'read-only',
+      ...(additionalDataSourceIds === undefined ? {} : { additionalDataSourceIds }),
+    }],
+    skills: [], personas: [], scenarios: [],
+  });
+  const ctx = { dataSourceIds: ['ds-1', 'ds-2', 'ds-3', 'ds-4'] };
+
+  it('正常(回帰固定): 追加idを持たない従来の計画はそのまま通る', () => {
+    expect(() => validateFactoryPlan(basePlan(), ctx)).not.toThrow();
+    expect(() => validateFactoryPlan(basePlan([]), ctx)).not.toThrow();
+  });
+
+  it('異常: Runに無いデータソースを結合先にはできない', () => {
+    expect(() => validateFactoryPlan(basePlan(['ds-9']), ctx)).toThrow(/additionalDataSourceIds.0 references unknown data source: ds-9/);
+  });
+
+  it('異常: 主データソース自身・重複は拒否する（同じ表を2回読ませない）', () => {
+    expect(() => validateFactoryPlan(basePlan(['ds-1']), ctx)).toThrow(/repeats the primary dataSourceId/);
+    expect(() => validateFactoryPlan(basePlan(['ds-2', 'ds-2']), ctx)).toThrow(/has a duplicate: ds-2/);
+  });
+
+  it('境界: 上限ちょうどは通り、超えたら拒否する', () => {
+    expect(() => validateFactoryPlan(basePlan(['ds-2', 'ds-3']), ctx)).not.toThrow();
+    expect(() => validateFactoryPlan(basePlan(['ds-2', 'ds-3', 'ds-4']), ctx)).toThrow(new RegExp(`exceeds limit ${MAX_ADDITIONAL_DATA_SOURCES}`));
+  });
+
+  it('例外: 既存Toolの再利用計画に結合は付けられない（既存グラフをそのまま使うため）', () => {
+    const plan: FactoryPlan = {
+      ...basePlan(['ds-2']),
+      tools: [{ key: 'reused', displayName: 'R', purpose: 'p', dataSourceId: '', sideEffect: 'read-only', reuse: { internalId: 'tool-x' }, additionalDataSourceIds: ['ds-2'] }],
+    };
+    expect(() => validateFactoryPlan(plan, ctx)).toThrow(/cannot combine reuse with additionalDataSourceIds/);
   });
 });

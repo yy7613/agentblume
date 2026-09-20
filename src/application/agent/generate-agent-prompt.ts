@@ -2,6 +2,7 @@ import type { AgentKind, AgentSubAgentRef } from '../../domain/agent/agent';
 import type { AgentRepository } from '../../domain/agent/agent-repository';
 import { AgentValidationError } from '../../domain/agent/errors';
 import type { StructuredOutputDefinition } from '../../domain/agent/structured-output';
+import { listValueArgumentSummaries } from '../../domain/etl/nodes/filter';
 import type { Schema } from '../../domain/data/types';
 import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { SemVer } from '../../domain/tool/semver';
@@ -41,9 +42,14 @@ export class GenerateAgentPromptUseCase {
     const optionalArgumentNote = loaded.some((tool) => (tool.inputSchema?.columns ?? []).some((column) => column.nullable))
       ? '\n- `?` 付きの引数は省略可能。省略するとその条件での絞り込みを行わない（全件が対象になる）。'
       : '';
+    // 値の並びを受け取る引数を持つToolがあるときだけ、1回でまとめて渡せることを明示する。
+    // 単値しか渡せないと思ったモデルは値ごとにToolを呼び、1実行あたりの呼び出し上限で力尽きる。
+    const listArgumentNote = loaded.some((tool) => listArgumentFields(tool).length > 0)
+      ? `\n- 次の引数は複数の値をまとめて指定できる（カンマ区切り。例: \`東京都,大阪府,北海道\`）。値ごとにToolを呼び分けない: ${[...new Set(loaded.flatMap(listArgumentFields))].join(', ')}。`
+      : '';
     const toolUsageGuide = loaded.length === 0
       ? '# Tool使用ガイド\n利用可能なToolはありません。'
-      : `# Tool使用ガイド\n${loaded.map(toolGuide).join('\n')}${optionalArgumentNote}`;
+      : `# Tool使用ガイド\n${loaded.map(toolGuide).join('\n')}${optionalArgumentNote}${listArgumentNote}`;
     const collaboratorGuide = resolved.subAgents.length === 0
       ? '# 協働者ガイド\n委譲できるサブエージェントはありません。'
       : `# 協働者ガイド\n委譲は ${resolved.subAgents.map((sub) => sub.toolName).join(' / ')} ツールで行う。\n${resolved.subAgents.map((sub) => `- ${sub.toolName}（${sub.agent.metadata.displayName}@${sub.agent.metadata.version.toString()}）: ${sub.ref.usage}`).join('\n')}`;
@@ -76,6 +82,18 @@ function schemaLabel(schema?: Schema): string {
 function argumentLabel(schema?: Schema): string {
   if (schema === undefined || schema.columns.length === 0) return 'なし';
   return schema.columns.map((column) => `${column.name}${column.nullable ? '?' : ''}:${column.type}`).join(', ');
+}
+
+/**
+ * その Tool で「カンマ区切りの値の並び」を受け取る引数名（filter の `in`/`notIn` の valueBinding 先）。
+ * 実行時に引数を分解する集合（domain の `listValueArgumentSummaries`）と同じものを使う。
+ * inputSchema に宣言の無い field は実行時に束縛が効かないので案内しない。
+ */
+function listArgumentFields(tool: Tool): string[] {
+  const declared = new Set((tool.inputSchema?.columns ?? []).map((column) => column.name));
+  return listValueArgumentSummaries(tool.graph.nodes.filter((node) => node.type === 'filter').map((node) => node.config))
+    .map((summary) => summary.field)
+    .filter((field) => declared.has(field));
 }
 
 function toolGuide(tool: Tool): string {

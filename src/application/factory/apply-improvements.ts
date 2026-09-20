@@ -393,12 +393,18 @@ export class ApplyImprovementsUseCase {
     }
     try {
       const profile = await creation.profiler.execute(input.scope, plan.dataSourceId);
+      // 結合するToolの追加提案（`additionalDataSourceIds`）も Stage 2 と同じ規律でプロファイルする。
+      const additionalProfiles = [];
+      for (const dataSourceId of plan.additionalDataSourceIds ?? []) {
+        additionalProfiles.push(await creation.profiler.execute(input.scope, dataSourceId));
+      }
       const outcome = await generateToolWithRepair(
         { toolSmith: creation.toolSmith, resolveDataSources: creation.resolveDataSources, engine: this.engine, saveTool: this.saveTool },
         {
           scope: input.scope,
           toolPlan: plan,
           profile,
+          ...(additionalProfiles.length === 0 ? {} : { additionalProfiles }),
           sideEffect: plan.sideEffect,
           maxRepairAttempts: input.maxRepairAttempts ?? DEFAULT_MAX_REPAIR_ATTEMPTS,
           // publishNameの一意性は払い出したinternalId由来の接尾辞で担保する（Run/イテレーションを跨いで衝突しない）。

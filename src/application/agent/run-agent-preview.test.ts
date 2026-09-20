@@ -2222,3 +2222,175 @@ describe('RunAgentPreviewUseCase: 0行のツール結果', () => {
     expect(content).not.toContain('noMatch');
   });
 });
+
+/**
+ * 複数値のフィルタ引数（`in`）。実測の再現: 「東京都・大阪府・北海道を比べて」と頼まれた Agent は
+ * 単値の条件しか持てず県ごとにツールを呼び、1 実行あたりのツール呼び出し上限（4回）で力尽きていた。
+ * カンマ区切りの1引数で 3 県を1回で絞れることを、実行経路まるごとで固定する。
+ */
+describe('RunAgentPreviewUseCase: 複数値のフィルタ引数（in）', () => {
+  const regionSchema: Schema = { columns: [{ name: 'regions', type: 'string', nullable: true }] };
+  const populationRows = [
+    { 地域: '東京都', 人口: 1400 },
+    { 地域: '大阪府', 人口: 880 },
+    { 地域: '北海道', 人口: 520 },
+    { 地域: '沖縄県', 人口: 150 },
+  ];
+
+  function regionTool(): Tool {
+    return createTool({
+      metadata: { internalId: 'region-tool', workingName: 'region', displayName: 'Population by region', publishName: 'get_population', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: regionSchema,
+      agentTool: { name: 'get_population', description: 'Population by prefecture.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: populationRows } },
+        { id: 'narrow', type: 'filter', config: {
+          column: '地域', op: 'in', values: ['東京都'],
+          valueBinding: { source: 'agent-input', field: 'regions' },
+        } },
+        { id: 'arguments', type: 'agent-input', config: { schema: regionSchema, sample: { regions: '東京都' } } },
+      ], edges: [{ from: 'data', to: 'narrow' }] },
+    });
+  }
+
+  /** 1回のツール呼び出しを流し、モデルが受け取ったツール結果の本文を返す。 */
+  async function callWith(regions: JsonObject['x']): Promise<{ readonly content: string; readonly calls: number }> {
+    const model = new QueueModel([toolCall('c1', 'get_population', { regions }), stop('done')]);
+    const run = await useCase(regionTool(), model).execute({ ...input, toolId: 'region-tool' });
+    const calls = run.trace.filter((event) => event.kind === 'tool-call').length;
+    return { content: String(model.requests[1]?.messages.at(-1)?.content), calls };
+  }
+
+  it('正常: カンマ区切りの1引数で3県を1回の呼び出しで絞り込む', async () => {
+    const { content, calls } = await callWith('東京都, 大阪府,北海道');
+    expect(content).toContain('東京都');
+    expect(content).toContain('大阪府');
+    expect(content).toContain('北海道');
+    expect(content).not.toContain('沖縄県');
+    expect(content).not.toContain('noMatch');
+    expect(calls).toBe(1); // 県ごとに呼ばなくてよい（これが上限に当たっていた原因）。
+  });
+
+  it.each([
+    ['読点', '東京都、大阪府'],
+    ['全角カンマ', '東京都，大阪府'],
+    ['セミコロン', '東京都;大阪府'],
+    ['改行', '東京都\n大阪府'],
+  ])('正常: 区切りが%sでも同じ2県を返す', async (_label, regions) => {
+    const { content } = await callWith(regions);
+    expect(content).toContain('東京都');
+    expect(content).toContain('大阪府');
+    expect(content).not.toContain('北海道');
+  });
+
+  it('境界: 前後の空白を落とし、空要素と重複を捨てる', async () => {
+    const { content } = await callWith('  東京都 , ,大阪府,東京都 ');
+    expect(content).toContain('東京都');
+    expect(content).toContain('大阪府');
+    expect(content).not.toContain('北海道');
+  });
+
+  it('正常: 知らない値が混ざっても、当たった県の行を返し noMatch は付けない', async () => {
+    const { content } = await callWith('東京都,大阪府,存在しない県');
+    expect(content).toContain('東京都');
+    expect(content).toContain('大阪府');
+    expect(content).not.toContain('noMatch');
+  });
+
+  it('異常: どれも当たらなければ、外した値と実在する値を添えて差し戻す', async () => {
+    const model = new QueueModel([toolCall('c1', 'get_population', { regions: '東京市,大阪市' }), stop('done')]);
+    const run = await useCase(regionTool(), model).execute({ ...input, toolId: 'region-tool' });
+
+    const content = JSON.parse(String(model.requests[1]?.messages.at(-1)?.content)) as {
+      rows: unknown[];
+      noMatch: { conditions: { column: string; op: string; values?: unknown[]; unmatchedValues?: string[]; availableValues?: string[] }[] };
+    };
+    expect(content.rows).toEqual([]);
+    expect(content.noMatch.conditions[0]).toMatchObject({
+      column: '地域', op: 'in', argument: 'regions',
+      values: ['東京市', '大阪市'],
+      unmatchedValues: ['東京市', '大阪市'],
+      matchingRows: 0,
+    });
+    // 近い値（東京都・大阪府）を先に出す。
+    expect(content.noMatch.conditions[0]?.availableValues?.slice(0, 2)).toEqual(['東京都', '大阪府']);
+    const toolResult = run.trace.find((event) => event.kind === 'tool-result');
+    expect(toolResult?.kind === 'tool-result' ? toolResult.noMatch?.conditions[0]?.unmatchedValues : undefined).toEqual(['東京市', '大阪市']);
+  });
+
+  it('境界: nullable引数を省略すると条件ごとスキップして全県を返す（従来どおり）', async () => {
+    const { content } = await callWith(null);
+    for (const row of populationRows) expect(content).toContain(row.地域);
+  });
+
+  it('境界: 区切り文字だけ・空文字の引数は省略と同じ扱いで全県を返す', async () => {
+    for (const regions of ['', ' , 、 ']) {
+      const { content } = await callWith(regions);
+      for (const row of populationRows) expect(content).toContain(row.地域);
+    }
+  });
+
+  it('異常: 100件を超える値はモデルへ差し戻し、直らなければ実行を拒否する', async () => {
+    const tooMany = Array.from({ length: 101 }, (_, index) => `県${index}`).join(',');
+    const model = new QueueModel([
+      toolCall('c1', 'get_population', { regions: tooMany }),
+      toolCall('c2', 'get_population', { regions: tooMany }),
+    ]);
+    await expect(useCase(regionTool(), model).execute({ ...input, toolId: 'region-tool' }))
+      .rejects.toThrow(/argument 'regions' has too many values \(101\); pass at most 100 values separated by commas/);
+    expect(JSON.stringify(model.requests[1]?.messages)).toContain("has too many values (101)");
+  });
+
+  it('境界: 上限ちょうど（100件）は実行できる', async () => {
+    const hundred = ['東京都', ...Array.from({ length: 99 }, (_, index) => `県${index}`)].join(',');
+    const { content } = await callWith(hundred);
+    expect(content).toContain('東京都');
+    expect(content).not.toContain('大阪府');
+  });
+
+  it('異常: 数値列の並びに数値でない値が混ざったら、その値を名指ししたエラーで止まる', async () => {
+    const amountSchema: Schema = { columns: [{ name: 'amounts', type: 'string', nullable: false }] };
+    const tool = createTool({
+      metadata: { internalId: 'amount-tool', workingName: 'amount', displayName: 'Amounts', publishName: 'get_amounts', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: amountSchema,
+      agentTool: { name: 'get_amounts', description: 'Rows by amount.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ 金額: 100 }, { 金額: 200 }] } },
+        { id: 'narrow', type: 'filter', config: { column: '金額', op: 'in', values: [100], valueBinding: { source: 'agent-input', field: 'amounts' } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: amountSchema, sample: { amounts: '100' } } },
+      ], edges: [{ from: 'data', to: 'narrow' }] },
+    });
+    const model = new QueueModel([toolCall('c1', 'get_amounts', { amounts: '100,たくさん' })]);
+    await expect(useCase(tool, model).execute({ ...input, toolId: 'amount-tool' }))
+      .rejects.toThrow(/filter: values for number column '金額' must be numbers: たくさん/);
+  });
+
+  it('正常: 数値列でも数値文字列の並びで絞り込める', async () => {
+    const amountSchema: Schema = { columns: [{ name: 'amounts', type: 'string', nullable: false }] };
+    const tool = createTool({
+      metadata: { internalId: 'amount-tool', workingName: 'amount', displayName: 'Amounts', publishName: 'get_amounts', version: SemVer.of(1, 0, 0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: amountSchema,
+      agentTool: { name: 'get_amounts', description: 'Rows by amount.' },
+      graph: { nodes: [
+        { id: 'data', type: 'json-source', config: { rows: [{ 金額: 100 }, { 金額: 200 }, { 金額: 300 }] } },
+        { id: 'narrow', type: 'filter', config: { column: '金額', op: 'in', values: [100], valueBinding: { source: 'agent-input', field: 'amounts' } } },
+        { id: 'arguments', type: 'agent-input', config: { schema: amountSchema, sample: { amounts: '100' } } },
+      ], edges: [{ from: 'data', to: 'narrow' }] },
+    });
+    const model = new QueueModel([toolCall('c1', 'get_amounts', { amounts: '100, 300' }), stop('done')]);
+    await useCase(tool, model).execute({ ...input, toolId: 'amount-tool' });
+    const content = String(model.requests[1]?.messages.at(-1)?.content);
+    expect(content).toContain('100');
+    expect(content).toContain('300');
+    expect(content).not.toContain('200');
+  });
+
+  it('正常: モデルへ公開する引数の説明が「カンマ区切りで複数渡す」ことを例つきで伝える', async () => {
+    const model = new QueueModel([toolCall('c1', 'get_population', { regions: '東京都' }), stop('done')]);
+    await useCase(regionTool(), model).execute({ ...input, toolId: 'region-tool' });
+    const description = String((model.requests[0]?.tools?.[0]?.parameters.properties['regions'] as { description?: string }).description);
+    expect(description).toContain('Comma-separated list of values');
+    expect(description).toContain('東京都');
+    expect(description).toContain('Omit it to skip this filter.');
+  });
+});

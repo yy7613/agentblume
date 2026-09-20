@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentDiagnosticsDto, ToolDiagnosticsDto } from '../api/types';
 import { I18nProvider } from '../i18n';
 import { NavigationProvider, consumePendingOpen } from '../navigation';
-import { DiagnosticsPanel, toolCheckTarget, topIssue } from './DiagnosticsPanel';
+import { diagnosticCheckLabel, DiagnosticsPanel, toolCheckTarget, topIssue } from './DiagnosticsPanel';
 
 afterEach(() => { cleanup(); consumePendingOpen('Tool'); consumePendingOpen('Agent'); });
 
@@ -301,6 +301,13 @@ describe('toolCheckTarget / topIssue', () => {
     expect(toolCheckTarget({ id: 'operator-arguments', status: 'warning' })).toEqual({ section: 'agent-context' });
     expect(toolCheckTarget({ id: 'output-schema', status: 'error' })).toEqual({ section: 'output' });
     expect(toolCheckTarget({ id: 'state', status: 'warning' })).toEqual({});
+  });
+
+  it('正常: 複数値の引数の検査（list-arguments）は、直す場所としてエージェント向け設定を指し、ラベルを日本語にする', () => {
+    expect(toolCheckTarget({ id: 'list-arguments', status: 'warning' })).toEqual({ section: 'agent-context' });
+    expect(toolCheckTarget({ id: 'list-arguments', status: 'warning', nodeId: 'f1' })).toEqual({ nodeId: 'f1' });
+    expect(diagnosticCheckLabel('list-arguments', (_en, ja) => ja)).toBe('複数値の引数');
+    expect(diagnosticCheckLabel('list-arguments', (en) => en)).toBe('Multi-value arguments');
   });
 
   it('最初の error、無ければ最初の warning を一番目の問題とする', () => {

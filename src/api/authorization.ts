@@ -126,6 +126,12 @@ const CORE_ROUTE_RULES: readonly RouteRule[] = [
   rule('POST', '/tool-drafts/suggest-calculate-expression', 'edit', 'tool'),
   rule('GET', '/runtime/capabilities', 'read', 'workspace'),
 
+  // --- ツールテンプレート（v43）。一覧と候補は読み取りだけ。実体化はデータソースを読んで
+  // 設計時プレビューまで走らせる（手で組んだ Tool と同じ検査）ので diagnose と同じ execute。 ---
+  rule('GET', '/tool-templates', 'read', 'tool'),
+  rule('POST', '/tool-templates/:id/slot-candidates', 'read', 'tool'),
+  rule('POST', '/tool-templates/:id/instantiate', 'execute', 'tool'),
+
   // --- tool checks（保存済みToolの単体検証。実行はデータソース読み取りを伴うので preview と同じ execute） ---
   rule('POST', '/tool-checks/run', 'execute', 'tool'),
   rule('GET', '/tool-checks/cases', 'read', 'tool'),

@@ -34,7 +34,7 @@ function makeFullRun(): FactoryRun {
     input: {
       goal: { goal: '売上について答える', targetUsers: '経理担当者', constraints: 'SQL不可', language: 'ja' },
       dataSourceIds: ['ds-1'],
-      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: true, promptStrategy: 'rewrite', targets: { minGoalAchievedRate: 0.75, minAvgSatisfaction: 4 }, budget: { maxDurationMs: 1_800_000, maxRoleCalls: 40, maxScenarioRuns: 20, maxRepairAttempts: 2, maxProposalsPerIteration: 4 } },
+      options: { maxIterations: 3, personaCount: 2, scenarioCount: 4, requirePlanApproval: true, promptStrategy: 'rewrite', toolGeneration: 'one-shot', targets: { minGoalAchievedRate: 0.75, minAvgSatisfaction: 4 }, budget: { maxDurationMs: 1_800_000, maxRoleCalls: 40, maxScenarioRuns: 20, maxRepairAttempts: 2, maxProposalsPerIteration: 4 } },
     },
     status: 'succeeded',
     stage: 'reporting',
@@ -110,6 +110,12 @@ describe('serializeFactoryRun / deserializeFactoryRun', () => {
     expect(deserializeFactoryRun(JSON.stringify(legacy)).input.options.promptStrategy).toBe('preserve');
   });
 
+  it('toolGeneration を持たない旧レコードは staged（既定）として読み出す', () => {
+    const legacy = JSON.parse(serializeFactoryRun(makeFullRun())) as { input: { options: Record<string, unknown> } };
+    delete legacy.input.options['toolGeneration'];
+    expect(deserializeFactoryRun(JSON.stringify(legacy)).input.options.toolGeneration).toBe('staged');
+  });
+
   it('failureを含むfailed runも往復する', () => {
     const run: FactoryRun = { ...makeFullRun(), status: 'failed', report: undefined, failure: { stage: 'generating-tools', reason: 'Tool生成に失敗' } };
     const restored = deserializeFactoryRun(serializeFactoryRun(run));
@@ -127,5 +133,25 @@ describe('serializeFactoryRun / deserializeFactoryRun', () => {
   it('スキーマ不適合な値はserializeでもFactoryValidationErrorを投げる', () => {
     const invalid = { ...makeFullRun(), status: 'bogus' } as unknown as FactoryRun;
     expect(() => serializeFactoryRun(invalid)).toThrow(FactoryValidationError);
+  });
+});
+
+// ─── ADR-0047 round 3: 結合する追加データソース ─────────────────────────────────────────
+describe('serializeFactoryRun（結合する追加データソース）', () => {
+  it('正常: additionalDataSourceIds を往復できる', () => {
+    // 共有フィクスチャを壊さないよう複製してから足す（後続の回帰固定テストが同じ plan を読む）。
+    const run = structuredClone(makeFullRun()) as FactoryRun;
+    const tools = run.plan?.tools as unknown as { additionalDataSourceIds?: string[] }[];
+    tools[0]!.additionalDataSourceIds = ['ds-2', 'ds-3'];
+
+    const restored = deserializeFactoryRun(serializeFactoryRun(run));
+
+    expect(restored.plan?.tools[0]?.additionalDataSourceIds).toEqual(['ds-2', 'ds-3']);
+  });
+
+  it('境界(回帰固定): フィールドを持たない既存Runは従来どおり読め、未設定のままになる', () => {
+    const restored = deserializeFactoryRun(serializeFactoryRun(makeFullRun()));
+
+    expect(restored.plan?.tools[0]?.additionalDataSourceIds).toBeUndefined();
   });
 });

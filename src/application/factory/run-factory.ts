@@ -53,6 +53,10 @@ import type { FactoryRunId } from '../../domain/factory/ids';
 import type { VersionRef } from '../../domain/factory/refs';
 import { FactoryAbortedError, FactoryValidationError } from '../../domain/factory/errors';
 import type { ScenarioRun } from '../../domain/validation/scenario-run';
+import { applicableTemplates } from '../../domain/tool-template/instantiate';
+import type { ToolTemplate } from '../../domain/tool-template/template';
+import type { ToolTemplateCatalogPort } from '../tool-template/catalog-port';
+import { templateContextOf } from '../tool-template/template-context';
 import { describeAbort, throwIfAborted } from './abort';
 import { ApplyImprovementsUseCase } from './apply-improvements';
 import { MAX_TOOL_CALLS } from '../agent/run-agent-preview';
@@ -101,6 +105,12 @@ export class RunFactoryUseCase {
      * Analyst入力がツール呼び出しの詳細を欠くだけで、Run自体は従来どおり動く。
      */
     private readonly agentRuns?: RunRepository,
+    /**
+     * ツールテンプレートの置き場所（v43 / ADR-0049）。Stage 1 の Planner へ「このデータで使える
+     * テンプレート」を材料として渡すためだけに読む。未注入なら従来どおり（Planner の材料が
+     * 1 項目少ないだけで、Run は同じように動く）。
+     */
+    private readonly toolTemplates?: ToolTemplateCatalogPort,
     private readonly makeId: () => string = randomUUID,
     private readonly now: () => Date = () => new Date(),
   ) {}
@@ -138,8 +148,10 @@ export class RunFactoryUseCase {
         const existingTools = await buildExistingToolCatalog(this.tools, scope);
         // 強化モードでは「既にAgentが持っている能力」を渡し、不足分だけを計画させる（ギャップ計画）。
         const currentAgent = baseAgent === undefined ? undefined : await this.describeCurrentAgent(scope, baseAgent);
+        const templates = await this.describeApplicableTemplates(profiles, run.input.goal.language);
         const plan = await this.planner.propose({
           goal: run.input.goal, profiles, dataSourceIds: run.input.dataSourceIds, options: run.input.options, existingTools,
+          ...(templates.length === 0 ? {} : { templates }),
           ...(currentAgent === undefined ? {} : { currentAgent }),
         }, signal);
         throwIfAborted(signal);
@@ -210,12 +222,14 @@ export class RunFactoryUseCase {
     const existingTools = await buildExistingToolCatalog(this.tools, next.scope);
     const baseAgent = await this.loadBaseAgent(next.scope, next.input.baseAgent);
     const currentAgent = baseAgent === undefined ? undefined : await this.describeCurrentAgent(next.scope, baseAgent);
+    const templates = await this.describeApplicableTemplates(profiles, next.input.goal.language);
     const plan = await this.planner.propose({
       goal: next.input.goal,
       profiles,
       dataSourceIds: next.input.dataSourceIds,
       options: next.input.options,
       existingTools,
+      ...(templates.length === 0 ? {} : { templates }),
       ...(currentAgent === undefined ? {} : { currentAgent }),
       ...(feedback === undefined ? {} : { feedback }),
     }, signal);
@@ -226,6 +240,36 @@ export class RunFactoryUseCase {
     next = waitForPlanApproval(next, checkpoint);
     next = appendFactoryEvent(next, { kind: 'approval_requested', at: this.now().toISOString(), stage: 'planning', message: checkpoint.prompt });
     return next;
+  }
+
+  /**
+   * このRunのデータで使えるツールテンプレートの `id` と要約（Stage 1 の Planner への材料。v43 §4）。
+   *
+   * 適用判定は**決定的で小さく**保つ: ソースの組み合わせを全通り試すのではなく、
+   * 「1 ソースずつ」「結合候補が挙げた 2 件」「結合できるソースの先頭 3 件」だけを見る
+   * （テンプレートは 1〜3 ソースのものしか同梱していない）。読めない置き場所は付加情報なので
+   * 黙って空にする — テンプレートが無くても計画は従来どおり立てられる。
+   */
+  private async describeApplicableTemplates(
+    profiles: readonly DataProfile[],
+    language: 'ja' | 'en',
+  ): Promise<{ readonly id: string; readonly summary: string }[]> {
+    const catalog = this.toolTemplates;
+    if (catalog === undefined || profiles.length === 0) return [];
+    let templates: readonly ToolTemplate[];
+    try {
+      templates = (await catalog.list()).templates;
+    } catch {
+      return [];
+    }
+    if (templates.length === 0) return [];
+    const found = new Map<string, ToolTemplate>();
+    for (const dataSourceIds of candidateSourceSets(profiles)) {
+      for (const template of applicableTemplates(templates, templateContextOf({ dataSourceIds }, profiles))) {
+        if (!found.has(template.id)) found.set(template.id, template);
+      }
+    }
+    return [...found.values()].map((template) => ({ id: template.id, summary: template.summary[language] }));
   }
 
   /**
@@ -272,6 +316,8 @@ export class RunFactoryUseCase {
       ...(baseAgent === undefined ? {} : { baseAgent }),
       // 強化モードでのsystemPromptの扱い（生成モードでは無視される）。
       promptStrategy: current.input.options.promptStrategy,
+      // 新規Toolの作り方（段階的生成 / 従来の一括生成）。段階的が失敗したら自動で一括へ落ちる。
+      toolGeneration: current.input.options.toolGeneration,
       onEvent,
       ...(signal === undefined ? {} : { signal }),
       // execute() が例外で抜けても積んだ保存を必ず待ち切る（保存順序を崩さない・未処理の rejection を残さない）。
@@ -726,6 +772,28 @@ export class RunFactoryUseCase {
 /** Runのイベント・レポートで既存Agentを一意に示すラベル。 */
 function describeAgent(agent: Agent): string {
   return `${agent.metadata.displayName}@${agent.metadata.version.toString()}`;
+}
+
+/**
+ * テンプレートの適用可否を数える「ソースの組み」（決定的・小さい）。
+ *
+ * 単一ソースのテンプレートはソースごとに、複数ソースのテンプレートは**結合候補が実際に挙げた**
+ * 組み合わせでだけ判定する（総当たりにすると組み合わせ爆発するうえ、結べないソースの組で
+ * 「使える」と言ってしまう）。
+ */
+export function candidateSourceSets(profiles: readonly DataProfile[]): string[][] {
+  const ids = new Set(profiles.map((profile) => profile.dataSourceId));
+  const sets: string[][] = profiles.map((profile) => [profile.dataSourceId]);
+  const joinable: string[] = [];
+  for (const candidate of profiles[0]?.joinCandidates ?? []) {
+    if (!ids.has(candidate.leftDataSourceId) || !ids.has(candidate.rightDataSourceId)) continue;
+    sets.push([candidate.leftDataSourceId, candidate.rightDataSourceId]);
+    for (const id of [candidate.leftDataSourceId, candidate.rightDataSourceId]) {
+      if (!joinable.includes(id)) joinable.push(id);
+    }
+  }
+  if (joinable.length >= 3) sets.push(joinable.slice(0, 3));
+  return sets;
 }
 
 /**

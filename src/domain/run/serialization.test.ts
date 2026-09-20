@@ -115,6 +115,27 @@ describe('Run serialization', () => {
     expect(() => deserializeRun({ ...serializeRun(record), trace: [{ sequence: 1, kind: 'tool-result', name: 't', terminalId: 'n', nodes: [], outputPreview: [], noMatch: { ...noMatch, conditions: [{ column: 'x', op: 'eq', value: null, matchingRows: 'many' }] } }] })).toThrow();
   });
 
+  it('正常: 複数値条件の内訳（values / unmatchedValues）も往復し、壊れた形は拒否する', () => {
+    const started = startRun({ runId: 'run-in', scope: { tenantId: 't', workspaceId: 'w' }, mode: 'preview', agent: { internalId: 'agent', version: '1.0.0' }, startedAt: 'now' });
+    const noMatch = {
+      message: 'No rows matched.',
+      nodeId: 'narrow',
+      combine: 'and' as const,
+      conditions: [
+        { column: '地域', op: 'in', argument: 'regions', value: null, values: ['東京市', '大阪市'], matchingRows: 0, unmatchedValues: ['東京市', '大阪市'], availableValues: ['東京都'], distinctValues: 3 },
+      ],
+    };
+    const record = failRun(started, {
+      trace: [{ sequence: 1, kind: 'tool-result', name: 'get_population', terminalId: 'narrow', nodes: [{ nodeId: 'narrow', rowCount: 0, truncated: false }], outputPreview: [], noMatch }],
+      failure: { code: 'X', message: 'bad' },
+      completedAt: 'later',
+    });
+    expect(deserializeRun(JSON.parse(JSON.stringify(serializeRun(record))))).toEqual(record);
+
+    // 値の並びに object のような運べない値が混ざったものは拒否する。
+    expect(() => deserializeRun({ ...serializeRun(record), trace: [{ sequence: 1, kind: 'tool-result', name: 't', terminalId: 'n', nodes: [], outputPreview: [], noMatch: { ...noMatch, conditions: [{ column: 'x', op: 'in', value: null, values: [{}], matchingRows: 0 }] } }] })).toThrow();
+  });
+
   it('error イベント / failure / tool 参照の未知キーは捨てて読み、識別の型が壊れたものは拒否する', () => {
     const started = startRun({ runId: 'run-x', scope: { tenantId: 't', workspaceId: 'w' }, mode: 'preview', agent: { internalId: 'agent', version: '1.0.0' }, startedAt: 'now' });
     // version / publishName を省略した tool 参照も往復する（キーは生えない）。

@@ -3,7 +3,7 @@ import { InMemoryDataSourceRepository } from '../../adapters/storage/in-memory-d
 import { createDefaultRegistry } from '../../domain/etl/nodes';
 import { EtlEngine } from '../etl/engine';
 import { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
-import { detectCategoricalColumn, detectPeriodColumn, MAX_CATEGORICAL_VALUES, ProfileDataSourcesUseCase } from './profile-data-sources';
+import { detectCategoricalColumn, detectPeriodColumn, isUniqueKey, MAX_CATEGORICAL_VALUES, ProfileDataSourcesUseCase, type DataProfile } from './profile-data-sources';
 
 const scope = { tenantId: 't', workspaceId: 'w' };
 
@@ -148,5 +148,121 @@ describe('ProfileDataSourcesUseCase（期間列・低カーディナリティ列
     expect(detectPeriodColumn('時点', [])).toBeUndefined();
     expect(detectPeriodColumn('時点', [{ 時点: null }, { 時点: '  ' }])).toBeUndefined();
     expect(detectCategoricalColumn('地域', [{ 地域: null }])).toBeUndefined();
+  });
+});
+
+// ─── ADR-0047 round 3: ソースをまたぐ結合候補 ──────────────────────────────────────────
+describe('ProfileDataSourcesUseCase（結合候補の検出）', () => {
+  /** e-Stat の 2 ファイル: 同じ `時点, 地域コード, 地域` を持ち、値の列だけが違う。 */
+  const WAGE_CSV = [
+    '時点,地域コード,地域,現金給与総額【円】',
+    '2023年,01000,北海道,280000',
+    '2023年,13000,東京都,390000',
+    '2024年,01000,北海道,285000',
+    '2024年,13000,東京都,398000',
+  ].join('\n');
+  const HOURS_CSV = [
+    '時点,地域コード,地域,総実労働時間【時間】',
+    '2023年,01000,北海道,138',
+    '2023年,13000,東京都,141',
+    '2024年,01000,北海道,137',
+    '2024年,13000,東京都,140',
+  ].join('\n');
+  /** 上の2つと共通の列を持たないファイル（結合候補にならない）。 */
+  const UNRELATED_CSV = ['商品,売上', 'りんご,100', 'みかん,200'].join('\n');
+  /** 地域コードを持たず、時点だけが共通で、しかも時点が一意でないファイル（行が増える組み合わせ）。 */
+  const DUPLICATED_CSV = [
+    '時点,業種,指数',
+    '2023年,製造業,101',
+    '2023年,建設業,99',
+    '2024年,製造業,103',
+    '2024年,建設業,98',
+  ].join('\n');
+
+  async function profilesOf(sources: readonly { readonly id: string; readonly csv: string }[]): Promise<DataProfile[]> {
+    const repository = new InMemoryDataSourceRepository();
+    for (const source of sources) {
+      await repository.save({ id: source.id, tenant: scope, name: source.id, kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: source.csv.length, createdAt: '', updatedAt: '' }, source.csv);
+    }
+    return makeUseCase(repository).executeAll(scope, sources.map((source) => source.id));
+  }
+
+  it('正常: 同名・同型で値が重なる列を結合キーとして挙げ、期間列・コード列を先に並べる', async () => {
+    const profiles = await profilesOf([{ id: 'wage', csv: WAGE_CSV }, { id: 'hours', csv: HOURS_CSV }]);
+
+    const candidates = profiles[0]!.joinCandidates;
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.leftDataSourceId).toBe('wage');
+    expect(candidates[0]?.rightDataSourceId).toBe('hours');
+    // 期間列（時点）→ コードらしい列（地域コード）→ その他（地域）の順。
+    expect(candidates[0]?.keys).toEqual(['時点', '地域コード', '地域']);
+    expect(candidates[0]?.overlap['時点']).toBe(1);
+  });
+
+  it('正常: 結合候補はRun内の全プロファイルが同じ一覧を持つ（読む側が組み立て直さない）', async () => {
+    const profiles = await profilesOf([{ id: 'wage', csv: WAGE_CSV }, { id: 'hours', csv: HOURS_CSV }]);
+
+    expect(profiles[0]?.joinCandidates).toHaveLength(1);
+    expect(profiles[1]?.joinCandidates).toEqual(profiles[0]?.joinCandidates);
+  });
+
+  it('正常: キーの組み合わせが両側で一意なら uniqueLeft / uniqueRight は true', async () => {
+    const profiles = await profilesOf([{ id: 'wage', csv: WAGE_CSV }, { id: 'hours', csv: HOURS_CSV }]);
+
+    expect(profiles[0]?.joinCandidates[0]).toMatchObject({ uniqueLeft: true, uniqueRight: true });
+  });
+
+  it('異常: キーが片側で一意でなければ、その旨を返す（結合で行が増える組み合わせ）', async () => {
+    const profiles = await profilesOf([{ id: 'wage', csv: WAGE_CSV }, { id: 'industry', csv: DUPLICATED_CSV }]);
+
+    const candidate = profiles[0]!.joinCandidates[0];
+    expect(candidate?.keys).toEqual(['時点']);
+    expect(candidate?.uniqueLeft).toBe(false); // 時点だけでは賃金側も一意でない（地域が2つある）
+    expect(candidate?.uniqueRight).toBe(false);
+  });
+
+  it('異常: 共通の列が無いファイル同士は結合候補にしない', async () => {
+    const profiles = await profilesOf([{ id: 'wage', csv: WAGE_CSV }, { id: 'unrelated', csv: UNRELATED_CSV }]);
+
+    expect(profiles[0]?.joinCandidates).toEqual([]);
+  });
+
+  it('境界: 値の重なりが閾値未満の同名列は結合キーにしない', async () => {
+    // 同名の列だが値が1つも重ならない（地域コードも値も別の集合）。
+    const overlapping = ['地域コード,値', '01000,1', '13000,2'].join('\n');
+    const disjoint = ['地域コード,値', '90000,7', '91000,8'].join('\n');
+    const profiles = await profilesOf([{ id: 'left', csv: overlapping }, { id: 'right', csv: disjoint }]);
+
+    expect(profiles[0]?.joinCandidates).toEqual([]);
+  });
+
+  it('異常: 空の値を持つ同名列は結合キーにしない（nullのキーはマッチせず行が黙って落ちる。e-Statの「注記」）', async () => {
+    const wage = ['時点,注記,現金給与総額【円】', '2023年,,280000', '2024年,,285000', '2025年,速報,290000'].join('\n');
+    const hours = ['時点,注記,総実労働時間【時間】', '2023年,,138', '2024年,,137', '2025年,速報,136'].join('\n');
+    const profiles = await profilesOf([{ id: 'wage', csv: wage }, { id: 'hours', csv: hours }]);
+
+    expect(profiles[0]?.joinCandidates[0]?.keys).toEqual(['時点']);
+    expect(profiles[0]?.joinCandidates[0]?.overlap).not.toHaveProperty('注記');
+  });
+
+  it('境界: 空の値が片側に1つあるだけでも、その列は結合キーにしない', async () => {
+    const left = ['時点,区分,値', '2023年,A,1', '2024年,B,2'].join('\n');
+    const right = ['時点,区分,量', '2023年,A,3', '2024年,,4'].join('\n');
+    const profiles = await profilesOf([{ id: 'left', csv: left }, { id: 'right', csv: right }]);
+
+    expect(profiles[0]?.joinCandidates[0]?.keys).toEqual(['時点']);
+  });
+
+  it('境界: 単体の execute（1ソース）では結合候補は空（相手が分からない）', async () => {
+    const repository = new InMemoryDataSourceRepository();
+    await repository.save({ id: 'wage', tenant: scope, name: 'wage', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: WAGE_CSV.length, createdAt: '', updatedAt: '' }, WAGE_CSV);
+
+    expect((await makeUseCase(repository).execute(scope, 'wage')).joinCandidates).toEqual([]);
+  });
+
+  it('例外: isUniqueKey は null を含むキーの行を重複判定から外す（joinでもマッチしないため）', () => {
+    expect(isUniqueKey(['a'], [{ a: null }, { a: null }])).toBe(true);
+    expect(isUniqueKey(['a'], [{ a: '1' }, { a: '1' }])).toBe(false);
+    expect(isUniqueKey(['a', 'b'], [{ a: '1', b: 'x' }, { a: '1', b: 'y' }])).toBe(true);
   });
 });

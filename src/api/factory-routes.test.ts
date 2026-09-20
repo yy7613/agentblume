@@ -87,6 +87,8 @@ describe('factory routes', () => {
 
   it('202で作成し、requirePlanApproval:trueならqueued→running→waiting-approval→(approve後)running/succeededへ進む', async () => {
     const sourceId = await seedDataSource();
+    // 台本は「Planner → ToolSmith → SkillWriter → Assembler」の一括経路を1本ずつ積むFIFOなので、
+    // 段階的生成（既定）ではなく `toolGeneration: 'one-shot'` を明示して従来どおりの順序を固定する。
     model.enqueue(
       { message: { role: 'assistant', content: planJson(sourceId) }, finishReason: 'stop' },
       { message: { role: 'assistant', content: toolProposalJson(sourceId) }, finishReason: 'stop' },
@@ -96,7 +98,7 @@ describe('factory routes', () => {
 
     // maxIterations:1で、疑似ユーザー会話の台本を積まなくても改善ループ本体（Analyst呼び出し）を経由せず、
     // イテレーション1の結果（各ScenarioRunはstatus:'error'）だけで停止条件(c)が成立してsucceededに到達する。
-    const created = await server.inject({ method: 'POST', url: '/factory-runs', payload: { scope, goal: { goal: 'Answer sales questions', language: 'ja' }, dataSourceIds: [sourceId], options: { requirePlanApproval: true, maxIterations: 1 } } });
+    const created = await server.inject({ method: 'POST', url: '/factory-runs', payload: { scope, goal: { goal: 'Answer sales questions', language: 'ja' }, dataSourceIds: [sourceId], options: { requirePlanApproval: true, maxIterations: 1, toolGeneration: 'one-shot' } } });
     expect(created.statusCode).toBe(202);
     expect(created.json().run.status).toBe('queued');
     const runId = created.json().run.id as string;
@@ -322,5 +324,27 @@ describe('factory routes', () => {
       payload: { scope, goal: { goal: 'x', language: 'ja' }, baseAgent: { internalId: 'agent-1' }, options: { promptStrategy: 'llm' } },
     });
     expect(invalid.statusCode).toBe(400);
+  });
+
+  it('options.toolGeneration: 未指定なら staged、one-shotは受け付け、未知の値は400', async () => {
+    const omitted = await server.inject({
+      method: 'POST', url: '/factory-runs',
+      payload: { scope, goal: { goal: 'x', language: 'ja' }, baseAgent: { internalId: 'agent-1' } },
+    });
+    expect(omitted.statusCode).toBe(202);
+    expect(omitted.json().run.input.options.toolGeneration).toBe('staged');
+
+    const oneShot = await server.inject({
+      method: 'POST', url: '/factory-runs',
+      payload: { scope, goal: { goal: 'x', language: 'ja' }, baseAgent: { internalId: 'agent-1' }, options: { toolGeneration: 'one-shot' } },
+    });
+    expect(oneShot.statusCode).toBe(202);
+    expect(oneShot.json().run.input.options.toolGeneration).toBe('one-shot');
+
+    const invalidGeneration = await server.inject({
+      method: 'POST', url: '/factory-runs',
+      payload: { scope, goal: { goal: 'x', language: 'ja' }, baseAgent: { internalId: 'agent-1' }, options: { toolGeneration: 'staged-v2' } },
+    });
+    expect(invalidGeneration.statusCode).toBe(400);
   });
 });

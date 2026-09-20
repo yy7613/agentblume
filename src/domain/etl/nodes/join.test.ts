@@ -615,3 +615,39 @@ describe('join: cartesian product guard', () => {
     ).toThrowError(overflowMessage);
   });
 });
+
+describe('join: キーの省略記法（左右で同じ列名なら文字列 1 つ）', () => {
+  const wage: Table = {
+    schema: { columns: [{ name: '時点', type: 'string', nullable: false }, { name: '地域コード', type: 'string', nullable: false }, { name: '給与', type: 'number', nullable: false }] },
+    rows: [{ 時点: '2024年', 地域コード: '00000', 給与: 349388 }, { 時点: '2023年', 地域コード: '00000', 給与: 340000 }],
+  };
+  const hours: Table = {
+    schema: { columns: [{ name: '時点', type: 'string', nullable: false }, { name: '地域コード', type: 'string', nullable: false }, { name: '労働時間', type: 'number', nullable: false }] },
+    rows: [{ 時点: '2024年', 地域コード: '00000', 労働時間: 136.3 }],
+  };
+
+  it('正常: keys: ["時点", "地域コード"] は { left, right } が同名の指定と同じ結果になる', () => {
+    const shorthand = joinNode.validateConfig({ mode: 'inner', keys: ['時点', '地域コード'] });
+    expect(shorthand.keys).toEqual([{ left: '時点', right: '時点' }, { left: '地域コード', right: '地域コード' }]);
+    const explicit = joinNode.validateConfig({ mode: 'inner', keys: [{ left: '時点', right: '時点' }, { left: '地域コード', right: '地域コード' }] });
+    expect(joinNode.execute([wage, hours], shorthand)).toEqual(joinNode.execute([wage, hours], explicit));
+    expect(joinNode.execute([wage, hours], shorthand).rows).toEqual([{ 時点: '2024年', 地域コード: '00000', 給与: 349388, 労働時間: 136.3 }]);
+  });
+
+  it('境界: 文字列と { left, right } を混ぜて書ける', () => {
+    const mixed = joinNode.validateConfig({ mode: 'left', keys: ['時点', { left: '地域コード', right: '地域コード' }] });
+    expect(mixed.keys).toHaveLength(2);
+    expect(joinNode.execute([wage, hours], mixed).rows).toHaveLength(2);
+  });
+
+  it('異常: 文字列でもオブジェクトでもないキー・空の keys は従来どおり ConfigError', () => {
+    expect(() => joinNode.validateConfig({ mode: 'inner', keys: [1] })).toThrow(ConfigError);
+    expect(() => joinNode.validateConfig({ mode: 'inner', keys: [] })).toThrow(ConfigError);
+  });
+
+  it('異常: 省略記法で書いた列が片側に無ければ、スキーマ点検が列名つきで指摘する', () => {
+    const inferred = joinNode.inferSchema([wage.schema, hours.schema], joinNode.validateConfig({ mode: 'inner', keys: ['給与'] }));
+    expect(inferred.state).toBe('mismatch');
+    expect(inferred.issues.map((issue) => issue.message).join(' ')).toContain('給与');
+  });
+});

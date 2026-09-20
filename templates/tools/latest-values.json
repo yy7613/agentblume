@@ -1,0 +1,67 @@
+{
+  "$schema": "./tool-template.schema.json",
+  "formatVersion": 1,
+  "id": "latest-values",
+  "version": "1.0.1",
+  "title": { "ja": "最新の値", "en": "Latest values" },
+  "summary": {
+    "ja": "指定した粒度の最新 N 期ぶんの値だけを、新しい順に返す（「いま幾つか」「直近はどうか」用）。",
+    "en": "Returns only the most recent N periods of the chosen granularity, newest first."
+  },
+  "whenToUse": {
+    "ja": ["最新の値・直近の状況を答えたい", "期間を指定せずに「現在」を聞かれる", "最新値を少ない行数で確実に返したい"],
+    "en": ["The latest value or the current situation", "Questions about \"now\" with no period given", "A short, certain answer about the most recent periods"]
+  },
+  "notFor": {
+    "ja": ["過去の特定の期間を指定して引きたい（period-series を使う）", "増減率が要る（period-change を使う）"],
+    "en": ["A specific past period (use period-series)", "Rates of change (use period-change)"]
+  },
+  "tags": ["time-series", "lookup"],
+  "sources": { "min": 1, "max": 1 },
+  "slots": [
+    { "name": "source", "kind": "dataSource", "label": { "ja": "データソース", "en": "Data source" } },
+    { "name": "periodColumn", "kind": "column", "source": "source", "role": "period", "label": { "ja": "期間の列", "en": "Period column" } },
+    { "name": "valueColumns", "kind": "column", "source": "source", "role": "value", "multiple": { "min": 1, "max": 5 }, "label": { "ja": "値の列", "en": "Value columns" } },
+    { "name": "categoryColumn", "kind": "column", "source": "source", "role": "category", "optional": true, "label": { "ja": "絞り込むカテゴリの列（地域など）", "en": "Category column to filter by" } },
+    { "name": "defaultGranularity", "kind": "choice", "optionsFrom": "granularities:periodColumn", "label": { "ja": "既定の粒度", "en": "Default granularity" } },
+    { "name": "limit", "kind": "number", "min": 1, "max": 50, "integer": true, "default": 12, "label": { "ja": "返す最大行数（最新から）", "en": "Maximum rows (newest first)" } }
+  ],
+  "arguments": [
+    {
+      "name": "granularity", "type": "string", "nullable": false, "sample": { "$slot": "defaultGranularity" },
+      "description": { "ja": "期間の粒度。month / quarter / half / year / fiscal-year のうちデータにあるものを、この綴りのまま渡す（monthly・yearly・月次・年次 などは不可）。必ず指定する。", "en": "Period granularity: one of month / quarter / half / year / fiscal-year that exists in the data, spelled exactly like this (not monthly, yearly or a translation). Required." }
+    },
+    {
+      "name": "categories", "type": "string", "nullable": true, "when": "categoryColumn", "sample": { "$profile": "firstValuesCsv:categoryColumn:2" },
+      "description": { "ja": "{{categoryColumn}} の値をカンマ区切りで。複数を 1 回で渡す。省略で全件。", "en": "Comma-separated values of {{categoryColumn}}. Omit for all." }
+    }
+  ],
+  "nodes": [
+    { "id": "src", "type": { "$sourceType": "source" }, "config": { "dataSourceId": { "$slot": "source" } } },
+    { "id": "period", "type": "parse-period", "config": { "column": { "$slot": "periodColumn" }, "startColumn": "periodStart", "granularityColumn": "periodGranularity", "fiscalYearStartMonth": 4 } },
+    {
+      "id": "f_granularity", "type": "filter",
+      "config": { "column": "periodGranularity", "op": "eq", "value": { "$slot": "defaultGranularity" }, "valueBinding": { "$argument": "granularity" } }
+    },
+    {
+      "id": "f_category", "type": "filter", "when": "categoryColumn",
+      "config": { "column": { "$slot": "categoryColumn" }, "op": "in", "values": { "$profile": "firstValues:categoryColumn:2" }, "valueBinding": { "$argument": "categories" }, "caseInsensitive": true }
+    },
+    { "id": "sort", "type": "sort", "config": { "keys": [{ "column": "periodStart", "direction": "desc", "nulls": "last" }] } },
+    { "id": "limit", "type": "limit", "config": { "count": { "$slot": "limit" } } },
+    { "id": "out", "type": "agent-output", "config": { "shape": "rows", "format": "json", "maxRows": { "$slot": "limit" }, "maxBytes": 65536, "overflow": "error" } }
+  ],
+  "edges": [
+    { "from": "src", "to": "period" },
+    { "from": "period", "to": "f_granularity" },
+    { "from": "f_granularity", "to": "f_category" },
+    { "from": "f_category", "to": "sort" },
+    { "from": "sort", "to": "limit" },
+    { "from": "limit", "to": "out" }
+  ],
+  "description": {
+    "ja": "{{valueColumns}} の最新 {{limit}} 行を、期間の新しい順に返します。期間の範囲は指定できません（常に最新）。粒度 granularity は必須です。",
+    "en": "Returns the most recent {{limit}} rows of {{valueColumns}}, newest period first. There is no period range: it is always the latest. granularity is required."
+  },
+  "notes": "期間の範囲引数を持たないのが period-series との違い。「最新は？」に 1 回で答えるための最小のツール。"
+}

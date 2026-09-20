@@ -173,6 +173,8 @@ function hasBindingWithoutField(config: unknown, key: 'valueBinding' | 'opBindin
  * - 同一 field を比較値（valueBinding）と演算子（opBinding）の両方にバインドしないこと
  *   （実行時に1つの引数値が二重消費され、値と演算子のどちらとしても壊れる）。
  * - opBinding の field は string 型の引数であること（演算子は inputSchema 上 string で受け取る契約）。
+ * - `in`/`notIn` 条件の valueBinding の field も string 型であること（値の並びを区切り文字で連結した
+ *   1つの文字列で受け取る契約。number/date 宣言では値を1つしか渡せない）。
  * - allowed に isNull/notNull を含む opBinding と同じ条件の valueBinding が参照する引数は
  *   nullable であること（値を要さない演算子が選ばれたとき値引数を省略できる必要がある）。
  * - 同一 field を複数条件がバインドする場合、全条件の allowed に共通する演算子が少なくとも1つ残ること
@@ -218,6 +220,15 @@ function validateAgentInputBindings(graph: ToolGraph, inputSchema: Schema | unde
     const column = inputSchema.columns.find((candidate) => candidate.name === summary.field);
     if (column !== undefined && column.type !== 'string') {
       throw new ToolValidationError(`SaveTool: operator binding for argument '${summary.field}' requires a string argument, but it is declared as '${column.type}'`);
+    }
+  }
+  // in/notIn の値引数は「カンマ区切りで並べた1つの文字列」で届く。number/date で宣言すると
+  // 1個しか渡せず、複数値を指定できるようにした意味が実行時まで気づかれないまま失われる。
+  for (const site of valueSites) {
+    if (!site.multiValue) continue;
+    const column = inputSchema.columns.find((candidate) => candidate.name === site.field);
+    if (column !== undefined && column.type !== 'string') {
+      throw new ToolValidationError(`SaveTool: value binding for argument '${site.field}' supplies a list of values (in/notIn), so it must be a string argument, but it is declared as '${column.type}'`);
     }
   }
   for (const site of configs.flatMap((config) => operatorBindingsOf(config))) {

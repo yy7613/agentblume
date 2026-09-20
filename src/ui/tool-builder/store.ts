@@ -10,7 +10,9 @@ import {
 } from '@xyflow/react';
 import { create } from 'zustand';
 import type {
+  GraphEdgeDto,
   GraphNodeDto,
+  InstantiatedTemplateDto,
   PreviewResultDto,
   PropagationResultDto,
   SaveToolDto,
@@ -65,6 +67,13 @@ interface ToolBuilderState {
   saveError?: string;
   currentVersion?: string;
   versions: readonly string[];
+  /**
+   * テンプレートから作成したとき、式が空の calculate ノードへ渡す「AIに式を書かせる」の初期指示文。
+   * 関数電卓パネルが開いたときに**1 度だけ**消費する（消費後は消える）。
+   */
+  pendingCalculateIntent?: { readonly nodeId: string; readonly intent: string };
+  /** 直近に展開したテンプレート（`id@version`）。作成後の通知に出す。 */
+  createdFromTemplate?: string;
   setMetadata<K extends keyof ToolMetadataState>(key: K, value: ToolMetadataState[K]): void;
   addNode(type: ToolNodeType): void;
   onNodesChange(changes: NodeChange<ToolFlowNode>[]): void;
@@ -81,6 +90,12 @@ interface ToolBuilderState {
   setSavedVersion(version: string, versions: readonly string[]): void;
   setVersions(versions: readonly string[]): void;
   loadTool(tool: SerializedToolDto): void;
+  /** 実体化したテンプレートを新しい下書きとしてキャンバスへ展開する（v43）。 */
+  loadTemplate(instantiated: InstantiatedTemplateDto, displayName: string): void;
+  /** 関数電卓パネルが初期指示文を受け取る（同じノードで 1 度だけ返す）。 */
+  consumePendingCalculateIntent(nodeId: string): string | undefined;
+  /** 作成通知を閉じる。 */
+  clearCreatedFromTemplate(): void;
   applyDraft(draft: ToolBuilderDraft): void;
   reset(): void;
 }
@@ -299,6 +314,37 @@ function loadedPositions(graphNodes: readonly GraphNodeDto[]): CanvasPosition[] 
   });
 }
 
+/**
+ * 位置を持たないグラフ（テンプレートの実体化結果）を左→右へ並べる。
+ *
+ * 列はトポロジカルな深さ（入力からの最長距離）、行は同じ深さの中の出現順。
+ * 深さを使うのは、結合のように 2 本の枝が合流する形で「合流先が両方の右に来る」ためで、
+ * 単純な出現順に並べると枝が重なって読めなくなる。循環は保存前の検査が弾くので、
+ * ここでは未解決のまま残った節を最後の列へ置いて**必ず終わる**ようにする。
+ */
+export function layoutByDepth(nodes: readonly GraphNodeDto[], edges: readonly GraphEdgeDto[]): CanvasPosition[] {
+  const depth = new Map<string, number>(nodes.map((node) => [node.id, 0] as const));
+  // ノード数ぶん繰り返せば最長距離は確定する（各周回で少なくとも 1 つの深さが確定する）。
+  for (let round = 0; round < nodes.length; round += 1) {
+    let changed = false;
+    for (const edge of edges) {
+      const from = depth.get(edge.from);
+      const to = depth.get(edge.to);
+      if (from === undefined || to === undefined || to >= from + 1) continue;
+      depth.set(edge.to, from + 1);
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  const rows = new Map<number, number>();
+  return nodes.map((node) => {
+    const column = depth.get(node.id) ?? 0;
+    const row = rows.get(column) ?? 0;
+    rows.set(column, row + 1);
+    return { x: ORIGIN.x + column * PLACEMENT_STEP_X, y: ORIGIN.y + row * PLACEMENT_STEP_Y };
+  });
+}
+
 function makeNode(
   id: string,
   type: ToolNodeType,
@@ -329,6 +375,8 @@ function initialState() {
     saveError: undefined,
     currentVersion: undefined,
     versions: [] as readonly string[],
+    pendingCalculateIntent: undefined,
+    createdFromTemplate: undefined,
   };
 }
 
@@ -445,6 +493,61 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
       versions: state.versions,
     };
   }),
+  /**
+   * 実体化したテンプレートを**新しい下書き**として展開する（v43 / ADR-0049）。
+   *
+   * 保存済み Tool を開く `loadTool` と同じ状態（派生状態は破棄して自動プレビューに再計算させる）に
+   * するが、版はまだ無いので `currentVersion` は付けない。メタデータは人が直せる出発点を入れる:
+   * 表示名はテンプレートのタイトル、公開名と Agent Tool の名前は実体化が決めた function 名。
+   */
+  loadTemplate: (instantiated, displayName) => set(() => {
+    const positions = layoutByDepth(instantiated.graph.nodes, instantiated.graph.edges);
+    const name = instantiated.agentTool.name;
+    const pending = instantiated.pendingExpressions[0];
+    return {
+      metadata: {
+        internalId: name,
+        workingName: displayName,
+        displayName,
+        publishName: name,
+        agentName: name,
+        agentDescription: instantiated.agentTool.description,
+        owner: '',
+        sideEffect: 'read-only' as const,
+      },
+      nodes: instantiated.graph.nodes.map((node, index) => makeNode(
+        node.id,
+        node.type as ToolNodeType,
+        node.position ?? positions[index] ?? ORIGIN,
+        node.config as Readonly<Record<string, unknown>>,
+      )),
+      edges: instantiated.graph.edges.map((edge, index) => ({
+        id: `${edge.from}-${edge.to}-${index}`,
+        source: edge.from,
+        target: edge.to,
+        ...(edge.toInput === undefined ? {} : { targetHandle: inputHandleId(edge.toInput) }),
+      })),
+      // 式が空の calculate があれば、そのノードを選んで開いた状態にする（人が最初に触る場所）。
+      selectedNodeId: pending?.nodeId ?? instantiated.graph.nodes[0]?.id,
+      ...(pending === undefined ? { pendingCalculateIntent: undefined } : { pendingCalculateIntent: { nodeId: pending.nodeId, intent: pending.intent } }),
+      createdFromTemplate: `${instantiated.template.id}@${instantiated.template.version}`,
+      currentVersion: undefined,
+      versions: [] as readonly string[],
+      propagation: undefined,
+      propagationPending: true,
+      preview: undefined,
+      draftIssue: undefined,
+      diagnostics: undefined,
+      saveError: undefined,
+    };
+  }),
+  consumePendingCalculateIntent: (nodeId) => {
+    const pending = get().pendingCalculateIntent;
+    if (pending === undefined || pending.nodeId !== nodeId) return undefined;
+    set({ pendingCalculateIntent: undefined });
+    return pending.intent;
+  },
+  clearCreatedFromTemplate: () => set({ createdFromTemplate: undefined }),
   // 復元した下書きを丸ごと反映する。派生状態（推論結果・プレビュー・エラー）は破棄して自動プレビューに再計算させる。
   applyDraft: (draft) => set({
     metadata: { ...draft.metadata },

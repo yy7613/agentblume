@@ -72,7 +72,7 @@ export class AssemblerRole {
         ? []
         : [
             `- The agent may make at most ${input.toolCallBudget} tool calls in one conversation ("toolCallBudget" in the user message). Never write a rule that implies one call per item ("call the tool once for each region"): comparing a handful of items would exceed the budget and the whole conversation fails.`,
-            '- When a tool has an optional narrowing argument, prefer rules that omit it once and pick the needed rows out of the single result.',
+            '- When a tool takes a comma-separated list for a category (region, segment, …), prefer rules that pass every requested value in ONE call. When it only takes a single value, prefer rules that omit the argument once and pick the needed rows out of the single result.',
           ]),
       // 既存プロンプトの改訂であることを明示する（全面的な作り替えは利用者の資産を壊すため禁止する）。
       ...(revising

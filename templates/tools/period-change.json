@@ -1,0 +1,100 @@
+{
+  "$schema": "./tool-template.schema.json",
+  "formatVersion": 1,
+  "id": "period-change",
+  "version": "1.1.0",
+  "title": { "ja": "前期比・前年同期比", "en": "Period-over-period change" },
+  "summary": {
+    "ja": "月次の値について、前月比や前年同月比の増減（delta）と増減率（percentChange）を決定的に計算して返す（LLM に暗算させない）。",
+    "en": "Computes month-over-month or year-over-year delta and percentChange deterministically."
+  },
+  "whenToUse": {
+    "ja": ["前年比・前月比・増減率・伸び率を答えたい", "月次のデータがある"],
+    "en": ["Year-over-year or month-over-month change, growth rates", "Monthly data is available"]
+  },
+  "notFor": {
+    "ja": ["年次しか無いデータ", "値そのものだけが要る（period-series を使う）"],
+    "en": ["Annual-only data", "Plain values (use period-series)"]
+  },
+  "tags": ["time-series", "analysis"],
+  "sources": { "min": 1, "max": 1 },
+  "slots": [
+    { "name": "source", "kind": "dataSource", "label": { "ja": "データソース", "en": "Data source" } },
+    { "name": "periodColumn", "kind": "column", "source": "source", "role": "period", "label": { "ja": "期間の列", "en": "Period column" } },
+    { "name": "valueColumns", "kind": "column", "source": "source", "role": "value", "multiple": { "min": 1, "max": 3 }, "label": { "ja": "値の列", "en": "Value columns" } },
+    { "name": "categoryColumn", "kind": "column", "source": "source", "role": "category", "optional": true, "label": { "ja": "系列を分けるカテゴリの列（地域など）", "en": "Category column that separates series" } },
+    {
+      "name": "lag", "kind": "choice", "default": "12", "label": { "ja": "比べる相手", "en": "Compare with" },
+      "options": [
+        { "value": "12", "label": { "ja": "前年の同じ月（12 か月前）", "en": "Same month last year (12 months back)" } },
+        { "value": "1", "label": { "ja": "前の月", "en": "Previous month" } }
+      ]
+    },
+    { "name": "limit", "kind": "number", "min": 1, "max": 100, "integer": true, "default": 24, "label": { "ja": "返す最大行数", "en": "Maximum rows" } }
+  ],
+  "arguments": [
+    {
+      "name": "period_from", "type": "date", "nullable": true, "sample": { "$profile": "periodMin:periodColumn" },
+      "description": { "ja": "この月以降（ISO 日付、月の初日）。省略で最初から。", "en": "Months on or after this ISO date. Omit for no lower bound." }
+    },
+    {
+      "name": "period_to", "type": "date", "nullable": true, "sample": { "$profile": "periodMax:periodColumn" },
+      "description": { "ja": "この月以前（ISO 日付）。省略で最新まで。", "en": "Months on or before this ISO date. Omit for no upper bound." }
+    },
+    {
+      "name": "categories", "type": "string", "nullable": true, "when": "categoryColumn", "sample": { "$profile": "firstValuesCsv:categoryColumn:2" },
+      "description": { "ja": "{{categoryColumn}} の値をカンマ区切りで。省略で全件。", "en": "Comma-separated values of {{categoryColumn}}. Omit for all." }
+    }
+  ],
+  "nodes": [
+    { "id": "src", "type": { "$sourceType": "source" }, "config": { "dataSourceId": { "$slot": "source" } } },
+    { "id": "period", "type": "parse-period", "config": { "column": { "$slot": "periodColumn" }, "startColumn": "periodStart", "granularityColumn": "periodGranularity", "fiscalYearStartMonth": 4 } },
+    { "id": "f_month", "type": "filter", "config": { "column": "periodGranularity", "op": "eq", "value": "month" } },
+    {
+      "id": "f_category", "type": "filter", "when": "categoryColumn",
+      "config": { "column": { "$slot": "categoryColumn" }, "op": "in", "values": { "$profile": "firstValues:categoryColumn:2" }, "valueBinding": { "$argument": "categories" }, "caseInsensitive": true }
+    },
+    {
+      "id": "change", "type": "time-series-analysis",
+      "config": {
+        "configVersion": 1,
+        "timeColumn": "periodStart",
+        "valueColumns": { "$slot": "valueColumns" },
+        "groupBy": { "$each": "categoryColumn", "as": "c", "item": "{{c}}" },
+        "timezone": "UTC",
+        "interval": "month",
+        "aggregate": "mean",
+        "fill": "none",
+        "comparison": { "lag": { "$number": "lag" }, "output": ["delta", "percent-change"] }
+      }
+    },
+    {
+      "id": "f_range", "type": "filter",
+      "config": {
+        "combine": "and",
+        "conditions": [
+          { "column": "bucketStart", "op": "gte", "value": { "$profile": "periodMin:periodColumn" }, "valueBinding": { "$argument": "period_from" } },
+          { "column": "bucketStart", "op": "lte", "value": { "$profile": "periodMax:periodColumn" }, "valueBinding": { "$argument": "period_to" } }
+        ]
+      }
+    },
+    { "id": "sort", "type": "sort", "config": { "keys": [{ "column": "bucketStart", "direction": "desc", "nulls": "last" }, { "column": "series", "direction": "asc" }] } },
+    { "id": "limit", "type": "limit", "config": { "count": { "$slot": "limit" } } },
+    { "id": "out", "type": "agent-output", "config": { "shape": "rows", "format": "json", "maxRows": { "$slot": "limit" }, "maxBytes": 65536, "overflow": "error" } }
+  ],
+  "edges": [
+    { "from": "src", "to": "period" },
+    { "from": "period", "to": "f_month" },
+    { "from": "f_month", "to": "f_category" },
+    { "from": "f_category", "to": "change" },
+    { "from": "change", "to": "f_range" },
+    { "from": "f_range", "to": "sort" },
+    { "from": "sort", "to": "limit" },
+    { "from": "limit", "to": "out" }
+  ],
+  "description": {
+    "ja": "{{valueColumns}} の月次の値と、{{lag}} か月前との増減を返します（新しい順、最大 {{limit}} 行）。1 行は bucketStart（月の初日）・series（どの値の列か）・value（その月の値）・delta（増減）・percentChange（増減率。0.05 = +5%）です。増減や率はこの結果から答え、暗算しないでください。",
+    "en": "Returns the monthly values of {{valueColumns}} with the change versus {{lag}} month(s) earlier (newest first, up to {{limit}} rows). Each row has bucketStart (first day of the month), series (which value column), value, delta and percentChange (0.05 = +5%). Read changes from the result; do not calculate them yourself."
+  },
+  "notes": "time-series-analysis は縦持ち（1 行 = 系列 × 月）で bucketStart / series / value / sampleCount / delta / percentChange を出し、groupBy の列だけを元の表から引き継ぐ。したがって期間の範囲と並べ替えは periodStart ではなく bucketStart で行う。percentChange は比率（0.05 = 5%）。lag は「行数」で数えるので、fill: none のまま欠測月があるとずれる（欠測が多いデータでは period-series を使う）。"
+}

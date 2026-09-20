@@ -1,0 +1,80 @@
+{
+  "$schema": "./tool-template.schema.json",
+  "formatVersion": 1,
+  "id": "category-ranking",
+  "version": "1.0.1",
+  "title": { "ja": "カテゴリ別ランキング", "en": "Ranking by category" },
+  "summary": {
+    "ja": "ある 1 つの期間について、カテゴリ（地域など）別に値の大きい順（または小さい順）へ並べて上位 N 件を返す。",
+    "en": "Ranks categories (regions and the like) by value for a single period and returns the top N."
+  },
+  "whenToUse": {
+    "ja": ["一番多い/少ないのはどこか、上位いくつはどこかを答えたい", "同じ時点でカテゴリを比べたい"],
+    "en": ["Which category is the largest or smallest, or the top few", "Comparing categories at the same point in time"]
+  },
+  "notFor": {
+    "ja": ["推移が要る（period-series を使う）", "期間をまたいで合計したい（period-statistics を使う）"],
+    "en": ["Trends over time (use period-series)", "Totals across periods (use period-statistics)"]
+  },
+  "tags": ["ranking", "comparison"],
+  "sources": { "min": 1, "max": 1 },
+  "slots": [
+    { "name": "source", "kind": "dataSource", "label": { "ja": "データソース", "en": "Data source" } },
+    { "name": "periodColumn", "kind": "column", "source": "source", "role": "period", "label": { "ja": "期間の列", "en": "Period column" } },
+    { "name": "categoryColumn", "kind": "column", "source": "source", "role": "category", "label": { "ja": "並べるカテゴリの列（地域など）", "en": "Category column to rank" } },
+    { "name": "valueColumn", "kind": "column", "source": "source", "role": "value", "label": { "ja": "順位を決める値の列", "en": "Value column that decides the rank" } },
+    { "name": "defaultGranularity", "kind": "choice", "optionsFrom": "granularities:periodColumn", "label": { "ja": "既定の粒度", "en": "Default granularity" } },
+    {
+      "name": "direction", "kind": "choice", "default": "desc", "label": { "ja": "並び順", "en": "Order" },
+      "options": [
+        { "value": "desc", "label": { "ja": "大きい順（上位）", "en": "Largest first" } },
+        { "value": "asc", "label": { "ja": "小さい順（下位）", "en": "Smallest first" } }
+      ]
+    },
+    { "name": "limit", "kind": "number", "min": 1, "max": 50, "integer": true, "default": 10, "label": { "ja": "返す件数", "en": "Rows" } }
+  ],
+  "arguments": [
+    {
+      "name": "granularity", "type": "string", "nullable": false, "sample": { "$slot": "defaultGranularity" },
+      "description": { "ja": "期間の粒度。month / quarter / half / year / fiscal-year のうちデータにあるものを、この綴りのまま渡す（monthly・yearly・月次・年次 などは不可）。必ず指定する。", "en": "Period granularity: one of month / quarter / half / year / fiscal-year that exists in the data, spelled exactly like this (not monthly, yearly or a translation). Required." }
+    },
+    {
+      "name": "period", "type": "date", "nullable": false, "sample": { "$profile": "periodMax:periodColumn" },
+      "description": {
+        "ja": "順位をつける 1 つの期間の開始日（ISO 日付。2023年 = 2023-01-01、2023年5月 = 2023-05-01、2023年度 = 2023-04-01）。必ず指定する（省略すると別の時点の行が混ざって順位が意味を失う）。",
+        "en": "The start day of the single period to rank (ISO date; 2023 = 2023-01-01, May 2023 = 2023-05-01). Required — without it, rows from different periods would be mixed into one ranking."
+      }
+    }
+  ],
+  "nodes": [
+    { "id": "src", "type": { "$sourceType": "source" }, "config": { "dataSourceId": { "$slot": "source" } } },
+    { "id": "period", "type": "parse-period", "config": { "column": { "$slot": "periodColumn" }, "startColumn": "periodStart", "granularityColumn": "periodGranularity", "fiscalYearStartMonth": 4 } },
+    {
+      "id": "f_granularity", "type": "filter",
+      "config": { "column": "periodGranularity", "op": "eq", "value": { "$slot": "defaultGranularity" }, "valueBinding": { "$argument": "granularity" } }
+    },
+    {
+      "id": "f_period", "type": "filter",
+      "config": { "column": "periodStart", "op": "eq", "value": { "$profile": "periodMax:periodColumn" }, "valueBinding": { "$argument": "period" } }
+    },
+    {
+      "id": "sort", "type": "sort",
+      "config": { "keys": [{ "column": { "$slot": "valueColumn" }, "direction": { "$slot": "direction" }, "nulls": "last" }, { "column": { "$slot": "categoryColumn" }, "direction": "asc" }] }
+    },
+    { "id": "limit", "type": "limit", "config": { "count": { "$slot": "limit" } } },
+    { "id": "out", "type": "agent-output", "config": { "shape": "rows", "format": "json", "maxRows": { "$slot": "limit" }, "maxBytes": 65536, "overflow": "error" } }
+  ],
+  "edges": [
+    { "from": "src", "to": "period" },
+    { "from": "period", "to": "f_granularity" },
+    { "from": "f_granularity", "to": "f_period" },
+    { "from": "f_period", "to": "sort" },
+    { "from": "sort", "to": "limit" },
+    { "from": "limit", "to": "out" }
+  ],
+  "description": {
+    "ja": "引数 period で指定した 1 つの期間について、{{categoryColumn}} を {{valueColumn}} の {{direction}} 順に並べ、上位 {{limit}} 件を返します。並んだ順がそのまま順位です。period と granularity は必須です。",
+    "en": "Ranks {{categoryColumn}} by {{valueColumn}} ({{direction}}) for the single period given as period, and returns the first {{limit}} rows. The row order is the ranking. period and granularity are required."
+  },
+  "notes": "期間を 1 つに固定するのがこのツールの肝（複数の時点が混ざると順位が意味を失う）ので period は必須引数にする。同値のときはカテゴリ名の昇順で並びが決まる（毎回同じ順位になる）。"
+}

@@ -201,3 +201,78 @@ describe('diagnoseEmptyResult: 0行の理由', () => {
     expect(rendered).toContain('2015年');
   });
 });
+
+describe('diagnoseEmptyResult: 複数値条件（in）', () => {
+  it('正常: 要求した値の並びと、そのうち1行も当たらなかった値を返す', () => {
+    const graph = graphOf({
+      column: '地域', op: 'in', values: ['東京都', '存在しない県'],
+      valueBinding: { source: 'agent-input', field: 'regions' },
+    });
+    // 東京都は当たるが、条件を通った行が下流で消えた想定（この条件は単独で 3 行に当たる）。
+    const diagnosis = diagnoseEmptyResult({ graph, tables: tablesOf(statsTable) });
+
+    expect(diagnosis?.conditions[0]).toMatchObject({
+      column: '地域', op: 'in', argument: 'regions',
+      values: ['東京都', '存在しない県'],
+      matchingRows: 3,
+      unmatchedValues: ['存在しない県'],
+    });
+  });
+
+  it('正常: どれも当たらないときは全要求値を unmatchedValues に並べ、近い実在値を先に薦める', () => {
+    const graph = graphOf({ column: '地域', op: 'in', values: ['東京市', '大阪市'] });
+    const diagnosis = diagnoseEmptyResult({ graph, tables: tablesOf(statsTable) });
+
+    const condition = diagnosis?.conditions[0];
+    expect(condition?.matchingRows).toBe(0);
+    expect(condition?.unmatchedValues).toEqual(['東京市', '大阪市']);
+    expect(condition?.availableValues?.slice(0, 2)).toEqual(['東京都', '大阪府']);
+    expect(condition?.distinctValues).toBe(3);
+  });
+
+  it('境界: notIn には unmatchedValues を付けない（除外した値に「空振り」は無い）', () => {
+    const graph = graphOf({ column: '地域', op: 'notIn', values: ['東京都', '大阪府', '愛知県'] });
+    const diagnosis = diagnoseEmptyResult({ graph, tables: tablesOf(statsTable) });
+
+    expect(diagnosis?.conditions[0]).toMatchObject({ op: 'notIn', matchingRows: 0, values: ['東京都', '大阪府', '愛知県'] });
+    expect(diagnosis?.conditions[0]?.unmatchedValues).toBeUndefined();
+    expect(diagnosis?.conditions[0]?.availableValues).toBeDefined();
+  });
+
+  it('境界: 要求値・空振りした値も8件までに切り詰める', () => {
+    const many = Array.from({ length: 20 }, (_, index) => `県${index}`);
+    const graph = graphOf({ column: '地域', op: 'in', values: many });
+    const diagnosis = diagnoseEmptyResult({ graph, tables: tablesOf(statsTable) });
+
+    expect(diagnosis?.conditions[0]?.values).toHaveLength(MAX_AVAILABLE_VALUES);
+    expect(diagnosis?.conditions[0]?.unmatchedValues).toHaveLength(MAX_AVAILABLE_VALUES);
+    expect(new TextEncoder().encode(JSON.stringify(diagnosis)).byteLength).toBeLessThanOrEqual(MAX_DIAGNOSIS_BYTES);
+  });
+
+  it('境界: 長い値は実在値と同じく80文字までに切り詰める', () => {
+    const long = 'あ'.repeat(200);
+    const graph = graphOf({ column: '地域', op: 'in', values: [long] });
+    const diagnosis = diagnoseEmptyResult({ graph, tables: tablesOf(statsTable) });
+
+    expect(diagnosis?.conditions[0]?.unmatchedValues?.[0]).toHaveLength(MAX_VALUE_CHARS);
+  });
+
+  it('正常: 文章版は要求した並びと「どの値が空振りしたか」を1行に書く', () => {
+    const graph = graphOf({ column: '地域', op: 'in', values: ['東京市'], valueBinding: { source: 'agent-input', field: 'regions' } });
+    const diagnosis = diagnoseEmptyResult({ graph, tables: tablesOf(statsTable) });
+    const rendered = noMatchText(diagnosis as NonNullable<typeof diagnosis>);
+
+    expect(rendered).toContain('地域 in ["東京市"] (argument regions) matched 0 rows');
+    expect(rendered).toContain('no rows for: 東京市');
+    expect(rendered).toContain('values in this column include: 東京都');
+  });
+
+  it('境界: 従来どおり — 単値条件の行には値の並びを足さない', () => {
+    const graph = graphOf({ column: '地域', op: 'eq', value: '東京市' });
+    const diagnosis = diagnoseEmptyResult({ graph, tables: tablesOf(statsTable) });
+
+    expect(diagnosis?.conditions[0]?.values).toBeUndefined();
+    expect(diagnosis?.conditions[0]?.unmatchedValues).toBeUndefined();
+    expect(noMatchText(diagnosis as NonNullable<typeof diagnosis>)).toContain('地域 eq "東京市"');
+  });
+});

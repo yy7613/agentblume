@@ -18,7 +18,7 @@
  */
 import { schemaIncompatibility } from '../../domain/data/schema';
 import type { ToolGraph } from '../../domain/etl/graph';
-import { operatorArgumentSummaries } from '../../domain/etl/nodes/filter';
+import { listValueArgumentSummaries, operatorArgumentSummaries } from '../../domain/etl/nodes/filter';
 import type { TenantScope } from '../../domain/shared/tenant-scope';
 import type { Tool } from '../../domain/tool/tool';
 import { agentInputInconsistency, toolToModelDefinition } from '../agent/tool-schema';
@@ -39,6 +39,7 @@ export type ToolCheckId =
   | 'execution'           // 設計時サンプル値でのドライラン（ノード実行エラー）
   | 'output-schema'       // 宣言 outputSchema と推論終端の整合（assertOutputMatchesSchema と同一規則）
   | 'operator-arguments'  // opBinding の許可リスト・既定演算子・引数宣言の整合
+  | 'list-arguments'      // in/notIn の valueBinding 先が「カンマ区切りの値の並び」を運べる string 引数か
   | 'side-effect';        // 非 read-only は承認ゲートで停止する（失敗ではないので warning）
 
 export interface DiagnosticCheck<Id extends string = string> {
@@ -128,6 +129,7 @@ export class DiagnoseToolUseCase {
     }
 
     checks.push(...checkOperatorArguments(tool));
+    checks.push(...checkListArguments(tool));
 
     if (tool.sideEffect !== 'read-only') {
       checks.push(warning('side-effect', `side effect '${tool.sideEffect}' pauses the run for approval before this tool executes`));
@@ -245,4 +247,25 @@ function checkOperatorArguments(tool: Tool): DiagnosticCheck<ToolCheckId>[] {
   if (errors.length > 0) return [error('operator-arguments', [...errors, ...warnings].join('; '))];
   if (warnings.length > 0) return [warning('operator-arguments', warnings.join('; '))];
   return [ok('operator-arguments')];
+}
+
+/**
+ * `in`/`notIn` の値引数（valueBinding 先）が、カンマ区切りの値の並びを運べる形で宣言されているか。
+ * 保存時（SaveTool）と同じ規則を、実行せずに同じ英文で先に見せる。
+ */
+function checkListArguments(tool: Tool): DiagnosticCheck<ToolCheckId>[] {
+  const sites = listValueArgumentSummaries(
+    tool.graph.nodes.filter((node) => node.type === 'filter').map((node) => node.config),
+  );
+  if (sites.length === 0) return [];
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  for (const site of sites) {
+    const column = tool.inputSchema?.columns.find((candidate) => candidate.name === site.field);
+    if (column === undefined) warnings.push(`list argument '${site.field}' is not declared in the input schema, so the binding is inactive at run time`);
+    else if (column.type !== 'string') errors.push(`list argument '${site.field}' must be declared as a string argument to carry a comma-separated list, but it is '${column.type}'`);
+  }
+  if (errors.length > 0) return [error('list-arguments', [...errors, ...warnings].join('; '))];
+  if (warnings.length > 0) return [warning('list-arguments', warnings.join('; '))];
+  return [ok('list-arguments')];
 }

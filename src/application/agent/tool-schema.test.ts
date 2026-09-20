@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Schema, Table } from '../../domain/data/types';
-import { FILTER_OPS } from '../../domain/etl/nodes/filter';
+import { OPERATOR_BINDABLE_OPS } from '../../domain/etl/nodes/filter';
 import { SemVer } from '../../domain/tool/semver';
 import { createTool } from '../../domain/tool/tool';
 import { AgentRunError, ToolArgumentsError } from './errors';
@@ -212,15 +212,17 @@ describe('filter opBinding の JSON Schema 公開', () => {
     });
   });
 
-  it('allowed省略時は全演算子がenumに載る', () => {
+  it('allowed省略時は演算子引数にできる全演算子がenumに載る（in/notIn は除く）', () => {
     const inputSchema: Schema = { columns: [{ name: 'op', type: 'string', nullable: false }] };
     const tool = filterTool(inputSchema, {
       column: 'price', op: 'eq', value: 1,
       opBinding: { source: 'agent-input', field: 'op' },
     });
     const property = toolToModelDefinition(tool).parameters.properties['op'];
-    expect(property?.enum).toEqual([...FILTER_OPS]);
+    expect(property?.enum).toEqual([...OPERATOR_BINDABLE_OPS]);
     expect(property?.enum).toHaveLength(9);
+    // 値の形が違う複数値演算子は、許可リストを省略しても公開されない。
+    expect(property?.enum).not.toContain('in');
   });
 
   it('同一fieldを複数条件がバインドしたらenumは積集合・descriptionは全列を列挙する', () => {
@@ -279,5 +281,72 @@ describe('filter opBinding の JSON Schema 公開', () => {
     expect(properties['limit']).toEqual({ type: 'number' });
     // opバインドの無い引数は従来どおり。
     expect(properties['month']).toEqual({ type: 'string' });
+  });
+});
+
+describe('filter in/notIn の値引数（カンマ区切りの並び）の JSON Schema 公開', () => {
+  it('正常: 値の並びを受け取る引数に「カンマ区切りで一度に渡す」説明と設計時サンプルの例を付ける', () => {
+    const inputSchema: Schema = { columns: [{ name: 'regions', type: 'string', nullable: false }] };
+    const tool = filterTool(inputSchema, {
+      column: '地域', op: 'in', values: ['東京都', '大阪府'],
+      valueBinding: { source: 'agent-input', field: 'regions' },
+    });
+    expect(toolToModelDefinition(tool).parameters.properties['regions']).toEqual({
+      type: 'string',
+      description: "Comma-separated list of values to match in column '地域'. Pass every value you need in one call (for example \"A,B,C\") instead of calling the tool once per value. For example: \"東京都,大阪府\".",
+    });
+  });
+
+  it('正常: nullable な引数には「省略するとこの絞り込みをしない」まで書く', () => {
+    const inputSchema: Schema = { columns: [{ name: 'regions', type: 'string', nullable: true }] };
+    const tool = filterTool(inputSchema, {
+      column: '地域', op: 'notIn', values: ['沖縄県'],
+      valueBinding: { source: 'agent-input', field: 'regions' },
+    });
+    const property = toolToModelDefinition(tool).parameters.properties['regions'];
+    expect(property?.anyOf).toEqual([{ type: 'string' }, { type: 'null' }]);
+    expect(property?.description).toContain('Omit it to skip this filter.');
+    expect(property?.enum).toBeUndefined(); // 値は自由記述なので enum は付けない。
+  });
+
+  it('境界: 同一引数を複数条件がバインドしたら列とサンプルをまとめて1つの説明にする', () => {
+    const inputSchema: Schema = { columns: [{ name: 'regions', type: 'string', nullable: false }] };
+    const tool = filterTool(inputSchema, { conditions: [
+      { column: '地域', op: 'in', values: ['東京都'], valueBinding: { source: 'agent-input', field: 'regions' } },
+      { column: '県名', op: 'in', values: ['大阪府'], valueBinding: { source: 'agent-input', field: 'regions' } },
+    ], combine: 'or' });
+    const description = String(toolToModelDefinition(tool).parameters.properties['regions']?.description);
+    expect(description).toContain("columns '地域', '県名'");
+    expect(description).toContain('"東京都,大阪府"');
+  });
+
+  it('境界: 設計時サンプルが無ければ例を書かない（他の文言は変わらない）', () => {
+    const inputSchema: Schema = { columns: [{ name: 'regions', type: 'string', nullable: false }] };
+    const tool = filterTool(inputSchema, { column: '地域', op: 'in', valueBinding: { source: 'agent-input', field: 'regions' } });
+    const description = String(toolToModelDefinition(tool).parameters.properties['regions']?.description);
+    expect(description).toContain('Comma-separated list of values');
+    expect(description).not.toContain('For example:');
+  });
+
+  it('異常: 宣言の無い引数・string型でない引数は触らず、正しい引数にだけ説明を付ける', () => {
+    const inputSchema: Schema = { columns: [
+      { name: 'limit', type: 'number', nullable: false },
+      { name: 'regions', type: 'string', nullable: false },
+    ] };
+    const tool = filterTool(inputSchema, { conditions: [
+      { column: '地域', op: 'in', values: ['東京都'], valueBinding: { source: 'agent-input', field: 'ghost' } },
+      { column: '金額', op: 'in', values: [1], valueBinding: { source: 'agent-input', field: 'limit' } },
+      { column: '県名', op: 'in', values: ['大阪府'], valueBinding: { source: 'agent-input', field: 'regions' } },
+    ], combine: 'and' });
+    const { properties } = toolToModelDefinition(tool).parameters;
+    expect(properties['ghost']).toBeUndefined();
+    expect(properties['limit']).toEqual({ type: 'number' });
+    expect(String(properties['regions']?.description)).toContain('Comma-separated list of values');
+  });
+
+  it('境界: 従来どおり — 単値演算子の valueBinding には説明を足さない', () => {
+    const inputSchema: Schema = { columns: [{ name: 'region', type: 'string', nullable: false }] };
+    const tool = filterTool(inputSchema, { column: '地域', op: 'eq', value: '東京都', valueBinding: { source: 'agent-input', field: 'region' } });
+    expect(toolToModelDefinition(tool).parameters.properties['region']).toEqual({ type: 'string' });
   });
 });

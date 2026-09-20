@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Schema, Table } from '../../data/types';
 import { ConfigError, SchemaError } from '../errors';
-import { CASE_FOLD_OPS, FILTER_OPS, filterNode, operatorArgumentSummaries, ORDER_OPS, valueBindingsOf, VALUELESS_OPS } from './filter';
+import { CASE_FOLD_OPS, FILTER_OPS, filterNode, listValueArgumentSummaries, MAX_FILTER_VALUES, MULTI_VALUE_OPS, operatorArgumentSummaries, OPERATOR_BINDABLE_OPS, ORDER_OPS, parseFilterValueList, valueBindingsOf, VALUELESS_OPS } from './filter';
 
 const schema: Schema = {
   columns: [
@@ -293,19 +293,19 @@ describe('filter: exported operator sets', () => {
     expect([...ORDER_OPS].sort()).toEqual(['gt', 'gte', 'lt', 'lte']);
   });
 
-  it('CASE_FOLD_OPS is exactly eq/neq/contains', () => {
-    expect([...CASE_FOLD_OPS].sort()).toEqual(['contains', 'eq', 'neq']);
+  it('CASE_FOLD_OPS is exactly eq/neq/contains/in/notIn', () => {
+    expect([...CASE_FOLD_OPS].sort()).toEqual(['contains', 'eq', 'in', 'neq', 'notIn']);
   });
 
   it('all sets contain only canonical FILTER_OPS entries', () => {
-    for (const op of [...VALUELESS_OPS, ...ORDER_OPS, ...CASE_FOLD_OPS]) expect(FILTER_OPS).toContain(op);
+    for (const op of [...VALUELESS_OPS, ...ORDER_OPS, ...CASE_FOLD_OPS, ...MULTI_VALUE_OPS, ...OPERATOR_BINDABLE_OPS]) expect(FILTER_OPS).toContain(op);
   });
 });
 
 describe('filter: valueBindingsOf', () => {
   it('collects the binding from the legacy flat shape', () => {
     expect(valueBindingsOf({ column: 'age', op: 'gte', value: 18, valueBinding: { source: 'agent-input', field: 'minimumAge' } }))
-      .toEqual([{ field: 'minimumAge', column: 'age' }]);
+      .toEqual([{ field: 'minimumAge', column: 'age', multiValue: false }]);
   });
 
   it('collects every binding from the conditions shape in order', () => {
@@ -314,8 +314,8 @@ describe('filter: valueBindingsOf', () => {
       { column: 'age', op: 'gte', value: 18 },
       { column: 'month', op: 'eq', value: '2026-05', valueBinding: { source: 'agent-input', field: 'month' } },
     ], combine: 'and' })).toEqual([
-      { field: 'region', column: 'region' },
-      { field: 'month', column: 'month' },
+      { field: 'region', column: 'region', multiValue: false },
+      { field: 'month', column: 'month', multiValue: false },
     ]);
   });
 
@@ -327,7 +327,7 @@ describe('filter: valueBindingsOf', () => {
     expect(valueBindingsOf(null)).toEqual([]);
     // 条件が null・column 欠損でも落ちずに拾えるものだけ拾う（column は空文字で表す）。
     expect(valueBindingsOf({ conditions: [null, { valueBinding: { source: 'agent-input', field: 'x' } }] }))
-      .toEqual([{ field: 'x', column: '' }]);
+      .toEqual([{ field: 'x', column: '', multiValue: false }]);
   });
 });
 
@@ -342,9 +342,9 @@ describe('filter: operatorArgumentSummaries', () => {
     expect(summaries).toEqual([{ field: 'textOp', columns: ['note', 'category'], allowed: ['eq', 'neq'], defaultOp: 'eq', defaultOpMixed: false }]);
   });
 
-  it('omitting allowed expands to every operator', () => {
+  it('omitting allowed expands to every bindable operator (in/notIn are never bindable)', () => {
     expect(operatorArgumentSummaries([{ column: 'age', op: 'gte', value: 18, opBinding: { source: 'agent-input', field: 'ageOp' } }]))
-      .toEqual([{ field: 'ageOp', columns: ['age'], allowed: [...FILTER_OPS], defaultOp: 'gte', defaultOpMixed: false }]);
+      .toEqual([{ field: 'ageOp', columns: ['age'], allowed: [...OPERATOR_BINDABLE_OPS], defaultOp: 'gte', defaultOpMixed: false }]);
   });
 
   it('deduplicates columns and drops empty column names', () => {
@@ -688,5 +688,265 @@ describe('filter: 日付列のISO文字列', () => {
   it('例外: 月が範囲外（13月）の ISO 風文字列も読めない値として SchemaError', () => {
     // `2020-02-30` のような「桁は正しいが実在しない日」は JS が 3/1 へ繰り上げる（csv-source の date 化と同じ挙動）。
     expect(() => filterNode.execute([isoTable], { column: 'joined', op: 'eq', value: '2020-13-01' })).toThrowError(SchemaError);
+  });
+});
+
+describe('filter: 複数値の一致（in / notIn）', () => {
+  it('正常: 文字列列の in は列挙したどの値にも一致する行を残す（1条件で複数県）', () => {
+    const out = filterNode.execute([table], { column: 'name', op: 'in', values: ['Alice', 'Bob'] });
+    expect(out.rows.map((row) => row.id)).toEqual([1, 2]);
+  });
+
+  it('正常: notIn は列挙した値のどれとも一致しない行を残す', () => {
+    const out = filterNode.execute([table], { column: 'name', op: 'notIn', values: ['Alice'] });
+    // name が null の行は neq と同じ扱いで残る（下の境界テストで明示的に固定する）。
+    expect(out.rows.map((row) => row.id)).toEqual([2, 3]);
+  });
+
+  it('正常: 数値列の in は数値の等価で一致する', () => {
+    const out = filterNode.execute([table], { column: 'age', op: 'in', values: [17, 40, 99] });
+    expect(out.rows.map((row) => row.id)).toEqual([2, 3]);
+  });
+
+  it('正常: 数値列の in は数値として読める文字列も受け取る（引数は文字列で届く）', () => {
+    const out = filterNode.execute([table], { column: 'age', op: 'in', values: ['17', '40'] });
+    expect(out.rows.map((row) => row.id)).toEqual([2, 3]);
+  });
+
+  it('正常: 日付列の in は ISO 文字列を日付として解釈する', () => {
+    const out = filterNode.execute([table], { column: 'joined', op: 'in', values: ['2020-01-01', '2019-03-15'] });
+    expect(out.rows.map((row) => row.id)).toEqual([1, 3]);
+    // Date で書いた場合と1行もずれない。
+    expect(out.rows).toEqual(filterNode.execute([table], { column: 'joined', op: 'in', values: [d('2020-01-01T00:00:00Z'), d('2019-03-15T00:00:00Z')] }).rows);
+  });
+
+  it('正常: boolean 列の in も厳密等価で判定する', () => {
+    expect(filterNode.execute([table], { column: 'active', op: 'in', values: [false] }).rows.map((row) => row.id)).toEqual([2]);
+    expect(filterNode.execute([table], { column: 'active', op: 'notIn', values: [false] }).rows.map((row) => row.id)).toEqual([1, 3]);
+  });
+
+  it('正常: caseInsensitive を付けると文字列の in が大文字小文字を区別しない', () => {
+    const out = filterNode.execute([table], { column: 'name', op: 'in', values: ['ALICE', 'bob'], caseInsensitive: true });
+    expect(out.rows.map((row) => row.id)).toEqual([1, 2]);
+  });
+
+  it('境界: caseInsensitive を付けなければ大文字小文字の違う値は一致しない（既定は従来どおり区別する）', () => {
+    expect(filterNode.execute([table], { column: 'name', op: 'in', values: ['ALICE'] }).rows).toEqual([]);
+  });
+
+  it('境界: null セルは in に一致しない（values に null を混ぜても一致しない）', () => {
+    expect(filterNode.execute([table], { column: 'name', op: 'in', values: [null] }).rows).toEqual([]);
+    expect(filterNode.execute([table], { column: 'name', op: 'in', values: ['Alice', null] }).rows.map((row) => row.id)).toEqual([1]);
+  });
+
+  it('境界: notIn は neq と同じく null セルを残す（values に null があるときだけ落ちる）', () => {
+    expect(filterNode.execute([table], { column: 'name', op: 'notIn', values: ['Alice'] }).rows.map((row) => row.id)).toEqual([2, 3]);
+    expect(filterNode.execute([table], { column: 'name', op: 'notIn', values: ['Alice', null] }).rows.map((row) => row.id)).toEqual([2]);
+    // 単値の neq と同じ扱いであることを直接比べて固定する。
+    expect(filterNode.execute([table], { column: 'name', op: 'notIn', values: ['Alice'] }).rows)
+      .toEqual(filterNode.execute([table], { column: 'name', op: 'neq', value: 'Alice' }).rows);
+  });
+
+  it('境界: 値を1つだけ並べた in は eq と同じ行を残す', () => {
+    expect(filterNode.execute([table], { column: 'name', op: 'in', values: ['Alice'] }).rows)
+      .toEqual(filterNode.execute([table], { column: 'name', op: 'eq', value: 'Alice' }).rows);
+  });
+
+  it('境界: 上限ちょうど（100件）は通り、超えた並びは ConfigError で弾く', () => {
+    const hundred = Array.from({ length: MAX_FILTER_VALUES }, (_, index) => `v${index}`);
+    expect(filterNode.validateConfig({ column: 'name', op: 'in', values: hundred })).toMatchObject({ values: hundred });
+    expect(() => filterNode.validateConfig({ column: 'name', op: 'in', values: [...hundred, 'over'] })).toThrowError(ConfigError);
+  });
+
+  it('境界: 他の条件と AND / OR で組み合わせられる', () => {
+    const and = filterNode.execute([table], { conditions: [
+      { column: 'name', op: 'in', values: ['Alice', 'Bob'] },
+      { column: 'age', op: 'gte', value: 18 },
+    ], combine: 'and' });
+    expect(and.rows.map((row) => row.id)).toEqual([1]);
+    const or = filterNode.execute([table], { conditions: [
+      { column: 'name', op: 'in', values: ['Bob'] },
+      { column: 'age', op: 'gte', value: 40 },
+    ], combine: 'or' });
+    expect(or.rows.map((row) => row.id)).toEqual([2, 3]);
+  });
+
+  it('境界: disabled（nullable 引数の省略）の in 条件は存在しない条件として扱う', () => {
+    const conditions = [
+      { column: 'name', op: 'in' as const, values: ['Alice'] },
+      { column: 'age', op: 'gte' as const, value: 18 },
+    ];
+    // 有効なままなら Alice の1行だけ。disabled なら条件ごと消えて 18 歳以上の2行が残る。
+    expect(filterNode.execute([table], { conditions, combine: 'and' }).rows.map((row) => row.id)).toEqual([1]);
+    expect(filterNode.execute([table], { conditions: [{ ...conditions[0]!, disabled: true }, conditions[1]!], combine: 'and' }).rows.map((row) => row.id))
+      .toEqual([1, 3]);
+  });
+
+  it('境界: values は in / notIn 以外の演算子では無視され、警告だけを出す（従来どおり実行は続く）', () => {
+    const config = { column: 'name', op: 'eq' as const, value: 'Alice', values: ['Bob', 'Carol'] };
+    expect(filterNode.execute([table], config).rows.map((row) => row.id)).toEqual([1]);
+    const inference = filterNode.inferSchema([schema], config);
+    expect(inference.state).toBe('confirmed');
+    expect(inference.issues).toEqual([
+      { severity: 'warning', message: "filter: 'values' is ignored by operator 'eq' on column 'name'", column: 'name' },
+    ]);
+  });
+
+  it('異常: values が空（かつ引数束縛も無い）の in は inferSchema が error にする', () => {
+    const inference = filterNode.inferSchema([schema], { column: 'name', op: 'in', values: [] });
+    expect(inference.state).toBe('mismatch');
+    expect(inference.issues).toEqual([
+      { severity: 'error', message: "filter: operator 'in' requires a non-empty 'values' list for column 'name'", column: 'name' },
+    ]);
+    // values キーそのものが無い場合も同じ案内にする。
+    expect(filterNode.inferSchema([schema], { column: 'name', op: 'in' }).issues).toEqual(inference.issues);
+  });
+
+  it('異常: 引数束縛があるのに設計時サンプルが無い in は warning（実行時は引数で埋まる）', () => {
+    const inference = filterNode.inferSchema([schema], {
+      column: 'name', op: 'in', valueBinding: { source: 'agent-input', field: 'names' },
+    });
+    expect(inference.state).toBe('confirmed');
+    expect(inference.issues).toEqual([
+      { severity: 'warning', message: "filter: operator 'in' on column 'name' has no design-time 'values' sample, so the preview matches no rows", column: 'name' },
+    ]);
+  });
+
+  it('異常: 日付列の並びに読めない要素があれば、その要素を名指しして error にする', () => {
+    const inference = filterNode.inferSchema([schema], { column: 'joined', op: 'in', values: ['2020-01-01', '2020/02/02'] });
+    expect(inference.state).toBe('mismatch');
+    expect(inference.issues).toEqual([
+      { severity: 'error', message: "filter: values for date column 'joined' must be ISO dates (YYYY-MM-DD): 2020/02/02", column: 'joined' },
+    ]);
+  });
+
+  it('異常: 数値列の並びに数値でない要素があれば、その要素を名指しして error にする', () => {
+    const inference = filterNode.inferSchema([schema], { column: 'age', op: 'in', values: ['17', 'たくさん'] });
+    expect(inference.state).toBe('mismatch');
+    expect(inference.issues).toEqual([
+      { severity: 'error', message: "filter: values for number column 'age' must be numbers: たくさん", column: 'age' },
+    ]);
+  });
+
+  it('異常: opBinding.allowed に in / notIn を入れたら error にする（値の形が違う）', () => {
+    const inference = filterNode.inferSchema([schema], {
+      column: 'name', op: 'eq', value: 'Alice',
+      opBinding: { source: 'agent-input', field: 'op', allowed: ['eq', 'in', 'notIn'] },
+    });
+    expect(inference.state).toBe('mismatch');
+    expect(inference.issues).toEqual([
+      { severity: 'error', message: "filter: opBinding on 'name' cannot use operator(s) in|notIn because they take a list of values; use a fixed operator for those conditions", column: 'name' },
+    ]);
+  });
+
+  it('異常: opBinding を持つ条件の既定演算子が in でも同じ error にする（allowed 省略時）', () => {
+    const inference = filterNode.inferSchema([schema], {
+      column: 'name', op: 'in', values: ['Alice'],
+      opBinding: { source: 'agent-input', field: 'op' },
+    });
+    expect(inference.issues).toContainEqual(
+      { severity: 'error', message: "filter: opBinding on 'name' cannot use operator(s) in because they take a list of values; use a fixed operator for those conditions", column: 'name' },
+    );
+  });
+
+  it('例外: values が空のまま execute へ来たら SchemaError（黙って全滅・素通しにしない）', () => {
+    expect(() => filterNode.execute([table], { column: 'name', op: 'in', values: [] }))
+      .toThrowError(new SchemaError("filter: operator 'in' requires a non-empty 'values' list for column 'name'"));
+    expect(() => filterNode.execute([table], { column: 'name', op: 'notIn' }))
+      .toThrowError(new SchemaError("filter: operator 'notIn' requires a non-empty 'values' list for column 'name'"));
+  });
+
+  it('例外: 日付・数値として読めない要素は execute でも名指しの SchemaError', () => {
+    expect(() => filterNode.execute([table], { column: 'joined', op: 'in', values: ['昨日'] }))
+      .toThrowError(new SchemaError("filter: values for date column 'joined' must be ISO dates (YYYY-MM-DD): 昨日"));
+    expect(() => filterNode.execute([table], { column: 'age', op: 'in', values: ['x'] }))
+      .toThrowError(new SchemaError("filter: values for number column 'age' must be numbers: x"));
+  });
+});
+
+describe('filter: parseFilterValueList', () => {
+  it.each([
+    ['東京都,大阪府', ['東京都', '大阪府']],
+    ['東京都, 大阪府 , 北海道', ['東京都', '大阪府', '北海道']],
+    ['東京都、大阪府', ['東京都', '大阪府']],
+    ['東京都，大阪府', ['東京都', '大阪府']],
+    ['東京都;大阪府', ['東京都', '大阪府']],
+    ['東京都\n大阪府\r\n北海道', ['東京都', '大阪府', '北海道']],
+  ] as const)('正常: %s をどの区切りでも同じ並びへ分ける', (text, expected) => {
+    expect(parseFilterValueList(text)).toEqual([...expected]);
+  });
+
+  it('境界: 空要素は捨て、重複は最初の1つだけ残す', () => {
+    expect(parseFilterValueList('東京都,,大阪府,東京都, ')).toEqual(['東京都', '大阪府']);
+  });
+
+  it('境界: 空文字・区切りだけの文字列は空の並びになる', () => {
+    expect(parseFilterValueList('')).toEqual([]);
+    expect(parseFilterValueList(' , 、 ; ')).toEqual([]);
+  });
+
+  it('境界: 上限は掛けない（何件まで許すかは呼び出し側の判断）', () => {
+    expect(parseFilterValueList(Array.from({ length: MAX_FILTER_VALUES + 5 }, (_, index) => `v${index}`).join(','))).toHaveLength(MAX_FILTER_VALUES + 5);
+  });
+});
+
+describe('filter: listValueArgumentSummaries', () => {
+  it('正常: in の valueBinding を field 単位に集約し、サンプル値を例として返す', () => {
+    expect(listValueArgumentSummaries([{
+      column: '地域', op: 'in', values: ['東京都', '大阪府'],
+      valueBinding: { source: 'agent-input', field: 'regions' },
+    }])).toEqual([{ field: 'regions', columns: ['地域'], samples: ['東京都', '大阪府'] }]);
+  });
+
+  it('正常: 複数ノード・複数条件の同一 field をまとめ、列とサンプルを重複排除する', () => {
+    expect(listValueArgumentSummaries([
+      { conditions: [
+        { column: '地域', op: 'in', values: ['東京都'], valueBinding: { source: 'agent-input', field: 'regions' } },
+        { column: '地域', op: 'notIn', values: ['東京都', '沖縄県'], valueBinding: { source: 'agent-input', field: 'regions' } },
+      ], combine: 'and' },
+    ])).toEqual([{ field: 'regions', columns: ['地域'], samples: ['東京都', '沖縄県'] }]);
+  });
+
+  it('境界: 例に出すサンプルは3件まで', () => {
+    expect(listValueArgumentSummaries([{
+      column: '地域', op: 'in', values: ['a', 'b', 'c', 'd', 'e'],
+      valueBinding: { source: 'agent-input', field: 'regions' },
+    }])[0]?.samples).toEqual(['a', 'b', 'c']);
+  });
+
+  it('異常: 単値演算子の束縛・束縛の無い in は集約しない', () => {
+    expect(listValueArgumentSummaries([
+      { column: '地域', op: 'eq', value: '東京都', valueBinding: { source: 'agent-input', field: 'region' } },
+      { column: '地域', op: 'in', values: ['東京都'] },
+    ])).toEqual([]);
+  });
+
+  it('正常: valueBindingsOf は複数値の条件に multiValue とサンプルを添える', () => {
+    expect(valueBindingsOf({ column: '地域', op: 'in', values: ['東京都'], valueBinding: { source: 'agent-input', field: 'regions' } }))
+      .toEqual([{ field: 'regions', column: '地域', multiValue: true, samples: ['東京都'] }]);
+  });
+});
+
+describe('filter: in / notIn に重ねて書かれた value（配列）を受け流す（e-Stat 実測）', () => {
+  const schema: Schema = { columns: [{ name: '地域', type: 'string', nullable: false }] };
+  const table: Table = { schema, rows: [{ 地域: '東京都' }, { 地域: '大阪府' }, { 地域: '北海道' }] };
+
+  it('正常: value と values の両方に配列があれば values を読み、設定は通る（実測の形そのまま）', () => {
+    const config = filterNode.validateConfig({ column: '地域', op: 'in', value: ['東京都'], values: ['東京都', '大阪府'], valueBinding: { source: 'agent-input', field: 'region_names' }, caseInsensitive: true });
+    expect(filterNode.execute([table], config).rows).toEqual([{ 地域: '東京都' }, { 地域: '大阪府' }]);
+  });
+
+  it('正常: values が無く value が配列なら、それを values として読む', () => {
+    const config = filterNode.validateConfig({ column: '地域', op: 'notIn', value: ['東京都', '大阪府'] });
+    expect(filterNode.execute([table], config).rows).toEqual([{ 地域: '北海道' }]);
+  });
+
+  it('正常: conditions 配列の中でも同じく受け流す', () => {
+    const config = filterNode.validateConfig({ conditions: [{ column: '地域', op: 'in', value: ['北海道'], values: ['北海道'] }], combine: 'and' });
+    expect(filterNode.execute([table], config).rows).toEqual([{ 地域: '北海道' }]);
+  });
+
+  it('従来どおり: in / notIn 以外の演算子で value に配列を書いたら ConfigError のまま', () => {
+    expect(() => filterNode.validateConfig({ column: '地域', op: 'eq', value: ['東京都'] })).toThrow(ConfigError);
   });
 });

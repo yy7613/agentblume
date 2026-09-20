@@ -35,10 +35,91 @@ import { wrapUntrusted } from './untrusted';
  * 期間ラベルが文字列のままでは範囲指定も時系列の並べ替えもできず、行数を縛る手段が無いと
  * 引数を省略した既定の呼び出しが `agent-output` の maxRows を必ず溢れさせる。
  */
-export const SAFE_TRANSFORM_TYPES = ['select', 'filter', 'sort', 'distinct', 'limit', PARSE_PERIOD_TYPE, 'summary-statistics'] as const;
+export const SAFE_TRANSFORM_TYPES = ['select', 'filter', 'sort', 'distinct', 'limit', PARSE_PERIOD_TYPE, 'rename', 'join', 'summary-statistics'] as const;
+
+/**
+ * 複数データソースを束ねる結合ノード。`SAFE_TRANSFORM_TYPES` に含まれるが、入力を2つ取る唯一の
+ * ノードなので、グラフの形（木）を語るときに名指しできるよう定数として分けておく。
+ */
+export const JOIN_NODE_TYPE = 'join';
 
 /** `parse-period` が付ける粒度の語彙（プロンプトへ列挙する）。 */
 const GRANULARITY_VOCABULARY = PERIOD_GRANULARITIES.map((granularity) => `'${granularity}'`).join(', ');
+
+/**
+ * この配線の `filter` が複数値演算子（`in` / `notIn`）を持つか（ADR-0047 round 3 / Part 2）。
+ *
+ * domain の正準リストから決定的に見る。持たないビルドでは `in` を勧める規則も、
+ * 「カテゴリ引数は `in` で束縛せよ」という検査も**出さない**: エンジンが受け付けない演算子を
+ * 書かせると、生成したToolが毎回修復ループで落ちてRunごと失敗するため。
+ */
+export function supportsMultiValueFilterOps(): boolean {
+  return (FILTER_OPS as readonly string[]).includes('in');
+}
+
+/** カテゴリ引数を `in` で束縛させる規則（`filter` が複数値演算子を持つビルドでのみ出す）。 */
+const CATEGORY_IN_RULES: readonly string[] = [
+  '- A category argument (a region, a category, a segment — see dataSource.categoricalColumns) MUST be bound with the \'in\' operator, not \'eq\', so that ONE call can ask for several of them: { "column": "<category column>", "op": "in", "values": ["<a representative value>"], "valueBinding": { "source": "agent-input", "field": "<argument name>" } }.',
+  '- The argument behind an \'in\' condition is declared "type": "string", "nullable": true. At run time the agent sends a COMMA-SEPARATED LIST in that one string ("東京都,大阪府,北海道"); the tool splits it. Omitting it (or sending an empty string) disables the condition and returns every category.',
+  "- An 'in' / 'notIn' condition reads \"values\" (a non-empty array), NOT \"value\". Even when the condition is bound to an argument, keep a design-time \"values\" list with one or two REAL values from the data: it is the sample the preview runs with, and the agent's argument replaces it at run time. A bound condition with an empty \"values\" fails validation.",
+  '- agentTool.description MUST say both halves: that the argument takes a comma-separated list with a concrete example ("regions: comma-separated, e.g. 東京都,大阪府"), and that omitting it returns every category.',
+  "- Never use 'in' / 'notIn' inside an opBinding \"allowed\" list; they are value operators, not operator choices.",
+];
+
+/** `in` を持たないビルドでの従来の言い回し（round 2）: カテゴリ引数は省略可能にして全件返す。 */
+const CATEGORY_OMIT_RULES: readonly string[] = [
+  '- A category argument (a region, a category, a segment — see dataSource.categoricalColumns) MUST stay nullable, and omitting it MUST return every category for the requested period. Comparing three regions is then ONE call whose result contains all of them, not three calls.',
+];
+
+/**
+ * 複数データソースを束ねるToolにだけ足す規則（ADR-0047 round 3）。
+ *
+ * 実測では「現金給与総額と労働時間を同じ時点で並べて説明する」目的に対して、Factory は
+ * 1ソース1Toolを3つ作り、行の突き合わせをエージェント任せにした（そして最後の再実行では
+ * どれも呼ばれなかった）。1つのToolで結合して返せば、突き合わせは決定的に済む。
+ */
+const JOIN_RULES: readonly string[] = [
+  'Joining the sources (the shape of a joined graph):',
+  '- The graph is a TREE, not a single chain: each source starts its own short branch, the branches meet in \'join\' nodes, and after the last join there is ONE chain down to the single \'agent-output\'.',
+  '- A typical branch is just: <source> → select/rename (keep the join keys and that source\'s value column, rename what would collide). Keep the branches as short as possible; everything else belongs after the last join.',
+  '- Join on ALL the key columns the sources share (joinCandidates[].keys in the user message lists them, e.g. BOTH 時点 AND 地域コード). Joining on only one of them multiplies rows: every region of one file matches every region of the other for the same period.',
+  '- Use "mode": "inner" unless the purpose explicitly needs rows that exist on only one side (then "left" from the primary source). inner keeps exactly the rows where both sources have a value, which is what "put them side by side" means.',
+  '- Do the select / rename BEFORE the join, so the value columns stay distinguishable (a bare "値" from both sides becomes "値" and "値_right", which the agent cannot read). Give each value column a name that says which source it came from, and drop the columns you do not need instead of carrying \'注記_right\'-style clutter — unless the notes matter for the answer.',
+  '- Put the argument filters AFTER the last join (or identically on every branch). One argument must filter the joined table once; binding the same argument on two branches with different conditions makes the result depend on which branch narrowed first.',
+  '- joinCandidates[].uniqueLeft / uniqueRight tell you whether the key identifies a single row on that side. When a side is NOT unique, narrow that branch first (for example filter it to one granularity) — otherwise the join multiplies rows and the output overflows.',
+  // ADR-0047 第5ラウンド: 3ソース結合の実測失敗（periodStart の衝突・注記をキーにした行落ち）。
+  `- Run '${PARSE_PERIOD_TYPE}' EXACTLY ONCE, AFTER the last join, on the primary source's period label column. Running it on each branch adds 'periodStart' / 'periodGranularity' to every branch, and the second join then fails with "right column 'periodStart' still conflicts after suffix". The label column survives the join because it is a join key, so parsing it afterwards works.`,
+  '- Before the join, a branch should only \'select\' the columns you need and \'rename\' the ones that would collide. Nothing else belongs there.',
+  '- Join keys MUST be taken from joinCandidates[].keys. Never join on a note/remark column (注記, remarks, 備考) or any other free-text column: rows whose text differs are silently dropped, and the result looks like "no data" instead of an error. When the sources share both a code and a name for the same thing (地域コード and 地域), the code alone is enough.',
+  '- With THREE sources, chain two joins (A ⨝ B) ⨝ C and give each join a DISTINCT "rightSuffix" (or drop the colliding columns with \'select\' on the branches first), so that the second join has no name to collide on.',
+];
+
+/**
+ * 3ソース結合の完成例（ノード一覧とエッジ）。結合する計画のときだけ出す。
+ * 12B級のモデルには、規則の列挙より「動く形をそのまま見せる」方が通りやすい（ADR-0047）。
+ */
+const THREE_SOURCE_EXAMPLE: readonly string[] = [
+  'Worked example for three sources (A = primary, B, C share 時点 and 地域コード; each has one value column):',
+  '  nodes:',
+  '    { "id": "a",  "type": "csv-source", "config": { "dataSourceId": "<A>" } }',
+  '    { "id": "b",  "type": "csv-source", "config": { "dataSourceId": "<B>" } }',
+  '    { "id": "c",  "type": "csv-source", "config": { "dataSourceId": "<C>" } }',
+  '    { "id": "bs", "type": "select", "config": { "columns": ["時点", "地域コード", "<B value column>"] } }',
+  '    { "id": "cs", "type": "select", "config": { "columns": ["時点", "地域コード", "<C value column>"] } }',
+  '    { "id": "j1", "type": "join", "config": { "mode": "inner", "keys": ["時点", "地域コード"], "rightSuffix": "_b" } }',
+  '    { "id": "j2", "type": "join", "config": { "mode": "inner", "keys": ["時点", "地域コード"], "rightSuffix": "_c" } }',
+  `    { "id": "pp", "type": "${PARSE_PERIOD_TYPE}", "config": { "column": "時点", "startColumn": "periodStart", "granularityColumn": "periodGranularity", "fiscalYearStartMonth": 4 } }`,
+  '    { "id": "g",  "type": "filter", "config": { "column": "periodGranularity", "op": "eq", "value": "year" } }',
+  '    { "id": "o",  "type": "sort", "config": { "keys": [{ "column": "periodStart", "direction": "desc" }] } }',
+  '    { "id": "l",  "type": "limit", "config": { "count": 100 } }',
+  '    { "id": "out","type": "agent-output", "config": { "shape": "rows", "format": "json", "maxRows": 100, "maxBytes": 65536, "overflow": "error" } }',
+  '  edges:',
+  '    { "from": "b", "to": "bs" }, { "from": "c", "to": "cs" }',
+  '    { "from": "a", "to": "j1", "toInput": 0 }, { "from": "bs", "to": "j1", "toInput": 1 }',
+  '    { "from": "j1", "to": "j2", "toInput": 0 }, { "from": "cs", "to": "j2", "toInput": 1 }',
+  '    { "from": "j2", "to": "pp" }, { "from": "pp", "to": "g" }, { "from": "g", "to": "o" }, { "from": "o", "to": "l" }, { "from": "l", "to": "out" }',
+  '  Note: the branches only select; the period is parsed ONCE after the last join; each join has its own rightSuffix.',
+];
 
 /** プロンプトへ列挙する演算子語彙（domain の正準リスト `FILTER_OPS` から導出し、リテラルの複製を持たない）。 */
 const OP_VOCABULARY = FILTER_OPS.map((op) => `'${op}'`).join(', ');
@@ -99,7 +180,13 @@ const TOOL_SMITH_SCHEMA: JsonSchemaObject = {
 
 export interface ToolSmithRoleInput {
   readonly toolPlan: FactoryToolPlan;
+  /** 主データソースのプロファイル（グラフの左端・`join` の左側になる）。 */
   readonly profile: DataProfile;
+  /**
+   * 結合する追加データソースのプロファイル（計画の `additionalDataSourceIds` 順）。
+   * 空・未指定なら従来どおりの単一ソースTool（ADR-0047 round 3）。
+   */
+  readonly additionalProfiles?: readonly DataProfile[];
   /** 直前の検証エラー（EtlEngine.propagateSchemas/preview 由来）。修復再試行時のみ設定する。 */
   readonly priorError?: string;
 }
@@ -119,11 +206,17 @@ export class ToolSmithRole {
   async propose(input: ToolSmithRoleInput, signal?: AbortSignal): Promise<ToolSmithProposal> {
     if (!this.available()) throw new FactoryValidationError('ToolSmithRole: model does not support structured output');
     const sourceType = input.profile.format === 'json' ? 'json-source' : 'csv-source';
+    const additional = input.additionalProfiles ?? [];
+    const sourceLine = additional.length === 0
+      ? `- The graph MUST contain exactly one source node of type '${sourceType}' with config { "dataSourceId": "${input.toolPlan.dataSourceId}" }. Use this dataSourceId exactly; never invent another one.`
+      : `- This is a JOINED tool. The graph MUST contain exactly ${1 + additional.length} source nodes, one per data source, each used exactly once: the primary { "dataSourceId": "${input.toolPlan.dataSourceId}" } (type '${sourceType}') and ${additional.map((profile) => `{ "dataSourceId": "${profile.dataSourceId}" } (type '${profile.format === 'json' ? 'json-source' : 'csv-source'}')`).join(', ')}. Use these ids exactly; never invent another one and never read the same source twice.`;
     const system = [
       'You are the ToolSmith role of an internal Agent Factory generation pipeline.',
-      'Turn one tool plan into a read-only ETL tool graph that reads the given data source and returns rows or a summary to the agent.',
+      additional.length === 0
+        ? 'Turn one tool plan into a read-only ETL tool graph that reads the given data source and returns rows or a summary to the agent.'
+        : 'Turn one tool plan into a read-only ETL tool graph that reads SEVERAL data sources, joins them on their shared key columns, and returns one table whose rows carry the values of all of them side by side.',
       'Rules (hard constraints; violating any of these causes the proposal to be rejected and re-tried):',
-      `- The graph MUST contain exactly one source node of type '${sourceType}' with config { "dataSourceId": "${input.toolPlan.dataSourceId}" }. Use this dataSourceId exactly; never invent another one.`,
+      sourceLine,
       `- You may chain zero or more transform nodes after the source, using ONLY these types: ${SAFE_TRANSFORM_TYPES.join(', ')}.`,
       '- Node config fields that name a column (select.columns, filter.column, sort.keys[].column, distinct.columns, summary-statistics columns) may only use columns listed in the provided data source columns, or a column added upstream by parse-period. Never invent column names.',
       'Node catalog (config contract of every transform node you may use):',
@@ -133,6 +226,8 @@ export class ToolSmithRole {
       '- limit: { "count": <1..10000>, "offset": <0 or more, optional> } — keeps the first count rows. sort + limit is how you return "the top N".',
       `- ${PARSE_PERIOD_TYPE}: { "column": "<period label column>", "startColumn": "periodStart", "granularityColumn": "periodGranularity", "fiscalYearStartMonth": 4 } — reads a Japanese/ISO period label ('1975年10月', '2024年1-3月期', '2024年', '2024年度', '2024-05') and ADDS two columns: "periodStart" (type date, the first day of that period) and "periodGranularity" (type string, one of ${GRANULARITY_VOCABULARY}). It never removes or rewrites the original column. startColumn/granularityColumn must not collide with an existing column name.`,
       '- distinct: { "columns": ["<column>", ...] } — drops duplicate rows over those columns.',
+      '- rename: { "renames": [{ "from": "<column>", "to": "<new name>" }] } — renames columns. Use it BEFORE a join so that the value columns of each source keep telling you which source they came from.',
+      `- ${JOIN_NODE_TYPE}: { "mode": "inner" | "left" | "right" | "full", "keys": [{ "left": "<column in the left input>", "right": "<column in the right input>" }, ...], "rightSuffix": "_right" } — the ONLY node that takes TWO inputs. Its two incoming edges MUST carry "toInput": 0 (left) and "toInput": 1 (right). Output = every left column + the right columns that are not join keys; a right column whose name already exists on the left gets "rightSuffix" appended (so '注記' becomes '注記_right').`,
       '- summary-statistics: aggregates the table; use it only when the plan asks for statistics rather than rows.',
       'Period columns (dataSource.periodColumns in the user message):',
       `- A period column is a STRING column: '2008年' and '2010年' sort and compare as text, so range questions ("2008年から2010年の推移", "最大だった時期") cannot be answered by filtering it with eq/gte/lte directly. When the plan needs a range, an ordering, or a maximum over time, you MUST insert a '${PARSE_PERIOD_TYPE}' node right after the source and work on "periodStart" / "periodGranularity" instead.`,
@@ -152,9 +247,12 @@ export class ToolSmithRole {
       '- An argument that filters a date column MUST be declared "type": "date" (not "string"). The agent then passes an ISO date such as "2008-01-01" and the tool compares dates instead of text.',
       "- Dates always mean the START of the period: an annual row for 2023 has periodStart 2023-01-01, so `period_from` 2023-10-01 EXCLUDES it. Say this in agentTool.description.",
       `- Sort by the parsed start column before the limit, descending unless the purpose asks for the oldest first, so that a call with no date arguments returns the most recent periods: { "keys": [{ "column": "periodStart", "direction": "desc" }] }.`,
+      ...(additional.length === 0 ? [] : JOIN_RULES),
+      // 3ソース以上のときだけ、完成した形をそのまま見せる（2ソースでは長すぎて他の規則を薄める）。
+      ...(additional.length >= 2 ? THREE_SOURCE_EXAMPLE : []),
       `One call must be able to cover several categories (the conversation has a budget of ${MAX_TOOL_CALLS} tool calls):`,
-      '- A category argument (region, category, segment) MUST stay nullable, and omitting it MUST return every category for the requested period. Comparing three regions is then ONE call whose result contains all of them, not three calls.',
-      '- Never design a tool that accepts only one category value per call, and never say "one region at a time" in the description: a comparison question would exceed the tool call budget and the whole conversation fails.',
+      ...(supportsMultiValueFilterOps() ? CATEGORY_IN_RULES : CATEGORY_OMIT_RULES),
+      '- Never design a tool that accepts only one category value per call, and never say "one region at a time" in the description: a comparison question would then need one call per region and would exceed the tool call budget, failing the whole conversation.',
       '- Check the row count: with the category argument omitted and the period narrowed, the result must still fit the agent-output maxRows (dataSource.categoricalColumns tells you how many categories there are).',
       'agentTool.description (what the agent reads before calling):',
       '- State the accepted format of every argument ("period_from / period_to: ISO date, e.g. 2008-01-01", "granularity: one of month, quarter, year, fiscal-year").',
@@ -204,6 +302,20 @@ export class ToolSmithRole {
         categoricalColumns: input.profile.categoricalColumns ?? [],
         sampleRows: input.profile.sampleRows.slice(0, 3),
       },
+      // 結合するToolだけ、追加ソースのプロファイルと「どの列で結合できるか」を添える。
+      ...(additional.length === 0 ? {} : {
+        additionalDataSources: additional.map((profile) => ({
+          dataSourceId: profile.dataSourceId,
+          name: profile.name,
+          format: profile.format,
+          columns: profile.columns,
+          rowCount: profile.rowCount,
+          periodColumns: profile.periodColumns ?? [],
+          categoricalColumns: profile.categoricalColumns ?? [],
+          sampleRows: profile.sampleRows.slice(0, 3),
+        })),
+        joinCandidates: joinCandidatesFor(input.profile, additional),
+      }),
       ...(input.priorError === undefined ? {} : { priorValidationError: input.priorError }),
     };
     const completion = await this.model.complete({
@@ -216,6 +328,15 @@ export class ToolSmithRole {
     }, signal);
     return parseProposal(completion.message.content);
   }
+}
+
+/**
+ * このToolが束ねるソースの組み合わせに関係する結合候補だけを取り出す（向きは問わない）。
+ * `joinCandidates` はRun全体の一覧なので、無関係なペアを渡すとモデルが別のソースを読みに行く。
+ */
+function joinCandidatesFor(primary: DataProfile, additional: readonly DataProfile[]): DataProfile['joinCandidates'] {
+  const involved = new Set([primary.dataSourceId, ...additional.map((profile) => profile.dataSourceId)]);
+  return (primary.joinCandidates ?? []).filter((candidate) => involved.has(candidate.leftDataSourceId) && involved.has(candidate.rightDataSourceId));
 }
 
 function parseProposal(content: string | null): ToolSmithProposal {

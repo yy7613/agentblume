@@ -329,7 +329,9 @@ export class AnalystRole {
         ? []
         : [
             `- toolCallBudget is the maximum number of tool calls the agent may make in ONE conversation: ${input.toolCallBudget}. A design that needs one call per item (one region, one category, one period) fails outright as soon as the user asks to compare a few of them.`,
-            '- Therefore NEVER narrow a tool so that it accepts a single category value per call, and never write "one region at a time" into a tool description or a prompt. Category arguments stay optional, and omitting them returns every category in ONE call; comparison questions are answered by picking rows out of that one result.',
+            '- Therefore NEVER narrow a tool so that it accepts a single category value per call, and never write "one region at a time" into a tool description or a prompt.',
+            '- A category argument should be bound with the \'in\' operator so that ONE call can ask for several values: the agent sends a comma-separated list in a single nullable string argument, and omitting it returns every category. Keep both halves in the tool description. Only when a tool really cannot take a list, fall back to "omit the category and pick the rows out of the result".',
+            '- A tool may read SEVERAL data sources joined on their shared keys (時点, 地域コード …). When scenarios need values from different sources in the same row, prefer revising that tool (or proposing one add-tool that joins them) over asking the agent to call several tools and line the rows up itself.',
           ]),
       '- proposals: at most one revision per target asset kind you decide to change. Only propose kinds from the fixed set in the schema.',
       '- system-prompt-revision: sections.role and sections.rules MUST both be the FULL replacement text for that section (not a diff or a patch); they replace the current section verbatim.',

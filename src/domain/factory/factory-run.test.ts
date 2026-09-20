@@ -55,6 +55,19 @@ describe('startFactoryRun', () => {
     expect(run.input.options.promptStrategy).toBe('preserve');
   });
 
+  it('正常: 新規Toolの作り方は既定で段階的（staged）', () => {
+    const run = makeRun();
+    expect(DEFAULT_FACTORY_OPTIONS.toolGeneration).toBe('staged');
+    expect(run.input.options.toolGeneration).toBe('staged');
+  });
+
+  it('境界: toolGeneration:one-shot を指定すると従来どおりの一括生成として保持する', () => {
+    const options = { ...DEFAULT_FACTORY_OPTIONS, toolGeneration: 'one-shot' as const };
+    const run = startFactoryRun({ id: 'run-4', scope, input: { goal: { goal: 'g', language: 'ja' }, dataSourceIds: ['ds-1'], options }, startedAt: '2026-07-20T00:00:00Z' });
+    expect(run.input.options.toolGeneration).toBe('one-shot');
+    expect(run.input.options).not.toBe(options);
+  });
+
   it('promptStrategy を含む options を複製して保持する（呼び出し元と共有しない）', () => {
     const options = { ...DEFAULT_FACTORY_OPTIONS, promptStrategy: 'rewrite' as const };
     const run = startFactoryRun({ id: 'run-3', scope, input: { goal: { goal: 'g', language: 'ja' }, dataSourceIds: ['ds-1'], options }, startedAt: '2026-07-20T00:00:00Z' });

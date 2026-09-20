@@ -17,6 +17,7 @@ import { PreviewPanel } from './PreviewPanel';
 import { useDraftPreview } from './use-draft-preview';
 import { AGENT_CONTEXT_NAME_INPUT_ID, AgentToolContextPanel } from './AgentToolContextPanel';
 import { catalogItem } from './node-catalog';
+import { TemplateDialog } from './TemplateDialog';
 import { useToolBuilderStore, type ToolBuilderDraft, type ToolFlowNode } from './store';
 import { scope } from '../scope';
 
@@ -65,6 +66,9 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
   const [pendingDelete, setPendingDelete] = useState<ToolSummaryDto>();
   // 「開いたうえで直す場所へ」の依頼。editor が描画されてから DOM / 選択を触るため effect で消費する。
   const [focusRequest, setFocusRequest] = useState<LocalTarget>();
+  // 「テンプレートから作成」（v43）。作成に成功したらキャンバス（editor）へ移る。
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const createdFromTemplate = useToolBuilderStore((state) => state.createdFromTemplate);
 
   // 下書きの自動保存。グラフとメタデータだけを退避し、推論結果やプレビューは復元時に再計算させる。
   const metadata = useToolBuilderStore((state) => state.metadata);
@@ -96,6 +100,17 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
     useToolBuilderStore.getState().reset();
     setListError(undefined);
     setView('editor');
+  }
+  /** テンプレートから作成する前に、いまの編集内容を捨てて新しい下書きの土台にする。 */
+  function openTemplates(): void {
+    useToolBuilderStore.getState().reset();
+    setListError(undefined);
+    setTemplateOpen(true);
+  }
+  /** 作成できたらキャンバスへ。作成せずに閉じたときは一覧のまま。 */
+  function closeTemplates(): void {
+    setTemplateOpen(false);
+    if (useToolBuilderStore.getState().createdFromTemplate !== undefined) setView('editor');
   }
   async function backToList(): Promise<void> { setView('list'); await refreshTools(); }
   /** 一覧・他画面からの依頼で保存済みToolを開く。開けたら true（失敗は一覧にエラーを出して false）。 */
@@ -135,7 +150,10 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
     return <main className="agent-builder tool-list-page">
       <header className="agent-builder-header">
         <div><span className="eyebrow">{text('Tool Builder', 'ツールビルダー')}</span><h1>{text('Tools', 'ツール一覧')}</h1><p>{text('Compose an ETL graph and save the reviewed definition as a new version.', 'ETLグラフを組み立て、レビュー後の定義を新しいバージョンとして保存します。')}</p></div>
-        <div className="save-actions"><button type="button" className="primary" onClick={startNewTool}>{text('New tool', '新規作成')}</button></div>
+        <div className="save-actions">
+          <button type="button" className="secondary" onClick={openTemplates}>{text('Create from a template', 'テンプレートから作成')}</button>
+          <button type="button" className="primary" onClick={startNewTool}>{text('New tool', '新規作成')}</button>
+        </div>
       </header>
       {listError !== undefined && <div className="api-error">{listError}</div>}
       <section className="workspace-card agent-list">
@@ -151,10 +169,15 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
         message={text(`Delete "${pendingDelete?.displayName ?? ''}" (${pendingDelete?.publishName ?? ''})? It disappears from this list and Agents can no longer reference it.`, `「${pendingDelete?.displayName ?? ''}」(${pendingDelete?.publishName ?? ''})を削除しますか？一覧から消え、エージェントから参照できなくなります。`)}
         confirmLabel={text('Delete', '削除')} cancelLabel={text('Cancel', 'キャンセル')} danger busy={busy}
         onConfirm={() => { if (pendingDelete !== undefined) void removeTool(pendingDelete.internalId); }} onCancel={() => setPendingDelete(undefined)} />
+      <TemplateDialog client={client} open={templateOpen} onClose={closeTemplates} />
     </main>;
   }
   return <div className="tool-builder-shell">
     <button type="button" className="secondary agent-back-button" onClick={() => void backToList()}>{text('Back to list', '一覧へ戻る')}</button>
+    {createdFromTemplate !== undefined && <div className="template-created" role="status">
+      {text(`Built from the template ${createdFromTemplate}. Set the owner and the names, then save.`, `テンプレート ${createdFromTemplate} から作成しました。所有者と名前を確認して保存してください。`)}
+      <button type="button" className="ghost" aria-label={text('Close notice', '通知を閉じる')} onClick={() => useToolBuilderStore.getState().clearCreatedFromTemplate()}>×</button>
+    </div>}
     {draft.pending !== undefined && <DraftRestoreBanner savedAt={draft.pending.savedAt}
       onRestore={() => { const value = draft.restore(); if (value !== undefined) useToolBuilderStore.getState().applyDraft(value); }}
       onDiscard={draft.discard} />}
