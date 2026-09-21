@@ -236,7 +236,7 @@ describe('InstantiateToolTemplateUseCase', () => {
 
   it('正常: 実体化したグラフ・引数スキーマ・Agent Tool 契約を返す（保存はしない）', async () => {
     const { instantiate } = await singleSource();
-    const result = await instantiate.execute({ scope, templateId: 'period-series', dataSourceIds: ['ds-population'], values: seriesValues, language: 'ja' });
+    const result = await instantiate.execute({ scope, templateId: 'period-series', dataSourceIds: ['ds-population'], values: seriesValues, language: 'ja', toolName: 'population_series' });
     expect(result.template).toEqual({ id: 'period-series', version: expect.stringMatching(/^\d+\.\d+\.\d+$/) });
     expect(result.graph.nodes.map((node) => node.type)).toEqual(expect.arrayContaining(['csv-source', 'parse-period', 'filter', 'sort', 'limit', 'agent-output', 'agent-input']));
     expect(result.inputSchema?.columns.map((column) => column.name)).toEqual(['granularity', 'period_from', 'period_to', 'categories']);
@@ -244,17 +244,15 @@ describe('InstantiateToolTemplateUseCase', () => {
     expect(result.pendingExpressions).toEqual([]);
   });
 
-  it('正常: function 名を省略するとテンプレート id になり、渡せばその名前になる', async () => {
+  it('正常: 渡した toolName が agentTool.name に入る', async () => {
     const { instantiate } = await singleSource();
-    const fallback = await instantiate.execute({ scope, templateId: 'period-series', dataSourceIds: ['ds-population'], values: seriesValues, language: 'ja' });
-    expect(fallback.agentTool.name).toBe('period-series');
     const named = await instantiate.execute({ scope, templateId: 'period-series', dataSourceIds: ['ds-population'], values: seriesValues, language: 'ja', toolName: 'population_series' });
     expect(named.agentTool.name).toBe('population_series');
   });
 
   it('正常: 説明文の言語は language に従う', async () => {
     const { instantiate } = await singleSource();
-    const english = await instantiate.execute({ scope, templateId: 'period-series', dataSourceIds: ['ds-population'], values: seriesValues, language: 'en' });
+    const english = await instantiate.execute({ scope, templateId: 'period-series', dataSourceIds: ['ds-population'], values: seriesValues, language: 'en', toolName: 'population_series' });
     expect(english.agentTool.description).toContain('Returns the series of');
   });
 
@@ -262,7 +260,7 @@ describe('InstantiateToolTemplateUseCase', () => {
     const { instantiate } = await singleSource();
     const result = await instantiate.execute({
       scope, templateId: 'period-series', dataSourceIds: ['ds-population'],
-      values: { ...seriesValues, categoryColumn: undefined }, language: 'ja',
+      values: { ...seriesValues, categoryColumn: undefined }, language: 'ja', toolName: 'population_series',
     });
     expect(result.inputSchema?.columns.map((column) => column.name)).not.toContain('categories');
     expect(result.graph.nodes.map((node) => node.id)).not.toContain('f_category');
@@ -273,7 +271,7 @@ describe('InstantiateToolTemplateUseCase', () => {
     const result = await instantiate.execute({
       scope, templateId: 'custom-computation', dataSourceIds: ['ds-population'],
       values: { source: 'ds-population', periodColumn: '時点', valueColumns: ['人口'], outputColumn: '一人当たり', computationIntent: '人口を千で割る', defaultGranularity: 'year', limit: 12 },
-      language: 'ja',
+      language: 'ja', toolName: 'population_per_capita',
     });
     expect(result.pendingExpressions).toEqual([{ nodeId: 'calc', intent: '人口を千で割る' }]);
     expect(result.graph.nodes.find((node) => node.id === 'calc')?.config).toMatchObject({ expression: '' });
@@ -283,7 +281,7 @@ describe('InstantiateToolTemplateUseCase', () => {
     const { instantiate } = await singleSource();
     const failure = instantiate.execute({
       scope, templateId: 'period-series', dataSourceIds: ['ds-population'],
-      values: { ...seriesValues, valueColumns: ['世帯数'] }, language: 'ja',
+      values: { ...seriesValues, valueColumns: ['世帯数'] }, language: 'ja', toolName: 'population_series',
     });
     await expect(failure).rejects.toThrow(ToolTemplateSlotsError);
     const error = await slotsErrorOf(failure);
@@ -295,7 +293,7 @@ describe('InstantiateToolTemplateUseCase', () => {
     const { instantiate } = await singleSource();
     const error = await slotsErrorOf(instantiate.execute({
       scope, templateId: 'period-series', dataSourceIds: ['ds-population'],
-      values: { source: 'ds-population', valueColumns: ['人口'], defaultGranularity: 'year' }, language: 'ja',
+      values: { source: 'ds-population', valueColumns: ['人口'], defaultGranularity: 'year' }, language: 'ja', toolName: 'population_series',
     }));
     expect(error.slots.map((problem) => problem.slot)).toContain('periodColumn');
   });
@@ -304,20 +302,20 @@ describe('InstantiateToolTemplateUseCase', () => {
     const { instantiate } = await singleSource();
     const error = await slotsErrorOf(instantiate.execute({
       scope, templateId: 'period-series', dataSourceIds: ['ds-population'],
-      values: { source: 'ds-population', periodColumn: '人口', valueColumns: ['地域'], defaultGranularity: 'year' }, language: 'ja',
+      values: { source: 'ds-population', periodColumn: '人口', valueColumns: ['地域'], defaultGranularity: 'year' }, language: 'ja', toolName: 'population_series',
     }));
     expect(error.slots.map((problem) => problem.slot)).toEqual(expect.arrayContaining(['periodColumn', 'valueColumns']));
   });
 
   it('例外: 知らないテンプレート id は not found（実体化の前に止める）', async () => {
     const { instantiate } = await singleSource();
-    await expect(instantiate.execute({ scope, templateId: 'nope', dataSourceIds: ['ds-population'], values: {}, language: 'ja' }))
+    await expect(instantiate.execute({ scope, templateId: 'nope', dataSourceIds: ['ds-population'], values: {}, language: 'ja', toolName: 'population_series' }))
       .rejects.toThrow(ToolTemplateNotFoundError);
   });
 
   it('例外: ソース数が足りなければ、いくつ選べばよいかを言って止める', async () => {
     const { instantiate } = await twoSources();
-    await expect(instantiate.execute({ scope, templateId: 'ratio-of-two-sources', dataSourceIds: ['ds-population'], values: {}, language: 'ja' }))
+    await expect(instantiate.execute({ scope, templateId: 'ratio-of-two-sources', dataSourceIds: ['ds-population'], values: {}, language: 'ja', toolName: 'ratio_tool' }))
       .rejects.toThrow(/exactly 2 data source/);
   });
 });

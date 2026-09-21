@@ -1176,4 +1176,6 @@ button.ghost { border: 1px solid #ccd3e0; background: white; color: #55617e; bor
 fieldset.template-slot { border: 1px solid #e1e6ef; border-radius: 8px; padding: 8px 10px; }
 fieldset.template-slot legend { font-size: 12px; padding: 0 4px; }
 .template-slot .check { display: flex; align-items: center; gap: 6px; font-weight: 400; }
+/* 名前の2欄。スロットと「作成」の間で区切って、最後に決めるものだと分かるようにする。 */
+.template-names { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 12px; padding-top: 12px; border-top: 1px solid #e1e6ef; }
 .template-created { display: flex; align-items: center; gap: 10px; margin: 8px 0; padding: 8px 12px; border-radius: 8px; background: #eef5ff; color: #2b3a55; font-size: 12px; }

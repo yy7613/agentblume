@@ -11,13 +11,14 @@ import type {
   TemplateSlotProblemDto,
   TemplateSlotValueDto,
   TemplateSlotValuesDto,
+  ToolSummaryDto,
   ToolTemplateDto,
   ToolTemplateSlotDto,
 } from '../api/types';
 import { useModalBehavior } from '../hooks/useModalBehavior';
 import { useI18n } from '../i18n';
 import { scope } from '../scope';
-import { useToolBuilderStore } from './store';
+import { FUNCTION_NAME_PATTERN, useToolBuilderStore } from './store';
 
 /**
  * 「テンプレートから作成」ダイアログ（v43 実装契約 §5 / ADR-0049）。
@@ -27,9 +28,12 @@ import { useToolBuilderStore } from './store';
  * 並べて、当てずっぽうの選択を避けさせること。壊れて読めなかったテンプレートも一覧の下に
  * 理由と直し方つきで出す（黙って消すと「足したのに出てこない」になる）。
  *
- * 2 段階: (1) テンプレートを選ぶ → (2) データソースとスロットを埋めて作成。
+ * 2 段階: (1) テンプレートを選ぶ → (2) データソースとスロットを埋め、名前を決めて作成。
  * 作成は保存ではなく、実体化したグラフをキャンバスへ展開するところまで。
  */
+
+/** 表示名の上限（v45 実装契約 §4）。 */
+const DISPLAY_NAME_MAX = 80;
 
 /** 表示言語に合わせて日英のどちらかを取る。 */
 function pick(value: LocalizedTextDto | undefined, language: 'en' | 'ja'): string {
@@ -209,8 +213,15 @@ export function TemplateDialog({ client, open, onClose }: {
   const [catalog, setCatalog] = useState<{ readonly templates: readonly ToolTemplateDto[]; readonly invalid: readonly InvalidToolTemplateDto[] }>();
   const [catalogError, setCatalogError] = useState<string>();
   const [dataSources, setDataSources] = useState<readonly DataSourceDto[]>([]);
+  // 保存済み Tool。関数名の重複を**保存まで待たずに**この場で弾くためだけに使う。
+  const [savedTools, setSavedTools] = useState<readonly ToolSummaryDto[]>([]);
   const [filter, setFilter] = useState('');
   const [template, setTemplate] = useState<ToolTemplateDto>();
+  // 名前（v45 / 実装契約 §4）。既定値は入れない: テンプレートの title / id を初期値にすると
+  // そのまま押し通され、同じテンプレートから作った 2 本目が 1 本目と同じ内部IDになり、
+  // 別のツールのつもりが 1 本目の新しいバージョンになってしまう。
+  const [toolDisplayName, setToolDisplayName] = useState('');
+  const [toolFunctionName, setToolFunctionName] = useState('');
   const [values, setValues] = useState<TemplateSlotValuesDto>({});
   const [candidates, setCandidates] = useState<readonly TemplateSlotCandidatesDto[]>([]);
   const [problems, setProblems] = useState<readonly TemplateSlotProblemDto[]>([]);
@@ -227,6 +238,11 @@ export function TemplateDialog({ client, open, onClose }: {
     void client.listDataSources(scope)
       .then((sources) => { if (active) setDataSources(sources); })
       .catch(() => { if (active) setDataSources([]); });
+    // 重複チェックのための一覧は開いたときに 1 回だけ取る。取れなくても作成は止めない
+    // （重複チェックだけ諦める。一覧が読めないことは、名前を決められない理由にはならない）。
+    void client.listTools(scope)
+      .then((items) => { if (active) setSavedTools(items); })
+      .catch(() => { if (active) setSavedTools([]); });
     return () => { active = false; };
   }, [client, open]);
 
@@ -253,8 +269,27 @@ export function TemplateDialog({ client, open, onClose }: {
 
   const close = () => {
     setTemplate(undefined); setValues({}); setCandidates([]); setProblems([]); setFormError(undefined); setFilter('');
+    setToolDisplayName(''); setToolFunctionName('');
     onClose();
   };
+
+  // 名前の指摘（欄の真下に出し、片方でも残っていれば「作成」は押せない）。
+  // 関数名は前後の空白を落とさずに形を見る（空白入りの名前は直してもらう対象で、黙って捨てる値ではない）。
+  const displayName = toolDisplayName.trim();
+  const duplicate = savedTools.find((tool) => tool.publishName.toLowerCase() === toolFunctionName.toLowerCase());
+  const displayNameProblem = displayName === ''
+    ? text('Enter a tool name.', 'ツール名を入力してください')
+    : displayName.length > DISPLAY_NAME_MAX
+      ? text(`The tool name must be 1–${DISPLAY_NAME_MAX} characters.`, `ツール名は1〜${DISPLAY_NAME_MAX}文字です`)
+      : undefined;
+  const functionNameProblem = toolFunctionName.trim() === ''
+    ? text('Enter a function name.', '関数名を入力してください')
+    : !FUNCTION_NAME_PATTERN.test(toolFunctionName)
+      ? text('The function name must be 1–64 characters of letters, digits, _ or -.', '関数名は英数字・_・- で 1〜64 文字です')
+      : duplicate === undefined
+        ? undefined
+        : text(`The tool "${duplicate.displayName}" already uses this function name. Choose a different one.`, `この関数名はツール「${duplicate.displayName}」が使っています。別の名前にしてください`);
+  const namesReady = displayNameProblem === undefined && functionNameProblem === undefined;
 
   const startWith = (chosen: ToolTemplateDto) => {
     setTemplate(chosen);
@@ -271,13 +306,13 @@ export function TemplateDialog({ client, open, onClose }: {
   };
 
   const create = async () => {
-    if (template === undefined) return;
+    if (template === undefined || !namesReady) return;
     setBusy(true); setFormError(undefined); setProblems([]);
     try {
       const instantiated = await client.instantiateToolTemplate({
-        templateId: template.id, scope, dataSourceIds, values, language,
+        templateId: template.id, scope, dataSourceIds, values, language, toolName: toolFunctionName,
       });
-      useToolBuilderStore.getState().loadTemplate(instantiated, pick(template.title, language));
+      useToolBuilderStore.getState().loadTemplate(instantiated, displayName);
       close();
     } catch (cause) {
       if (cause instanceof ApiError) {
@@ -338,6 +373,23 @@ export function TemplateDialog({ client, open, onClose }: {
           problems={problems.filter((problem) => problem.slot === slot.name)}
           onChange={(next) => setValue(slot.name, next)}
         />)}</div>
+        {/*
+          名前はスロットの後（テンプレートとデータソースを選んでから考える順）。既定値を入れないのは、
+          同じテンプレートから 2 本目を作ったときに内部IDまで同じになり、1 本目の新しいバージョンに
+          なってしまうのを、人が名前を決めることでしか防げないため（v45 / 実装契約 §4）。
+        */}
+        <div className="template-names">
+          <label className="template-slot">{text('Tool name', 'ツール名（表示名）')}
+            <small>{text('Shown in the tool list and when an agent picks a tool. e.g. Population by prefecture over time', '一覧とエージェントの選択画面に出ます。例: 都道府県別人口の推移')}</small>
+            <input aria-label={text('Tool name', 'ツール名（表示名）')} value={toolDisplayName} onChange={(event) => setToolDisplayName(event.target.value)} />
+            {displayNameProblem !== undefined && <small className="field-error" role="alert">{displayNameProblem}</small>}
+          </label>
+          <label className="template-slot">{text('Function name', '関数名')}
+            <small>{text('The name the model sees when it picks this tool. e.g. population_series', 'モデルがこの名前でツールを選びます。例: population_series')}</small>
+            <input aria-label={text('Function name', '関数名')} value={toolFunctionName} onChange={(event) => setToolFunctionName(event.target.value)} />
+            {functionNameProblem !== undefined && <small className="field-error" role="alert">{functionNameProblem}</small>}
+          </label>
+        </div>
         {generalProblems.map((problem, index) => <div className="api-error" role="alert" key={index}>{problem.message}</div>)}
         {formError !== undefined && <div className="api-error" role="alert">{formError}</div>}
       </div>}
@@ -345,7 +397,7 @@ export function TemplateDialog({ client, open, onClose }: {
       <footer>
         {template !== undefined && <button type="button" className="secondary" disabled={busy} onClick={() => setTemplate(undefined)}>{text('Back to the list', 'テンプレート一覧へ戻る')}</button>}
         <button type="button" className="secondary" onClick={close}>{text('Cancel', 'キャンセル')}</button>
-        {template !== undefined && <button type="button" className="primary" disabled={busy} onClick={() => void create()}>{busy ? text('Creating…', '作成中…') : text('Create', '作成')}</button>}
+        {template !== undefined && <button type="button" className="primary" disabled={busy || !namesReady} onClick={() => void create()}>{busy ? text('Creating…', '作成中…') : text('Create', '作成')}</button>}
       </footer>
     </div>
   </div>;

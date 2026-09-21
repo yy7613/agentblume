@@ -6,6 +6,9 @@
  * 一覧と絞り込み・読めなかったテンプレートの表示・スロット種別ごとの入力欄・
  * 依存するスロットを変えたときの候補の取り直し・422 のスロット指摘・
  * 作成でストアへ展開されること（メタデータと通知つき）・キーボード操作。
+ *
+ * v45 からは名前（表示名・関数名）が作成時の必須入力で、保存済みの関数名との重複は
+ * この場で弾く（同じテンプレートから作った 2 本目が 1 本目の新しいバージョンになるのを防ぐ）。
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -15,6 +18,7 @@ import type {
   DataSourceDto,
   InstantiatedTemplateDto,
   TemplateSlotCandidatesResultDto,
+  ToolSummaryDto,
   ToolTemplateCatalogDto,
   ToolTemplateDto,
 } from '../api/types';
@@ -128,10 +132,16 @@ function instantiated(overrides: Partial<InstantiatedTemplateDto> = {}): Instant
   };
 }
 
+/** 保存済み Tool（関数名の重複チェックの相手）。 */
+const SAVED_TOOLS: readonly ToolSummaryDto[] = [
+  { internalId: 'population_series', publishName: 'population_series', displayName: '都道府県別人口の推移', latestVersion: '1.0.0', state: 'published', sideEffect: 'read-only' },
+];
+
 function fakeClient(overrides: Readonly<Record<string, unknown>> = {}): ToolApiClient {
   return {
     listToolTemplates: vi.fn().mockResolvedValue(CATALOG),
     listDataSources: vi.fn().mockResolvedValue(DATA_SOURCES),
+    listTools: vi.fn().mockResolvedValue(SAVED_TOOLS),
     toolTemplateSlotCandidates: vi.fn().mockResolvedValue(SERIES_CANDIDATES),
     instantiateToolTemplate: vi.fn().mockResolvedValue(instantiated()),
     ...overrides,
@@ -149,6 +159,22 @@ async function choose(title: string): Promise<HTMLElement> {
   await userEvent.click(within(card).getByRole('button', { name: /Use this template|このテンプレートを使う/ }));
   return screen.getByRole('dialog');
 }
+
+/** 名前の 2 欄を埋める（長い値も入れられるよう change で入れる）。 */
+function fillNames(displayName = '人口の推移', functionName = 'population_trend'): void {
+  fireEvent.change(screen.getByLabelText(/^(Tool name|ツール名（表示名）)$/), { target: { value: displayName } });
+  fireEvent.change(screen.getByLabelText(/^(Function name|関数名)$/), { target: { value: functionName } });
+}
+
+/** その入力欄の真下に出ている指摘。 */
+function problemUnder(label: RegExp): string | undefined {
+  const field = screen.getByLabelText(label).closest('label') as HTMLElement;
+  return within(field).queryByRole('alert')?.textContent ?? undefined;
+}
+
+const createButton = () => screen.getByRole('button', { name: /^(Create|作成)$/ }) as HTMLButtonElement;
+const TOOL_NAME_FIELD = /^(Tool name|ツール名（表示名）)$/;
+const FUNCTION_NAME_FIELD = /^(Function name|関数名)$/;
 
 describe('TemplateDialog: テンプレート一覧', () => {
   it('正常: タイトル・要約・使いどころ・タグ・要るデータソース数を出す', async () => {
@@ -315,6 +341,7 @@ describe('TemplateDialog: 作成', () => {
     const values = (screen.getByText('Value columns')).closest('fieldset') as HTMLElement;
     await userEvent.click(within(values).getByRole('checkbox', { name: /人口/ }));
     await userEvent.selectOptions(screen.getByLabelText('Default granularity'), 'year');
+    fillNames();
   }
 
   it('正常: 実体化した結果をストアへ展開し、メタデータと Agent Tool 契約を埋めて閉じる', async () => {
@@ -333,7 +360,7 @@ describe('TemplateDialog: 作成', () => {
     expect(state.nodes.map((node) => node.id)).toEqual(['src', 'period', 'out', 'args']);
     expect(state.edges).toHaveLength(2);
     expect(state.metadata).toMatchObject({
-      displayName: 'Time series lookup', publishName: 'period-series', internalId: 'period-series',
+      displayName: '人口の推移', publishName: 'period-series', internalId: 'period-series',
       agentName: 'period-series', agentDescription: '人口の推移を返します。',
     });
     expect(state.createdFromTemplate).toBe('period-series@1.0.0');
@@ -370,6 +397,7 @@ describe('TemplateDialog: 作成', () => {
     await choose('Add a computed column');
     await userEvent.selectOptions(screen.getByLabelText('Data source'), 'ds-population');
     await userEvent.type(screen.getByLabelText('What to compute'), '人口を千で割る');
+    fillNames('人口を千人単位に', 'population_in_thousands');
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
 
     await waitFor(() => expect(useToolBuilderStore.getState().selectedNodeId).toBe('calc'));
@@ -410,6 +438,141 @@ describe('TemplateDialog: 作成', () => {
     await screen.findByRole('alert');
     await userEvent.selectOptions(screen.getByLabelText('Period column'), '時点');
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('TemplateDialog: 名前（表示名と関数名）', () => {
+  /** テンプレートを選び、データソースだけ埋めた状態（名前は未入力）。 */
+  async function readyForNames(language: 'en' | 'ja' = 'en'): Promise<void> {
+    await choose(language === 'ja' ? '時系列の取り出し' : 'Time series lookup');
+    await userEvent.selectOptions(screen.getByLabelText(language === 'ja' ? 'データソース' : 'Data source'), 'ds-population');
+  }
+
+  it('正常: 名前を 2 つ入れると作成でき、入力した関数名が toolName に、表示名が下書きの名前になる', async () => {
+    const instantiateToolTemplate = vi.fn().mockResolvedValue(instantiated());
+    renderDialog(fakeClient({ instantiateToolTemplate }));
+    await readyForNames();
+    expect(createButton().disabled).toBe(true);
+
+    fillNames('賃金の推移', 'wage_series');
+    expect(createButton().disabled).toBe(false);
+    await userEvent.click(createButton());
+
+    await waitFor(() => expect(instantiateToolTemplate).toHaveBeenCalled());
+    expect(instantiateToolTemplate.mock.calls[0]?.[0]).toMatchObject({ toolName: 'wage_series' });
+    expect(useToolBuilderStore.getState().metadata).toMatchObject({ displayName: '賃金の推移', workingName: '賃金の推移' });
+  });
+
+  it('境界: 2 欄は空で始まる（テンプレートの title / id を既定にしない）', async () => {
+    renderDialog(fakeClient());
+    await readyForNames();
+    expect((screen.getByLabelText(TOOL_NAME_FIELD) as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText(FUNCTION_NAME_FIELD) as HTMLInputElement).value).toBe('');
+    expect(createButton().disabled).toBe(true);
+  });
+
+  it('異常: ツール名が空だと作成できず、その欄の真下に理由が出る', async () => {
+    renderDialog(fakeClient());
+    await readyForNames();
+    fillNames('', 'wage_series');
+    expect(createButton().disabled).toBe(true);
+    expect(problemUnder(TOOL_NAME_FIELD)).toBe('Enter a tool name.');
+    expect(problemUnder(FUNCTION_NAME_FIELD)).toBeUndefined();
+  });
+
+  it('異常: 関数名が空だと作成できず、その欄の真下に理由が出る', async () => {
+    renderDialog(fakeClient());
+    await readyForNames();
+    fillNames('賃金の推移', '');
+    expect(createButton().disabled).toBe(true);
+    expect(problemUnder(FUNCTION_NAME_FIELD)).toBe('Enter a function name.');
+    expect(problemUnder(TOOL_NAME_FIELD)).toBeUndefined();
+  });
+
+  it('異常: 関数名の日本語や空白はその場で指摘し、API を呼ばない', async () => {
+    const instantiateToolTemplate = vi.fn().mockResolvedValue(instantiated());
+    renderDialog(fakeClient({ instantiateToolTemplate }));
+    await readyForNames();
+
+    fillNames('賃金の推移', '賃金の推移');
+    expect(problemUnder(FUNCTION_NAME_FIELD)).toContain('letters, digits, _ or -');
+    fillNames('賃金の推移', 'wage series');
+    expect(problemUnder(FUNCTION_NAME_FIELD)).toContain('letters, digits, _ or -');
+
+    expect(createButton().disabled).toBe(true);
+    await userEvent.click(createButton());
+    expect(instantiateToolTemplate).not.toHaveBeenCalled();
+  });
+
+  it('異常: 保存済み Tool と同じ関数名は大文字小文字を無視して弾き、API を呼ばない', async () => {
+    const instantiateToolTemplate = vi.fn().mockResolvedValue(instantiated());
+    renderDialog(fakeClient({ instantiateToolTemplate }));
+    await readyForNames();
+    fillNames('賃金の推移', 'POPULATION_Series');
+
+    await waitFor(() => expect(problemUnder(FUNCTION_NAME_FIELD)).toContain('都道府県別人口の推移'));
+    expect(createButton().disabled).toBe(true);
+    await userEvent.click(createButton());
+    expect(instantiateToolTemplate).not.toHaveBeenCalled();
+  });
+
+  it('境界: 関数名は 64 文字まで（65 文字は不可）', async () => {
+    renderDialog(fakeClient());
+    await readyForNames();
+    fillNames('賃金の推移', 'a'.repeat(64));
+    expect(createButton().disabled).toBe(false);
+    fillNames('賃金の推移', 'a'.repeat(65));
+    expect(createButton().disabled).toBe(true);
+    expect(problemUnder(FUNCTION_NAME_FIELD)).toContain('1–64');
+  });
+
+  it('境界: 表示名は 80 文字まで（81 文字は不可）', async () => {
+    renderDialog(fakeClient());
+    await readyForNames();
+    fillNames('あ'.repeat(80), 'wage_series');
+    expect(createButton().disabled).toBe(false);
+    fillNames('あ'.repeat(81), 'wage_series');
+    expect(createButton().disabled).toBe(true);
+    expect(problemUnder(TOOL_NAME_FIELD)).toContain('1–80');
+  });
+
+  it('境界: 前後の空白だけの入力は空と同じ扱いで、表示名の前後の空白は落として渡す', async () => {
+    const instantiateToolTemplate = vi.fn().mockResolvedValue(instantiated());
+    renderDialog(fakeClient({ instantiateToolTemplate }));
+    await readyForNames();
+
+    fillNames('   ', '   ');
+    expect(createButton().disabled).toBe(true);
+    expect(problemUnder(TOOL_NAME_FIELD)).toBe('Enter a tool name.');
+    expect(problemUnder(FUNCTION_NAME_FIELD)).toBe('Enter a function name.');
+
+    fillNames('  賃金の推移  ', 'wage_series');
+    await userEvent.click(createButton());
+    await waitFor(() => expect(instantiateToolTemplate).toHaveBeenCalled());
+    expect(useToolBuilderStore.getState().metadata.displayName).toBe('賃金の推移');
+  });
+
+  it('例外: 保存済みの一覧を取れなくても作成できる（重複チェックだけ効かない）', async () => {
+    const instantiateToolTemplate = vi.fn().mockResolvedValue(instantiated());
+    renderDialog(fakeClient({ listTools: vi.fn().mockRejectedValue(new Error('offline')), instantiateToolTemplate }));
+    await readyForNames();
+    // 本来なら重複する名前でも、相手の一覧が無いので止めない。
+    fillNames('賃金の推移', 'population_series');
+    expect(problemUnder(FUNCTION_NAME_FIELD)).toBeUndefined();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(instantiateToolTemplate).toHaveBeenCalled());
+    expect(instantiateToolTemplate.mock.calls[0]?.[0]).toMatchObject({ toolName: 'population_series' });
+  });
+
+  it('正常: 日本語では「ツール名（表示名）」「関数名」とその指摘が日本語で出る', async () => {
+    renderDialog(fakeClient(), 'ja');
+    await readyForNames('ja');
+    expect(problemUnder(TOOL_NAME_FIELD)).toBe('ツール名を入力してください');
+    expect(problemUnder(FUNCTION_NAME_FIELD)).toBe('関数名を入力してください');
+    fillNames('賃金の推移', '賃金');
+    expect(problemUnder(FUNCTION_NAME_FIELD)).toBe('関数名は英数字・_・- で 1〜64 文字です');
+    fillNames('賃金の推移', 'Population_Series');
+    await waitFor(() => expect(problemUnder(FUNCTION_NAME_FIELD)).toBe('この関数名はツール「都道府県別人口の推移」が使っています。別の名前にしてください'));
   });
 });
 

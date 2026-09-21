@@ -310,7 +310,8 @@ export class ToolApiClient {
     readonly dataSourceIds: readonly string[];
     readonly values: TemplateSlotValuesDto;
     readonly language: 'ja' | 'en';
-    readonly toolName?: string;
+    /** モデルへ公開する function 名（v45 で必須。省略してテンプレート id へ落ちると 2 本目が 1 本目の別版になる）。 */
+    readonly toolName: string;
   }): Promise<InstantiatedTemplateDto> {
     const { templateId, ...body } = input;
     return this.request<InstantiatedTemplateDto>(`/tool-templates/${encodeURIComponent(templateId)}/instantiate`, {

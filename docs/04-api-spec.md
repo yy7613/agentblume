@@ -980,8 +980,10 @@ Tool を 1 から組む代わりに、**テンプレートを選んでスロッ�
 // POST /tool-templates/period-series/instantiate
 {
   "scope": { … }, "dataSourceIds": ["ds-population"], "language": "ja",
-  "values": { "source": "ds-population", "periodColumn": "時点", "valueColumns": ["人口"], "defaultGranularity": "year", "limit": 12 }
-  // "toolName": 省略すると テンプレート id を function 名にする
+  "values": { "source": "ds-population", "periodColumn": "時点", "valueColumns": ["人口"], "defaultGranularity": "year", "limit": 12 },
+  // 必須。モデルへ公開する function 名（`^[A-Za-z0-9_-]{1,64}$`）。既定は持たない — テンプレート id を既定にすると
+  // 同じテンプレートから作った2本目が1本目と同じ内部ID・公開名になり、別のToolのつもりが既存Toolの新版になる。
+  "toolName": "population_series"
 }
 // → 200
 {

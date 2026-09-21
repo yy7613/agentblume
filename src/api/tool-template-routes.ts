@@ -72,7 +72,7 @@ export function registerToolTemplateRoutes(app: FastifyInstance, deps: ToolTempl
       dataSourceIds: body.dataSourceIds,
       values: body.values,
       language: body.language ?? 'ja',
-      ...(body.toolName === undefined ? {} : { toolName: body.toolName }),
+      toolName: body.toolName,
     });
   });
 }

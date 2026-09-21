@@ -175,7 +175,8 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
   return <div className="tool-builder-shell">
     <button type="button" className="secondary agent-back-button" onClick={() => void backToList()}>{text('Back to list', '一覧へ戻る')}</button>
     {createdFromTemplate !== undefined && <div className="template-created" role="status">
-      {text(`Built from the template ${createdFromTemplate}. Set the owner and the names, then save.`, `テンプレート ${createdFromTemplate} から作成しました。所有者と名前を確認して保存してください。`)}
+      {/* 名前は作成の時点で人が決めている（v45）ので、残る宿題は所有者だけ。 */}
+      {text(`Built from the template ${createdFromTemplate}. Set the owner, then save.`, `テンプレート ${createdFromTemplate} から作成しました。所有者を設定して保存してください。`)}
       <button type="button" className="ghost" aria-label={text('Close notice', '通知を閉じる')} onClick={() => useToolBuilderStore.getState().clearCreatedFromTemplate()}>×</button>
     </div>}
     {draft.pending !== undefined && <DraftRestoreBanner savedAt={draft.pending.savedAt}

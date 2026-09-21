@@ -400,8 +400,15 @@ function joinKeyOptionOf(
 export interface InstantiateToolTemplateRequest extends ToolTemplateRequest {
   readonly values: TemplateSlotValues;
   readonly language: 'ja' | 'en';
-  /** エージェントへ公開する function 名。省略するとテンプレート id を使う（人が後で直せる）。 */
-  readonly toolName?: string;
+  /**
+   * エージェントへ公開する function 名。**必須**（v45）。
+   *
+   * 以前は省略時にテンプレート id（`period-series` など）へ落としていたが、同じテンプレートから
+   * 2 本目を作ると内部ID・公開名・関数名がすべて 1 本目と同じになり、保存が 1 本目の新しい
+   * バージョンになってしまっていた（別のツールを作ったつもりが最初のツールを置き換える）。
+   * 既定を無くし、その場で名前を決めさせる。
+   */
+  readonly toolName: string;
 }
 
 export interface InstantiateToolTemplateResult {
@@ -444,7 +451,7 @@ export class InstantiateToolTemplateUseCase {
     }
 
     const instantiated = instantiateTemplate(template, request.values, context, {
-      toolName: request.toolName ?? template.id,
+      toolName: request.toolName,
       language: request.language,
     });
 

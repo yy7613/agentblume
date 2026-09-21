@@ -129,26 +129,26 @@ describe('tool template routes', () => {
   });
 
   describe('POST /tool-templates/:id/instantiate', () => {
-    it('正常: グラフ・引数スキーマ・Agent Tool 契約を返し、Tool は保存しない', async () => {
+    it('正常: toolName を渡すと 200 で、その名前が agentTool.name に入り、Tool は保存しない', async () => {
       const response = await server.inject({
         method: 'POST', url: '/tool-templates/period-series/instantiate',
-        payload: { scope, dataSourceIds: ['ds-population'], values: SERIES_VALUES, language: 'ja' },
+        payload: { scope, dataSourceIds: ['ds-population'], values: SERIES_VALUES, language: 'ja', toolName: 'population_series' },
       });
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.template).toEqual({ id: 'period-series', version: expect.stringMatching(/^\d+\.\d+\.\d+$/) });
       expect(body.graph.nodes.map((node: { type: string }) => node.type)).toContain('parse-period');
       expect(body.inputSchema.columns.map((column: { name: string }) => column.name)).toEqual(['granularity', 'period_from', 'period_to', 'categories']);
-      expect(body.agentTool).toMatchObject({ name: 'period-series', description: expect.stringContaining('人口') });
+      expect(body.agentTool).toMatchObject({ name: 'population_series', description: expect.stringContaining('人口') });
       expect(body.pendingExpressions).toEqual([]);
-      await expect(app.repo.listVersions(scope, 'period-series')).resolves.toEqual([]);
+      await expect(app.repo.listVersions(scope, 'population_series')).resolves.toEqual([]);
     });
 
     it('正常: 式を AI に書かせるテンプレートは pendingExpressions つきで返る（式は空のまま）', async () => {
       const response = await server.inject({
         method: 'POST', url: '/tool-templates/custom-computation/instantiate',
         payload: {
-          scope, dataSourceIds: ['ds-population'], language: 'ja',
+          scope, dataSourceIds: ['ds-population'], language: 'ja', toolName: 'population_per_thousand',
           values: { source: 'ds-population', periodColumn: '時点', valueColumns: ['人口'], outputColumn: '千人', computationIntent: '人口を千で割る', defaultGranularity: 'year', limit: 12 },
         },
       });
@@ -156,10 +156,38 @@ describe('tool template routes', () => {
       expect(response.json().pendingExpressions).toEqual([{ nodeId: 'calc', intent: '人口を千で割る' }]);
     });
 
+    it('異常: toolName が無い → 400（何が悪いか・どう直すかを含む）', async () => {
+      const response = await server.inject({
+        method: 'POST', url: '/tool-templates/period-series/instantiate',
+        payload: { scope, dataSourceIds: ['ds-population'], values: SERIES_VALUES, language: 'ja' },
+      });
+      expect(response.statusCode).toBe(400);
+      const { error } = response.json();
+      expect(error.code).toBe('BAD_REQUEST');
+      expect(error.message).toContain('toolName is required');
+      expect(error.message).toContain('letters, digits');
+    });
+
+    it.each([
+      ['日本語', '人口の推移'],
+      ['空白', 'population series'],
+      ['65文字', 'x'.repeat(65)],
+    ])('異常: 関数名の形式違反（%s）は 400 で、直し方を含む文言', async (_label, toolName) => {
+      const response = await server.inject({
+        method: 'POST', url: '/tool-templates/period-series/instantiate',
+        payload: { scope, dataSourceIds: ['ds-population'], values: SERIES_VALUES, language: 'ja', toolName },
+      });
+      expect(response.statusCode).toBe(400);
+      const { error } = response.json();
+      expect(error.code).toBe('BAD_REQUEST');
+      expect(error.message).toContain('letters, digits');
+      expect(error.message).toContain('1-64');
+    });
+
     it('異常: スロット違反は 422 で、どの欄を直せばよいかを slots に載せる', async () => {
       const response = await server.inject({
         method: 'POST', url: '/tool-templates/period-series/instantiate',
-        payload: { scope, dataSourceIds: ['ds-population'], values: { ...SERIES_VALUES, valueColumns: ['世帯数'] }, language: 'ja' },
+        payload: { scope, dataSourceIds: ['ds-population'], values: { ...SERIES_VALUES, valueColumns: ['世帯数'] }, language: 'ja', toolName: 'population_series' },
       });
       expect(response.statusCode).toBe(422);
       const { error } = response.json();
@@ -171,7 +199,7 @@ describe('tool template routes', () => {
     it('異常: 知らないテンプレート id は 404', async () => {
       const response = await server.inject({
         method: 'POST', url: '/tool-templates/nope/instantiate',
-        payload: { scope, dataSourceIds: ['ds-population'], values: {}, language: 'ja' },
+        payload: { scope, dataSourceIds: ['ds-population'], values: {}, language: 'ja', toolName: 'population_series' },
       });
       // status だけでは「ルートが無い」と区別が付かないので、写像した code まで見る。
       expect(response.statusCode).toBe(404);
@@ -181,7 +209,7 @@ describe('tool template routes', () => {
     it('境界: ソース数が足りなければ 422（2 つ要るテンプレートに 1 つ）', async () => {
       const response = await server.inject({
         method: 'POST', url: '/tool-templates/ratio-of-two-sources/instantiate',
-        payload: { scope, dataSourceIds: ['ds-population'], values: {}, language: 'ja' },
+        payload: { scope, dataSourceIds: ['ds-population'], values: {}, language: 'ja', toolName: 'ratio_tool' },
       });
       expect(response.statusCode).toBe(422);
       expect(response.json().error.message).toContain('exactly 2 data source');

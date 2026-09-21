@@ -512,7 +512,7 @@ describe('ToolApiClient: ツールテンプレート', () => {
     const slots = [{ slot: 'valueColumns', message: "slot 'valueColumns' is set to '世帯数'" }];
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'TOOL_TEMPLATE_SLOTS', message: 'bad slots', slots } }, 422));
     const client = new ToolApiClient('', fetcher as typeof fetch);
-    const error = await client.instantiateToolTemplate({ templateId: 'period-series', scope, dataSourceIds: ['ds-a'], values: {}, language: 'ja' })
+    const error = await client.instantiateToolTemplate({ templateId: 'period-series', scope, dataSourceIds: ['ds-a'], values: {}, language: 'ja', toolName: 'population_series' })
       .catch((cause: unknown) => cause) as ApiError;
     expect(error.status).toBe(422);
     expect(error.code).toBe('TOOL_TEMPLATE_SLOTS');

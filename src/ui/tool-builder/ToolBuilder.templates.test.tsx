@@ -6,7 +6,7 @@
  * 新規作成の隣に入口があること、作成するとキャンバスへ移ってテンプレート名の通知が出ること、
  * 作らずに閉じれば一覧のままであること。
  */
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
@@ -66,6 +66,12 @@ function client(overrides: Readonly<Record<string, unknown>> = {}): ToolApiClien
   } as unknown as ToolApiClient;
 }
 
+/** ダイアログの名前欄（v45 で必須）。中身の検証は TemplateDialog.test.tsx が見る。 */
+function fillNames(displayName = '人口の推移', functionName = 'population_trend'): void {
+  fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: displayName } });
+  fireEvent.change(screen.getByLabelText('Function name'), { target: { value: functionName } });
+}
+
 function renderBuilder(api: ToolApiClient, language: 'en' | 'ja' = 'en') {
   render(<I18nProvider initialLanguage={language}><NavigationProvider navigate={vi.fn()}><ToolBuilder client={api} /></NavigationProvider></I18nProvider>);
 }
@@ -83,16 +89,19 @@ describe('ToolBuilder: テンプレートから作成の入口', () => {
     expect(await screen.findByRole('button', { name: 'テンプレートから作成' })).toBeTruthy();
   });
 
-  it('正常: 作成するとキャンバスへ移り、どのテンプレートから作ったかを通知する', async () => {
+  it('従来どおり: 作成するとキャンバスへ移り、どのテンプレートから作ったかを通知する（名前は決まっているので残る宿題は所有者）', async () => {
     renderBuilder(client());
     await userEvent.click(screen.getByRole('button', { name: 'Create from a template' }));
     const dialog = await screen.findByRole('dialog');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Use this template' }));
     await userEvent.selectOptions(screen.getByLabelText('Data source'), 'ds-population');
+    fillNames();
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
 
     await waitFor(() => expect(screen.getByLabelText('ETL canvas')).toBeTruthy());
-    expect(screen.getByRole('status').textContent).toContain('period-series@1.0.0');
+    const notice = screen.getByRole('status').textContent ?? '';
+    expect(notice).toContain('period-series@1.0.0');
+    expect(notice).toContain('Set the owner, then save.');
     expect(useToolBuilderStore.getState().nodes.map((node) => node.id)).toEqual(['src', 'out']);
   });
 
@@ -111,6 +120,7 @@ describe('ToolBuilder: テンプレートから作成の入口', () => {
     const dialog = await screen.findByRole('dialog');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Use this template' }));
     await userEvent.selectOptions(screen.getByLabelText('Data source'), 'ds-population');
+    fillNames();
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
     await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
     await userEvent.click(screen.getByRole('button', { name: 'Close notice' }));

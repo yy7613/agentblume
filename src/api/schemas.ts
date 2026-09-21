@@ -791,12 +791,31 @@ export const toolTemplateCandidatesBodySchema = z.object({
   /** 既に決まっているスロット（部分でよい）。依存する候補がこれに合わせて絞られる。 */
   values: templateSlotValuesSchema.optional(),
 });
+/**
+ * エージェントへ公開する function 名の形（`createTool` の `agentTool.name` と同じ規則）。
+ * 保存の直前ではなく、実体化の入口で弾く（保存して初めて気づくのを避ける）。
+ */
+const TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const TOOL_NAME_MESSAGE = 'toolName must use only letters, digits, "_", or "-" (1-64 characters), e.g. "population_series"';
+
 export const toolTemplateInstantiateBodySchema = z.object({
   scope: tenantScopeSchema,
   dataSourceIds: templateDataSourceIdsSchema,
   values: templateSlotValuesSchema,
   /** 説明文の言語（既定 ja）。テンプレートは日英の説明文を持つ。 */
   language: z.enum(['ja', 'en']).optional(),
-  /** エージェントへ公開する function 名（省略するとテンプレート id）。 */
-  toolName: z.string().min(1).max(64).optional(),
+  /**
+   * エージェントへ公開する function 名。**必須**（v45）。
+   *
+   * 以前は省略時にテンプレート id（`period-series` など）へ落としていたが、同じテンプレートから
+   * 2 本目を作ると内部ID・公開名・関数名がすべて 1 本目と同じになり、保存すると 1 本目の
+   * 新しいバージョンになってしまっていた（別のツールを作ったつもりが最初のツールを置き換える）。
+   * 既定を無くし、その場で名前を決めさせる。
+   */
+  toolName: z.string({
+    // zod v4: required_error / invalid_type_error は無い。`error` は issue を受けて出し分ける。
+    error: (issue) => issue.input === undefined
+      ? `toolName is required; give the tool a function name so a second tool made from the same template does not overwrite the first. ${TOOL_NAME_MESSAGE}`
+      : TOOL_NAME_MESSAGE,
+  }).regex(TOOL_NAME_PATTERN, TOOL_NAME_MESSAGE),
 });
