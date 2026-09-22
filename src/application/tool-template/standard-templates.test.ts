@@ -167,6 +167,31 @@ describe('同梱の標準テンプレート', () => {
     }
   });
 
+  it('正常: granularity 引数を持つ 9 本すべてが、契約の文言で lock され、読み込みで invalid にならない（v46 §B）', async () => {
+    // shippedTemplates() が invalid が空であることも確かめている。
+    const withGranularity = (await shippedTemplates())
+      .map((template) => ({ id: template.id, argument: template.arguments.find((argument) => argument.name === 'granularity') }))
+      .filter((entry) => entry.argument !== undefined);
+    expect(withGranularity.map((entry) => entry.id).sort()).toEqual([
+      'category-ranking',
+      'correlation-of-two-sources',
+      'custom-computation',
+      'join-side-by-side',
+      'join-three-side-by-side',
+      'latest-values',
+      'period-series',
+      'period-statistics',
+      'ratio-of-two-sources',
+    ]);
+    for (const { id, argument } of withGranularity) {
+      expect(argument?.nullable, id).toBe(false);
+      expect(argument?.lock, id).toEqual({
+        ja: '省略できると月次と年次が混ざるため、必須に固定しています',
+        en: 'Required: omitting it would mix monthly and annual rows',
+      });
+    }
+  });
+
   it('正常: どのテンプレートも csv / json のどちらのデータソースでも使える形で source ノードを書いている', async () => {
     for (const template of await shippedTemplates()) {
       const sourceNodes = template.nodes.filter((node) => (node.config as { dataSourceId?: unknown } | null)?.dataSourceId !== undefined);
@@ -226,6 +251,33 @@ describe('period-series', () => {
     expect(instantiated.inputSchema?.columns.map((column) => column.name)).toEqual(['granularity', 'period_from', 'period_to']);
     await assertPassesEngineValidation(harness, instantiated);
     expect(await run(harness, instantiated, { granularity: 'year', period_from: null, period_to: null })).toHaveLength(8);
+  });
+
+  it('正常: 地域と期間の下限を必須にすると、実エンジンの検査を通り、省略した呼び出しは引数の検査で止まる（v46 §B）', async () => {
+    const harness = await setup([{ id: 'ds-region', name: '人口', csv: REGION_CSV }]);
+    const template = await templateById('period-series');
+    const context = templateContextOf({ dataSourceIds: ['ds-region'] }, harness.profiles);
+    const instantiated = instantiateTemplate(template, values, context, {
+      toolName: 'population_series', language: 'ja', argumentNullability: { categories: false, period_from: false },
+    });
+    expect(instantiated.inputSchema?.columns.filter((column) => !column.nullable).map((column) => column.name))
+      .toEqual(['granularity', 'period_from', 'categories']);
+    expect(instantiated.agentTool.description).toContain('- categories (必須):');
+    await assertPassesEngineValidation(harness, instantiated);
+
+    const rows = await run(harness, instantiated, { granularity: 'year', categories: '東京都', period_from: '2023-01-01', period_to: null });
+    expect(rows.map((row) => [row['時点'], row['地域']])).toEqual([['2023年', '東京都']]);
+    // 必須にした引数を省略すると、条件が黙って外れるのではなく呼び出しが拒まれる。
+    expect(() => validateToolArguments(instantiated.inputSchema!, { granularity: 'year', period_from: '2023-01-01', period_to: null } as never)).toThrow();
+  });
+
+  it('異常: 固定された粒度を任意にしようとすると、実カタログのテンプレートでも lock の理由つきで止まる', async () => {
+    const harness = await setup([{ id: 'ds-region', name: '人口', csv: REGION_CSV }]);
+    const context = templateContextOf({ dataSourceIds: ['ds-region'] }, harness.profiles);
+    const template = await templateById('period-series');
+    expect(() => instantiateTemplate(template, values, context, {
+      toolName: 'population_series', language: 'ja', argumentNullability: { granularity: true },
+    })).toThrow(/cannot be changed: Required: omitting it would mix monthly and annual rows/);
   });
 });
 

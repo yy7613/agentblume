@@ -2,7 +2,7 @@
   "$schema": "./tool-template.schema.json",
   "formatVersion": 1,
   "id": "correlation-of-two-sources",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "title": { "ja": "2 つのデータの相関係数", "en": "Correlation of two sources" },
   "summary": {
     "ja": "2 つのデータソースを同じ時点（と地域）で結合し、2 つの値の相関係数を決定的に計算して返す（-1〜1）。",
@@ -41,6 +41,7 @@
   "arguments": [
     {
       "name": "granularity", "type": "string", "nullable": false, "sample": { "$slot": "defaultGranularity" },
+      "lock": { "ja": "省略できると月次と年次が混ざるため、必須に固定しています", "en": "Required: omitting it would mix monthly and annual rows" },
       "description": { "ja": "期間の粒度。month / quarter / half / year / fiscal-year のうちデータにあるものを、この綴りのまま渡す（monthly・yearly・月次・年次 などは不可）。必ず指定する。", "en": "Period granularity: one of month / quarter / half / year / fiscal-year that exists in the data, spelled exactly like this (not monthly, yearly or a translation). Required." }
     },
     {

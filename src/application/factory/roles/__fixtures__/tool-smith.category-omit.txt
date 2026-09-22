@@ -1,0 +1,1 @@
+- A category argument (a region, a category, a segment — see dataSource.categoricalColumns) MUST stay nullable, and omitting it MUST return every category for the requested period. Comparing three regions is then ONE call whose result contains all of them, not three calls.

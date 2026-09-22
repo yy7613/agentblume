@@ -1,15 +1,19 @@
 // @vitest-environment jsdom
 /**
- * join ノードの `coerceKeys`（キーを文字列として比較）設定 UI。
+ * join ノードの `coerceKeys`（キーを文字列として比較）と `maxRows`（v46: 結合ごとの行数上限）設定 UI。
  * 既存の join フィールド（mode / キーペア / サフィックス）の回帰は ui-components.test.tsx が担う。
  */
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { NodeInspector } from './NodeInspector';
+// domain の正準値。UI ソースは domain を import しない方針だが、テストからのピン留め import は可
+// （NodeInspector.group-limit-filter.test.tsx と同じ方針）。ずれると片方だけ更新されて上限が食い違う。
+import { JOIN_MAX_ROWS_CEILING as DOMAIN_JOIN_MAX_ROWS_CEILING } from '../../domain/etl/nodes/join';
+import { JOIN_MAX_ROWS_CEILING, NodeInspector } from './NodeInspector';
 import { useToolBuilderStore } from './store';
 
 const CHECKBOX_LABEL = 'Compare keys as text (join 001 with 1)';
+const MAX_ROWS_LABEL = 'Maximum rows';
 
 afterEach(cleanup);
 beforeEach(() => useToolBuilderStore.getState().reset());
@@ -94,5 +98,70 @@ describe('NodeInspector: join coerceKeys', () => {
     expect(screen.getByLabelText('Join mode')).toBeTruthy();
     expect(screen.getByLabelText('Right suffix')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Add key' })).toBeTruthy();
+  });
+});
+
+describe('NodeInspector: join maxRows（v46: 結合ごとの行数上限）', () => {
+  it('正常: 保存済みconfigにmaxRowsが無ければ欄は空欄（既定を使う）', () => {
+    const nodeId = addJoin();
+    expect(configOf(nodeId)).not.toHaveProperty('maxRows');
+    render(<NodeInspector />);
+    expect((screen.getByRole('spinbutton', { name: MAX_ROWS_LABEL }) as HTMLInputElement).value).toBe('');
+  });
+
+  it('正常: 数値を入力するとconfigのmaxRowsへ書き戻す', async () => {
+    const nodeId = addJoin();
+    render(<NodeInspector />);
+    const input = screen.getByRole('spinbutton', { name: MAX_ROWS_LABEL });
+
+    await userEvent.type(input, '500000');
+    expect(configOf(nodeId)['maxRows']).toBe(500_000);
+  });
+
+  it('境界: 欄を空にするとconfigからmaxRowsが外れる（既定に戻る）', async () => {
+    const nodeId = addJoin();
+    useToolBuilderStore.getState().updateNodeConfig(nodeId, { ...configOf(nodeId), maxRows: 500_000 });
+    render(<NodeInspector />);
+    const input = screen.getByRole('spinbutton', { name: MAX_ROWS_LABEL });
+
+    await userEvent.clear(input);
+    expect(configOf(nodeId)['maxRows']).toBeUndefined();
+  });
+
+  it('異常: 範囲外（0以下・1,000万超）はその場で欄の下に指摘し、範囲内では指摘が消える', async () => {
+    // 上限の定数(NodeInspector側)が domain の JOIN_MAX_ROWS_CEILING とずれていないことも
+    // あわせて確認する（ずれると UI とサーバーの範囲外判定が食い違う）。
+    expect(JOIN_MAX_ROWS_CEILING).toBe(DOMAIN_JOIN_MAX_ROWS_CEILING);
+    // このファイルは I18nProvider を被せていないため text() は英語文言を返す（既存テストの
+    // CHECKBOX_LABEL と同じ前提）。範囲外の指摘もそこに合わせて英語文言で検査する。
+    const outOfRange = `Enter a whole number between 1 and ${JOIN_MAX_ROWS_CEILING.toLocaleString('en-US')}.`;
+    const nodeId = addJoin();
+    render(<NodeInspector />);
+    const input = screen.getByRole('spinbutton', { name: MAX_ROWS_LABEL });
+
+    await userEvent.type(input, '0');
+    expect(configOf(nodeId)['maxRows']).toBe(0);
+    expect(screen.getByText(outOfRange)).toBeTruthy();
+
+    await userEvent.clear(input);
+    await userEvent.type(input, String(JOIN_MAX_ROWS_CEILING + 1));
+    expect(screen.getByText(outOfRange)).toBeTruthy();
+
+    await userEvent.clear(input);
+    await userEvent.type(input, String(JOIN_MAX_ROWS_CEILING));
+    expect(screen.queryByText(outOfRange)).toBeNull();
+  });
+
+  it('applies the dialog maxRows only after Apply settings', async () => {
+    const nodeId = addJoin();
+    render(<NodeInspector />);
+    await userEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const dialog = screen.getByRole('dialog', { name: 'Node configuration' });
+
+    await userEvent.type(within(dialog).getByRole('spinbutton', { name: MAX_ROWS_LABEL }), '250000');
+    expect(configOf(nodeId)).not.toHaveProperty('maxRows');
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Apply settings' }));
+    expect(configOf(nodeId)['maxRows']).toBe(250_000);
   });
 });

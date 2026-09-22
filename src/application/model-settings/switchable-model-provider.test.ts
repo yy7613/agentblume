@@ -237,3 +237,20 @@ describe('SwitchableModelProvider', () => {
     expect(factory.created.at(-1)?.options.model).toBe('openai/gpt-4o');
   });
 });
+
+describe('SwitchableModelProvider: contextWindow の委譲（v49）', () => {
+  class WindowProvider extends StubProvider {
+    async contextWindow(): Promise<number | undefined> { return 8192; }
+  }
+  it('正常: 実行時点の設定で解決したアダプタの contextWindow を返す', async () => {
+    const factory = new FakeFactory();
+    factory.create = (options) => { const provider = new WindowProvider(options); factory.created.push(provider); return provider; };
+    const { provider } = make(new InMemoryModelSettingsRepository(), new FakeCipher(), factory);
+    await expect(provider.contextWindow()).resolves.toBe(8192);
+  });
+
+  it('従来どおり: アダプタが contextWindow を持たなければ undefined（例外にしない）', async () => {
+    const { provider } = make();
+    await expect(provider.contextWindow()).resolves.toBeUndefined();
+  });
+});

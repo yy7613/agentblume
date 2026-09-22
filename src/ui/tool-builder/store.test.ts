@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { SerializedToolDto } from '../api/types';
 import type { InstantiatedTemplateDto } from '../api/types';
-import { buildSaveDto, currentGraph, layoutByDepth, declaredInputSchema, effectiveFunctionName, flowToGraph, missingRequiredMetadata, requiresSessionWrite, saveBlocker, toolBuilderDraft, useToolBuilderStore } from './store';
+import type { DesignChatResultDto, ToolGraphDto } from '../api/types';
+import { buildSaveDto, currentGraph, designChatPositions, designChatTranscript, layoutByDepth, declaredInputSchema, effectiveFunctionName, flowToGraph, missingRequiredMetadata, requiresSessionWrite, saveBlocker, toolBuilderDraft, useToolBuilderStore, type DesignChatTurn } from './store';
 
 const okPropagation = {
   order: ['source-1', 'filter-1'], terminalId: 'filter-1', hasErrors: false,
@@ -698,5 +699,395 @@ describe('loadTemplate', () => {
     useToolBuilderStore.getState().reset();
     expect(useToolBuilderStore.getState().createdFromTemplate).toBeUndefined();
     expect(useToolBuilderStore.getState().pendingCalculateIntent).toBeUndefined();
+  });
+});
+
+/**
+ * 設計アシスタント（v47 / ADR-0051）。
+ *
+ * ストア側の責務は「応答をキャンバスへ当てる」ことと「1 手で元へ戻せる」こと。
+ * starter グラフは source-1 (80,120) → filter-1 (390,120) の 2 ノード。
+ */
+describe('designChat', () => {
+  /** サーバーは変えなかったノードの position を写して返す（契約 §3）。 */
+  const keptNodes = [
+    { id: 'source-1', type: 'json-source', config: { rows: [] }, position: { x: 80, y: 120 } },
+    { id: 'filter-1', type: 'filter', config: { column: 'age', op: 'gte', value: 18 }, position: { x: 390, y: 120 } },
+  ];
+  const withSort: ToolGraphDto = {
+    nodes: [...keptNodes, { id: 'sort-1', type: 'sort', config: { by: 'age' } }],
+    edges: [{ from: 'source-1', to: 'filter-1' }, { from: 'filter-1', to: 'sort-1' }],
+  };
+  const sortResult: DesignChatResultDto = {
+    message: '並べ替えを足しました。',
+    graph: withSort,
+    changes: [{ op: 'add-node', nodeId: 'sort-1', summary: 'sort を追加' }, { op: 'set-config', nodeId: 'filter-1', summary: 'filter を age >= 20 へ' }],
+    problems: [],
+  };
+
+  /** 1 往復を丸ごと進める（送って応答を受け取る）。 */
+  function exchange(instruction: string, result: DesignChatResultDto): string {
+    const id = useToolBuilderStore.getState().startDesignChatTurn(instruction);
+    useToolBuilderStore.getState().completeDesignChatTurn(id, result);
+    return id;
+  }
+  function turnAt(index: number): DesignChatTurn {
+    return useToolBuilderStore.getState().designChat.turns[index] as DesignChatTurn;
+  }
+
+  beforeEach(() => useToolBuilderStore.getState().reset());
+
+  it('正常: 指示を送ると会話へ積まれ、送信中になる', () => {
+    const id = useToolBuilderStore.getState().startDesignChatTurn('年次に絞って');
+    const { designChat } = useToolBuilderStore.getState();
+    expect(designChat.busy).toBe(true);
+    expect(designChat.turns).toHaveLength(1);
+    expect(turnAt(0)).toMatchObject({ id, user: '年次に絞って', changes: [], problems: [], reverted: false });
+    expect(turnAt(0).assistant).toBeUndefined();
+  });
+
+  it('正常: 返答のグラフを即座にキャンバスへ当て、変えなかったノードの配置を保つ', () => {
+    exchange('多い順に並べて', sortResult);
+    const state = useToolBuilderStore.getState();
+    expect(state.designChat.busy).toBe(false);
+    expect(state.nodes.map((node) => node.id)).toEqual(['source-1', 'filter-1', 'sort-1']);
+    expect(state.nodes.find((node) => node.id === 'filter-1')?.position).toEqual({ x: 390, y: 120 });
+    expect(state.edges.map((edge) => [edge.source, edge.target])).toEqual([['source-1', 'filter-1'], ['filter-1', 'sort-1']]);
+    // 会話は下書き（保存対象）には入らない。
+    expect(Object.keys(toolBuilderDraft(state))).toEqual(['metadata', 'nodes', 'edges']);
+  });
+
+  it('正常: 新しいノードは上流ノードの右 220px へ置く', () => {
+    exchange('多い順に並べて', sortResult);
+    expect(useToolBuilderStore.getState().nodes.find((node) => node.id === 'sort-1')?.position).toEqual({ x: 610, y: 120 });
+  });
+
+  it('境界: 上流が無い新しいノードは、既存の最右列のさらに右へ縦に並べる', () => {
+    // データソースを 2 本足しただけで、まだどこへも繋いでいない状態（契約 §4 の孤立ノード）。
+    exchange('CSV を 2 つ読み込んで', {
+      message: '2 つ足しました。',
+      graph: {
+        nodes: [...keptNodes, { id: 'csv-1', type: 'csv-source', config: {} }, { id: 'csv-2', type: 'csv-source', config: {} }],
+        edges: [{ from: 'source-1', to: 'filter-1' }],
+      },
+      changes: [{ op: 'add-node', nodeId: 'csv-1', summary: 'csv-source を追加' }, { op: 'add-node', nodeId: 'csv-2', summary: 'csv-source を追加' }],
+    });
+    const at = (id: string) => useToolBuilderStore.getState().nodes.find((node) => node.id === id)?.position;
+    // 最右は filter-1 (390)。その右の列（670）へ、重ならないよう縦に積む。
+    expect(at('csv-1')).toEqual({ x: 670, y: 120 });
+    expect(at('csv-2')?.x).toBe(670);
+    expect(at('csv-2')?.y).toBeGreaterThan(120);
+  });
+
+  it('正常: 追加・変更したノードを強調し、最初の変更ノードを選択する', () => {
+    exchange('多い順に並べて', sortResult);
+    expect(useToolBuilderStore.getState().designChat.highlight).toEqual(['sort-1', 'filter-1']);
+    expect(useToolBuilderStore.getState().selectedNodeId).toBe('sort-1');
+    useToolBuilderStore.getState().clearDesignChatHighlight();
+    expect(useToolBuilderStore.getState().designChat.highlight).toEqual([]);
+  });
+
+  it('異常: 消えたノードを指す変更では強調も選択も動かさない', () => {
+    useToolBuilderStore.getState().selectNode('filter-1');
+    exchange('distinct を外して', {
+      message: '外しました。',
+      graph: { nodes: keptNodes, edges: [{ from: 'source-1', to: 'filter-1' }] },
+      changes: [{ op: 'remove-node', nodeId: 'distinct-1', summary: 'distinct を削除' }],
+    });
+    expect(useToolBuilderStore.getState().designChat.highlight).toEqual([]);
+    expect(useToolBuilderStore.getState().selectedNodeId).toBe('filter-1');
+  });
+
+  it('正常: 変更が無い返答（質問への回答）ではキャンバスを触らない', () => {
+    const before = currentGraph();
+    exchange('この結合のキーは足りている？', { message: '足りています。', changes: [], problems: [] });
+    expect(currentGraph()).toEqual(before);
+    expect(turnAt(0).assistant).toBe('足りています。');
+    expect(turnAt(0).before).toBeUndefined();
+  });
+
+  it('異常: problems 付きの返答は理由だけ残し、キャンバスを変えない', () => {
+    const before = currentGraph();
+    exchange('無理な指示', { message: '適用できませんでした。', changes: [], problems: ['sort: column(s) not found: population'] });
+    expect(currentGraph()).toEqual(before);
+    expect(turnAt(0).problems).toEqual(['sort: column(s) not found: population']);
+    expect(turnAt(0).before).toBeUndefined();
+  });
+
+  it('正常: 取り消すと適用前のキャンバスへ戻り、以後のターンにも取り消し済みが付く', () => {
+    const before = currentGraph();
+    const first = exchange('多い順に並べて', sortResult);
+    exchange('10 件に絞って', {
+      message: '絞りました。',
+      graph: {
+        nodes: [...withSort.nodes.map((node) => ({ ...node, position: node.position ?? { x: 610, y: 120 } })), { id: 'limit-1', type: 'limit', config: { count: 10 } }],
+        edges: [...withSort.edges, { from: 'sort-1', to: 'limit-1' }],
+      },
+      changes: [{ op: 'add-node', nodeId: 'limit-1', summary: 'limit を追加' }],
+    });
+    expect(useToolBuilderStore.getState().nodes).toHaveLength(4);
+
+    useToolBuilderStore.getState().revertDesignChatTurn(first);
+    expect(currentGraph()).toEqual(before);
+    // 会話そのものは残す（何を頼んだかは読める）。
+    expect(useToolBuilderStore.getState().designChat.turns).toHaveLength(2);
+    expect(turnAt(0).reverted).toBe(true);
+    expect(turnAt(1).reverted).toBe(true);
+  });
+
+  it('境界: 取り消しは 1 度だけ効き、2 度目は同じキャンバスのまま', () => {
+    const before = currentGraph();
+    const first = exchange('多い順に並べて', sortResult);
+    useToolBuilderStore.getState().revertDesignChatTurn(first);
+    useToolBuilderStore.getState().revertDesignChatTurn(first);
+    expect(currentGraph()).toEqual(before);
+  });
+
+  it('異常: キャンバスを変えていないターンは取り消せない（戻り先が無い）', () => {
+    const id = exchange('この結合のキーは足りている？', { message: '足りています。', changes: [] });
+    const before = currentGraph();
+    useToolBuilderStore.getState().revertDesignChatTurn(id);
+    expect(currentGraph()).toEqual(before);
+    expect(turnAt(0).reverted).toBe(false);
+  });
+
+  it('異常: 応答が受け取れなければ理由を出し、送信中を解く（キャンバスはそのまま）', () => {
+    const before = currentGraph();
+    const id = useToolBuilderStore.getState().startDesignChatTurn('年次に絞って');
+    useToolBuilderStore.getState().failDesignChatTurn(id, 'Network error');
+    expect(useToolBuilderStore.getState().designChat).toMatchObject({ busy: false, error: 'Network error' });
+    expect(useToolBuilderStore.getState().designChat.turns).toHaveLength(1);
+    expect(currentGraph()).toEqual(before);
+  });
+
+  it('例外: 会話が消えた後に届いた応答はキャンバスへ当てない', () => {
+    const id = useToolBuilderStore.getState().startDesignChatTurn('年次に絞って');
+    useToolBuilderStore.getState().reset();
+    const before = currentGraph();
+    useToolBuilderStore.getState().completeDesignChatTurn(id, sortResult);
+    useToolBuilderStore.getState().failDesignChatTurn(id, 'Network error');
+    expect(currentGraph()).toEqual(before);
+    expect(useToolBuilderStore.getState().designChat.turns).toEqual([]);
+    expect(useToolBuilderStore.getState().designChat.error).toBeUndefined();
+  });
+
+  it('正常: 新規作成・別のツールを開く・テンプレートから作るで会話は消え、開閉は残る', () => {
+    const openAndTalk = () => { useToolBuilderStore.getState().setDesignChatOpen(true); exchange('多い順に並べて', sortResult); };
+    const clearedButOpen = () => {
+      expect(useToolBuilderStore.getState().designChat.turns).toEqual([]);
+      expect(useToolBuilderStore.getState().designChat.open).toBe(true);
+    };
+
+    openAndTalk();
+    useToolBuilderStore.getState().reset();
+    clearedButOpen();
+
+    openAndTalk();
+    useToolBuilderStore.getState().loadTool({
+      metadata: { internalId: 'other', workingName: 'w', displayName: 'O', publishName: 'o', version: '1.0.0', owner: 'o', state: 'draft', tenant: { tenantId: 't', workspaceId: 'w' } },
+      sideEffect: 'read-only',
+      graph: { nodes: [{ id: 'a', type: 'json-source', config: { rows: [] } }], edges: [] },
+    } as SerializedToolDto);
+    clearedButOpen();
+
+    openAndTalk();
+    useToolBuilderStore.getState().loadTemplate({
+      template: { id: 'period-series', version: '1.0.0' },
+      graph: { nodes: [{ id: 'src', type: 'csv-source', config: {} }], edges: [] },
+      agentTool: { name: 'period-series', description: 'd' },
+      pendingExpressions: [],
+    }, 'x');
+    clearedButOpen();
+  });
+
+  // --- v49: 文脈の消費・履歴の圧縮とクリア・Tool Calling 契約の説明 ---------------------------
+
+  /** グラフを変えない往復を count 回積む（圧縮の材料づくり）。 */
+  function talk(count: number, offset = 0): void {
+    for (let index = offset; index < offset + count; index += 1) {
+      exchange(`指示${index}`, { message: `返答${index}`, changes: [{ op: 'set-config', nodeId: 'filter-1', summary: `変更${index}` }] });
+    }
+  }
+
+  it('正常: 直前の応答の消費を持ち、消費を返さない応答では捨てる', () => {
+    exchange('多い順に並べて', { ...sortResult, usage: { promptTokens: 6812, completionTokens: 240, contextWindow: 200192 } });
+    expect(useToolBuilderStore.getState().designChat.usage).toEqual({ promptTokens: 6812, completionTokens: 240, contextWindow: 200192 });
+    // メーターは「直前の応答」だけを映す。数えられなかった応答の後に古い値を残すと嘘になる。
+    exchange('この結合のキーは足りている？', { message: '足りています。', changes: [] });
+    expect(useToolBuilderStore.getState().designChat.usage).toBeUndefined();
+  });
+
+  it('正常: 応答の agentTool を Tool Calling 契約へ反映し、取り消しで戻す', () => {
+    useToolBuilderStore.getState().setMetadata('agentName', 'population_top');
+    useToolBuilderStore.getState().setMetadata('agentDescription', '古い説明');
+    const id = exchange('説明文に日付の渡し方を書いて', {
+      ...sortResult,
+      agentTool: { name: 'population_all', description: '都道府県別の総人口を返す。date は ISO（期間の開始日）。' },
+      changes: [{ op: 'set-agent-tool', nodeId: 'agent-tool', summary: 'set the tool description for the agent' }],
+    });
+    expect(useToolBuilderStore.getState().metadata).toMatchObject({ agentName: 'population_all', agentDescription: '都道府県別の総人口を返す。date は ISO（期間の開始日）。' });
+
+    useToolBuilderStore.getState().revertDesignChatTurn(id);
+    expect(useToolBuilderStore.getState().metadata).toMatchObject({ agentName: 'population_top', agentDescription: '古い説明' });
+  });
+
+  it('境界: name を返さない応答では説明だけを更新する', () => {
+    useToolBuilderStore.getState().setMetadata('agentName', 'population_top');
+    exchange('説明を直して', { message: '直しました。', changes: [], agentTool: { description: '新しい説明' } });
+    expect(useToolBuilderStore.getState().metadata).toMatchObject({ agentName: 'population_top', agentDescription: '新しい説明' });
+  });
+
+  it('正常: グラフを変えないターンでも、説明を変えたなら取り消せる', () => {
+    useToolBuilderStore.getState().setMetadata('agentDescription', '古い説明');
+    const before = currentGraph();
+    const id = exchange('説明だけ直して', { message: '直しました。', changes: [], agentTool: { description: '新しい説明' } });
+    expect(turnAt(0).before).toBeDefined();
+
+    useToolBuilderStore.getState().revertDesignChatTurn(id);
+    expect(useToolBuilderStore.getState().metadata.agentDescription).toBe('古い説明');
+    expect(currentGraph()).toEqual(before);
+    expect(turnAt(0).reverted).toBe(true);
+  });
+
+  it('正常: 要約が返ると古いターンが消え、直近 4 ターンと覚え書きが残る', () => {
+    talk(6);
+    useToolBuilderStore.getState().startDesignChatCompact();
+    useToolBuilderStore.getState().completeDesignChatCompact(2, '- 地域は引数にする / 全国は除く');
+    const { designChat } = useToolBuilderStore.getState();
+    expect(designChat.turns.map((turn) => turn.user)).toEqual(['指示2', '指示3', '指示4', '指示5']);
+    expect(designChat.summary).toBe('- 地域は引数にする / 全国は除く');
+    expect(designChat).toMatchObject({ compacted: 2, compacting: false });
+  });
+
+  it('境界: 要約を待つ間は送信を止め、会話はまだ畳まない', () => {
+    talk(5);
+    useToolBuilderStore.getState().startDesignChatCompact();
+    expect(useToolBuilderStore.getState().designChat).toMatchObject({ compacting: true });
+    expect(useToolBuilderStore.getState().designChat.turns).toHaveLength(5);
+  });
+
+  it('正常: 2 回目の圧縮では覚え書きを置き換える（前回分は材料として渡してある）', () => {
+    talk(6);
+    useToolBuilderStore.getState().completeDesignChatCompact(2, '1 回目の覚え書き');
+    talk(3, 6);
+    useToolBuilderStore.getState().completeDesignChatCompact(3, '1 回目と 2 回目をまとめた覚え書き');
+    const { designChat } = useToolBuilderStore.getState();
+    expect(designChat.summary).toBe('1 回目と 2 回目をまとめた覚え書き');
+    expect(designChat.compacted).toBe(5);
+    expect(designChat.turns).toHaveLength(4);
+  });
+
+  it('異常: 要約できなければ会話も覚え書きも変えず、理由だけ出す', () => {
+    talk(5);
+    useToolBuilderStore.getState().startDesignChatCompact();
+    useToolBuilderStore.getState().failDesignChatCompact('model is not configured');
+    const { designChat } = useToolBuilderStore.getState();
+    expect(designChat.turns).toHaveLength(5);
+    expect(designChat.summary).toBeUndefined();
+    expect(designChat).toMatchObject({ compacting: false, error: 'model is not configured' });
+  });
+
+  it('例外: 会話が消えた後に届いた要約では、残った会話の先頭を削らない', () => {
+    talk(5);
+    useToolBuilderStore.getState().startDesignChatCompact();
+    useToolBuilderStore.getState().reset();
+    useToolBuilderStore.getState().completeDesignChatCompact(1, '覚え書き');
+    const { designChat } = useToolBuilderStore.getState();
+    expect(designChat.turns).toEqual([]);
+    expect(designChat.summary).toBeUndefined();
+  });
+
+  it('正常: クリアで会話・覚え書き・消費が消え、キャンバスと開閉はそのまま', () => {
+    useToolBuilderStore.getState().setDesignChatOpen(true);
+    exchange('多い順に並べて', { ...sortResult, usage: { promptTokens: 6812, contextWindow: 200192 } });
+    useToolBuilderStore.getState().completeDesignChatCompact(1, '覚え書き');
+    const graph = currentGraph();
+
+    useToolBuilderStore.getState().clearDesignChat();
+    const { designChat } = useToolBuilderStore.getState();
+    expect(designChat).toMatchObject({ turns: [], compacted: 0, open: true });
+    expect(designChat.summary).toBeUndefined();
+    expect(designChat.usage).toBeUndefined();
+    // 会話は下書きだが、会話で作ったキャンバスは資産なので消さない。
+    expect(currentGraph()).toEqual(graph);
+  });
+});
+
+describe('designChatTranscript', () => {
+  function turns(count: number): DesignChatTurn[] {
+    return Array.from({ length: count }, (_value, index) => ({
+      id: `t${index}`, user: `u${index}`, assistant: `a${index}`, changes: [], reverted: false, problems: [], warnings: [],
+    }));
+  }
+
+  it('正常: role と content だけを古い順で送る（変更一覧は送らない）', () => {
+    expect(designChatTranscript(turns(2))).toEqual([
+      { role: 'user', content: 'u0' }, { role: 'assistant', content: 'a0' },
+      { role: 'user', content: 'u1' }, { role: 'assistant', content: 'a1' },
+    ]);
+  });
+
+  it('境界: 直近 12 ターンに切り、古いものから捨てる', () => {
+    const transcript = designChatTranscript(turns(7));
+    expect(transcript).toHaveLength(12);
+    expect(transcript[0]).toEqual({ role: 'user', content: 'u1' });
+    expect(transcript.at(-1)).toEqual({ role: 'assistant', content: 'a6' });
+  });
+
+  it('異常: 返答がまだ無いターンは指示だけを送る', () => {
+    const first = turns(1)[0] as DesignChatTurn;
+    expect(designChatTranscript([{ ...first, assistant: undefined }])).toEqual([{ role: 'user', content: 'u0' }]);
+  });
+});
+
+describe('designChatPositions', () => {
+  const placed = [
+    { id: 'a', type: 'tool' as const, position: { x: 80, y: 120 }, data: { nodeType: 'json-source' as const, label: 'a', config: {} } },
+  ];
+
+  it('正常: 既に画面にあるノードは、返答に position が無くても前の配置を保つ', () => {
+    const positions = designChatPositions({ nodes: [{ id: 'a', type: 'json-source', config: {} }], edges: [] }, placed);
+    expect(positions.get('a')).toEqual({ x: 80, y: 120 });
+  });
+
+  it('境界: 新しいノードが連なるときも、上流から順に右へ置く', () => {
+    const positions = designChatPositions({
+      nodes: [{ id: 'a', type: 'json-source', config: {} }, { id: 'b', type: 'filter', config: {} }, { id: 'c', type: 'sort', config: {} }],
+      edges: [{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }],
+    }, placed);
+    expect(positions.get('b')).toEqual({ x: 300, y: 120 });
+    expect(positions.get('c')).toEqual({ x: 520, y: 120 });
+  });
+
+  it('境界: 下流から順に並んだ鎖でも、上流から辿って全部を右へ置く', () => {
+    // nodes の並びは保証されないので、c（下流）が先に来ても b を待って正しく決める。
+    const positions = designChatPositions({
+      nodes: [{ id: 'c', type: 'sort', config: {} }, { id: 'b', type: 'filter', config: {} }, { id: 'a', type: 'json-source', config: {} }],
+      edges: [{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }],
+    }, placed);
+    expect(positions.get('b')).toEqual({ x: 300, y: 120 });
+    expect(positions.get('c')).toEqual({ x: 520, y: 120 });
+  });
+
+  it('境界: 2 入力（join）は両方の枝より右へ置く', () => {
+    const positions = designChatPositions({
+      nodes: [
+        { id: 'a', type: 'json-source', config: {} },
+        { id: 'far', type: 'csv-source', config: {}, position: { x: 600, y: 300 } },
+        { id: 'j', type: 'join', config: {} },
+      ],
+      edges: [{ from: 'a', to: 'j', toInput: 0 }, { from: 'far', to: 'j', toInput: 1 }],
+    }, placed);
+    expect(positions.get('j')?.x).toBeGreaterThan(600);
+  });
+
+  it('例外: 循環していて上流を辿れないノードも、最右列の右へ置いて必ず終わる', () => {
+    const positions = designChatPositions({
+      nodes: [{ id: 'a', type: 'json-source', config: {} }, { id: 'x', type: 'filter', config: {} }, { id: 'y', type: 'sort', config: {} }],
+      edges: [{ from: 'x', to: 'y' }, { from: 'y', to: 'x' }],
+    }, placed);
+    expect(positions.get('x')).toBeDefined();
+    expect(positions.get('y')).toBeDefined();
+    expect(positions.get('x')?.x).toBeGreaterThan(80);
   });
 });

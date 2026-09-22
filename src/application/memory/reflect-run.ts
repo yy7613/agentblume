@@ -19,6 +19,16 @@ import type { SkillRepository } from '../../domain/skill/skill-repository';
 import type { Skill } from '../../domain/skill/skill';
 import type { JsonSchemaObject, ModelMessage, ModelProviderPort } from '../model/model-provider';
 import { DEFAULT_WIKI_ID } from '../../domain/memory/wiki-space';
+import type { PromptCatalogPort, PromptSpec } from '../prompt/prompt-catalog-port';
+
+/**
+ * 振り返り（reflect）の system 文（v48 / ADR-0052）。対象Skillの有無で 1 行だけ差し替える
+ * （`skill-rule.with-target` / `skill-rule.no-target`）。`prompts/memory/reflect-run.md` に文がある。
+ */
+export const REFLECT_RUN_PROMPT: PromptSpec = {
+  id: 'memory/reflect-run',
+  sections: ['system', 'skill-rule.with-target', 'skill-rule.no-target'],
+};
 
 export interface ReflectRunInput {
   readonly scope: TenantScope;
@@ -87,6 +97,8 @@ export class ReflectRunUseCase {
     private readonly proposals: MemoryProposalRepository,
     private readonly wiki: WikiRepository,
     private readonly skills: SkillRepository,
+    /** system 文（v48 / ADR-0052）。 */
+    private readonly prompts: PromptCatalogPort,
     private readonly makeId: () => string = randomUUID,
     private readonly now: () => Date = () => new Date(),
   ) {}
@@ -141,14 +153,9 @@ export class ReflectRunUseCase {
   }
 
   private async reflect(input: ReflectRunInput, existingWiki: WikiPage | null, skill: Skill | null, signal?: AbortSignal): Promise<Reflection> {
-    const system = [
-      'You curate an agent\'s long-term memory. Given one successful interaction, extract durable, reusable knowledge.',
-      '- Propose a wiki note only for knowledge that generalizes beyond this single request. Set wikiShouldPropose=false otherwise.',
-      skill !== null
-        ? '- If the target skill\'s instructions could be improved by what this interaction revealed, propose a full revised instructions text; else skillShouldPropose=false.'
-        : '- There is no target skill; set skillShouldPropose=false and leave skill fields empty.',
-      'Do not fabricate. Be concise. Follow the JSON schema exactly.',
-    ].join('\n');
+    const template = this.prompts.get(REFLECT_RUN_PROMPT.id);
+    const skillRule = template.render(skill !== null ? 'skill-rule.with-target' : 'skill-rule.no-target');
+    const system = template.render('system', { skillRule });
     const context = [
       `User input:\n${input.input}`,
       `Agent output:\n${input.output}`,

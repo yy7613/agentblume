@@ -101,6 +101,27 @@ describe('tool template routes', () => {
       expect(joinKeys.options[0].overlap).toBeGreaterThan(0);
     });
 
+    it('正常: arguments は when に従う（カテゴリ列を選ぶと categories が現れる）。粒度は lock の理由つき（v46 §B）', async () => {
+      const ask = async (values: Record<string, unknown>) => (await server.inject({
+        method: 'POST', url: '/tool-templates/period-series/slot-candidates',
+        payload: { scope, dataSourceIds: ['ds-population'], values, language: 'en' },
+      })).json().arguments as { name: string; nullable: boolean; lock?: string; description: string }[];
+      const before = await ask({ source: 'ds-population' });
+      expect(before.map((argument) => argument.name)).toEqual(['granularity', 'period_from', 'period_to']);
+      expect(before[0]).toMatchObject({ nullable: false, lock: 'Required: omitting it would mix monthly and annual rows' });
+      const after = await ask({ source: 'ds-population', categoryColumn: '地域' });
+      expect(after.find((argument) => argument.name === 'categories')).toMatchObject({ nullable: true, description: expect.stringContaining('地域') });
+    });
+
+    it('異常: language が ja / en 以外なら 400', async () => {
+      const response = await server.inject({
+        method: 'POST', url: '/tool-templates/period-series/slot-candidates',
+        payload: { scope, dataSourceIds: ['ds-population'], language: 'fr' },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.message).toContain('language');
+    });
+
     it('異常: 知らないテンプレート id は 404（使える id を本文に挙げる）', async () => {
       const response = await server.inject({
         method: 'POST', url: '/tool-templates/no-such-template/slot-candidates',
@@ -194,6 +215,39 @@ describe('tool template routes', () => {
       expect(error.code).toBe('TOOL_TEMPLATE_SLOTS');
       expect(error.slots).toEqual([{ slot: 'valueColumns', message: expect.stringContaining('世帯数') }]);
       expect(error.slots[0].message).toContain('choose one of');
+    });
+
+    it('正常: argumentNullability で任意の引数を必須にでき、入力スキーマに効く（v46 §B）', async () => {
+      const response = await server.inject({
+        method: 'POST', url: '/tool-templates/period-series/instantiate',
+        payload: { scope, dataSourceIds: ['ds-population'], values: SERIES_VALUES, language: 'ja', toolName: 'population_series', argumentNullability: { categories: false } },
+      });
+      expect(response.statusCode).toBe(200);
+      const columns = response.json().inputSchema.columns as { name: string; nullable: boolean }[];
+      expect(columns.find((column) => column.name === 'categories')?.nullable).toBe(false);
+    });
+
+    it('異常: 固定された引数・無い引数の指定は 422 TOOL_TEMPLATE_SLOTS で、slot は argument:<name>', async () => {
+      const response = await server.inject({
+        method: 'POST', url: '/tool-templates/period-series/instantiate',
+        payload: { scope, dataSourceIds: ['ds-population'], values: SERIES_VALUES, language: 'ja', toolName: 'population_series', argumentNullability: { granularity: true, region: false } },
+      });
+      expect(response.statusCode).toBe(422);
+      const { error } = response.json();
+      expect(error.code).toBe('TOOL_TEMPLATE_SLOTS');
+      expect(error.slots).toEqual([
+        { slot: 'argument:granularity', message: expect.stringContaining('cannot be changed: Required: omitting it would mix monthly and annual rows') },
+        { slot: 'argument:region', message: expect.stringContaining("argument 'region' is not in this template; choose one of") },
+      ]);
+    });
+
+    it('異常: argumentNullability の値が真偽値でなければ 400（どの項目が悪いかを言う）', async () => {
+      const response = await server.inject({
+        method: 'POST', url: '/tool-templates/period-series/instantiate',
+        payload: { scope, dataSourceIds: ['ds-population'], values: SERIES_VALUES, language: 'ja', toolName: 'population_series', argumentNullability: { categories: 'required' } },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.message).toContain('argumentNullability.categories');
     });
 
     it('異常: 知らないテンプレート id は 404', async () => {

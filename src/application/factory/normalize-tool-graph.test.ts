@@ -168,6 +168,87 @@ describe('normalizeProposedGraph（in / notIn の values）', () => {
     expect(unknownColumn.changes.filter((change) => change.includes('seeded'))).toEqual([]);
   });
 
+  it('異常: 引数バインドされた eq 条件の value が空なら、実在値の先頭 1 件を種にする（実測: 設計アシスタントが value "" を置き、画面のプレビューが 0 行になった）', () => {
+    const result = normalizeProposedGraph(
+      filterGraph({ column: '地域', op: 'eq', value: '', valueBinding: { source: 'agent-input', field: 'region' } }),
+      context,
+    );
+
+    expect(filterConfigOf(result.graph)['value']).toBe('北海道');
+    expect(result.changes[0]).toMatch(/seeded the bound 'eq' condition on '地域' with the real sample value "北海道"/);
+  });
+
+  it('従来どおり: バインドされた eq 条件に value が入っていれば触らない。バインドの無い eq の空 value にも値を作らない', () => {
+    const kept = normalizeProposedGraph(filterGraph({ column: '地域', op: 'eq', value: '東京都', valueBinding: { source: 'agent-input', field: 'region' } }), context);
+    expect(filterConfigOf(kept.graph)['value']).toBe('東京都');
+    expect(kept.changes.filter((change) => change.includes('seeded'))).toEqual([]);
+
+    const unbound = normalizeProposedGraph(filterGraph({ column: '地域', op: 'eq', value: '' }), context);
+    expect(filterConfigOf(unbound.graph)['value']).toBe('');
+  });
+
+  it('異常: parse-period が足す periodStart への束縛条件（gte / lte）は、プロファイルの期間の範囲を種にする（実測: 日付引数のツールでプレビューが 0 行）', () => {
+    const withPeriods = { ...context, profiles: [{ ...wageProfile, periodColumns: [{ column: '時点', granularities: { year: 4 }, minStart: '2020-01-01', maxStart: '2023-01-01', mixed: false }] }] };
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-wage' } },
+        { id: 'period', type: 'parse-period', config: { column: '時点', startColumn: 'periodStart', granularityColumn: 'periodGranularity' } },
+        { id: 'range', type: 'filter', config: { combine: 'and', conditions: [
+          { column: 'periodStart', op: 'gte', valueBinding: { source: 'agent-input', field: 'period_from' } },
+          { column: 'periodStart', op: 'lte', valueBinding: { source: 'agent-input', field: 'period_to' } },
+        ] } },
+      ],
+      edges: [{ from: 'src', to: 'period' }, { from: 'period', to: 'range' }],
+    } as unknown as ToolGraph;
+    const result = normalizeProposedGraph(graph, withPeriods);
+    const conditions = (result.graph.nodes.find((node) => node.id === 'range')?.config as { conditions: { value?: unknown }[] }).conditions;
+    expect(conditions[0]?.value).toBe('2020-01-01');
+    expect(conditions[1]?.value).toBe('2023-01-01');
+    expect(result.changes.join(' ')).toContain("earliest period start 2020-01-01");
+    expect(result.changes.join(' ')).toContain("latest period start 2023-01-01");
+  });
+
+  it('従来どおり: periodStart への束縛でも、プロファイルに期間の範囲が無ければ何も置かない。parse-period の無いグラフでは periodStart を特別扱いしない（値は発明しない）', () => {
+    const graph = (withPeriod: boolean): ToolGraph => ({
+      nodes: [
+        { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-wage' } },
+        ...(withPeriod ? [{ id: 'period', type: 'parse-period', config: { column: '時点', startColumn: 'periodStart', granularityColumn: 'periodGranularity' } }] : []),
+        { id: 'range', type: 'filter', config: { column: 'periodStart', op: 'gte', valueBinding: { source: 'agent-input', field: 'from' } } },
+      ],
+      edges: [],
+    } as unknown as ToolGraph);
+    const noRange = normalizeProposedGraph(graph(true), context);
+    expect((noRange.graph.nodes.find((node) => node.id === 'range')?.config as { value?: unknown }).value).toBeUndefined();
+    const noParse = normalizeProposedGraph(graph(false), { ...context, profiles: [{ ...wageProfile, periodColumns: [{ column: '時点', granularities: { year: 4 }, minStart: '2020-01-01', maxStart: '2023-01-01', mixed: false }] }] });
+    expect((noParse.graph.nodes.find((node) => node.id === 'range')?.config as { value?: unknown }).value).toBeUndefined();
+  });
+
+  it('異常: valueBinding / opBinding の source の綴り違い（agent_input など）は agent-input に直す（実測: 差し戻し 1 回を使っていた）', () => {
+    const result = normalizeProposedGraph(
+      filterGraph({ column: '地域', op: 'eq', value: '東京都', valueBinding: { source: 'agent_input', field: 'region' }, opBinding: { source: 'input', field: 'cmp', allowed: ['eq'] } }),
+      context,
+    );
+    const config = filterConfigOf(result.graph);
+    expect(config['valueBinding']).toEqual({ source: 'agent-input', field: 'region' });
+    expect(config['opBinding']).toEqual({ source: 'agent-input', field: 'cmp', allowed: ['eq'] });
+    expect(result.changes.join(' ')).toContain("rewrote valueBinding.source \"agent_input\" as 'agent-input'");
+  });
+
+  it('従来どおり: field の無い束縛や、既に agent-input の束縛には触らない', () => {
+    const untouched = normalizeProposedGraph(filterGraph({ column: '地域', op: 'eq', value: '東京都', valueBinding: { source: 'agent-input', field: 'region' } }), context);
+    expect(untouched.changes.filter((change) => change.includes('rewrote valueBinding'))).toEqual([]);
+    const noField = normalizeProposedGraph(filterGraph({ column: '地域', op: 'eq', value: '東京都', valueBinding: { source: 'input' } }), context);
+    expect(filterConfigOf(noField.graph)['valueBinding']).toEqual({ source: 'input' });
+  });
+
+  it('従来どおり: isNull / notNull の束縛条件と、実在値が分からない列には何も置かない（種を置くのは単一値の束縛条件だけ）', () => {
+    const valueless = normalizeProposedGraph(filterGraph({ column: '地域', op: 'isNull', valueBinding: { source: 'agent-input', field: 'r' } }), context);
+    expect(filterConfigOf(valueless.graph)['value']).toBeUndefined();
+
+    const unknown = normalizeProposedGraph(filterGraph({ column: '未知の列', op: 'eq', value: '', valueBinding: { source: 'agent-input', field: 'r' } }), context);
+    expect(filterConfigOf(unknown.graph)['value']).toBe('');
+  });
+
   it('境界: バインドされていない静的な in 条件には値を作らない（修復ループへ委ねる）', () => {
     const result = normalizeProposedGraph(filterGraph({ column: '地域', op: 'in' }), context);
 
@@ -438,6 +519,40 @@ describe('normalizeProposedGraph（agent-input の形と合成）', () => {
     const twice = normalizeProposedGraph(once.graph, context);
     expect(twice.graph.nodes.filter((node) => node.type === 'agent-input')).toHaveLength(1);
     expect(twice.changes).toEqual([]);
+  });
+});
+
+describe('normalizeProposedGraph（agent-output の書き忘れた必須項目）', () => {
+  const outGraph = (config: unknown): ToolGraph => ({
+    nodes: [
+      { id: 'src', type: 'csv-source', config: { dataSourceId: 'ds-wage' } },
+      { id: 'out', type: 'agent-output', config },
+    ],
+    edges: [{ from: 'src', to: 'out' }],
+  } as unknown as ToolGraph);
+  const outConfig = (graph: ToolGraph): Record<string, unknown> => graph.nodes.find((node) => node.id === 'out')?.config as Record<string, unknown>;
+
+  it('異常: maxRows / maxBytes / overflow を書き忘れた agent-output は既定で埋める（実測: 設計アシスタントが毎回 1 回目で落ちていた）', () => {
+    const result = normalizeProposedGraph(outGraph({ shape: 'rows', format: 'json' }), context);
+
+    expect(outConfig(result.graph)).toEqual({ shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65_536, overflow: 'error' });
+    expect(result.changes.join(' ')).toContain("agent-output 'out': filled the missing maxRows, maxBytes, overflow");
+  });
+
+  it('従来どおり: 書いてある項目は変えない（maxRows 10 はそのまま）。全部揃っていれば changes に何も残さない', () => {
+    const partial = normalizeProposedGraph(outGraph({ shape: 'rows', format: 'json', maxRows: 10 }), context);
+    expect(outConfig(partial.graph)['maxRows']).toBe(10);
+    expect(outConfig(partial.graph)['overflow']).toBe('error');
+
+    const full = { shape: 'summary', format: 'markdown-table', maxRows: 5, maxBytes: 2048, overflow: 'store-and-reference' };
+    const complete = normalizeProposedGraph(outGraph(full), context);
+    expect(outConfig(complete.graph)).toEqual(full);
+    expect(complete.changes.filter((change) => change.includes('agent-output'))).toEqual([]);
+  });
+
+  it('境界: config が無い agent-output も既定 5 項目で埋める', () => {
+    const result = normalizeProposedGraph(outGraph(undefined), context);
+    expect(outConfig(result.graph)).toEqual({ shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65_536, overflow: 'error' });
   });
 });
 

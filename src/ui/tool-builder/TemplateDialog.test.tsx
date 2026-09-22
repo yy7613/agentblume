@@ -441,6 +441,138 @@ describe('TemplateDialog: 作成', () => {
   });
 });
 
+describe('TemplateDialog: エージェントの引数（v46 §B）', () => {
+  /** 候補と一緒に届く引数（サーバーが when を評価済み・表示言語で埋め込み済み）。 */
+  const WITH_ARGUMENTS: TemplateSlotCandidatesResultDto = {
+    ...SERIES_CANDIDATES,
+    arguments: [
+      { name: 'granularity', type: 'string', nullable: false, lock: 'Required: omitting it would mix monthly and annual rows', description: 'Period granularity.' },
+      { name: 'period_from', type: 'date', nullable: true, description: 'Periods starting on or after this ISO date.' },
+      { name: 'categories', type: 'string', nullable: true, description: 'Comma-separated values of 地域.' },
+    ],
+  };
+
+  const requiredBox = (name: string) => screen.getByRole('checkbox', { name: `Require ${name}` }) as HTMLInputElement;
+  const rowOf = (name: string) => requiredBox(name).closest('.template-argument') as HTMLElement;
+
+  async function openWithArguments(client: ToolApiClient, language: 'en' | 'ja' = 'en'): Promise<void> {
+    renderDialog(client, language);
+    await choose(language === 'ja' ? '時系列の取り出し' : 'Time series lookup');
+    await userEvent.selectOptions(screen.getByLabelText(language === 'ja' ? 'データソース' : 'Data source'), 'ds-population');
+  }
+
+  it('正常: スロットと名前の間に区画を出し、冒頭の 1 文・引数名・説明・既定のチェック（必須 = テンプレートの値）を並べる', async () => {
+    await openWithArguments(fakeClient({ toolTemplateSlotCandidates: vi.fn().mockResolvedValue(WITH_ARGUMENTS) }));
+    const section = (await screen.findByText('Agent arguments')).closest('fieldset') as HTMLElement;
+    expect(within(section).getByText('If you make an argument optional and the agent omits it, the tool does not filter on that condition.')).toBeTruthy();
+    expect(within(rowOf('period_from')).getByText('period_from')).toBeTruthy();
+    expect(within(rowOf('period_from')).getByText('Periods starting on or after this ISO date.')).toBeTruthy();
+    expect(requiredBox('granularity').checked).toBe(true);
+    expect(requiredBox('period_from').checked).toBe(false);
+    expect(requiredBox('categories').checked).toBe(false);
+    // 並び: スロットの欄 → 引数の区画 → 名前の欄。
+    const form = screen.getByLabelText('Maximum rows');
+    const toolName = screen.getByLabelText(TOOL_NAME_FIELD);
+    expect(form.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(section.compareDocumentPosition(toolName) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('正常: チェックボックスは <label> の中に入り、文言「Required」と並ぶ（全体規則で横並びになる形）', async () => {
+    await openWithArguments(fakeClient({ toolTemplateSlotCandidates: vi.fn().mockResolvedValue(WITH_ARGUMENTS) }));
+    await screen.findByText('Agent arguments');
+    const label = requiredBox('period_from').closest('label') as HTMLElement;
+    expect(label.textContent).toBe('Required');
+  });
+
+  it('正常: lock の行はチェックボックスが無効で、その行に理由が出る', async () => {
+    await openWithArguments(fakeClient({ toolTemplateSlotCandidates: vi.fn().mockResolvedValue(WITH_ARGUMENTS) }));
+    await screen.findByText('Agent arguments');
+    expect(requiredBox('granularity').disabled).toBe(true);
+    expect(within(rowOf('granularity')).getByText('Required: omitting it would mix monthly and annual rows')).toBeTruthy();
+    expect(requiredBox('period_from').disabled).toBe(false);
+    expect(within(rowOf('period_from')).queryByText(/omitting it would mix/)).toBeNull();
+  });
+
+  it('正常: 既定から変えた引数だけを argumentNullability で送る（既定へ戻した引数は送らない）', async () => {
+    const instantiateToolTemplate = vi.fn().mockResolvedValue(instantiated());
+    await openWithArguments(fakeClient({ toolTemplateSlotCandidates: vi.fn().mockResolvedValue(WITH_ARGUMENTS), instantiateToolTemplate }));
+    await screen.findByText('Agent arguments');
+    await userEvent.click(requiredBox('period_from'));
+    expect(requiredBox('period_from').checked).toBe(true);
+    await userEvent.click(requiredBox('categories'));
+    await userEvent.click(requiredBox('categories'));
+    fillNames();
+    await userEvent.click(createButton());
+
+    await waitFor(() => expect(instantiateToolTemplate).toHaveBeenCalled());
+    expect(instantiateToolTemplate.mock.calls[0]?.[0].argumentNullability).toEqual({ period_from: false });
+  });
+
+  it('境界: 何も変えなければ argumentNullability を送らない', async () => {
+    const instantiateToolTemplate = vi.fn().mockResolvedValue(instantiated());
+    await openWithArguments(fakeClient({ toolTemplateSlotCandidates: vi.fn().mockResolvedValue(WITH_ARGUMENTS), instantiateToolTemplate }));
+    await screen.findByText('Agent arguments');
+    fillNames();
+    await userEvent.click(createButton());
+
+    await waitFor(() => expect(instantiateToolTemplate).toHaveBeenCalled());
+    expect(instantiateToolTemplate.mock.calls[0]?.[0]).not.toHaveProperty('argumentNullability');
+  });
+
+  it('正常: 候補は表示言語つきで頼む（説明と固定の理由はサーバーがその言語で埋める）', async () => {
+    const toolTemplateSlotCandidates = vi.fn().mockResolvedValue(WITH_ARGUMENTS);
+    await openWithArguments(fakeClient({ toolTemplateSlotCandidates }), 'ja');
+    await waitFor(() => expect(toolTemplateSlotCandidates).toHaveBeenCalled());
+    expect(toolTemplateSlotCandidates.mock.calls[0]?.[0]).toMatchObject({ language: 'ja' });
+  });
+
+  it('正常: 日本語では見出し・冒頭の 1 文・チェックボックスの文言が日本語になる', async () => {
+    await openWithArguments(fakeClient({ toolTemplateSlotCandidates: vi.fn().mockResolvedValue(WITH_ARGUMENTS) }), 'ja');
+    const section = (await screen.findByText('エージェントの引数')).closest('fieldset') as HTMLElement;
+    expect(within(section).getByText('任意にした引数は、エージェントが省略するとその条件で絞りません')).toBeTruthy();
+    const box = within(section).getByRole('checkbox', { name: 'period_from を必須にする' });
+    expect((box.closest('label') as HTMLElement).textContent).toBe('必須');
+  });
+
+  it('異常: 422 の argument:<name> の指摘はその引数の行の真下に出て、切り替えると消える', async () => {
+    const failure = new ApiError(422, 'TOOL_TEMPLATE_SLOTS', 'argument settings cannot be applied', undefined, {
+      details: { slots: [{ slot: 'argument:period_from', message: "argument 'period_from' has no design-time sample, so it cannot be made required; write a \"sample\" for it in the template, or leave it optional" }] },
+    });
+    const onClose = vi.fn();
+    renderDialog(fakeClient({ toolTemplateSlotCandidates: vi.fn().mockResolvedValue(WITH_ARGUMENTS), instantiateToolTemplate: vi.fn().mockRejectedValue(failure) }), 'en', onClose);
+    await choose('Time series lookup');
+    await userEvent.selectOptions(screen.getByLabelText('Data source'), 'ds-population');
+    await screen.findByText('Agent arguments');
+    await userEvent.click(requiredBox('period_from'));
+    fillNames();
+    await userEvent.click(createButton());
+
+    await waitFor(() => expect(within(rowOf('period_from')).getByRole('alert').textContent).toContain('no design-time sample'));
+    expect(onClose).not.toHaveBeenCalled();
+    await userEvent.click(requiredBox('period_from'));
+    expect(within(rowOf('period_from')).queryByRole('alert')).toBeNull();
+  });
+
+  it('異常: 画面に行の無い引数への指摘は、見失わないよう全体の指摘として出す', async () => {
+    const failure = new ApiError(422, 'TOOL_TEMPLATE_SLOTS', 'argument settings cannot be applied', undefined, {
+      details: { slots: [{ slot: 'argument:region', message: "argument 'region' is not in this template; choose one of granularity, period_from" }] },
+    });
+    renderDialog(fakeClient({ toolTemplateSlotCandidates: vi.fn().mockResolvedValue(WITH_ARGUMENTS), instantiateToolTemplate: vi.fn().mockRejectedValue(failure) }));
+    await choose('Time series lookup');
+    await userEvent.selectOptions(screen.getByLabelText('Data source'), 'ds-population');
+    await screen.findByText('Agent arguments');
+    fillNames();
+    await userEvent.click(createButton());
+    expect((await screen.findByRole('alert')).textContent).toContain("argument 'region' is not in this template");
+  });
+
+  it('従来どおり: 候補に arguments が無ければ（引数の無いテンプレート・古いサーバー）区画を出さない', async () => {
+    await openWithArguments(fakeClient());
+    await screen.findByRole('option', { name: /時点/ });
+    expect(screen.queryByText('Agent arguments')).toBeNull();
+  });
+});
+
 describe('TemplateDialog: 名前（表示名と関数名）', () => {
   /** テンプレートを選び、データソースだけ埋めた状態（名前は未入力）。 */
   async function readyForNames(language: 'en' | 'ja' = 'en'): Promise<void> {

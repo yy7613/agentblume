@@ -10,6 +10,7 @@
 // env は @mastra/core の評価より前に確定させる必要がある。import は記述順に評価されるため
 // この行は必ず '@mastra/core/*' より前に置く（並べ替え禁止。詳細は src/mastra-runtime-env.ts）。
 import '../../mastra-runtime-env';
+import { ContextWindowProbe } from './lm-studio-context-window';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ModelRouterLanguageModel, modelSupportsAttachments } from '@mastra/core/llm';
 import {
@@ -463,6 +464,7 @@ export class MastraModelProvider implements ModelProviderPort {
    * 生成は初回 complete() まで遅らせ、モデルID不正で配線が落ちないようにする。
    */
   private router: ModelRouterLanguageModel | undefined;
+  private contextWindowProbe: ContextWindowProbe | undefined;
 
   constructor(private readonly options: MastraModelProviderOptions) {
     this.spec = typeof options.model === 'string' ? { id: options.model } : options.model;
@@ -475,6 +477,21 @@ export class MastraModelProvider implements ModelProviderPort {
 
   capabilities(): readonly ModelCapability[] {
     return this.resolvedCapabilities;
+  }
+
+  /**
+   * いま載っているモデルへ送れる文脈の長さ（v49 §4）。OpenAI 互換の `url` が LM Studio（`…/v1`）を指すときだけ
+   * LM Studio 固有の API から読む。実運用の経路はこのプロバイダなので、ここに無いと画面の比率が出ない。
+   * レジストリ指定（`url` 無し）やそれ以外のサーバでは undefined（取れないのは正常系）。
+   */
+  async contextWindow(): Promise<number | undefined> {
+    if (this.spec.url === undefined) return undefined;
+    // 工場が付ける擬似接頭辞（`local/`）はサーバへ送る id には含まれない。LM Studio が知っているのは `google/gemma-4-12b` の方。
+    const slash = this.spec.id.indexOf('/');
+    const wireModelId = slash > 0 ? this.spec.id.slice(slash + 1).trim() : this.spec.id.trim();
+    if (wireModelId === '') return undefined;
+    this.contextWindowProbe ??= new ContextWindowProbe({ baseUrl: this.spec.url, model: wireModelId, ...(this.spec.apiKey !== undefined ? { apiKey: this.spec.apiKey } : {}) });
+    return this.contextWindowProbe.read();
   }
 
   async complete(request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion> {

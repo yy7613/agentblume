@@ -15,6 +15,7 @@ import type { FactoryGoalInput } from '../../../domain/factory/factory-run';
 import { MAX_TOOL_CALLS } from '../../agent/run-agent-preview';
 import { supportsMultiValueFilterOps } from '../roles/tool-smith-role';
 import type { JsonSchemaProperty } from '../../model/model-provider';
+import type { PromptCatalogPort, PromptSpec } from '../../prompt/prompt-catalog-port';
 import type { DataProfile, JoinCandidate } from '../profile-data-sources';
 import type { RoleTask, RoleTaskParseResult } from './role-task';
 import {
@@ -147,18 +148,13 @@ export function joinKeyChoices(input: DecideJoinInput): string[] {
   return unique(joinCandidatesFor(input.profiles).flatMap((candidate) => candidate.keys));
 }
 
-export const decideJoinTask: RoleTask<DecideJoinInput, ToolSpecJoin> = {
+/** このタスクがモデルへ送る文（v48 / ADR-0052）。文は `prompts/factory/tasks/decide-join.md`。 */
+export const DECIDE_JOIN_PROMPT: PromptSpec = { id: 'factory/tasks/decide-join', sections: ['goal', 'rules'] };
+
+export const decideJoinTaskOf = (prompts: PromptCatalogPort): RoleTask<DecideJoinInput, ToolSpecJoin> => ({
   name: 'decide-join',
-  goal: 'You decide how this tool joins its data sources: which shared key columns it joins on, and which join mode it uses.',
-  rules: [
-    '- Take every key from joinCandidates[].keys. Never invent a column, and never join on a note or free-text column (注記, remarks, 備考).',
-    '- Join on ALL the keys the candidate lists (for example BOTH the period AND the region code). One key alone matches every region with every region and multiplies the rows.',
-    '- When the sources share both a code and a name for the same thing, the code alone is enough; list the name only if there is no code.',
-    `- Use at most ${MAX_TOOL_SPEC_JOIN_KEYS} keys, each one at most once.`,
-    "- Use mode 'inner' — it keeps exactly the rows where every source has a value, which is what putting values side by side means.",
-    "- Use mode 'left' only when the purpose explicitly needs rows that exist in the primary source alone.",
-    '- uniqueLeft / uniqueRight false only means the tool has to narrow that side later; it is not a reason to drop a key.',
-  ],
+  goal: prompts.get(DECIDE_JOIN_PROMPT.id).render('goal'),
+  rules: prompts.get(DECIDE_JOIN_PROMPT.id).render('rules', { maxJoinKeys: MAX_TOOL_SPEC_JOIN_KEYS }).split('\n'),
   schema(input) {
     const choices = joinKeyChoices(input);
     const key: JsonSchemaProperty = choices.length === 0 ? { type: 'string' } : { type: 'string', enum: choices };
@@ -223,7 +219,7 @@ export const decideJoinTask: RoleTask<DecideJoinInput, ToolSpecJoin> = {
     if (issues.length > 0) return { ok: false, issues };
     return { ok: true, value: { keys, mode: mode as ToolSpecJoin['mode'] } };
   },
-};
+});
 
 // ---------------------------------------------------------------------------
 // T1 decide-filters
@@ -254,21 +250,28 @@ export function categoricalColumnsOf(input: DecideFiltersInput): DataProfile['ca
   return (input.profiles[0]?.categoricalColumns ?? []).filter((column) => column.values.length > 0);
 }
 
-export const decideFiltersTask: RoleTask<DecideFiltersInput, DecideFiltersOutput> = {
+/** このタスクがモデルへ送る文（v48 / ADR-0052）。文は `prompts/factory/tasks/decide-filters.md`。
+ * `rules.category.multi` / `rules.category.single` は、`filter` が複数値演算子を持つビルドかで入れ替わる。 */
+export const DECIDE_FILTERS_PROMPT: PromptSpec = {
+  id: 'factory/tasks/decide-filters',
+  sections: ['goal', 'rules.head', 'rules.category.multi', 'rules.category.single', 'rules.tail'],
+};
+
+export const decideFiltersTaskOf = (prompts: PromptCatalogPort): RoleTask<DecideFiltersInput, DecideFiltersOutput> => ({
   name: 'decide-filters',
-  goal: 'You decide how this tool narrows its rows: how it handles the period column, and which category columns it exposes as call arguments.',
+  goal: prompts.get(DECIDE_FILTERS_PROMPT.id).render('goal'),
   rules: [
-    '- When a period column has "mixed": true, rows of several granularities share it, so you MUST pin the granularity: pick a fixed one, or \'argument\'.',
-    "- Pick 'argument' only when the goal really needs more than one granularity (monthly AND yearly); then defaultGranularity must be one of the granularities present in that column.",
-    "- With a fixed granularity, leave defaultGranularity null. Set period to null only when the data has no period column.",
-    '- Set range to true whenever the goal mentions a span of time, a trend, the latest figures, or a maximum over time; false only for a single fixed label.',
+    prompts.get(DECIDE_FILTERS_PROMPT.id).render('rules.head'),
     supportsMultiValueFilterOps()
-      ? '- Add a category filter only for a column the goal actually narrows on, and always set multi to true: one call must be able to ask for several values, or a comparison costs one call per value.'
-      : '- Add a category filter only for a column the goal actually narrows on; multi must be false because this build accepts a single value per argument.',
-    `- Keep at most ${MAX_TOOL_SPEC_CATEGORY_FILTERS} category filters: the conversation has only ${MAX_TOOL_CALLS} tool calls, and every extra argument is one more thing the agent can get wrong.`,
-    `- Argument names are snake_case (${TOOL_SPEC_ARGUMENT_PATTERN.source}), unique, and may not be ${list(RESERVED_TOOL_SPEC_ARGUMENTS)}: the tool declares those itself.`,
-    '- An empty categoryFilters array is the right answer when the goal needs no narrowing by category.',
-  ],
+      ? prompts.get(DECIDE_FILTERS_PROMPT.id).render('rules.category.multi')
+      : prompts.get(DECIDE_FILTERS_PROMPT.id).render('rules.category.single'),
+    prompts.get(DECIDE_FILTERS_PROMPT.id).render('rules.tail', {
+      maxCategoryFilters: MAX_TOOL_SPEC_CATEGORY_FILTERS,
+      maxToolCalls: MAX_TOOL_CALLS,
+      argumentPattern: TOOL_SPEC_ARGUMENT_PATTERN.source,
+      reservedArguments: list(RESERVED_TOOL_SPEC_ARGUMENTS),
+    }),
+  ].join('\n').split('\n'),
   schema(input) {
     const periods = periodColumnsOf(input);
     const granularities = unique(periods.flatMap((period) => granularitiesOf(period)));
@@ -419,7 +422,7 @@ export const decideFiltersTask: RoleTask<DecideFiltersInput, DecideFiltersOutput
     if (issues.length > 0) return { ok: false, issues };
     return { ok: true, value: { ...(period === undefined ? {} : { period }), categoryFilters } };
   },
-};
+});
 
 // ---------------------------------------------------------------------------
 // T2 decide-computations
@@ -436,18 +439,13 @@ export interface DecideComputationsOutput {
   readonly computations: readonly ToolSpecComputation[];
 }
 
-export const decideComputationsTask: RoleTask<DecideComputationsInput, DecideComputationsOutput> = {
+/** このタスクがモデルへ送る文（v48 / ADR-0052）。文は `prompts/factory/tasks/decide-computations.md`。 */
+export const DECIDE_COMPUTATIONS_PROMPT: PromptSpec = { id: 'factory/tasks/decide-computations', sections: ['goal', 'rules'] };
+
+export const decideComputationsTaskOf = (prompts: PromptCatalogPort): RoleTask<DecideComputationsInput, DecideComputationsOutput> => ({
   name: 'decide-computations',
-  goal: 'You decide which computed columns this tool should add, and describe in plain language what each one must compute.',
-  rules: [
-    '- Do NOT write a formula or any arithmetic syntax. Name the new column and say in ONE plain sentence what it should mean.',
-    '- Propose a computation only for arithmetic BETWEEN COLUMNS OF THE SAME ROW: a difference, a ratio, a percentage, a per-capita value, a share of a total.',
-    '- The expression language cannot do conditionals (if/case), text handling, aggregation over rows (sum/average/count), or comparison with a previous row. Never ask for those.',
-    '- Refer only to the numeric columns listed in numericColumns; never mention a column that is not there.',
-    '- outputColumn must be a NEW column name that does not already exist in the table, and every outputColumn must differ from the others.',
-    `- Propose at most ${MAX_TOOL_SPEC_COMPUTATIONS} computations.`,
-    '- An EMPTY computations array is the right answer whenever the goal needs no arithmetic between columns. That is the normal case; do not invent work.',
-  ],
+  goal: prompts.get(DECIDE_COMPUTATIONS_PROMPT.id).render('goal'),
+  rules: prompts.get(DECIDE_COMPUTATIONS_PROMPT.id).render('rules', { maxComputations: MAX_TOOL_SPEC_COMPUTATIONS }).split('\n'),
   schema() {
     return {
       type: 'object',
@@ -520,7 +518,7 @@ export const decideComputationsTask: RoleTask<DecideComputationsInput, DecideCom
     if (issues.length > 0) return { ok: false, issues };
     return { ok: true, value: { computations } };
   },
-};
+});
 
 // ---------------------------------------------------------------------------
 // T3 decide-output
@@ -534,17 +532,13 @@ export interface DecideOutputInput {
   readonly estimatedRows: number;
 }
 
-export const decideOutputTask: RoleTask<DecideOutputInput, ToolSpecOutput> = {
+/** このタスクがモデルへ送る文（v48 / ADR-0052）。文は `prompts/factory/tasks/decide-output.md`。 */
+export const DECIDE_OUTPUT_PROMPT: PromptSpec = { id: 'factory/tasks/decide-output', sections: ['goal', 'rules'] };
+
+export const decideOutputTaskOf = (prompts: PromptCatalogPort): RoleTask<DecideOutputInput, ToolSpecOutput> => ({
   name: 'decide-output',
-  goal: 'You decide which columns this tool returns, how its rows are sorted, and how many rows one call returns.',
-  rules: [
-    '- Keep the period label column, the value columns the purpose is about, and every computed column. Dropping them makes the answer unusable.',
-    '- Return an EMPTY columns array to keep every column. List columns only to drop clutter the purpose does not need.',
-    '- Never list a column that is not in availableColumns, and never list the same column twice.',
-    "- Use sort 'latest-first' when the purpose wants the newest figures, 'oldest-first' for a chronological trend, and 'none' when the rows have no period.",
-    `- limit is a whole number between ${MIN_TOOL_SPEC_LIMIT} and ${MAX_TOOL_SPEC_LIMIT}. It bounds a call made with no arguments at all, so it must not overflow.`,
-    '- Compare limit with estimatedRows: when the estimate is larger, the sort decides which rows survive, so pick the sort that keeps the rows the purpose cares about.',
-  ],
+  goal: prompts.get(DECIDE_OUTPUT_PROMPT.id).render('goal'),
+  rules: prompts.get(DECIDE_OUTPUT_PROMPT.id).render('rules', { minLimit: MIN_TOOL_SPEC_LIMIT, maxLimit: MAX_TOOL_SPEC_LIMIT }).split('\n'),
   schema(input) {
     const columns: JsonSchemaProperty = input.availableColumns.length === 0
       ? { type: 'string' }
@@ -606,4 +600,4 @@ export const decideOutputTask: RoleTask<DecideOutputInput, ToolSpecOutput> = {
     if (issues.length > 0) return { ok: false, issues };
     return { ok: true, value: { columns, sort: sort as ToolSpecOutput['sort'], limit: limit as number } };
   },
-};
+});

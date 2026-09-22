@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { bundledPrompts } from '../../test-support/prompts';
 import { ScriptedModelProvider } from '../../adapters/model/scripted-model-provider';
 import { InMemoryDataSourceRepository } from '../../adapters/storage/in-memory-data-source-repository';
 import type { Row } from '../../domain/data/types';
@@ -122,8 +123,8 @@ async function setup(
   const mode = options?.expressionAssistant ?? 'on';
   const assistant = mode === 'absent'
     ? undefined
-    : new SuggestCalculateExpressionUseCase(engine, expressions, () => mode === 'on');
-  const staged = new StagedToolGeneration(tasks, engine, assistant, resolver);
+    : new SuggestCalculateExpressionUseCase(engine, expressions, () => mode === 'on', bundledPrompts());
+  const staged = new StagedToolGeneration(tasks, engine, assistant, resolver, bundledPrompts());
 
   let roleCalls = 0;
   const events: string[] = [];
@@ -469,7 +470,7 @@ describe('StagedToolGeneration — 中断と設定不足', () => {
 
   it('境界: データソース解決が注入されていなければ、モデルを呼ぶ前に ok:false を返す', async () => {
     const harness = await setup([{ id: 'ds-national', name: '全国人口', csv: NATIONAL_CSV }]);
-    const staged = new StagedToolGeneration(harness.tasks, harness.engine, undefined, undefined);
+    const staged = new StagedToolGeneration(harness.tasks, harness.engine, undefined, undefined, bundledPrompts());
     const result = await staged.generate({
       scope, plan: nationalPlan, profiles: harness.profiles, goal,
       onRoleCall: () => { throw new Error('must not call the model'); },

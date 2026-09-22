@@ -3,7 +3,7 @@ import type { Edge } from '@xyflow/react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
-import { canConnect, MINIMAP_NODE_COLOR, FlowCanvas } from './FlowCanvas';
+import { canConnect, highlightNodes, MINIMAP_NODE_COLOR, FlowCanvas } from './FlowCanvas';
 import { useToolBuilderStore, type ToolFlowNode } from './store';
 
 // jsdomにはResizeObserverが無く、@xyflow/reactの実描画（コンテナ寸法計測）に必要なので最小スタブを与える。
@@ -164,5 +164,39 @@ describe('FlowCanvas（実描画）', () => {
     const pane = document.querySelector('.react-flow__pane') as HTMLElement;
     fireEvent.click(pane);
     expect(useToolBuilderStore.getState().selectedNodeId).toBeUndefined();
+  });
+});
+
+/** 設計アシスタント（v47）が変えたノードの強調。強調は一時的な見た目で、グラフには残らない。 */
+describe('node-highlight（設計アシスタントが変えたノードの強調）', () => {
+  it('正常: 強調中のノードにだけ node-highlight を付けて描画する', () => {
+    useToolBuilderStore.getState().reset();
+    const turnId = useToolBuilderStore.getState().startDesignChatTurn('多い順に並べて');
+    act(() => useToolBuilderStore.getState().completeDesignChatTurn(turnId, {
+      message: '並べ替えました。',
+      graph: {
+        nodes: [
+          { id: 'source-1', type: 'json-source', config: { rows: [] }, position: { x: 80, y: 120 } },
+          { id: 'filter-1', type: 'filter', config: {}, position: { x: 390, y: 120 } },
+        ],
+        edges: [{ from: 'source-1', to: 'filter-1' }],
+      },
+      changes: [{ op: 'set-config', nodeId: 'filter-1', summary: 'filter を直した' }],
+    }));
+    render(<FlowCanvas />);
+    expect(document.querySelector('.react-flow__node[data-id="filter-1"]')?.className).toContain('node-highlight');
+    expect(document.querySelector('.react-flow__node[data-id="source-1"]')?.className).not.toContain('node-highlight');
+
+    act(() => useToolBuilderStore.getState().clearDesignChatHighlight());
+    expect(document.querySelector('.react-flow__node[data-id="filter-1"]')?.className).not.toContain('node-highlight');
+  });
+
+  it('境界: 強調が無ければノード配列をそのまま渡す（描画の無駄な差分を作らない）', () => {
+    expect(highlightNodes(nodes, [])).toBe(nodes);
+  });
+
+  it('異常: 既に消えたノードidを強調しても、残りのノードは素のまま', () => {
+    const highlighted = highlightNodes(nodes, ['gone']);
+    expect(highlighted.every((node) => node.className === undefined)).toBe(true);
   });
 });

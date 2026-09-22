@@ -2,7 +2,7 @@
   "$schema": "./tool-template.schema.json",
   "formatVersion": 1,
   "id": "latest-values",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "title": { "ja": "最新の値", "en": "Latest values" },
   "summary": {
     "ja": "指定した粒度の最新 N 期ぶんの値だけを、新しい順に返す（「いま幾つか」「直近はどうか」用）。",
@@ -29,6 +29,7 @@
   "arguments": [
     {
       "name": "granularity", "type": "string", "nullable": false, "sample": { "$slot": "defaultGranularity" },
+      "lock": { "ja": "省略できると月次と年次が混ざるため、必須に固定しています", "en": "Required: omitting it would mix monthly and annual rows" },
       "description": { "ja": "期間の粒度。month / quarter / half / year / fiscal-year のうちデータにあるものを、この綴りのまま渡す（monthly・yearly・月次・年次 などは不可）。必ず指定する。", "en": "Period granularity: one of month / quarter / half / year / fiscal-year that exists in the data, spelled exactly like this (not monthly, yearly or a translation). Required." }
     },
     {

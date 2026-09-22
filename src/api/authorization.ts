@@ -124,6 +124,10 @@ const CORE_ROUTE_RULES: readonly RouteRule[] = [
   rule('POST', '/tool-drafts/diagnose', 'execute', 'tool'),
   rule('POST', '/tool-drafts/suggest-analysis-config', 'edit', 'tool'),
   rule('POST', '/tool-drafts/suggest-calculate-expression', 'edit', 'tool'),
+  // 設計アシスタントは提案のたびに設計時プレビューでデータを読むので、preview と同じ execute を要求する。
+  rule('POST', '/tool-drafts/design-chat', 'execute', 'tool'),
+  // 会話の圧縮（v49）はモデルを呼ぶだけだが、材料はその会話＝設計中のツールの中身なので同じ execute。
+  rule('POST', '/tool-drafts/design-chat/compact', 'execute', 'tool'),
   rule('GET', '/runtime/capabilities', 'read', 'workspace'),
 
   // --- ツールテンプレート（v43）。一覧と候補は読み取りだけ。実体化はデータソースを読んで

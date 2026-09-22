@@ -10,6 +10,7 @@ import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider
 import { RoleMatrixAuthorization } from '../adapters/security/role-matrix-authorization';
 import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
 import { authenticated, rejected, type AuthenticationPort } from '../application/security/authentication';
+import { bundledPrompts } from '../test-support/prompts';
 import { SuggestToolCheckCasesUseCase } from '../application/tool-check/suggest-tool-check-cases';
 import { RunToolCheckUseCase } from '../application/tool-check/run-tool-check';
 import { ResolveAiJudgmentsUseCase } from '../application/tool/resolve-ai-judgments';
@@ -54,7 +55,7 @@ function caseBody(overrides: Record<string, unknown> = {}) {
 
 /** 缶詰のモデル応答で提案ユースケースを差し替えた App（test プロファイルの既定は無効＝502）。 */
 function withSuggestions(app: App, scripted: ScriptedModelProvider, enabled = true): App {
-  return { ...app, suggestToolCheckCases: new SuggestToolCheckCasesUseCase(app.repo, app.engine, scripted, () => enabled, undefined, async () => ({ provider: 'scripted', model: 'canned' })) };
+  return { ...app, suggestToolCheckCases: new SuggestToolCheckCasesUseCase(app.repo, app.engine, scripted, () => enabled, bundledPrompts(), undefined, async () => ({ provider: 'scripted', model: 'canned' })) };
 }
 
 function suggestionCases() {
@@ -483,7 +484,7 @@ function judgeToolBody(overrides: Record<string, unknown> = {}) {
 
 /** 缶詰のモデル応答で AI 判定を解く RunToolCheckUseCase に差し替えた App（test プロファイルの既定は未設定）。 */
 function withJudgments(app: App, scripted: ScriptedModelProvider): App {
-  const resolver = new ResolveAiJudgmentsUseCase(app.engine, scripted, () => true, { snapshot: async () => ({ provider: 'scripted', model: 'canned' }) });
+  const resolver = new ResolveAiJudgmentsUseCase(app.engine, scripted, () => true, bundledPrompts(), { snapshot: async () => ({ provider: 'scripted', model: 'canned' }) });
   return { ...app, runToolCheck: new RunToolCheckUseCase(app.repo, app.engine, undefined, {}, resolver) };
 }
 

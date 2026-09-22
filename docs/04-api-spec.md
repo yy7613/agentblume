@@ -173,6 +173,20 @@ interface ToolTemplateCatalogPort {
 
 テンプレートは**外部ファイル**（`templates/tools/*.json` + `AGENTCONTEXT_TOOL_TEMPLATES_DIR`）なので、壊れたfileは黙って落とさず`invalid[]`へ理由付きで残す。代表Adapterはファイルシステム（`FsToolTemplateCatalog`）で、要求時に読みファイルの更新時刻・サイズでキャッシュする。詳細は[ADR-0049](./adr/0049-tool-templates.md) / [implementation/v43](../implementation/v43-tool-templates.md) §1。
 
+### 2.7 プロンプトカタログ
+
+```typescript
+interface PromptCatalogPort {
+  // 読み込み済みのプロンプトを返す。ファイルの更新時刻・サイズが変わっていれば読み直す
+  // （壊れていれば直前の良い版を返して警告を残す）。id が無ければ PromptNotFoundError。
+  get(id: string): PromptTemplate; // { id, version, sections, render(section, vars?) }
+  // 起動時の検査。無い id / 無い節を、ファイルの置き場所と直し方つきで一括で投げる（MissingPromptsError）。
+  require(specs: readonly PromptSpec[]): void; // PromptSpec = { id, sections }
+}
+```
+
+モデルへ送る指示文（system の規則・差し戻しの文・タスクの目的）は**外部ファイル**（`prompts/**/*.md` + `AGENTCONTEXT_PROMPTS_DIR`）で持つ。どの節をどの順に使うか・条件での入れ替え・untrusted dataの隔離（`wrapUntrusted`）・JSON schemaはコードに残し、ファイルには文だけを置く。代表Adapterはファイルシステム（`FsPromptCatalog`）で、起動時に全件読み、コードが宣言した`PromptSpec`（id・節）が揃っているかを`require`で検査する（揃っていなければどのファイルの何が無いかを出して起動を止める）。実行中はファイルの更新時刻で再読込し、壊れたファイルは直前の良い版を使い続ける。詳細は[ADR-0052](./adr/0052-prompt-files.md) / [implementation/v48](../implementation/v48-prompt-files.md)。
+
 > **契約テスト**: 各Portには契約テストを用意し、実SDKアダプターとFakeが同じ契約を満たすことを検証する（[01-architecture.md](./01-architecture.md#5-composition-root-と依存性注入)）。
 
 ---
@@ -955,7 +969,7 @@ Tool を 1 から組む代わりに、**テンプレートを選んでスロッ�
 
 ```jsonc
 // POST /tool-templates/period-series/slot-candidates
-{ "scope": { … }, "dataSourceIds": ["ds-population"], "values": { "periodColumn": "時点" } }  // values は部分でよい
+{ "scope": { … }, "dataSourceIds": ["ds-population"], "values": { "periodColumn": "時点" }, "language": "ja" }  // values は部分でよい。language は arguments の説明の言語（既定 ja）
 // → 200
 {
   "templateId": "period-series", "version": "1.0.0",
@@ -970,6 +984,12 @@ Tool を 1 から組む代わりに、**テンプレートを選んでスロッ�
     { "slot": "defaultGranularity", "kind": "choice", "options": [{ "value": "year" }, { "value": "month" }] },
     { "slot": "limit", "kind": "number", "range": { "min": 1, "max": 100 } },
     { "slot": "outputColumn", "kind": "text", "freeText": true }
+  ],
+  // いまの values で `when` を評価して**残る**エージェント引数だけ（画面はこれを「必須」チェックの行として描く）。
+  // nullable はテンプレートの既定。lock があれば切り替え不可で、その理由（language の言語）。
+  "arguments": [
+    { "name": "granularity", "type": "string", "nullable": false, "lock": "省略できると月次と年次が混ざるため、必須に固定しています", "description": "期間の粒度。…" },
+    { "name": "period_from", "type": "date", "nullable": true, "description": "この日以降に始まる期間（ISO 日付）…" }
   ]
 }
 ```
@@ -983,7 +1003,10 @@ Tool を 1 から組む代わりに、**テンプレートを選んでスロッ�
   "values": { "source": "ds-population", "periodColumn": "時点", "valueColumns": ["人口"], "defaultGranularity": "year", "limit": 12 },
   // 必須。モデルへ公開する function 名（`^[A-Za-z0-9_-]{1,64}$`）。既定は持たない — テンプレート id を既定にすると
   // 同じテンプレートから作った2本目が1本目と同じ内部ID・公開名になり、別のToolのつもりが既存Toolの新版になる。
-  "toolName": "population_series"
+  "toolName": "population_series",
+  // 任意。引数名 → nullable。テンプレートの既定から変える引数だけを書く。lock のある引数を変える・テンプレートに無い名前・
+  // 設計時の見本が無い引数を必須にする、は 422 TOOL_TEMPLATE_SLOTS（slot は "argument:<name>"）。when で落ちた引数への指定は無視する。
+  "argumentNullability": { "period_from": false }
 }
 // → 200
 {
@@ -1021,6 +1044,56 @@ Tool を 1 から組む代わりに、**テンプレートを選んでスロッ�
 ```
 
 `slots[].slot` は**どの入力欄を直せばよいか**で、画面はその欄の真下にメッセージを出す。欄に紐づけられない問題（グラフ全体の検査で出たもの）は `slot` を持たない。
+
+### 3.9 設計アシスタント
+
+ツール作成画面のチャットパネルから、自由文の指示で**いまのキャンバスを編集する**（[docs/06 §3.17](./06-etl-tool-builder.md#317-設計アシスタント文章で指示するとノードが増える) / [ADR-0051](./adr/0051-tool-design-chat.md)）。認可は `execute` on `tool`（設計時プレビューでデータを読むため、プレビューと同じ）。**保存はしない** — 返るのはキャンバスへ展開する編集後のグラフで、保存は従来どおり `PUT /tools/{id}` 等。
+
+```jsonc
+// POST /tool-drafts/design-chat
+{
+  "graph": { "nodes": [ … ], "edges": [ … ] },     // いまのキャンバス（position つき）
+  "inputSchema": { "columns": [ … ] },              // 任意。省略すると graph の agent-input から読む
+  "instruction": "地域を引数で絞れるようにして",
+  "transcript": [                                    // 任意。直近の会話（画面が持つ。古い順、最大40ターン。
+                                                       // モデルへ送る直近12ターンへの切り詰めは応用層が行う）
+    { "role": "user", "content": "都道府県別の総人口を年次に絞って多い順に10件返して" },
+    { "role": "assistant", "content": "年次の総人口を多い順に10件返すツールにしました。" }
+  ]
+}
+// → 200
+{
+  "message": "地域コードを引数 region にして、filter を束縛しました。省略すると全地域を返します。",
+  "graph": { "nodes": [ … ], "edges": [ … ] },      // 編集後。変更が無いときは省略（キャンバスは変えない）
+  "changes": [                                        // 画面が一覧に出し、対象ノードを強調する。summary は決定的な英文
+    { "op": "set-config", "nodeId": "agent-input", "summary": "set config of agent-input 'agent-input': schema={\"columns\":[…]}" },
+    { "op": "set-config", "nodeId": "filter-1", "summary": "set config of filter 'filter-1': column=\"地域\", op=\"eq\", valueBinding=\"region\"" }
+  ],
+  "repaired": false,                                  // 1回差し戻して通ったか
+  "repairedFrom": ["node 'out': …"],                   // 差し戻したときだけ。1回目の失敗理由（画面には出さない。文を調整する材料）
+  "problems": [],                                      // 適用できなかったときだけ、理由（英語の原文。画面が localizeDetail 経由で日本語化）
+  "warnings": [],                                      // 適用はしたが注意点（例: 粒度が混在する列に粒度の filter が無い）。画面は黄色の注記で出す
+  "promptTemplateVersion": "design-chat/v2"
+}
+```
+
+- 質問への回答・曖昧で聞き返す等、キャンバスを変えない応答は `graph` を省略し `changes: []`。
+- 差し戻しても検査（正規化 → スキーマ伝播 → 設計時プレビュー）を通らなかったときは `graph` を省略し、`problems` に理由と `message` にモデルの説明を返す。**この場合も HTTP は 200**（アシスタントの応答であって、API 呼び出しそのものの失敗ではない）。
+- モデル未設定・モデル呼び出しの失敗は 502 `MODEL_PROVIDER`（既存の式提案と同じ経路。画面は先に `/runtime/capabilities` で案内する）。本文の形が違えば 400 `BAD_REQUEST`。
+- request には任意で `agentTool: { name, description }`（いまの Tool Calling 契約。空文字を含んでよい）と `transcriptSummary`（圧縮済みの古い会話。最大 4,000 字）を載せる。応答には `set-agent-tool` を適用したときだけ `agentTool`、毎回 `usage: { promptTokens?, completionTokens?, contextWindow? }`（直前の呼び出しの実数。`contextWindow` は LM Studio の `/api/v0/models/<id>` から取れたときだけ）。
+- 操作の語彙には `set-agent-tool { description, name? }` があり、グラフではなく Tool Calling 契約（エージェントが呼ぶ前に読む説明文）を置き換える。引数を足した・変えたときは同じ応答で説明文も更新するよう規則で求めている（`changes` には `{ "op": "set-agent-tool", "nodeId": "agent-tool" }`）。
+
+```jsonc
+// POST /tool-drafts/design-chat/compact — 古い会話をモデルに要約させる（認可: execute on tool）
+{ "scope": { … }, "previousSummary": "…", "turns": [{ "user": "…", "assistant": "…", "changes": ["added parse-period 'period' after 'src' …"] }], "language": "ja" }
+// → 200
+{ "summary": "- データソース: eStat 総人口 …
+- 全国の行は除外 …", "usage": { "promptTokens": 761, "completionTokens": 120, "contextWindow": 200192 } }
+```
+
+`turns` は 1〜40 件（古い順）。要約は `prompts/tool/design-chat-compact.md` の指示で作り（次のターンで読む覚え書き。目的・決めたこと・適用した変更の要点・未解決の質問を残す）、空なら 1 回、800 字超なら 1 回だけ出し直させる。画面は直近 4 ターンを残し、それより古いターンをここへ送って `transcriptSummary` に置き換える。
+
+`GET /runtime/capabilities` に `designAssistant: { enabled: boolean }` が加わる（`calculateAssistant` と同じ判定: main スロットのモデルが設定済みで構造化出力に対応していること）。
 
 ---
 

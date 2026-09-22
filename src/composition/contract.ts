@@ -87,9 +87,9 @@ export function composeContract(context: BusinessCompositionContext): BusinessCo
     return { provider: snapshot.provider, model: snapshot.model };
   });
   const resolver = new ContractPlaybookResolver(playbookRepo);
-  const extractor = new ContractClauseExtractor(gate);
-  const answerer = new ContractCriteriaAnswerer(gate, errorLogger);
-  const transcriber = new TranscribeContractPagesUseCase(gate);
+  const extractor = new ContractClauseExtractor(gate, context.promptCatalog);
+  const answerer = new ContractCriteriaAnswerer(gate, context.promptCatalog, errorLogger);
+  const transcriber = new TranscribeContractPagesUseCase(gate, context.promptCatalog);
   const ledger = new ListContractDeadlinesUseCase(signedRepo, resolver);
 
   const capabilitiesResolver = async (): Promise<ContractCapabilities> => {

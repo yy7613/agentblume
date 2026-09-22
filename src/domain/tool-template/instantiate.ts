@@ -51,10 +51,30 @@ export interface InstantiatedTemplate {
   readonly columnSlots: Readonly<Record<string, string>>;
 }
 
+/** 引数名 → nullable（作成画面でテンプレートの既定から切り替えた引数だけ。v46 §B）。 */
+export type ArgumentNullability = Readonly<Record<string, boolean>>;
+
 export interface InstantiateTemplateOptions {
   /** エージェントへ公開する function 名（`toolFunctionNameOf` などで呼び出し側が作る）。 */
   readonly toolName: string;
   readonly language: 'ja' | 'en';
+  /**
+   * 引数の必須 / 任意の上書き。省略時はテンプレートの既定のまま（Agent Factory はこれを渡さない）。
+   * 検査（`argumentNullabilityViolations`）を通らない指定は `ToolTemplateError` で止める。
+   */
+  readonly argumentNullability?: ArgumentNullability;
+}
+
+/** 実体化後に残る引数 1 つ（作成画面が「必須」チェックボックスの行として描く形）。 */
+export interface TemplateArgumentView {
+  readonly name: string;
+  readonly type: ToolTemplateArgument['type'];
+  /** テンプレートの既定（上書き前）。画面のチェックボックスの初期値になる。 */
+  readonly nullable: boolean;
+  /** 切り替えられない理由（表示言語で埋め込み済み）。 */
+  readonly lock?: string;
+  /** 表示言語で、スロットの値を埋め込んだ説明。 */
+  readonly description: string;
 }
 
 /** スロット 1 つぶんの選択肢（契約 §3 の形）。 */
@@ -422,6 +442,101 @@ export function validateSlotValues(template: ToolTemplate, values: TemplateSlotV
   return violations;
 }
 
+// ── 引数の必須 / 任意（v46 §B） ─────────────────────────────────────────────────────
+
+/** 引数の違反が載る `slot` の形（422 の封筒で、画面がその引数の行の真下へ出すための鍵）。 */
+export function argumentSlotOf(name: string): string {
+  return `argument:${name}`;
+}
+
+/**
+ * その引数の効く nullable（上書き → テンプレートの既定）。入力スキーマの列・説明文の「必須 / 省略可」・
+ * 設計時サンプルの要否は**すべてこれ**を見る（1 か所でも既定を直に見ると、画面では必須なのに
+ * 説明文は「省略可」のような食い違いになる）。
+ */
+export function effectiveNullable(argument: ToolTemplateArgument, overrides: ArgumentNullability | undefined): boolean {
+  return overrides?.[argument.name] ?? argument.nullable;
+}
+
+/** そのスロット値で `when` を満たし、実体化後に残る引数。 */
+function survivingArguments(template: ToolTemplate, values: TemplateSlotValues): ToolTemplateArgument[] {
+  const resolved = withSlotDefaults(template, values);
+  return template.arguments.filter((argument) => evaluateWhen(argument.when, resolved));
+}
+
+/** 設計時の見本を書いていない引数か（`sample` が無い・null）。 */
+function hasNoSample(argument: ToolTemplateArgument): boolean {
+  return argument.sample === undefined || argument.sample === null;
+}
+
+/**
+ * 引数の必須 / 任意の上書きが成立するかを見る。違反は `slot: 'argument:<name>'` を持つ。
+ *
+ * - テンプレートに無い名前は、使える名前を挙げて止める（打ち間違いを黙って無視しない）。
+ * - `lock` のある引数は既定と違う値にできない（既定と同じ値を送るのは可）。
+ * - 任意 → 必須にするには設計時の見本が要る（`agent-input` の設計時プレビューに値が要るため）。
+ * - `when` で落ちた引数への指定は**無視する**（その引数は作られないので、効かせる先が無い）。
+ *   画面は今のスロットで残る引数しか出さないが、スロットを変えた直後の古い指定は来うる。
+ */
+export function argumentNullabilityViolations(
+  template: ToolTemplate,
+  values: TemplateSlotValues,
+  overrides: ArgumentNullability,
+): SlotViolation[] {
+  const declared = new Map(template.arguments.map((argument) => [argument.name, argument] as const));
+  const surviving = new Set(survivingArguments(template, values).map((argument) => argument.name));
+  const violations: SlotViolation[] = [];
+  for (const [name, nullable] of Object.entries(overrides)) {
+    const argument = declared.get(name);
+    if (argument === undefined) {
+      const known = [...declared.keys()].join(', ') || 'none — this template declares no arguments';
+      violations.push({ slot: argumentSlotOf(name), message: `argument '${name}' is not in this template; choose one of ${known}` });
+      continue;
+    }
+    if (!surviving.has(name) || nullable === argument.nullable) continue;
+    if (argument.lock !== undefined) {
+      violations.push({
+        slot: argumentSlotOf(name),
+        message: `argument '${name}' cannot be changed: ${argument.lock.en}; leave it ${argument.nullable ? 'optional' : 'required'}`,
+      });
+      continue;
+    }
+    if (!nullable && hasNoSample(argument)) {
+      violations.push({
+        slot: argumentSlotOf(name),
+        message: `argument '${name}' has no design-time sample, so it cannot be made required; write a "sample" for it in the template, or leave it optional`,
+      });
+    }
+  }
+  return violations;
+}
+
+/** 説明文の `{{slot}}` を埋める。まだ選ばれていないスロットはそのスロットの表示名で読ませる。 */
+function interpolateForDisplay(text: string, template: ToolTemplate, values: TemplateSlotValues, language: 'ja' | 'en'): string {
+  return text.replace(/\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*\}\}/g, (match, name: string) => {
+    const value = values[name];
+    if (!isEmpty(value)) return textOf(value);
+    const slot = template.slots.find((candidate) => candidate.name === name);
+    return slot === undefined ? match : slot.label[language];
+  });
+}
+
+/**
+ * 今のスロット値で残る引数を、作成画面がそのまま描ける形で返す（`when` の評価を画面に持たせない）。
+ * 候補の取得はスロットを選び終える前にも呼ばれるので、説明文の未選択のスロットは例外にせず
+ * 表示名で埋める（実体化の説明文とは違い、ここは人が読むための下書きである）。
+ */
+export function templateArgumentViews(template: ToolTemplate, values: TemplateSlotValues, language: 'ja' | 'en'): TemplateArgumentView[] {
+  const resolved = withSlotDefaults(template, values);
+  return survivingArguments(template, resolved).map((argument) => ({
+    name: argument.name,
+    type: argument.type,
+    nullable: argument.nullable,
+    ...(argument.lock === undefined ? {} : { lock: argument.lock[language] }),
+    description: interpolateForDisplay(argument.description[language], template, resolved, language),
+  }));
+}
+
 // ── 実体化 ───────────────────────────────────────────────────────────────────────
 
 interface SubstitutionScope {
@@ -674,11 +789,14 @@ function upstreamOf(nodeId: string, edges: readonly GraphEdge[]): Set<string> {
   return seen;
 }
 
-/** 引数の設計時サンプルを、宣言した型のセルへ寄せる。 */
-function sampleOf(argument: ToolTemplateArgument, resolved: unknown): string | number | boolean | null {
+/**
+ * 引数の設計時サンプルを、宣言した型のセルへ寄せる。
+ * `nullable` は上書き後の効く値（任意なら見本が無くても null を置ける）。
+ */
+function sampleOf(argument: ToolTemplateArgument, nullable: boolean, resolved: unknown): string | number | boolean | null {
   const flat = Array.isArray(resolved) ? (resolved as readonly unknown[]).map(String).join(',') : resolved;
   if (flat === null || flat === undefined) {
-    if (argument.nullable) return null;
+    if (nullable) return null;
     throw new ToolTemplateError(`argument '${argument.name}' has no design-time sample; give it a literal "sample", or declare it "nullable": true`);
   }
   switch (argument.type) {
@@ -714,6 +832,14 @@ export function instantiateTemplate(
     throw new ToolTemplateError(`'${options.toolName}' cannot be published as a function name (allowed: letters, digits, '_' and '-', 1..64 characters); pass an ASCII name such as the tool plan key`);
   }
   const raw = withSlotDefaults(template, values);
+  // 引数の上書きは application でも同じ検査を通すが（違反を 422 の欄ごとの指摘にするため）、
+  // Factory など他の呼び出し元のためにここでも止める（検査を飛ばした上書きが黙って効かないように）。
+  const overrides = options.argumentNullability;
+  const argumentViolations = overrides === undefined ? [] : argumentNullabilityViolations(template, raw, overrides);
+  if (argumentViolations.length > 0) {
+    throw new ToolTemplateError(argumentViolations.map((violation) => violation.message).join('; '));
+  }
+  const nullableOf = (argument: ToolTemplateArgument): boolean => effectiveNullable(argument, overrides);
   const surviving = survivingNodeIds(template, raw);
   const edges = bridgedEdges(template, raw, surviving);
   const instantiator = new Instantiator(template, facts);
@@ -802,11 +928,11 @@ export function instantiateTemplate(
   }
 
   // 引数（残ったものだけ）→ `agent-input` ノード。
-  const keptArguments = template.arguments.filter((argument) => evaluateWhen(argument.when, raw));
-  const columns: Column[] = keptArguments.map((argument) => ({ name: argument.name, type: argument.type, nullable: argument.nullable }));
+  const keptArguments = survivingArguments(template, raw);
+  const columns: Column[] = keptArguments.map((argument) => ({ name: argument.name, type: argument.type, nullable: nullableOf(argument) }));
   const sample: Record<string, string | number | boolean | null> = {};
   for (const argument of keptArguments) {
-    sample[argument.name] = sampleOf(argument, instantiator.substitute(argument.sample, baseScope, `argument '${argument.name}'.sample`));
+    sample[argument.name] = sampleOf(argument, nullableOf(argument), instantiator.substitute(argument.sample, baseScope, `argument '${argument.name}'.sample`));
   }
   const inputSchema: Schema | undefined = columns.length === 0 ? undefined : { columns };
   if (inputSchema !== undefined) {
@@ -827,7 +953,7 @@ export function instantiateTemplate(
   // モデルへ届く文章は Tool の説明文だけである（実測: 説明が届かず granularity に "monthly" を渡して 0 行になった）。
   const summary = interpolate(template.description[options.language], baseScope, 'description');
   const argumentLines = keptArguments.map((argument) => {
-    const required = argument.nullable ? (options.language === 'ja' ? '省略可' : 'optional') : (options.language === 'ja' ? '必須' : 'required');
+    const required = nullableOf(argument) ? (options.language === 'ja' ? '省略可' : 'optional') : (options.language === 'ja' ? '必須' : 'required');
     return `- ${argument.name} (${required}): ${interpolate(argument.description[options.language], baseScope, `argument '${argument.name}'.description`)}`;
   });
   const description = argumentLines.length === 0

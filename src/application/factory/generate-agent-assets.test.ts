@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { bundledPrompts } from '../../test-support/prompts';
 import { describe, expect, it } from 'vitest';
 import { ScriptedModelProvider } from '../../adapters/model/scripted-model-provider';
 import { FsToolTemplateCatalog } from '../../adapters/templates/fs-tool-template-catalog';
@@ -193,9 +194,9 @@ async function setup(options?: {
   const profiles = await profiler.executeAll(scope, ['ds-1', ...(options?.sources ?? []).map((source) => source.id)]);
 
   const model = options?.model ?? new ScriptedModelProvider();
-  const toolSmith = new ToolSmithRole(model);
-  const skillWriter = new SkillWriterRole(model);
-  const assembler = new AssemblerRole(model);
+  const toolSmith = new ToolSmithRole(model, bundledPrompts());
+  const skillWriter = new SkillWriterRole(model, bundledPrompts());
+  const assembler = new AssemblerRole(model, bundledPrompts());
 
   const toolRepo = new InMemoryToolRepository();
   const skillRepo = new InMemorySkillRepository();
@@ -209,7 +210,7 @@ async function setup(options?: {
   const stagedTasks = new ScriptedModelProvider();
   const stagedExpressions = new ScriptedModelProvider();
   const staged = options?.staged === true
-    ? new StagedToolGeneration(stagedTasks, engine, new SuggestCalculateExpressionUseCase(engine, stagedExpressions, () => true), resolver)
+    ? new StagedToolGeneration(stagedTasks, engine, new SuggestCalculateExpressionUseCase(engine, stagedExpressions, () => true, bundledPrompts()), resolver, bundledPrompts())
     : undefined;
 
   // テンプレート経路の台本も本体・段階的経路と分ける（「どの経路が走ったか」を台本の消費で見分ける）。
@@ -221,8 +222,9 @@ async function setup(options?: {
       templateTasks,
       engine,
       new FsToolTemplateCatalog({ directories: [join(process.cwd(), 'templates', 'tools')], registry }),
-      new SuggestCalculateExpressionUseCase(engine, templateExpressions, () => true),
+      new SuggestCalculateExpressionUseCase(engine, templateExpressions, () => true, bundledPrompts()),
       resolver,
+      bundledPrompts(),
     )
     : undefined;
 

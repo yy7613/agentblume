@@ -13,6 +13,7 @@ import type { ModelCapability, ModelProviderPort } from '../application/model/mo
 import type { SecretCipherPort } from '../application/model-settings/secret-cipher';
 import type { LoggerPort } from '../application/operations/logger';
 import type { UnitOfWorkPort } from '../application/persistence/unit-of-work';
+import type { PromptCatalogPort } from '../application/prompt/prompt-catalog-port';
 import type { ExperimentModelSnapshot } from '../domain/evaluation/experiment';
 
 export interface BusinessCompositionContext {
@@ -32,6 +33,11 @@ export interface BusinessCompositionContext {
   readonly resolveModelSnapshot?: () => Promise<ExperimentModelSnapshot>;
   /** 握り潰した障害の出力先。 */
   readonly errorLogger: LoggerPort;
+  /**
+   * モデルへ送る指示文のカタログ（v48 / ADR-0052）。仕訳・経費・契約の LLM 読み取り / ヒアリング / 審査が
+   * `PromptCatalogPort` を受けてプロンプトファイルの文を組み立てる。`root.ts` が起動時に 1 つ作って渡す。
+   */
+  readonly promptCatalog: PromptCatalogPort;
   /**
    * 秘密値・個人情報の封緘（モデル設定・MCP 設定と同じ鍵。鍵は DB の外）。経費精算の振込口座番号が使う（docs/21 §20.17-1）。
    * 省略可にしてあるのは、この文脈を直接組み立てる既存のテストを壊さないため。省略された業務は揮発鍵で動かす。

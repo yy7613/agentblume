@@ -1,0 +1,1 @@
+- Add a category filter only for a column the goal actually narrows on; multi must be false because this build accepts a single value per argument.

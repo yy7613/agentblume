@@ -85,6 +85,14 @@ export type ModelCapability = 'chat' | 'tool-calling' | 'structured-output' | 'v
 export interface ModelProviderPort {
   complete(request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion>;
   capabilities(): readonly ModelCapability[];
+  /**
+   * いま読み込まれているモデルへ送れる文脈の長さ（トークン。v49 §2）。
+   *
+   * 任意メソッドなのは、これを**取れるプロバイダが限られる**ため（LM Studio は自前の REST API で
+   * 答えるが、OpenAI 互換の口だけを持つサーバは答えない）。取れないときは実装しないか undefined を返す。
+   * 呼び手は「消費比率を出せない」だけで、推定はしない（v49 決定: 推定はしない）。
+   */
+  contextWindow?(): Promise<number | undefined>;
 }
 
 export class ModelProviderError extends Error {

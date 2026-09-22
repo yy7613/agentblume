@@ -20,9 +20,10 @@ import {
   type ExpressionDiagnostic,
   type ExpressionPreview,
 } from '../../domain/etl/nodes/calculate-diagnostics';
+import type { PromptCatalogPort } from '../prompt/prompt-catalog-port';
 import {
+  CALCULATE_PROMPT,
   CALCULATE_PROMPT_SAMPLE_ROWS,
-  CALCULATE_PROMPT_TEMPLATE_VERSION,
   buildCalculateExpressionRepairRequest,
   buildCalculateExpressionRequest,
   type CalculateExpressionRepairFeedback,
@@ -150,6 +151,8 @@ export class SuggestCalculateExpressionUseCase {
     private readonly engine: EtlEngine,
     private readonly model: ModelProviderPort,
     private readonly enabled: () => boolean | Promise<boolean>,
+    /** 文の置き場所（v48）。版も文もここが正で、コードに定数は持たない。 */
+    private readonly prompts: PromptCatalogPort,
   ) {}
 
   async available(): Promise<boolean> {
@@ -172,7 +175,7 @@ export class SuggestCalculateExpressionUseCase {
     const warnings: string[] = [];
     if (upstream.warning !== undefined) warnings.push(upstream.warning);
 
-    const request = buildCalculateExpressionRequest({
+    const request = buildCalculateExpressionRequest(this.prompts, {
       intent: input.intent,
       node: { id: node.id, currentConfig: current },
       upstreamSchema: upstream.schema,
@@ -188,7 +191,7 @@ export class SuggestCalculateExpressionUseCase {
     if (inspection.feedback !== undefined) {
       // 差し戻しは 1 回だけ（ADR-0046 決定 2）。
       repaired = true;
-      const repair = buildCalculateExpressionRepairRequest(request, content, inspection.feedback);
+      const repair = buildCalculateExpressionRepairRequest(this.prompts, request, content, inspection.feedback);
       content = await this.ask(repair, signal);
       proposed = parseProposal(content);
       rejectDecline(proposed);
@@ -248,7 +251,7 @@ export class SuggestCalculateExpressionUseCase {
         })),
       },
       repaired,
-      promptTemplateVersion: CALCULATE_PROMPT_TEMPLATE_VERSION,
+      promptTemplateVersion: this.prompts.get(CALCULATE_PROMPT.id).version,
     };
   }
 

@@ -46,8 +46,22 @@ export function canConnect(
   return occupied === 0;
 }
 
+/**
+ * 設計アシスタント（v47）が足した・変えたノードに強調クラスを付ける。
+ *
+ * ノードそのものには印を持たせず、描画のたびに store の強調リストから被せる
+ * （強調は数秒で消える一時的な見た目で、保存されるグラフの一部ではないため）。
+ * 強調が無いときは元の配列をそのまま返し、React Flow に無駄な差分を渡さない。
+ */
+export function highlightNodes(nodes: ToolFlowNode[], highlight: readonly string[]): ToolFlowNode[] {
+  if (highlight.length === 0) return nodes;
+  return nodes.map((node) => highlight.includes(node.id) ? { ...node, className: 'node-highlight' } : node);
+}
+
 export function FlowCanvas() {
-  const nodes = useToolBuilderStore((state) => state.nodes);
+  const storedNodes = useToolBuilderStore((state) => state.nodes);
+  const highlight = useToolBuilderStore((state) => state.designChat.highlight);
+  const nodes = highlightNodes(storedNodes, highlight);
   const edges = useToolBuilderStore((state) => state.edges);
   const onNodesChange = useToolBuilderStore((state) => state.onNodesChange);
   const onEdgesChange = useToolBuilderStore((state) => state.onEdgesChange);

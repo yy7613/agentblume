@@ -18,6 +18,7 @@ import type { ScenarioRepository, ScenarioSummary } from '../../domain/validatio
 import type { ScenarioRun } from '../../domain/validation/scenario-run';
 import type { ScenarioRunFilter, ScenarioRunRepository } from '../../domain/validation/scenario-run-repository';
 import type { SurveyQuestion } from '../../domain/validation/survey';
+import { bundledPrompts } from '../../test-support/prompts';
 import { EtlEngine } from '../etl/engine';
 import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../model/model-provider';
 import { RunAgentPreviewUseCase } from '../agent/run-agent-preview';
@@ -207,6 +208,7 @@ function harness(options: {
     new StaticPersonas(options.persona === undefined ? makePersona() : options.persona),
     runAgent, puModel, scenarioRuns,
     new StaticAgents(options.pseudoUserAgent ?? null),
+    bundledPrompts(),
     () => 'scenario-run-1',
     () => new Date(Date.UTC(2026, 6, 1, 0, 0, 0, 0) + (tick += 1) * 1000),
     logger,
@@ -447,6 +449,74 @@ describe('RunScenarioUseCase', () => {
     expect(firstRequest?.messages[0]?.content).toContain(direction);
     const repair = h.puModel.requests[2];
     expect(repair?.messages[2]?.content).toContain(direction);
+  });
+
+  it('従来どおり: アンケート初回依頼のsystem文（ja）はプロンプトファイル移行後も完全一致する（v48移行のfixture）', async () => {
+    const h = harness({
+      scenario: makeScenario({ maxUserTurns: 1 }),
+      pu: [puTurn('質問1', false, false), surveyOk()],
+      agent: [agentSay('回答1')],
+    });
+    await h.useCase.execute(input);
+    const content = String(h.puModel.requests[1]?.messages[0]?.content);
+    const tail = [
+      '',
+      '会話全文:',
+      'user: 質問1\nagent: 回答1',
+      '',
+      '上記の会話を踏まえ、この人物として各設問へ回答する。指定されたJSONスキーマに従い全設問へ回答すること。',
+      '評点は数が大きいほど高評価である（最小値 = 最も悪い、最大値 = 最も良い）。自由記述の内容と評点を一致させること。',
+    ].join('\n');
+    expect(content.endsWith(tail)).toBe(true);
+  });
+
+  it('従来どおり: アンケート初回依頼のsystem文（en）はプロンプトファイル移行後も完全一致する（v48移行のfixture）', async () => {
+    const h = harness({
+      persona: makePersona({ language: 'en' }),
+      scenario: makeScenario({ maxUserTurns: 1 }),
+      pu: [puTurn('question', false, false), surveyOk()],
+      agent: [agentSay('answer')],
+    });
+    await h.useCase.execute(input);
+    const content = String(h.puModel.requests[1]?.messages[0]?.content);
+    const tail = [
+      '',
+      'Conversation transcript:',
+      'user: question\nagent: answer',
+      '',
+      'Based on the conversation above, answer every question as this persona, following the given JSON schema.',
+      'Higher scores mean a better evaluation (the minimum value is the worst, the maximum value is the best). Keep your free-text answers consistent with your scores.',
+    ].join('\n');
+    expect(content.endsWith(tail)).toBe(true);
+  });
+
+  it('従来どおり: アンケート検証落ちの再依頼文（ja/en）はプロンプトファイル移行後も完全一致する（v48移行のfixture）', async () => {
+    const badSurveyJa: ModelCompletion = { message: { role: 'assistant', content: JSON.stringify({ q1: true, q2: 0, impressions: 'x' }) }, finishReason: 'stop' };
+    const ja = harness({
+      scenario: makeScenario({ maxUserTurns: 1 }),
+      pu: [puTurn('質問1', false, false), badSurveyJa, surveyOk()],
+      agent: [agentSay('回答1')],
+    });
+    await ja.useCase.execute(input);
+    const jaRepair = String(ja.puModel.requests[2]?.messages[2]?.content);
+    expect(jaRepair).toBe(
+      "前回の回答は検証に通らなかった: survey answer 'q2' must be between 1 and 5。指定のJSONスキーマ（範囲も含む）を満たすJSONだけを返し直すこと。"
+      + '評点は数が大きいほど高評価である（最小値 = 最も悪い、最大値 = 最も良い）。自由記述の内容と評点を一致させること。',
+    );
+
+    const badSurveyEn: ModelCompletion = { message: { role: 'assistant', content: JSON.stringify({ q1: true, q2: 0, impressions: 'x' }) }, finishReason: 'stop' };
+    const en = harness({
+      persona: makePersona({ language: 'en' }),
+      scenario: makeScenario({ maxUserTurns: 1 }),
+      pu: [puTurn('question', false, false), badSurveyEn, surveyOk()],
+      agent: [agentSay('answer')],
+    });
+    await en.useCase.execute(input);
+    const enRepair = String(en.puModel.requests[2]?.messages[2]?.content);
+    expect(enRepair).toBe(
+      "Your previous answer failed validation: survey answer 'q2' must be between 1 and 5. Return only JSON that satisfies the given schema, including the allowed ranges. "
+      + 'Higher scores mean a better evaluation (the minimum value is the worst, the maximum value is the best). Keep your free-text answers consistent with your scores.',
+    );
   });
 
   it('異常: アンケートが2回とも不正でも会話の結末は壊さず、理由を stage:survey で残す', async () => {

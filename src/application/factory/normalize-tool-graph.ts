@@ -16,7 +16,8 @@
  * - 認識できない崩れ方は触らない。そのまま修復ループへ流し、差し戻し文面で直させる。
  */
 import type { GraphNode, ToolGraph } from '../../domain/etl/graph';
-import { FILTER_OPS, MAX_FILTER_VALUES, MULTI_VALUE_OPS, parseFilterValueList } from '../../domain/etl/nodes/filter';
+import { FILTER_OPS, MAX_FILTER_VALUES, MULTI_VALUE_OPS, VALUELESS_OPS, parseFilterValueList } from '../../domain/etl/nodes/filter';
+import { PARSE_PERIOD_TYPE } from '../../domain/etl/nodes/parse-period';
 import type { FactoryPlan } from '../../domain/factory/factory-plan';
 import type { PropagationResult } from '../etl/engine';
 import type { DataProfile } from './profile-data-sources';
@@ -105,6 +106,14 @@ function normalizeCondition(raw: unknown, changes: string[], nodeId: string): un
     changes.push(`filter '${nodeId}': rewrote operator ${JSON.stringify(condition['op'])} as '${op}'`);
     condition = { ...condition, op };
   }
+  // 束縛の `source` は 'agent-input' しか無い。`agent_input` / `input` / `arguments` のような綴りは意味が一意なので直す
+  // （実測: 設計アシスタントの 12B が別の綴りを書き、差し戻し 1 回を使っていた）。`field` を持つ束縛だけを対象にする。
+  for (const key of ['valueBinding', 'opBinding'] as const) {
+    const binding = condition[key];
+    if (!isRecord(binding) || typeof binding['field'] !== 'string' || binding['source'] === 'agent-input') continue;
+    changes.push(`filter '${nodeId}': rewrote ${key}.source ${JSON.stringify(binding['source'])} as 'agent-input' (the only binding source)`);
+    condition = { ...condition, [key]: { ...binding, source: 'agent-input' } };
+  }
   return condition;
 }
 
@@ -148,6 +157,49 @@ function normalizeMultiValueCondition(raw: unknown, changes: string[], nodeId: s
 }
 
 /**
+ * 引数にバインドされた**単一値**の条件（eq / neq / contains / 大小比較）に、設計時の `value` を用意する。
+ *
+ * 実測（設計アシスタント・12B）: 「地域を引数で絞れるように」に対し `{ op: "eq", value: "", valueBinding: … }`
+ * を置いた。実行時は引数で上書きされるので動くが、設計時プレビューは `value` をサンプルとして使うため
+ * 画面のプレビューが 0 行になり、人には壊れて見える。`value` が空のときだけ、実在値の先頭 1 件を種として置く
+ * （値は発明しない。実在値が分からなければ何も置かない）。`in` / `notIn` は `normalizeMultiValueCondition` が扱う。
+ */
+function normalizeBoundScalarCondition(raw: unknown, changes: string[], nodeId: string, profiles: readonly DataProfile[], periodStartColumns: ReadonlySet<string>): unknown {
+  if (!isRecord(raw)) return raw;
+  const op = raw['op'];
+  if (typeof op !== 'string' || MULTI_VALUE_OPS.has(op as never) || VALUELESS_OPS.has(op as never)) return raw;
+  const binding = raw['valueBinding'];
+  if (!isRecord(binding) || binding['source'] !== 'agent-input') return raw;
+  const current = raw['value'];
+  const empty = current === undefined || current === null || (typeof current === 'string' && current.trim() === '');
+  if (!empty) return raw;
+  const column = typeof raw['column'] === 'string' ? raw['column'] : '';
+  // `parse-period` が足す開始日の列は元データに無いので、プロファイルの期間の範囲（最小 / 最大）を種にする
+  // （テンプレートの `$profile: periodMin/periodMax` と同じ値。gte / gt には最小、lte / lt には最大 = 全期間が残る見本）。
+  if (periodStartColumns.has(column)) {
+    const range = periodRangeOf(profiles);
+    const seed = op === 'gte' || op === 'gt' ? range?.min : op === 'lte' || op === 'lt' ? range?.max : undefined;
+    if (seed === undefined) return raw;
+    changes.push(`filter '${nodeId}': seeded the bound '${op}' condition on '${column}' with the ${op === 'gte' || op === 'gt' ? 'earliest' : 'latest'} period start ${seed} from the data profile (replaced by the agent's argument at run time; the design-time preview was empty without it)`);
+    return { ...raw, value: seed };
+  }
+  const seed = sampleValuesFor(column, profiles)[0];
+  if (seed === undefined) return raw;
+  changes.push(`filter '${nodeId}': seeded the bound '${op}' condition on '${column}' with the real sample value ${JSON.stringify(seed)} (replaced by the agent's argument at run time; the design-time preview was empty without it)`);
+  return { ...raw, value: seed };
+}
+
+/** プロファイル全体の期間の範囲（開始日の最小と最大。どのプロファイルにも無ければ undefined）。 */
+function periodRangeOf(profiles: readonly DataProfile[]): { readonly min: string; readonly max: string } | undefined {
+  const starts = profiles.flatMap((profile) => profile.periodColumns ?? []).flatMap((column) => (column.minStart !== undefined && column.maxStart !== undefined ? [column] : []));
+  if (starts.length === 0) return undefined;
+  return {
+    min: starts.map((column) => column.minStart!).sort()[0]!,
+    max: starts.map((column) => column.maxStart!).sort().at(-1)!,
+  };
+}
+
+/**
  * ある列の実在値を Stage 0 プロファイルから拾う（列挙済みの `categoricalColumns` を優先し、
  * 無ければサンプル行から）。見つからなければ空配列（値は決して作らない）。
  */
@@ -171,7 +223,7 @@ export function sampleValuesFor(column: string, profiles: readonly DataProfile[]
 }
 
 /** filter ノード1つの config を正規化する（フラット1条件 / `conditions` 配列 / 別名ラッパーの3形）。 */
-function normalizeFilterNode(node: GraphNode, changes: string[], profiles: readonly DataProfile[]): GraphNode {
+function normalizeFilterNode(node: GraphNode, changes: string[], profiles: readonly DataProfile[], periodStartColumns: ReadonlySet<string>): GraphNode {
   if (!isRecord(node.config)) return node;
   let config: Record<string, unknown> = node.config;
 
@@ -190,7 +242,7 @@ function normalizeFilterNode(node: GraphNode, changes: string[], profiles: reado
   }
 
   const apply = (raw: unknown): unknown =>
-    normalizeMultiValueCondition(normalizeCondition(raw, changes, node.id), changes, node.id, profiles);
+    normalizeBoundScalarCondition(normalizeMultiValueCondition(normalizeCondition(raw, changes, node.id), changes, node.id, profiles), changes, node.id, profiles, periodStartColumns);
 
   const conditions = config['conditions'];
   const normalized = Array.isArray(conditions)
@@ -509,11 +561,38 @@ export function normalizeProposedGraph(graph: ToolGraph, context: NormalizeToolG
   // 綴りを先に直さないと、以降の「型で選ぶ」処理が対象を取りこぼす。
   let next = normalizeNodeTypes(graph, knownTypes, changes);
   next = normalizeSourceIds(next, dataSourceIds, changes);
-  const nodes = next.nodes.map((node) => (node.type === FILTER_TYPE ? normalizeFilterNode(node, changes, context.profiles) : node));
+  // グラフ内の parse-period が足す開始日の列名（既定 periodStart）。束縛した日付条件の種に使う。
+  const periodStartColumns = new Set<string>(next.nodes.filter((node) => node.type === PARSE_PERIOD_TYPE).map((node) => (isRecord(node.config) && typeof node.config['startColumn'] === 'string' ? node.config['startColumn'] : 'periodStart')));
+  const nodes = next.nodes.map((node) => (node.type === FILTER_TYPE ? normalizeFilterNode(node, changes, context.profiles, periodStartColumns) : node));
   if (nodes.some((node, index) => node !== next.nodes[index])) next = { nodes, edges: next.edges };
   next = normalizeAgentInputShape(next, changes);
   next = synthesizeAgentInput(next, context.profiles, changes);
+  next = fillAgentOutputDefaults(next, changes);
   return { graph: normalizeJoinPorts(next, context, changes), changes };
+}
+
+/** `agent-output` の必須項目の既定（`tool-output-dispatcher` の DEFAULT_OUTPUT と同じ値）。 */
+const AGENT_OUTPUT_DEFAULTS: Readonly<Record<string, string | number>> = { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65_536, overflow: 'error' };
+
+/**
+ * `agent-output` の書き忘れた必須項目を既定で埋める。
+ *
+ * 実測（設計アシスタント・12B）: `{ "shape": "rows", "format": "json" }` だけを書いて `maxRows` / `maxBytes` /
+ * `overflow` を落とし、毎回 1 回目が検証で落ちて差し戻しになっていた。値の意味は変えない（書いた項目はそのまま）。
+ * 既定は保存時の既定と同じにし、埋めた項目は changes に残す。
+ */
+function fillAgentOutputDefaults(graph: ToolGraph, changes: string[]): ToolGraph {
+  let touched = false;
+  const nodes = graph.nodes.map((node) => {
+    if (node.type !== 'agent-output') return node;
+    const config = isRecord(node.config) ? node.config : {};
+    const missing = Object.keys(AGENT_OUTPUT_DEFAULTS).filter((key) => config[key] === undefined || config[key] === null);
+    if (missing.length === 0) return node;
+    touched = true;
+    changes.push(`agent-output '${node.id}': filled the missing ${missing.join(', ')} with the defaults (${missing.map((key) => `${key}=${JSON.stringify(AGENT_OUTPUT_DEFAULTS[key])}`).join(', ')})`);
+    return { ...node, config: { ...config, ...Object.fromEntries(missing.map((key) => [key, AGENT_OUTPUT_DEFAULTS[key]])) } };
+  });
+  return touched ? { nodes, edges: graph.edges } : graph;
 }
 
 /**

@@ -44,7 +44,7 @@ describe('DraftToolUseCase', () => {
     expect(rejection).toBeInstanceOf(SchemaError);
     expect(rejection).toMatchObject({
       nodeId: 'source',
-      message: 'json-source: produced 250001 rows, exceeding the execution limit of 250000 rows',
+      message: 'json-source: produced 250001 rows, exceeding the execution limit of 250000 rows; narrow the data upstream, or raise AGENTCONTEXT_MAX_EXECUTION_ROWS on the server',
     });
   });
 

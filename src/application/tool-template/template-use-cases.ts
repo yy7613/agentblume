@@ -8,7 +8,8 @@
  * 2. `TemplateSlotCandidatesUseCase` — スロットごとの候補。**なぜその候補なのか**を人が読めるよう、
  *    列の型・カテゴリ列の実在値・期間列の粒度と範囲・結合キーの重なりと一意性を一緒に返す
  *    （画面がドロップダウンの横に出す。選択の根拠が見えないと、人は当てずっぽうで選ぶ）。
- * 3. `InstantiateToolTemplateUseCase` — スロット検証 → 実体化 → 既存の検査（手で組んだ Tool と同じ）。
+ *    今のスロットで残るエージェントの引数も一緒に返す（v46 §B: 画面が必須 / 任意を切り替える行）。
+ * 3. `InstantiateToolTemplateUseCase` — スロット・引数の上書きの検証 → 実体化 → 既存の検査（手で組んだ Tool と同じ）。
  *    保存はしない。返すのはキャンバスへ展開するための `graph` / `inputSchema` / `agentTool`。
  *
  * 失敗は必ず**どのスロットを直せばよいか**を持つ（`ToolTemplateSlotsError`）。画面はそれを
@@ -19,11 +20,15 @@ import type { Schema } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
 import type { TenantScope } from '../../domain/shared/tenant-scope';
 import {
+  argumentNullabilityViolations,
   slotCandidates,
+  templateArgumentViews,
   validateSlotValues,
   instantiateTemplate,
   withSlotDefaults,
+  type ArgumentNullability,
   type SlotCandidates,
+  type TemplateArgumentView,
   type TemplateSlotValues,
 } from '../../domain/tool-template/instantiate';
 import {
@@ -235,6 +240,11 @@ export interface SlotCandidatesResult {
   readonly templateId: string;
   readonly version: string;
   readonly candidates: readonly SlotCandidatesView[];
+  /**
+   * 今のスロット値で `when` を満たして残る引数（v46 §B）。作成画面はこれを「必須」チェックボックスの
+   * 行としてそのまま描く（`when` の評価を画面へ持たせない。持たせるとサーバーと食い違いうる）。
+   */
+  readonly arguments: readonly TemplateArgumentView[];
 }
 
 // ── 候補・実体化が共有する読み込み ───────────────────────────────────────────────
@@ -246,6 +256,11 @@ export interface ToolTemplateRequest {
   readonly dataSourceIds: readonly DataSourceId[];
   /** 既に決まっているスロット（部分でよい）。依存する候補がこれに合わせて絞られる。 */
   readonly values?: TemplateSlotValues;
+}
+
+/** 候補の入力。`language` は引数の説明・`lock` の理由を埋め込む言語（既定 ja）。 */
+export interface TemplateSlotCandidatesRequest extends ToolTemplateRequest {
+  readonly language?: 'ja' | 'en';
 }
 
 async function loadTemplate(catalog: ToolTemplateCatalogPort, templateId: string): Promise<ToolTemplate> {
@@ -297,7 +312,7 @@ export class TemplateSlotCandidatesUseCase {
     private readonly profiler: ProfileDataSourcesUseCase,
   ) {}
 
-  async execute(request: ToolTemplateRequest): Promise<SlotCandidatesResult> {
+  async execute(request: TemplateSlotCandidatesRequest): Promise<SlotCandidatesResult> {
     const template = await loadTemplate(this.catalog, request.templateId);
     checkSourceCount(template, request.dataSourceIds);
     // `executeAll` は結合キー候補（重なり・一意性）も埋めるので、複数ソースのテンプレートでも同じ呼び方でよい。
@@ -310,6 +325,7 @@ export class TemplateSlotCandidatesUseCase {
       templateId: template.id,
       version: template.version,
       candidates: template.slots.map((slot) => this.viewOf(template, slot, candidates[slot.name] ?? [], profiles, values)),
+      arguments: templateArgumentViews(template, values, request.language ?? 'ja'),
     };
   }
 
@@ -409,6 +425,11 @@ export interface InstantiateToolTemplateRequest extends ToolTemplateRequest {
    * 既定を無くし、その場で名前を決めさせる。
    */
   readonly toolName: string;
+  /**
+   * 引数の必須 / 任意の上書き（v46 §B。作成画面で既定から変えた引数だけ）。省略時はテンプレートの既定。
+   * 成立しない指定は、スロットの違反と一緒に `slot: 'argument:<name>'` で返す。
+   */
+  readonly argumentNullability?: ArgumentNullability;
 }
 
 export interface InstantiateToolTemplateResult {
@@ -442,17 +463,23 @@ export class InstantiateToolTemplateUseCase {
     const profiles = await this.profiler.executeAll(request.scope, request.dataSourceIds);
     const context = templateContextOf({ dataSourceIds: request.dataSourceIds }, profiles);
 
-    const violations = validateSlotValues(template, request.values, context);
+    // スロットと引数の違反は 1 度に全部返す（1 つ直すたびに往復させない）。
+    const slotViolations = validateSlotValues(template, request.values, context);
+    const argumentViolations = request.argumentNullability === undefined
+      ? []
+      : argumentNullabilityViolations(template, request.values, request.argumentNullability);
+    const violations = [...slotViolations, ...argumentViolations];
     if (violations.length > 0) {
-      throw new ToolTemplateSlotsError(
-        `${violations.length} slot(s) of the template '${template.id}' need a different value`,
-        violations.map((violation) => ({ slot: violation.slot, message: violation.message })),
-      );
+      const message = slotViolations.length > 0
+        ? `${slotViolations.length} slot(s) of the template '${template.id}' need a different value`
+        : `${argumentViolations.length} argument setting(s) for the template '${template.id}' cannot be applied`;
+      throw new ToolTemplateSlotsError(message, violations.map((violation) => ({ slot: violation.slot, message: violation.message })));
     }
 
     const instantiated = instantiateTemplate(template, request.values, context, {
       toolName: request.toolName,
       language: request.language,
+      ...(request.argumentNullability === undefined ? {} : { argumentNullability: request.argumentNullability }),
     });
 
     if (instantiated.pendingExpressions.length === 0) {

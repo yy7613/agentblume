@@ -757,9 +757,21 @@ function localizeEtlDetail(message: string, language: ErrorLanguage): string | u
   matched = /^filter: opBinding on '(.+)' allows operator\(s\) (.+) which require column type number\|date, but '.+' is '(.+)'; restrict opBinding\.allowed$/.exec(message);
   if (matched !== null) return `列「${matched[1]}」(${DATA_TYPE_JA[matched[3] ?? ''] ?? matched[3]})では大小比較の演算子(${matched[2]})をAIに許可できません。AIに許可する演算子を絞ってください`;
 
+  // join の出力行数の上限超過（v46: config.maxRows で任意の行数を指定できる）。
+  // 「直し方」を含む新文面。旧文面（下）より先に判定する（新文面のほうが `; ` の後ろが長く、
+  // 旧文面の正規表現がその接頭辞だけを貪欲に食ってしまわないようにするため）。
+  matched = /^join: output exceeded ([\d,]+) rows \(this join's maxRows\); check the join keys, and if they are right, raise maxRows on this join$/.exec(message);
+  if (matched !== null) return `結合結果が${Number(matched[1]?.replace(/,/g, '')).toLocaleString('ja-JP')}行を超えました。結合キーが正しいか確認し、正しければこの結合ノードの「最大行数」を上げてください`;
+
+  // 旧文面（上限は常に10万固定だった頃のもの）。保存済みの実行履歴に残っているため引き続き訳す。
   if (/^join: output exceeded 100,?000 rows(?:;\s*check join keys)?\.?$/.test(message)) return '結合結果が10万行を超えました。結合キーが正しいか確認してください';
 
   // 実行上限（engine.preview の maxRows）。計算は全行で行うため、切り詰めではなくエラーで止まる。
+  // 「直し方」を含む新文面（v46: AGENTCONTEXT_MAX_EXECUTION_ROWS で運用者が変えられる）。
+  matched = /^([A-Za-z][A-Za-z0-9_-]*): produced ([\d,]+) rows, exceeding the execution limit of ([\d,]+) rows; narrow the data upstream, or raise AGENTCONTEXT_MAX_EXECUTION_ROWS on the server$/.exec(message);
+  if (matched !== null) return `ノード（${matched[1]}）の出力が ${Number(matched[2]?.replace(/,/g, '')).toLocaleString('ja-JP')} 行になり、実行上限の ${Number(matched[3]?.replace(/,/g, '')).toLocaleString('ja-JP')} 行を超えました。上流で行を絞るか、サーバーの環境変数 AGENTCONTEXT_MAX_EXECUTION_ROWS を上げてください`;
+
+  // 旧文面（直し方が無かった頃のもの）。保存済みの実行履歴に残っているため引き続き訳す。
   matched = /^([A-Za-z][A-Za-z0-9_-]*): produced ([\d,]+) rows, exceeding the execution limit of ([\d,]+) rows$/.exec(message);
   if (matched !== null) return `ノード（${matched[1]}）の出力が ${Number(matched[2]?.replace(/,/g, '')).toLocaleString('ja-JP')} 行になり、実行上限の ${Number(matched[3]?.replace(/,/g, '')).toLocaleString('ja-JP')} 行を超えました。上流でフィルタや集計を入れて行数を減らすか、データソースの範囲を絞ってください`;
 

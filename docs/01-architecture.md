@@ -41,16 +41,18 @@ flowchart LR
   UC --> DB["PostgreSQL read adapter\nallowlist + read-only + row limit"]
   UC --> SEARCH["Web search adapters\nTavily / TinyFish / Google legacy\nexplicit fetch + TTL cache"]
   UC --> TEMPLATES["Tool templates\ntemplates/tools + 環境変数の追加置き場"]
+  UC --> PROMPTS["Prompts\nprompts + 環境変数の追加置き場"]
   ENV["Backend environment\nDB接続情報・passwordEnv・allowedTables"] --> DB
   ENV --> SEARCH
   ENV --> TEMPLATES
+  ENV --> PROMPTS
 
   classDef boundary fill:#e8f0fe,stroke:#5167d6,color:#182a6b;
   classDef core fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
   classDef store fill:#fff4e5,stroke:#b56b00,color:#6b4000;
   class UI,API boundary;
   class UC,ETL,DOMAIN core;
-  class SQLITE,FILES,SESSION,DB,MODEL,TEMPLATES store;
+  class SQLITE,FILES,SESSION,DB,MODEL,TEMPLATES,PROMPTS store;
 ```
 
 要点は次のとおり。
@@ -60,6 +62,7 @@ flowchart LR
 - DB読取はPostgreSQL adapterに限定し、環境変数の`allowedTables`に一致するtable/viewを読み取り専用・行数上限付きで取得する。詳細は[ADR-0029](./adr/0029-data-source-registry.md)。
 - Web検索は環境変数のキーが揃うproviderだけをUIへ公開する。明示取得結果は15分のサーバー内キャッシュで参照し、Toolの自動previewは外部検索を起動しない。詳細は[ADR-0030](./adr/0030-optional-web-search-providers.md)。
 - ツールテンプレートは外部ファイル（`templates/tools/*.json` + `AGENTCONTEXT_TOOL_TEMPLATES_DIR`で足す置き場）で持ち、利用者はJSONを置くだけでコード変更なしに構成を増やせる。同じ`id`は後から読んだ置き場が勝ち、壊れたファイルは理由と直し方つきで読み飛ばす。詳細は[ADR-0049](./adr/0049-tool-templates.md) / [implementation/v43](../implementation/v43-tool-templates.md)。
+- モデルへ送る指示文（プロンプト）も、ツールテンプレートと同じ「運用者が置く外部ファイル」（`prompts/**/*.md` + `AGENTCONTEXT_PROMPTS_DIR`で足す置き場）で持つ。ただし壊れた・欠けた上書きは読み飛ばさず**起動を止める**（黙って別の指示文でモデルが動く方が高くつくため）。詳細は[ADR-0052](./adr/0052-prompt-files.md) / [implementation/v48](../implementation/v48-prompt-files.md)。
 
 ---
 
@@ -188,6 +191,7 @@ flowchart LR
 | `TelemetryPort` | メトリクス・トレース・ログ | OpenTelemetry |
 | `AuditSink` | 監査イベントの外部転送 | SIEM / ログ基盤 |
 | `ToolTemplateCatalogPort` | 外部ファイルのツールテンプレートの読み込みと一覧（読めなかったファイルは理由つきで別掲） | ファイルシステム（[ADR-0049](./adr/0049-tool-templates.md)） |
+| `PromptCatalogPort` | モデルへ送る指示文（プロンプト）の読み込み。起動時に全件検査し、無い節は理由つきで起動を止める | ファイルシステム（[ADR-0052](./adr/0052-prompt-files.md)） |
 
 > SDK境界の実装ルールの詳細は [04-api-spec.md](./04-api-spec.md) と [08-security-auth.md](./08-security-auth.md) を参照。
 

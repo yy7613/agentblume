@@ -92,7 +92,8 @@ describe('draft tool routes', () => {
     expect(response.statusCode).toBe(422);
     expect(response.json().error).toMatchObject({
       code: 'ETL_SCHEMA',
-      message: 'json-source: produced 250001 rows, exceeding the execution limit of 250000 rows',
+      // v46: 実行上限超過のエラー文に直し方（上流で絞るか AGENTCONTEXT_MAX_EXECUTION_ROWS を上げる）が付いた。
+      message: 'json-source: produced 250001 rows, exceeding the execution limit of 250000 rows; narrow the data upstream, or raise AGENTCONTEXT_MAX_EXECUTION_ROWS on the server',
     });
   });
 
@@ -130,7 +131,7 @@ describe('draft tool routes', () => {
       const response = await server.inject({ method: 'GET', url: '/runtime/capabilities' });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({
-        analysisAssistant: { enabled: false }, calculateAssistant: { enabled: false }, toolCheckSuggestions: { enabled: false }, aiJudge: { enabled: false }, judge: { configured: true, provider: 'scripted-judge', model: 'scripted-judge' },
+        analysisAssistant: { enabled: false }, calculateAssistant: { enabled: false }, designAssistant: { enabled: false }, toolCheckSuggestions: { enabled: false }, aiJudge: { enabled: false }, judge: { configured: true, provider: 'scripted-judge', model: 'scripted-judge' },
         journal: { extraction: { enabled: false, vision: false }, hearing: { enabled: false } },
         expense: { extraction: { enabled: false, vision: false }, detailExtraction: { enabled: false }, policyHearing: { enabled: false } },
         receivables: { invoiceDraft: { enabled: false, vision: false } },
@@ -229,6 +230,319 @@ describe('draft tool routes', () => {
         await viewer.close();
       }
       expect(explicitRouteAuthorization('POST', '/tool-drafts/suggest-calculate-expression')).toMatchObject({ action: 'edit', kind: 'tool' });
+    });
+  });
+
+  describe('POST /tool-drafts/design-chat', () => {
+    const SCOPE = { tenantId: 't', workspaceId: 'w' };
+    const TOKEN = 'r'.repeat(40);
+    const body = { graph, instruction: '18 歳以上だけにして' };
+    /** 設計アシスタント 1 ターンの返り値を固定するフェイク（検分の中身は応用層のテストで見る）。 */
+    const stub = (result: unknown): App['designToolChat'] => ({
+      available: async () => true,
+      execute: async () => result,
+    } as unknown as App['designToolChat']);
+
+    it('正常: 200 で説明・編集後のグラフ・変更一覧をそのまま返す（保存はしない）', async () => {
+      const edited = { nodes: [...graph.nodes, { id: 'lim', type: 'limit', config: { count: 10 } }], edges: [...graph.edges, { from: 'adult', to: 'lim' }] };
+      const stubbed = buildServer({ ...app, designToolChat: stub({
+        message: '10 件に絞りました。',
+        graph: edited,
+        changes: [{ op: 'add-node', nodeId: 'lim', summary: "added limit 'lim' after 'adult' with count=10" }],
+        repaired: false,
+        problems: [],
+        promptTemplateVersion: 'design-chat/v2',
+      }) });
+      try {
+        const response = await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: body });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({
+          message: '10 件に絞りました。',
+          changes: [{ op: 'add-node', nodeId: 'lim', summary: "added limit 'lim' after 'adult' with count=10" }],
+          repaired: false,
+          problems: [],
+        });
+        expect(response.json().graph.nodes).toHaveLength(3);
+        await expect(app.repo.listVersions(SCOPE, 'draft')).resolves.toEqual([]);
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it('正常: 適用できなかったターンも 200（graph 無し・problems つき。アシスタントの応答であって API の失敗ではない）', async () => {
+      const stubbed = buildServer({ ...app, designToolChat: stub({
+        message: '列が見つかりませんでした。', changes: [], repaired: true,
+        problems: ["node 'adult': filter: column not found: ages"], promptTemplateVersion: 'design-chat/v2',
+      }) });
+      try {
+        const response = await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: body });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).not.toHaveProperty('graph');
+        expect(response.json()).toMatchObject({ repaired: true, problems: ["node 'adult': filter: column not found: ages"] });
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it('正常: 会話と引数の宣言はそのままユースケースへ渡る（切り詰めは応用層の仕事）', async () => {
+      let received: Record<string, unknown> | undefined;
+      const capturing = {
+        available: async () => true,
+        execute: async (input: Record<string, unknown>) => {
+          received = input;
+          return { message: 'ok', changes: [], repaired: false, problems: [], promptTemplateVersion: 'design-chat/v2' };
+        },
+      } as unknown as App['designToolChat'];
+      const stubbed = buildServer({ ...app, designToolChat: capturing });
+      try {
+        const transcript = Array.from({ length: 20 }, (_, index) => ({ role: index % 2 === 0 ? 'user' : 'assistant', content: `t${index}` }));
+        const inputSchema = { columns: [{ name: 'region', type: 'string', nullable: true }] };
+        // body の scope は無視し、認証済み principal のスコープで実行する（既存のルートと同じ規律）。
+        await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: { ...body, scope: { tenantId: 'other', workspaceId: 'other' }, transcript, inputSchema } });
+        expect(received).toMatchObject({ scope: { tenantId: 'local', workspaceId: 'default' }, instruction: '18 歳以上だけにして', inputSchema });
+        expect((received?.['transcript'] as unknown[]).length).toBe(20);
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it('正常: inputSchema を送らなければ渡さない（グラフの agent-input から読ませる）', async () => {
+      let received: Record<string, unknown> | undefined;
+      const stubbed = buildServer({ ...app, designToolChat: {
+        available: async () => true,
+        execute: async (input: Record<string, unknown>) => { received = input; return { message: 'ok', changes: [], repaired: false, problems: [], promptTemplateVersion: 'design-chat/v2' }; },
+      } as unknown as App['designToolChat'] });
+      try {
+        await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: body });
+        expect(received).not.toHaveProperty('inputSchema');
+        expect(received?.['transcript']).toEqual([]);
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it.each([
+      ['instruction が空', { graph, instruction: '' }],
+      ['graph が無い', { instruction: '直して' }],
+      ['transcript が 41 ターン', { graph, instruction: '直して', transcript: Array.from({ length: 41 }, () => ({ role: 'user', content: 'x' })) }],
+      ['transcript の role が語彙外', { graph, instruction: '直して', transcript: [{ role: 'system', content: 'x' }] }],
+    ])('異常: %s の body は 400 BAD_REQUEST', async (_name, payload) => {
+      const response = await server.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe('BAD_REQUEST');
+    });
+
+    it('境界: instruction は 2000 文字まで通り、2001 文字は 400', async () => {
+      const stubbed = buildServer({ ...app, designToolChat: stub({ message: 'ok', changes: [], repaired: false, problems: [], promptTemplateVersion: 'design-chat/v2' }) });
+      try {
+        expect((await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: { graph, instruction: 'あ'.repeat(2_000) } })).statusCode).toBe(200);
+        expect((await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: { graph, instruction: 'あ'.repeat(2_001) } })).statusCode).toBe(400);
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it('異常: モデル未設定なら 502 MODEL_PROVIDER（関数電卓アシスタントと同じ経路）', async () => {
+      const response = await server.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: body });
+      expect(response.statusCode).toBe(502);
+      expect(response.json().error).toMatchObject({ code: 'MODEL_PROVIDER', message: expect.stringContaining('not configured') });
+    });
+
+    it('異常: tool:execute を持たない viewer は 403（設計時プレビューでデータを読むため preview と同じ権限）', async () => {
+      const rolesAuth = (roles: readonly AuthorizationRole[]): AuthenticationPort => ({
+        mode: 'token', required: true,
+        authenticate: async (request) => request.header('authorization') === `Bearer ${TOKEN}`
+          ? authenticated({ subject: 'rita', ...SCOPE, roles })
+          : rejected('missing-credentials'),
+      });
+      const viewer = buildServer(app, { authentication: rolesAuth(['viewer']), authorization: new RoleMatrixAuthorization() });
+      try {
+        const forbidden = await viewer.inject({ method: 'POST', url: '/tool-drafts/design-chat', headers: { authorization: `Bearer ${TOKEN}` }, payload: body });
+        expect(forbidden.statusCode).toBe(403);
+        expect(forbidden.json().error).toEqual({ code: 'FORBIDDEN', message: "this operation requires the 'tool:execute' permission" });
+      } finally {
+        await viewer.close();
+      }
+      expect(explicitRouteAuthorization('POST', '/tool-drafts/design-chat')).toMatchObject({ action: 'execute', kind: 'tool' });
+    });
+
+    it('正常: いまの Tool Calling 契約と畳んだ会話はそのままユースケースへ渡る（v49 §3.2）', async () => {
+      let received: Record<string, unknown> | undefined;
+      const stubbed = buildServer({ ...app, designToolChat: {
+        available: async () => true,
+        execute: async (input: Record<string, unknown>) => { received = input; return { message: 'ok', changes: [], repaired: false, problems: [], promptTemplateVersion: 'design-chat/v2' }; },
+      } as unknown as App['designToolChat'] });
+      try {
+        const agentTool = { name: 'population_top', description: '都道府県別の総人口を返す。' };
+        await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: { ...body, agentTool, transcriptSummary: '- 全国は除く' } });
+        expect(received).toMatchObject({ agentTool, transcriptSummary: '- 全国は除く' });
+
+        await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: body });
+        expect(received).not.toHaveProperty('agentTool');
+        expect(received).not.toHaveProperty('transcriptSummary');
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it('正常: 更新後の契約と消費はそのまま応答に載る（画面がメタデータとメーターへ反映する）', async () => {
+      const stubbed = buildServer({ ...app, designToolChat: stub({
+        message: '説明文を更新しました。',
+        agentTool: { name: 'population_top', description: '新しい説明' },
+        changes: [{ op: 'set-agent-tool', nodeId: 'agent-tool', summary: 'set the tool description for the agent (新しい説明)' }],
+        repaired: false, problems: [], promptTemplateVersion: 'design-chat/v2',
+        usage: { promptTokens: 6_812, completionTokens: 240, contextWindow: 200_192 },
+      }) });
+      try {
+        const response = await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: body });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({
+          agentTool: { name: 'population_top', description: '新しい説明' },
+          usage: { promptTokens: 6_812, completionTokens: 240, contextWindow: 200_192 },
+          changes: [{ op: 'set-agent-tool', nodeId: 'agent-tool' }],
+        });
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it.each([
+      ['transcriptSummary が 4,001 字', { transcriptSummary: 'あ'.repeat(4_001) }],
+      ['agentTool.description が 4,001 字', { agentTool: { description: 'あ'.repeat(4_001) } }],
+      ['agentTool.name が 65 字', { agentTool: { name: 'x'.repeat(65) } }],
+    ])('異常: %s の body は 400 BAD_REQUEST', async (_name, extra) => {
+      const response = await server.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: { ...body, ...extra } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe('BAD_REQUEST');
+    });
+
+    it('境界: 要求の agentTool は空文字を含んでも 200（いまのメタデータをそのまま渡すだけで、検証の対象ではない）', async () => {
+      let received: Record<string, unknown> | undefined;
+      const stubbed = buildServer({ ...app, designToolChat: {
+        available: async () => true,
+        execute: async (input: Record<string, unknown>) => { received = input; return { message: 'ok', changes: [], repaired: false, problems: [], promptTemplateVersion: 'design-chat/v2' }; },
+      } as unknown as App['designToolChat'] });
+      try {
+        // 説明文の 1〜4,000 字・名前の形は、**モデルの set-agent-tool 操作**に掛ける検査（応用層）。
+        const response = await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: { ...body, agentTool: { name: 'population_top', description: '' } } });
+        expect(response.statusCode).toBe(200);
+        expect(received?.['agentTool']).toEqual({ name: 'population_top', description: '' });
+        expect((await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: { ...body, agentTool: { name: '', description: '' } } })).statusCode).toBe(200);
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it('境界: transcriptSummary は 4,000 字まで通る', async () => {
+      const stubbed = buildServer({ ...app, designToolChat: stub({ message: 'ok', changes: [], repaired: false, problems: [], promptTemplateVersion: 'design-chat/v2' }) });
+      try {
+        const response = await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat', payload: { ...body, transcriptSummary: 'あ'.repeat(4_000) } });
+        expect(response.statusCode).toBe(200);
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it('正常: designAssistant の有効判定は毎回ユースケースへ問い合わせる', async () => {
+      const enabled = buildServer({ ...app, designToolChat: { available: async () => true } as App['designToolChat'] });
+      try {
+        expect((await enabled.inject({ method: 'GET', url: '/runtime/capabilities' })).json()).toMatchObject({ designAssistant: { enabled: true }, calculateAssistant: { enabled: false } });
+      } finally {
+        await enabled.close();
+      }
+    });
+  });
+
+  describe('POST /tool-drafts/design-chat/compact', () => {
+    const TOKEN = 'r'.repeat(40);
+    const turns = [{ user: '年次に絞って', assistant: '年次だけにしました。', changes: ["added filter 'yearly' after 'period'"] }];
+    const body = { turns, language: 'ja' };
+    /** 圧縮 1 回の返り値を固定するフェイク（要約の中身は応用層のテストで見る）。 */
+    const stub = (result: unknown, capture?: (input: Record<string, unknown>) => void): App['designToolChat'] => ({
+      available: async () => true,
+      compact: async (input: Record<string, unknown>) => { capture?.(input); return result; },
+    } as unknown as App['designToolChat']);
+
+    it('正常: 200 で要約と消費を返し、本文はそのままユースケースへ渡る（保存はしない）', async () => {
+      let received: Record<string, unknown> | undefined;
+      const stubbed = buildServer({ ...app, designToolChat: stub(
+        { summary: '- 年次だけにする', usage: { promptTokens: 1_200, completionTokens: 180, contextWindow: 200_192 } },
+        (input) => { received = input; },
+      ) });
+      try {
+        const response = await stubbed.inject({
+          method: 'POST', url: '/tool-drafts/design-chat/compact',
+          // body の scope は無視し、認証済み principal のスコープで実行する（既存のルートと同じ規律）。
+          payload: { ...body, scope: { tenantId: 'other', workspaceId: 'other' }, previousSummary: '- 人口のツールを作る' },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ summary: '- 年次だけにする', usage: { promptTokens: 1_200, completionTokens: 180, contextWindow: 200_192 } });
+        expect(received).toMatchObject({ scope: { tenantId: 'local', workspaceId: 'default' }, turns, language: 'ja', previousSummary: '- 人口のツールを作る' });
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it('正常: previousSummary を送らなければ渡さない（1 回目の圧縮）', async () => {
+      let received: Record<string, unknown> | undefined;
+      const stubbed = buildServer({ ...app, designToolChat: stub({ summary: '- 覚え書き' }, (input) => { received = input; }) });
+      try {
+        await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat/compact', payload: body });
+        expect(received).not.toHaveProperty('previousSummary');
+        // 変更の無いターンは changes を省いて送れる（画面が空配列を作らなくてよい）。
+        await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat/compact', payload: { ...body, turns: [{ user: 'a' }] } });
+        expect(received?.['turns']).toEqual([{ user: 'a', changes: [] }]);
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it.each([
+      ['turns が 41 件', { turns: Array.from({ length: 41 }, () => ({ user: 'x', changes: [] })), language: 'ja' }],
+      ['turns が空', { turns: [], language: 'ja' }],
+      ['turns が無い', { language: 'ja' }],
+      ['user が空', { turns: [{ user: '', changes: [] }], language: 'ja' }],
+      ['language が語彙外', { turns, language: 'fr' }],
+      ['language が無い', { turns }],
+      ['previousSummary が 4,001 字', { turns, language: 'ja', previousSummary: 'あ'.repeat(4_001) }],
+    ])('異常: %s の body は 400 BAD_REQUEST', async (_name, payload) => {
+      const response = await server.inject({ method: 'POST', url: '/tool-drafts/design-chat/compact', payload });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe('BAD_REQUEST');
+    });
+
+    it('境界: turns は 40 件まで通る', async () => {
+      const stubbed = buildServer({ ...app, designToolChat: stub({ summary: '- 覚え書き' }) });
+      try {
+        const forty = { turns: Array.from({ length: 40 }, () => ({ user: 'x', changes: [] })), language: 'ja' };
+        expect((await stubbed.inject({ method: 'POST', url: '/tool-drafts/design-chat/compact', payload: forty })).statusCode).toBe(200);
+      } finally {
+        await stubbed.close();
+      }
+    });
+
+    it('異常: モデル未設定なら 502 MODEL_PROVIDER（1 ターンと同じ経路）', async () => {
+      const response = await server.inject({ method: 'POST', url: '/tool-drafts/design-chat/compact', payload: body });
+      expect(response.statusCode).toBe(502);
+      expect(response.json().error).toMatchObject({ code: 'MODEL_PROVIDER', message: expect.stringContaining('not configured') });
+    });
+
+    it('異常: tool:execute を持たない viewer は 403（材料は設計中のツールの会話そのもの）', async () => {
+      const rolesAuth = (roles: readonly AuthorizationRole[]): AuthenticationPort => ({
+        mode: 'token', required: true,
+        authenticate: async (request) => request.header('authorization') === `Bearer ${TOKEN}`
+          ? authenticated({ subject: 'rita', tenantId: 't', workspaceId: 'w', roles })
+          : rejected('missing-credentials'),
+      });
+      const viewer = buildServer(app, { authentication: rolesAuth(['viewer']), authorization: new RoleMatrixAuthorization() });
+      try {
+        const forbidden = await viewer.inject({ method: 'POST', url: '/tool-drafts/design-chat/compact', headers: { authorization: `Bearer ${TOKEN}` }, payload: body });
+        expect(forbidden.statusCode).toBe(403);
+        expect(forbidden.json().error).toEqual({ code: 'FORBIDDEN', message: "this operation requires the 'tool:execute' permission" });
+      } finally {
+        await viewer.close();
+      }
+      expect(explicitRouteAuthorization('POST', '/tool-drafts/design-chat/compact')).toMatchObject({ action: 'execute', kind: 'tool' });
     });
   });
 

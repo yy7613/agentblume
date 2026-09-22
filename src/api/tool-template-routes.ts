@@ -4,7 +4,7 @@
  * | メソッド/パス | 成功 | 認可 |
  * |---|---|---|
  * | GET /tool-templates | 200 { templates, invalid } | read / tool |
- * | POST /tool-templates/:id/slot-candidates | 200 { templateId, version, candidates } | read / tool |
+ * | POST /tool-templates/:id/slot-candidates | 200 { templateId, version, candidates, arguments } | read / tool |
  * | POST /tool-templates/:id/instantiate | 200 { template, graph, inputSchema?, agentTool, pendingExpressions } | execute / tool |
  *
  * 実体化はデータソースを読み、設計時プレビューまで走らせる（手で組んだ Tool と同じ検査）ので、
@@ -60,6 +60,7 @@ export function registerToolTemplateRoutes(app: FastifyInstance, deps: ToolTempl
       templateId: request.params.id,
       dataSourceIds: body.dataSourceIds,
       ...(body.values === undefined ? {} : { values: body.values }),
+      ...(body.language === undefined ? {} : { language: body.language }),
     });
   });
 
@@ -73,6 +74,7 @@ export function registerToolTemplateRoutes(app: FastifyInstance, deps: ToolTempl
       values: body.values,
       language: body.language ?? 'ja',
       toolName: body.toolName,
+      ...(body.argumentNullability === undefined ? {} : { argumentNullability: body.argumentNullability }),
     });
   });
 }

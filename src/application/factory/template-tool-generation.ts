@@ -28,6 +28,7 @@ import type { ToolTemplate } from '../../domain/tool-template/template';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import type { EtlEngine } from '../etl/engine';
 import type { ModelProviderPort } from '../model/model-provider';
+import type { PromptCatalogPort } from '../prompt/prompt-catalog-port';
 import type { SuggestCalculateExpressionUseCase } from '../tool/suggest-calculate-expression';
 import type { ToolTemplateCatalogPort } from '../tool-template/catalog-port';
 import { templateContextOf } from '../tool-template/template-context';
@@ -41,7 +42,7 @@ import type {
   TemplateToolResult,
   UsedToolTemplate,
 } from './template-tool-port';
-import { fillSlotsTask, runRoleTask, selectTemplateTask, type FillSlotsInput } from './tasks';
+import { fillSlotsTaskOf, runRoleTask, selectTemplateTaskOf, type FillSlotsInput } from './tasks';
 
 export type {
   TemplateToolGenerationPort,
@@ -134,6 +135,8 @@ export class TemplateToolGeneration implements TemplateToolGenerationPort {
     private readonly suggestExpression: SuggestCalculateExpressionUseCase | undefined,
     /** 検査と式の標本行に要る（未注入ならテンプレート経路は使えない）。 */
     private readonly resolveDataSources: ResolveDataSourceGraphUseCase | undefined,
+    /** モデルへ送る文の置き場所（v48）。2 つのタスクの目的文・規則はここから読む。 */
+    private readonly prompts: PromptCatalogPort,
   ) {}
 
   async generate(request: TemplateToolGenerationRequest): Promise<TemplateToolResult> {
@@ -170,7 +173,7 @@ export class TemplateToolGeneration implements TemplateToolGenerationPort {
 
       // ── 1. テンプレートを選ぶ ──────────────────────────────────────────────────────
       throwIfAborted(signal);
-      const selection = await runRoleTask(this.model, selectTemplateTask, { plan, goal, templates: applicable }, {
+      const selection = await runRoleTask(this.model, this.prompts, selectTemplateTaskOf(this.prompts), { plan, goal, templates: applicable }, {
         ...(signal === undefined ? {} : { signal }),
         onCall: request.onRoleCall,
       });
@@ -192,7 +195,7 @@ export class TemplateToolGeneration implements TemplateToolGenerationPort {
 
       const fill = async (feedback?: string): Promise<TemplateSlotValues> => {
         throwIfAborted(signal);
-        const result = await runRoleTask(this.model, fillSlotsTask, fillInput, {
+        const result = await runRoleTask(this.model, this.prompts, fillSlotsTaskOf(this.prompts), fillInput, {
           ...(feedback === undefined ? {} : { feedback }),
           ...(signal === undefined ? {} : { signal }),
           onCall: request.onRoleCall,

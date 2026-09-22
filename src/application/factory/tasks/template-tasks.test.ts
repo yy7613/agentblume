@@ -11,6 +11,8 @@
  * プロファイルから作る（作り物のテンプレートで固めると、同梱テンプレートが壊れても気づけない）。
  */
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { FsToolTemplateCatalog } from '../../../adapters/templates/fs-tool-template-catalog';
 import { InMemoryDataSourceRepository } from '../../../adapters/storage/in-memory-data-source-repository';
@@ -22,7 +24,14 @@ import { ResolveDataSourceGraphUseCase } from '../../data-source/resolve-data-so
 import { EtlEngine } from '../../etl/engine';
 import { templateContextOf } from '../../tool-template/template-context';
 import { ProfileDataSourcesUseCase, type DataProfile } from '../profile-data-sources';
-import { NO_TEMPLATE, fillSlotsTask, selectTemplateTask, type FillSlotsInput, type SelectTemplateInput } from './template-tasks';
+import { bundledPrompts } from '../../../test-support/prompts';
+import { buildRoleTaskSystemPrompt } from './role-task';
+import { NO_TEMPLATE, fillSlotsTaskOf, selectTemplateTaskOf, type FillSlotsInput, type SelectTemplateInput } from './template-tasks';
+
+// 文はファイル（`prompts/factory/tasks/*.md`）にあるので、タスク定義は同梱のカタログから組み立てる。
+const prompts = bundledPrompts();
+const selectTemplateTask = selectTemplateTaskOf(prompts);
+const fillSlotsTask = fillSlotsTaskOf(prompts);
 
 const scope = { tenantId: 't', workspaceId: 'w' };
 const goal: FactoryGoalInput = { goal: '地域別の売上の推移を答えられるようにしたい。', language: 'ja' };
@@ -308,5 +317,23 @@ describe('fill-slots タスク', () => {
     expect([schema.properties['joinKeys']?.minItems, schema.properties['joinKeys']?.maxItems]).toEqual([1, 3]);
     // 自由記述スロットは長さの上限つきの文字列（列名を書かせる場所）。
     expect([schema.properties['ratioColumn']?.type, schema.properties['ratioColumn']?.maxLength]).toEqual(['string', 40]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 移行の証明（v48 / ADR-0052）: 文を `prompts/factory/tasks/*.md` へ移す**前に**
+// 組み立てた system 文を `__fixtures__/*.txt` へ固定してある。一字一句一致する限り等価変換である。
+// ---------------------------------------------------------------------------
+
+describe('テンプレート経路のタスクの system 文', () => {
+  const fixture = (name: string): string =>
+    readFileSync(fileURLToPath(new URL(`./__fixtures__/${name}.txt`, import.meta.url)), 'utf8');
+
+  it('従来どおり: select-template の目的・規則・共通の締めは移行前と一字一句同じ', () => {
+    expect(buildRoleTaskSystemPrompt(prompts, selectTemplateTask)).toBe(fixture('select-template'));
+  });
+
+  it('従来どおり: fill-slots の目的・規則・共通の締めは移行前と一字一句同じ', () => {
+    expect(buildRoleTaskSystemPrompt(prompts, fillSlotsTask)).toBe(fixture('fill-slots'));
   });
 });

@@ -798,6 +798,8 @@ export interface RuntimeCapabilitiesDto {
   readonly aiJudge?: { readonly enabled: boolean };
   /** 関数電卓ノード（calculate）の式提案（v41）を実行できるか。旧サーバーでは undefined = 使えない扱い。 */
   readonly calculateAssistant?: { readonly enabled: boolean };
+  /** ツール作成画面の設計アシスタント（v47）を実行できるか。旧サーバーでは undefined = 使えない扱い。 */
+  readonly designAssistant?: { readonly enabled: boolean };
   readonly judge?: JudgeReadinessDto;
   /** 仕訳の LLM 抽出 / ヒアリングの可否（docs/20 §9）。旧サーバーでは undefined = どちらも使えないものとして扱う。 */
   readonly journal?: JournalCapabilitiesDto;
@@ -1640,10 +1642,30 @@ export interface TemplateSlotCandidatesDto {
   readonly freeText?: true;
 }
 
+/**
+ * 今のスロットで残るエージェントの引数 1 つ（v46 §B）。作成画面は「必須」チェックボックスの行として
+ * そのまま描く（どの引数が残るかの `when` の評価はサーバーが済ませている）。
+ */
+export interface TemplateArgumentDto {
+  readonly name: string;
+  readonly type: 'string' | 'number' | 'boolean' | 'date';
+  /** テンプレートの既定（チェックボックスの初期値。必須 = !nullable）。 */
+  readonly nullable: boolean;
+  /** 切り替えられない理由（候補を頼んだ言語で埋め込み済み）。あれば切り替え不可。 */
+  readonly lock?: string;
+  /** 候補を頼んだ言語で、スロットの値を埋め込んだ説明。 */
+  readonly description: string;
+}
+
+/** 引数名 → nullable（既定から変えた引数だけを送る）。 */
+export type TemplateArgumentNullabilityDto = Readonly<Record<string, boolean>>;
+
 export interface TemplateSlotCandidatesResultDto {
   readonly templateId: string;
   readonly version: string;
   readonly candidates: readonly TemplateSlotCandidatesDto[];
+  /** v46 から。古いサーバーは返さないので任意（無ければ引数の区画を出さない）。 */
+  readonly arguments?: readonly TemplateArgumentDto[];
 }
 
 /** スロットへ入れられる値（文字列 / 数値 / 文字列の配列）。 */
@@ -1664,4 +1686,102 @@ export interface InstantiatedTemplateDto {
 export interface TemplateSlotProblemDto {
   readonly slot?: string;
   readonly message: string;
+}
+
+// --- 設計アシスタント（v47 / ADR-0051） ---------------------------------------------------------
+
+/** 会話 1 件。モデルへ送るのは role と content だけで、変更一覧は送らない。 */
+export interface DesignChatMessageDto {
+  readonly role: 'user' | 'assistant';
+  readonly content: string;
+}
+
+/**
+ * 適用した編集操作の、人向けの要約。画面は一覧に出し `nodeId` のノードを強調する。
+ * `set-agent-tool` はグラフの操作ではないので `nodeId` は固定値 `agent-tool`（強調の対象にならない）。
+ */
+export interface DesignChatChangeDto {
+  readonly op: 'add-node' | 'remove-node' | 'set-config' | 'connect' | 'disconnect' | 'set-agent-tool';
+  /** 操作の対象ノード。エッジだけの操作では付かないことがあるので任意にしておく。 */
+  readonly nodeId?: string;
+  readonly summary: string;
+}
+
+/**
+ * Tool Calling 契約の説明（v49）。要求では「いまの説明」、応答では `set-agent-tool` を適用した結果。
+ * `name` は任意で、説明だけを直したときは付かない（画面も description だけを更新する）。
+ */
+export interface DesignChatAgentToolDto {
+  readonly name?: string;
+  readonly description: string;
+}
+
+/**
+ * 直前の呼び出しのトークン消費（v49）。モデルが数えた実数で、取れない項目は省略される
+ * （画面は推定しない。`contextWindow` が無ければ比率も出さない）。
+ */
+export interface DesignChatUsageDto {
+  readonly promptTokens?: number;
+  readonly completionTokens?: number;
+  readonly contextWindow?: number;
+}
+
+export interface DesignChatRequestDto {
+  readonly scope: TenantScopeDto;
+  /** いまのキャンバス（position つき）。 */
+  readonly graph: ToolGraphDto;
+  /** agent-input の宣言。省略するとサーバーが graph の agent-input から読む。 */
+  readonly inputSchema?: SchemaDto;
+  readonly instruction: string;
+  /** 直近の会話（古い順。最大 12 件）。 */
+  readonly transcript: readonly DesignChatMessageDto[];
+  /** いまの Tool Calling 契約（v49）。名前も説明も空なら送らない。 */
+  readonly agentTool?: DesignChatAgentToolDto;
+  /** 圧縮済みの古い会話（画面が決定的に作る。最大 4,000 字）。 */
+  readonly transcriptSummary?: string;
+}
+
+/**
+ * POST /tool-drafts/design-chat の応答。
+ * `graph` が無いのは「変更なし（質問への回答・聞き返し）」か「適用できなかった」ときで、
+ * 後者は `problems` に理由（英語の原文）が入る。どちらも HTTP は 200。
+ */
+export interface DesignChatResultDto {
+  readonly message: string;
+  readonly graph?: ToolGraphDto;
+  readonly changes?: readonly DesignChatChangeDto[];
+  /** 1 回差し戻して通った。 */
+  readonly repaired?: boolean;
+  /** 差し戻したときの 1 回目の失敗理由（英語の原文）。画面には出さず、開発者ツールで文の調整の材料にする。 */
+  readonly repairedFrom?: readonly string[];
+  readonly problems?: readonly string[];
+  /** 適用はしたが気を付けてほしい点（英語の原文）。 */
+  readonly warnings?: readonly string[];
+  /** `set-agent-tool` を適用したときだけ付く、更新後の Tool Calling 契約（v49）。 */
+  readonly agentTool?: DesignChatAgentToolDto;
+  /** 直前の呼び出しの消費（v49）。差し戻しがあれば 2 回目の値。 */
+  readonly usage?: DesignChatUsageDto;
+}
+
+/** 圧縮の材料にする 1 ターン（v49）。`changes` は適用した操作の要約だけ（op や nodeId は渡さない）。 */
+export interface DesignChatCompactTurnDto {
+  readonly user: string;
+  readonly assistant?: string;
+  readonly changes: readonly string[];
+}
+
+/** POST /tool-drafts/design-chat/compact の本文（v49）。`turns` は古い順・最大 40 件。 */
+export interface CompactDesignChatRequestDto {
+  readonly scope: TenantScopeDto;
+  /** 前回までの要約。あれば新しい要約に取り込まれる（画面は返った要約で置き換える）。 */
+  readonly previousSummary?: string;
+  readonly turns: readonly DesignChatCompactTurnDto[];
+  /** 要約を書く言語（画面の言語）。 */
+  readonly language: 'ja' | 'en';
+}
+
+/** 圧縮の応答（v49）。`summary` は 800 字以内の覚え書き。 */
+export interface CompactDesignChatResultDto {
+  readonly summary: string;
+  readonly usage?: DesignChatUsageDto;
 }

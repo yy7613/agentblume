@@ -6,6 +6,7 @@ import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider
 import type { ModelCapability } from '../application/model/model-provider';
 import { NOOP_LOGGER } from '../application/operations/logger';
 import { NoopUnitOfWork } from '../application/persistence/unit-of-work';
+import { bundledPrompts } from '../test-support/prompts';
 import type { BusinessCompositionContext } from './business';
 import { composeContract } from './contract';
 
@@ -18,6 +19,7 @@ function context(overrides: Partial<BusinessCompositionContext> = {}): BusinessC
     mainModelConfigured: async () => true,
     mainModelCapabilities: async () => ['chat', 'structured-output', 'vision'],
     errorLogger: NOOP_LOGGER,
+    promptCatalog: bundledPrompts(),
     ...overrides,
   };
 }

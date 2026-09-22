@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { bundledPrompts } from '../../test-support/prompts';
 import { ScriptedModelProvider } from '../../adapters/model/scripted-model-provider';
 import { InMemoryAgentRepository } from '../../adapters/storage/in-memory-agent-repository';
 import { InMemoryDataSourceRepository } from '../../adapters/storage/in-memory-data-source-repository';
@@ -224,11 +225,11 @@ async function setup(options?: {
   const resolver = new ResolveDataSourceGraphUseCase(dataSources);
   const profiler = new ProfileDataSourcesUseCase(dataSources, resolver, engine);
   const model = options?.model ?? new ScriptedModelProvider();
-  const planner = new PlannerRole(model);
-  const toolSmith = new ToolSmithRole(model);
-  const skillWriter = new SkillWriterRole(model);
-  const assembler = new AssemblerRole(model);
-  const analyst = new AnalystRole(model);
+  const planner = new PlannerRole(model, bundledPrompts());
+  const toolSmith = new ToolSmithRole(model, bundledPrompts());
+  const skillWriter = new SkillWriterRole(model, bundledPrompts());
+  const assembler = new AssemblerRole(model, bundledPrompts());
+  const analyst = new AnalystRole(model, bundledPrompts());
 
   const toolRepo = new InMemoryToolRepository();
   const skillRepo = new InMemorySkillRepository();

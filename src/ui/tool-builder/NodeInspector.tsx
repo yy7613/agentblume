@@ -870,11 +870,27 @@ function GroupByFields({ config, setConfig, columns }: { config: Readonly<Record
   </>;
 }
 
+/**
+ * `join.maxRows` に許す上限（v46）。`src/domain/etl/nodes/join.ts` の `JOIN_MAX_ROWS_CEILING` と
+ * 同じ値（10,000,000）。UI ソースは domain を import しない方針（AI_JUDGE_MAX_ITEMS 等と同じ理由）なので
+ * 値を書き写す。ずれないことは NodeInspector.join.test.tsx が domain 側の定数と突き合わせて検査する。
+ */
+export const JOIN_MAX_ROWS_CEILING = 10_000_000;
+
+/** `join.maxRows` の入力値の範囲検査。空欄（既定を使う）は対象外。 */
+function joinMaxRowsOutOfRange(value: number): boolean {
+  return !Number.isInteger(value) || value < 1 || value > JOIN_MAX_ROWS_CEILING;
+}
+
 function JoinFields({ config, setConfig, leftColumns, rightColumns }: { config: Readonly<Record<string, unknown>>; setConfig(patch: Record<string, unknown>): void; leftColumns: readonly ColumnDto[]; rightColumns: readonly ColumnDto[] }) {
   const { text } = useI18n();
   const keys = (config['keys'] as JoinKeyDraft[] | undefined) ?? [];
   const setKey = (index: number, patch: Partial<JoinKeyDraft>) =>
     setConfig({ keys: keys.map((key, i) => (i === index ? { ...key, ...patch } : key)) });
+  // 空欄 = 既定（100,000）。ノード実行(join.ts)側の `config.maxRows ?? DEFAULT_JOIN_MAX_ROWS` と同じ意味にする。
+  const maxRowsRaw = config['maxRows'];
+  const maxRowsText = typeof maxRowsRaw === 'number' ? String(maxRowsRaw) : '';
+  const maxRowsLabel = text('Maximum rows', '最大行数');
   return <>
     <label>{text('Join mode', '結合モード')}<select aria-label={text('Join mode', '結合モード')} value={String(config['mode'] ?? 'inner')} onChange={(event) => setConfig({ mode: event.target.value })}>{['inner', 'left', 'right', 'full'].map((value) => <option key={value}>{value}</option>)}</select></label>
     <datalist id="join-left-columns">{leftColumns.map((column) => <option key={column.name} value={column.name} />)}</datalist>
@@ -890,6 +906,15 @@ function JoinFields({ config, setConfig, leftColumns, rightColumns }: { config: 
     <button type="button" onClick={() => setConfig({ keys: [...keys, { left: '', right: '' }] })}>{text('Add key', 'キーを追加')}</button>
     <label>{text('Right suffix', '右列サフィックス')}<input value={String(config['rightSuffix'] ?? '_right')} onChange={(event) => setConfig({ rightSuffix: event.target.value })} /></label>
     <label className="check"><input type="checkbox" checked={config['coerceKeys'] === 'string'} onChange={(event) => setConfig({ coerceKeys: event.target.checked ? 'string' : 'none' })} /> {text('Compare keys as text (join 001 with 1)', 'キーを文字列として比較 (001と1を結合)')}</label>
+    <label>{maxRowsLabel}<input aria-label={maxRowsLabel} type="number" min={1} max={JOIN_MAX_ROWS_CEILING} placeholder={text('default: 100,000', '既定: 100,000')} value={maxRowsText} onChange={(event) => setConfig({ maxRows: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
+    <small>{text(
+      'The limit that stops a mis-keyed join from exploding. Only raise it if the keys are right and the join still stops. A value above the server execution limit (default 250,000 rows) still stops at that limit.',
+      'キーの指定ミスで行が爆発するのを止める上限です。キーが正しいのに止まるときだけ上げてください。サーバーの実行上限(既定250,000行)を超える値を指定しても、その上限で止まります。',
+    )}</small>
+    {typeof maxRowsRaw === 'number' && joinMaxRowsOutOfRange(maxRowsRaw) && <small className="field-error">{text(
+      `Enter a whole number between 1 and ${JOIN_MAX_ROWS_CEILING.toLocaleString('en-US')}.`,
+      `1〜${JOIN_MAX_ROWS_CEILING.toLocaleString('ja-JP')}の整数で入力してください。`,
+    )}</small>}
   </>;
 }
 

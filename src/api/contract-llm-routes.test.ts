@@ -5,6 +5,7 @@
  * （リポジトリ・認可・直列化・エラー写像は本物のまま通す）。仕訳の journal-llm-routes.test.ts と同じ形。
  */
 import type { FastifyInstance } from 'fastify';
+import { bundledPrompts } from '../test-support/prompts';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider';
 import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
@@ -58,9 +59,9 @@ describe('contract LLM routes', () => {
     const gate = new ContractModelGate(model, () => enabled);
     const resolver = new ContractPlaybookResolver(app.contractPlaybookRepo);
     Object.assign(app, {
-      contractExtractClauses: new ExtractContractClausesUseCase(app.contractDocumentRepo, app.contractReviewRepo, resolver, new ContractClauseExtractor(gate), app.unitOfWork),
-      contractTranscribePages: new TranscribeContractPagesUseCase(gate),
-      contractRunReview: new RunContractReviewUseCase(app.contractDocumentRepo, app.contractReviewRepo, resolver, new ContractCriteriaAnswerer(gate), app.unitOfWork),
+      contractExtractClauses: new ExtractContractClausesUseCase(app.contractDocumentRepo, app.contractReviewRepo, resolver, new ContractClauseExtractor(gate, bundledPrompts()), app.unitOfWork),
+      contractTranscribePages: new TranscribeContractPagesUseCase(gate, bundledPrompts()),
+      contractRunReview: new RunContractReviewUseCase(app.contractDocumentRepo, app.contractReviewRepo, resolver, new ContractCriteriaAnswerer(gate, bundledPrompts()), app.unitOfWork),
     });
   }
 

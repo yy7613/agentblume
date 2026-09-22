@@ -325,6 +325,48 @@ export const analysisSuggestionBodySchema = z.object({
 });
 /** ローカルLLMに関数電卓nodeの式だけを依頼する（形は分析補助と同じ。経路ごとに変えられるよう別名にする）。 */
 export const calculateSuggestionBodySchema = analysisSuggestionBodySchema;
+/**
+ * ツール作成画面の設計アシスタント（v47 §3）。いまのキャンバスと自由文の指示を受ける。
+ *
+ * `transcript` の上限は Agent の会話本文と同じ 40 ターンにしておき、モデルへ送る直近 12 ターンへの
+ * 切り詰めは応用層が行う（入口で 12 に絞ると、画面が多めに持っていた履歴が 400 で弾かれる）。
+ */
+export const designChatBodySchema = z.object({
+  scope: tenantScopeSchema.optional(),
+  graph: graphSchema,
+  inputSchema: dataSchemaSchema.optional(),
+  instruction: z.string().min(1).max(2_000),
+  transcript: z.array(z.object({
+    role: z.enum(['user', 'assistant']),
+    content: z.string().min(1).max(8_000),
+  })).max(40).optional(),
+  /**
+   * いまの Tool Calling 契約（v49 §3.2）。画面のメタデータそのものなので、どちらも未記入でありうる
+   * （`createTool` の検査を通るのは保存のときで、下書きの途中で弾く理由は無い）。
+   */
+  agentTool: z.object({
+    name: z.string().max(64).optional(),
+    description: z.string().max(4_000).optional(),
+  }).optional(),
+  /** 圧縮済みの古い会話（v49 §3.2）。画面が作る要約で、長さの上限は圧縮の応答と同じ。 */
+  transcriptSummary: z.string().max(4_000).optional(),
+});
+/**
+ * 会話の圧縮（v49 §3.1）。畳むターンは画面が選ぶ（直近 4 ターンは残す）。
+ *
+ * `turns` の上限は 1 ターンの `transcript` と同じ 40。変更の要約（`changes`）は
+ * `changes[].summary` の写しなので、1 件は短い。
+ */
+export const designChatCompactBodySchema = z.object({
+  scope: tenantScopeSchema.optional(),
+  previousSummary: z.string().max(4_000).optional(),
+  turns: z.array(z.object({
+    user: z.string().min(1).max(8_000),
+    assistant: z.string().max(8_000).optional(),
+    changes: z.array(z.string().max(1_000)).max(50).default([]),
+  })).min(1).max(40),
+  language: z.enum(['ja', 'en']),
+});
 export const closeAgentSessionBodySchema = z.object({ scope: tenantScopeSchema });
 export const sessionScopeQuerySchema = tenantScopeSchema;
 export const sessionArtifactQuerySchema = tenantScopeSchema.extend({ limit: z.coerce.number().int().min(1).max(100).optional(), offset: z.coerce.number().int().min(0).max(1_000_000).optional(), section: z.enum(['nodes', 'edges']).optional() });
@@ -790,7 +832,14 @@ export const toolTemplateCandidatesBodySchema = z.object({
   dataSourceIds: templateDataSourceIdsSchema,
   /** 既に決まっているスロット（部分でよい）。依存する候補がこれに合わせて絞られる。 */
   values: templateSlotValuesSchema.optional(),
+  /** 応答の `arguments` の説明・固定の理由を埋め込む言語（既定 ja）。 */
+  language: z.enum(['ja', 'en']).optional(),
 });
+/**
+ * 引数名 → nullable（v46 §B。作成画面で既定から変えた引数だけ）。ここでは形だけを見て、
+ * 名前の実在・`lock`・見本の有無は domain の `argumentNullabilityViolations` に任せる。
+ */
+const templateArgumentNullabilitySchema = z.record(z.string().min(1), z.boolean());
 /**
  * エージェントへ公開する function 名の形（`createTool` の `agentTool.name` と同じ規則）。
  * 保存の直前ではなく、実体化の入口で弾く（保存して初めて気づくのを避ける）。
@@ -818,4 +867,6 @@ export const toolTemplateInstantiateBodySchema = z.object({
       ? `toolName is required; give the tool a function name so a second tool made from the same template does not overwrite the first. ${TOOL_NAME_MESSAGE}`
       : TOOL_NAME_MESSAGE,
   }).regex(TOOL_NAME_PATTERN, TOOL_NAME_MESSAGE),
+  /** 引数の必須 / 任意の上書き（省略時はテンプレートの既定）。違反は 422 の `slot: 'argument:<name>'`。 */
+  argumentNullability: templateArgumentNullabilitySchema.optional(),
 });

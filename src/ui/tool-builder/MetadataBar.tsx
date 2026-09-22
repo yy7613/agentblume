@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { isAbortError, type ToolApiClient } from '../api/tool-api';
 import type { SideEffectDto } from '../api/types';
 import { InlineFeedback } from '../components/InlineFeedback';
+import { setDesignChatPanelOpen } from './DesignChatPanel';
 import { buildSaveDto, missingRequiredMetadata, saveBlocker, useToolBuilderStore, type RequiredMetadataKey, type SaveBlocker } from './store';
 import { useI18n } from '../i18n';
 import { scope } from '../scope';
@@ -26,6 +27,7 @@ export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClien
   const saveError = useToolBuilderStore((state) => state.saveError);
   const diagnostics = useToolBuilderStore((state) => state.diagnostics);
   const setDiagnostics = useToolBuilderStore((state) => state.setDiagnostics);
+  const designChatOpen = useToolBuilderStore((state) => state.designChat.open);
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string>();
   const dismissNotice = useCallback(() => setSavedNotice(undefined), []);
@@ -119,6 +121,8 @@ export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClien
             <option value="">{versions.length === 0 ? text('No saved versions', '保存済みバージョンなし') : text('Select version', 'バージョンを選択')}</option>
             {versions.map((version) => <option key={version} value={version}>{version}</option>)}
           </select>
+          {/* 設計アシスタント（v47）。押すとキャンバスの右にチャットが開く。開閉は覚える。 */}
+          <button type="button" className="secondary" aria-pressed={designChatOpen} title={text('Describe the tool you want in plain words and let the assistant edit the canvas.', '作りたいツールを文章で伝えると、アシスタントがキャンバスを編集します。')} onClick={() => setDesignChatPanelOpen(!designChatOpen)}>{text('Design assistant', '設計アシスタント')}</button>
           <button type="button" className="secondary" disabled={missing.length > 0 || diagnostics === 'loading'} title={text('Check whether an Agent could call this Tool as it is now, without saving.', '保存せずに、今の内容でエージェントから呼び出せるかを検査します。')} onClick={() => void diagnose()}>{diagnostics === 'loading' ? text('Diagnosing…', '診断中…') : text('Check readiness', '呼び出し診断')}</button>
           <button type="button" className="primary" disabled={saving || blocker !== undefined} title={blockerText} onClick={() => void save()}>{saving ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
         </div>

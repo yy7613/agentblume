@@ -54,8 +54,8 @@ export function expenseModelBinding(core: Pick<ExpenseCoreServices, 'context'>):
 
 export function composeExpenseInput(core: ExpenseCoreServices): ExpenseInputComposition {
   const model = expenseModelBinding(core);
-  const detailReader = new InputReceiptDetailReader(core, model);
-  const hearings = new ExpensePolicyHearingUseCases(core, new SaveExpensePolicyUseCase(core.repositories.policies, core.now), model);
+  const detailReader = new InputReceiptDetailReader(core, core.context.promptCatalog, model);
+  const hearings = new ExpensePolicyHearingUseCases(core, new SaveExpensePolicyUseCase(core.repositories.policies, core.now), core.context.promptCatalog, model);
   return {
     feature: {
       expenseExtractDetail: new ExtractExpenseDetailUseCase(detailReader),

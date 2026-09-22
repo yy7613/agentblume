@@ -99,7 +99,7 @@ export function composeJournal(context: BusinessCompositionContext): BusinessCom
    */
   const llmEnabled = mainModelConfigured;
   // 取込タブと添付読み取りで同じ 1 つを使う（読み取りの規則を 2 か所に分けない）。
-  const extractJournalDocument = new ExtractJournalDocumentUseCase(modelProvider, llmEnabled, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot(), errorLogger);
+  const extractJournalDocument = new ExtractJournalDocumentUseCase(modelProvider, llmEnabled, context.promptCatalog, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot(), errorLogger);
 
   /**
    * 仕訳の LLM 機能（抽出・ヒアリング）が使えるか。
@@ -167,8 +167,8 @@ export function composeJournal(context: BusinessCompositionContext): BusinessCom
       exportJournalEntries: new ExportJournalEntriesUseCase(entryRepo, chartRepo),
       // フェーズ 2: 抽出とヒアリング。モデルは main スロット（切替可能な配線ならその実体）。
       extractJournalDocument,
-      startJournalHearing: new StartJournalHearingUseCase(documentRepo, hearingRepo, chartRepo, modelProvider, llmEnabled),
-      answerJournalHearing: new AnswerJournalHearingUseCase(documentRepo, hearingRepo, chartRepo, modelProvider, llmEnabled),
+      startJournalHearing: new StartJournalHearingUseCase(documentRepo, hearingRepo, chartRepo, modelProvider, llmEnabled, context.promptCatalog),
+      answerJournalHearing: new AnswerJournalHearingUseCase(documentRepo, hearingRepo, chartRepo, modelProvider, llmEnabled, context.promptCatalog),
       acceptJournalHearing: new AcceptJournalHearingUseCase(documentRepo, hearingRepo, chartRepo, ruleRepo, entryRepo, judgeJournalDocuments),
       cancelJournalHearing: new CancelJournalHearingUseCase(documentRepo, hearingRepo),
       getJournalHearing: new GetJournalHearingUseCase(hearingRepo),

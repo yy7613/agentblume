@@ -12,6 +12,7 @@ import type { Reason } from '../../domain/contract/reasons';
 import { segmentArticles, singlePage } from '../../domain/contract/segmentation';
 import { CONTRACT_REVIEW_DRAFT_SCHEMA } from '../../domain/etl/nodes/contract-review-draft';
 import type { ModelCompletionRequest } from '../model/model-provider';
+import { bundledPrompts } from '../../test-support/prompts';
 import { clockAt, criteriaContext, extraction, extractionContext, FakeModel, finding, gateFor, PNG, userText } from './contract.fixtures';
 import { ContractExtractionSchemaError } from './errors';
 import { ContractClauseExtractor, planChunks } from './extract-clauses';
@@ -48,9 +49,10 @@ async function provider(model: FakeModel, playbook: Playbook = playbookFixture('
   await repos.playbooks.save(playbook);
   const clock = clockAt('2026-09-15');
   const gate = gateFor(model);
+  const catalog = bundledPrompts();
   return {
     ...repos,
-    rows: new ContractReviewDraftRowsProvider(new ContractPlaybookResolver(repos.playbooks, clock), new ContractClauseExtractor(gate), new ContractCriteriaAnswerer(gate), new TranscribeContractPagesUseCase(gate), clock),
+    rows: new ContractReviewDraftRowsProvider(new ContractPlaybookResolver(repos.playbooks, clock), new ContractClauseExtractor(gate, catalog), new ContractCriteriaAnswerer(gate, catalog), new TranscribeContractPagesUseCase(gate, catalog), clock),
   };
 }
 

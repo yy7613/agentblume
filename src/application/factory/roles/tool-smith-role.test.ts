@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { bundledPrompts } from '../../../test-support/prompts';
 import { ScriptedModelProvider } from '../../../adapters/model/scripted-model-provider';
 import { FILTER_OPS, ORDER_OPS, VALUELESS_OPS } from '../../../domain/etl/nodes/filter';
 import type { FactoryToolPlan } from '../../../domain/factory/factory-plan';
@@ -6,7 +9,7 @@ import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelPro
 import type { DataProfile } from '../profile-data-sources';
 import { PERIOD_GRANULARITIES } from '../../../domain/etl/nodes/parse-period';
 import { MAX_TOOL_CALLS } from '../../agent/run-agent-preview';
-import { SAFE_TRANSFORM_TYPES, supportsMultiValueFilterOps, ToolSmithRole } from './tool-smith-role';
+import { SAFE_TRANSFORM_TYPES, supportsMultiValueFilterOps, TOOL_SMITH_PROMPT, ToolSmithRole } from './tool-smith-role';
 
 const toolPlan: FactoryToolPlan = { key: 'lookup', displayName: 'Lookup Sales', purpose: 'Look up sales rows.', dataSourceId: 'ds-1', sideEffect: 'read-only' };
 const profile: DataProfile = {
@@ -50,7 +53,7 @@ describe('ToolSmithRole', () => {
   it('温度0・厳格な構造化出力でToolグラフを提案する', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
-    const role = new ToolSmithRole(model);
+    const role = new ToolSmithRole(model, bundledPrompts());
 
     const proposal = await role.propose({ toolPlan, profile });
 
@@ -71,7 +74,7 @@ describe('ToolSmithRole', () => {
   it('json形式のprofileではjson-sourceを指示する', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
-    const role = new ToolSmithRole(model);
+    const role = new ToolSmithRole(model, bundledPrompts());
 
     await role.propose({ toolPlan, profile: { ...profile, format: 'json' } });
 
@@ -82,7 +85,7 @@ describe('ToolSmithRole', () => {
   it('検索条件をエージェント引数にするルールをsystemプロンプトへ含める', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
-    const role = new ToolSmithRole(model);
+    const role = new ToolSmithRole(model, bundledPrompts());
 
     await role.propose({ toolPlan: { ...toolPlan, argumentSummary: 'minimum amount to search for' }, profile });
 
@@ -100,7 +103,7 @@ describe('ToolSmithRole', () => {
   it('任意の絞り込み引数をnullableで宣言するルールをsystemプロンプトへ含める', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
-    const role = new ToolSmithRole(model);
+    const role = new ToolSmithRole(model, bundledPrompts());
 
     await role.propose({ toolPlan, profile });
 
@@ -117,7 +120,7 @@ describe('ToolSmithRole', () => {
   it('演算子をエージェント引数で選ばせる opBinding ルールをsystemプロンプトへ含める', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
-    const role = new ToolSmithRole(model);
+    const role = new ToolSmithRole(model, bundledPrompts());
 
     await role.propose({ toolPlan, profile });
 
@@ -144,7 +147,7 @@ describe('ToolSmithRole', () => {
   it('save-toolの保存検証と対になるopBinding追加ルール4種をsystemプロンプトへ含める', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
-    const role = new ToolSmithRole(model);
+    const role = new ToolSmithRole(model, bundledPrompts());
 
     await role.propose({ toolPlan, profile });
 
@@ -162,7 +165,7 @@ describe('ToolSmithRole', () => {
   it('agent-input付きの提案（引数宣言つきグラフ）をそのままパースする', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: argumentProposalJson() }, finishReason: 'stop' });
-    const role = new ToolSmithRole(model);
+    const role = new ToolSmithRole(model, bundledPrompts());
 
     const proposal = await role.propose({ toolPlan, profile });
 
@@ -176,7 +179,7 @@ describe('ToolSmithRole', () => {
   it('priorErrorが渡された場合はuser messageへ検証エラーとして含める', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
-    const role = new ToolSmithRole(model);
+    const role = new ToolSmithRole(model, bundledPrompts());
 
     await role.propose({ toolPlan, profile, priorError: 'graph validation failed: out: column not found' });
 
@@ -188,14 +191,14 @@ describe('ToolSmithRole', () => {
   it('壊れたJSONはFactoryValidationErrorになる', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: '{not json' }, finishReason: 'stop' });
-    const role = new ToolSmithRole(model);
+    const role = new ToolSmithRole(model, bundledPrompts());
     await expect(role.propose({ toolPlan, profile })).rejects.toThrow(/invalid JSON/);
   });
 
   it('graph/agentToolを欠く応答はFactoryValidationErrorになる', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: JSON.stringify({ graph: { nodes: [], edges: [] } }) }, finishReason: 'stop' });
-    const role = new ToolSmithRole(model);
+    const role = new ToolSmithRole(model, bundledPrompts());
     await expect(role.propose({ toolPlan, profile })).rejects.toThrow(/agentTool/);
   });
 
@@ -209,7 +212,7 @@ describe('ToolSmithRole', () => {
     for (const [content, expected] of cases) {
       const model = new ScriptedModelProvider();
       model.enqueue({ message: { role: 'assistant', content }, finishReason: 'stop' });
-      await expect(new ToolSmithRole(model).propose({ toolPlan, profile })).rejects.toThrow(expected);
+      await expect(new ToolSmithRole(model, bundledPrompts()).propose({ toolPlan, profile })).rejects.toThrow(expected);
     }
   });
 
@@ -221,7 +224,7 @@ describe('ToolSmithRole', () => {
         throw new Error('should not be called');
       },
     };
-    const role = new ToolSmithRole(model);
+    const role = new ToolSmithRole(model, bundledPrompts());
     expect(role.available()).toBe(false);
     await expect(role.propose({ toolPlan, profile })).rejects.toThrow(/does not support structured output/);
   });
@@ -248,7 +251,7 @@ describe('ToolSmithRole（期間列・出力の上限・引数の値域）', () 
   function systemPromptFor(profile: DataProfile): Promise<string> {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
-    return new ToolSmithRole(model)
+    return new ToolSmithRole(model, bundledPrompts())
       .propose({ toolPlan, profile })
       .then(() => String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content));
   }
@@ -289,7 +292,7 @@ describe('ToolSmithRole（期間列・出力の上限・引数の値域）', () 
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
 
-    await new ToolSmithRole(model).propose({ toolPlan, profile: estatProfile });
+    await new ToolSmithRole(model, bundledPrompts()).propose({ toolPlan, profile: estatProfile });
 
     const user = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
     expect(user).toContain('<untrusted-data');
@@ -302,7 +305,7 @@ describe('ToolSmithRole（期間列・出力の上限・引数の値域）', () 
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
 
-    await new ToolSmithRole(model).propose({ toolPlan, profile });
+    await new ToolSmithRole(model, bundledPrompts()).propose({ toolPlan, profile });
 
     const user = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
     expect(user).toContain('"periodColumns":[]');
@@ -315,7 +318,7 @@ describe('ToolSmithRole（証拠列の保全・範囲・カテゴリ引数）', 
   async function systemPrompt(): Promise<string> {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
-    await new ToolSmithRole(model).propose({ toolPlan, profile });
+    await new ToolSmithRole(model, bundledPrompts()).propose({ toolPlan, profile });
     return String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
   }
 
@@ -384,7 +387,7 @@ describe('ToolSmithRole（複数データソースの結合）', () => {
   async function joinedRequest(): Promise<{ system: string; user: string }> {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
-    await new ToolSmithRole(model).propose({ toolPlan: joinPlan, profile: wageProfile, additionalProfiles: [hoursProfile] });
+    await new ToolSmithRole(model, bundledPrompts()).propose({ toolPlan: joinPlan, profile: wageProfile, additionalProfiles: [hoursProfile] });
     return {
       system: String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content),
       user: String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content),
@@ -431,7 +434,7 @@ describe('ToolSmithRole（複数データソースの結合）', () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
 
-    await new ToolSmithRole(model).propose({ toolPlan, profile });
+    await new ToolSmithRole(model, bundledPrompts()).propose({ toolPlan, profile });
 
     const system = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
     const user = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
@@ -444,7 +447,7 @@ describe('ToolSmithRole（複数データソースの結合）', () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
 
-    await new ToolSmithRole(model).propose({ toolPlan, profile });
+    await new ToolSmithRole(model, bundledPrompts()).propose({ toolPlan, profile });
 
     const system = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
     if (supportsMultiValueFilterOps()) {
@@ -457,5 +460,68 @@ describe('ToolSmithRole（複数データソースの結合）', () => {
       expect(system).toMatch(/MUST stay nullable, and omitting it MUST return every category/);
       expect(system).not.toMatch(/'in' operator/);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 移行の証明（v48 / ADR-0052）: 文を `prompts/factory/tool-smith.md` へ移す**前に**
+// 組み立てた system 文を `__fixtures__/*.txt` へ固定してある。一字一句一致する限り等価変換である。
+// ---------------------------------------------------------------------------
+
+/** 移行前に固定した文。 */
+function promptFixture(name: string): string {
+  return readFileSync(fileURLToPath(new URL(`./__fixtures__/${name}.txt`, import.meta.url)), 'utf8');
+}
+
+function fixtureProfile(id: string, name: string, format: 'csv' | 'json'): DataProfile {
+  return {
+    dataSourceId: id, name, kind: 'file', format,
+    columns: [{ name: '時点', type: 'string', nullable: false }, { name: '値', type: 'number', nullable: false }],
+    sampleRowCount: 1, sampleRows: [{ 時点: '2024年', 値: 1 }], rowCount: 1,
+    periodColumns: [], categoricalColumns: [], joinCandidates: [],
+  };
+}
+
+const fixtureToolPlan: FactoryToolPlan = { key: 'lookup', displayName: '賃金推移', purpose: '賃金を調べる', dataSourceId: 'ds-1', sideEffect: 'read-only' };
+
+async function systemOf(input: Parameters<ToolSmithRole['propose']>[0]): Promise<string> {
+  const model = new ScriptedModelProvider();
+  model.enqueue({ message: { role: 'assistant', content: '{}' }, finishReason: 'stop' });
+  await new ToolSmithRole(model, bundledPrompts()).propose(input).catch(() => undefined);
+  return String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
+}
+
+describe('ToolSmithRole の system 文', () => {
+  it('従来どおり: 単一の csv ソースでは、移行前と一字一句同じ system 文になる', async () => {
+    expect(await systemOf({ toolPlan: fixtureToolPlan, profile: fixtureProfile('ds-1', 'Wage', 'csv') }))
+      .toBe(promptFixture('tool-smith.single-csv'));
+  });
+
+  it('従来どおり: json ソースでは source ノード種別の 1 行だけが差し替わる', async () => {
+    expect(await systemOf({ toolPlan: fixtureToolPlan, profile: fixtureProfile('ds-1', 'Wage', 'json') }))
+      .toBe(promptFixture('tool-smith.single-json'));
+  });
+
+  it('従来どおり: 2 ソースの結合では結合の規則が足され、完成例は出ない', async () => {
+    expect(await systemOf({
+      toolPlan: fixtureToolPlan,
+      profile: fixtureProfile('ds-1', 'Wage', 'csv'),
+      additionalProfiles: [fixtureProfile('ds-2', 'Hours', 'json')],
+    })).toBe(promptFixture('tool-smith.join-two'));
+  });
+
+  it('従来どおり: 3 ソースの結合では 3 ソースの完成例まで含めて移行前と同じ', async () => {
+    expect(await systemOf({
+      toolPlan: fixtureToolPlan,
+      profile: fixtureProfile('ds-1', 'Wage', 'csv'),
+      additionalProfiles: [fixtureProfile('ds-2', 'Hours', 'json'), fixtureProfile('ds-3', 'Jobs', 'csv')],
+    })).toBe(promptFixture('tool-smith.join-three'));
+  });
+
+  it('従来どおり: 複数値演算子を持たないビルド向けの節も、移行前の文のまま残っている', () => {
+    // このビルドでは `supportsMultiValueFilterOps()` が true なので propose からは出ない節。
+    // 文が消えていないこと（死んだ文ではなく、`in` の無いビルドで使われる節であること）をここで固定する。
+    expect(bundledPrompts().get(TOOL_SMITH_PROMPT.id).render('rules.category.omit'))
+      .toBe(promptFixture('tool-smith.category-omit'));
   });
 });

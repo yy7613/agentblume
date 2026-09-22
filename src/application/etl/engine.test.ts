@@ -255,8 +255,8 @@ function makeRegistry(): NodeRegistry {
   return registry;
 }
 
-function makeEngine(): EtlEngine {
-  return new EtlEngine(makeRegistry());
+function makeEngine(options?: { readonly maxRows?: number }): EtlEngine {
+  return new EtlEngine(makeRegistry(), options);
 }
 
 // 共通のサンプル source config を作るヘルパ。
@@ -775,7 +775,7 @@ describe('EtlEngine.preview', () => {
       expect(error).toMatchObject({
         code: 'ETL_SCHEMA',
         nodeId: 's',
-        message: 'stub-source: produced 5 rows, exceeding the execution limit of 4 rows',
+        message: 'stub-source: produced 5 rows, exceeding the execution limit of 4 rows; narrow the data upstream, or raise AGENTCONTEXT_MAX_EXECUTION_ROWS on the server',
       });
     });
 
@@ -801,7 +801,7 @@ describe('EtlEngine.preview', () => {
       expect(error).toBeInstanceOf(SchemaError);
       expect(error).toMatchObject({
         nodeId: 'j',
-        message: 'stub-join: produced 6 rows, exceeding the execution limit of 5 rows',
+        message: 'stub-join: produced 6 rows, exceeding the execution limit of 5 rows; narrow the data upstream, or raise AGENTCONTEXT_MAX_EXECUTION_ROWS on the server',
       });
     });
 
@@ -822,7 +822,7 @@ describe('EtlEngine.preview', () => {
       expect(error).toBeInstanceOf(SchemaError);
       expect(error).toMatchObject({
         nodeId: 's',
-        message: 'stub-source: produced 250001 rows, exceeding the execution limit of 250000 rows',
+        message: 'stub-source: produced 250001 rows, exceeding the execution limit of 250000 rows; narrow the data upstream, or raise AGENTCONTEXT_MAX_EXECUTION_ROWS on the server',
       });
     });
 
@@ -836,6 +836,44 @@ describe('EtlEngine.preview', () => {
       expect(() => engine.preview(graph, { maxRows })).toThrow(ConfigError);
       expect(() => engine.preview(graph, { maxRows })).toThrow(
         `preview: maxRows must be a positive integer, received ${String(maxRows)}`,
+      );
+    });
+
+    it('正常: コンストラクタの options.maxRows が、preview 省略時の既定になる（v46: AGENTCONTEXT_MAX_EXECUTION_ROWS）', () => {
+      const engine = makeEngine({ maxRows: 5 });
+      const graph: ToolGraph = {
+        nodes: [{ id: 's', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', rowsOfCount(5)) }],
+        edges: [],
+      };
+
+      expect(engine.preview(graph).fullOutput.rows).toHaveLength(5);
+
+      const error = caught(() =>
+        engine.preview({
+          nodes: [{ id: 's', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', rowsOfCount(6)) }],
+          edges: [],
+        }),
+      );
+      expect(error).toBeInstanceOf(SchemaError);
+      expect(error).toMatchObject({
+        message: 'stub-source: produced 6 rows, exceeding the execution limit of 5 rows; narrow the data upstream, or raise AGENTCONTEXT_MAX_EXECUTION_ROWS on the server',
+      });
+    });
+
+    it('従来どおり: preview の呼び出しごとの maxRows は、コンストラクタの既定より優先する', () => {
+      const engine = makeEngine({ maxRows: 5 });
+      const graph: ToolGraph = {
+        nodes: [{ id: 's', type: 'stub-source', config: sourceConfig(numSchema, 'confirmed', rowsOfCount(6)) }],
+        edges: [],
+      };
+
+      expect(engine.preview(graph, { maxRows: 10 }).fullOutput.rows).toHaveLength(6);
+    });
+
+    it.each([0, -1, 1.5, Number.NaN])('異常: コンストラクタの options.maxRows %s は ConfigError（正の整数のみ）', (maxRows) => {
+      expect(() => makeEngine({ maxRows })).toThrow(ConfigError);
+      expect(() => makeEngine({ maxRows })).toThrow(
+        `EtlEngine: maxRows must be a positive integer, received ${String(maxRows)}`,
       );
     });
   });

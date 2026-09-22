@@ -10,6 +10,7 @@ import { SemVer } from '../../domain/tool/semver';
 import { createTool, type Tool } from '../../domain/tool/tool';
 import type { ToolCheckExpectations } from '../../domain/tool-check/tool-check-case';
 import { EtlEngine } from '../etl/engine';
+import { bundledPrompts } from '../../test-support/prompts';
 import { ResolveAiJudgmentsUseCase } from '../tool/resolve-ai-judgments';
 import { RunToolCheckUseCase, type RunToolCheckInput } from './run-tool-check';
 
@@ -438,7 +439,7 @@ async function judgeHarness(options: { graph?: ToolGraph; verdicts?: readonly { 
   const model = new ScriptedModelProvider();
   model.enqueue({ message: { role: 'assistant', content: JSON.stringify({ verdicts: options.verdicts ?? CANNED_VERDICTS }) }, finishReason: 'stop' });
   const engine = new EtlEngine(createDefaultRegistry());
-  const resolver = new ResolveAiJudgmentsUseCase(engine, model, () => true, { snapshot: async () => ({ provider: 'scripted', model: 'canned' }) });
+  const resolver = new ResolveAiJudgmentsUseCase(engine, model, () => true, bundledPrompts(), { snapshot: async () => ({ provider: 'scripted', model: 'canned' }) });
   const useCase = new RunToolCheckUseCase(repo, engine, undefined, { now: () => checkedAt }, resolver);
   return { useCase, model };
 }
@@ -539,7 +540,7 @@ describe('RunToolCheckUseCase: AI 判定つきの実行（端から端まで）'
     await repo.save(makeTool());
     const model = new ScriptedModelProvider();
     const engine = new EtlEngine(createDefaultRegistry());
-    const resolver = new ResolveAiJudgmentsUseCase(engine, model, () => true, { snapshot: async () => ({ provider: 'scripted', model: 'canned' }) });
+    const resolver = new ResolveAiJudgmentsUseCase(engine, model, () => true, bundledPrompts(), { snapshot: async () => ({ provider: 'scripted', model: 'canned' }) });
     const useCase = new RunToolCheckUseCase(repo, engine, undefined, { now: () => checkedAt }, resolver);
     const result = await useCase.execute(input({ expectations: { rowCount: { op: 'eq', value: 2 } } }));
     expect(result.status).toBe('passed');
@@ -552,7 +553,7 @@ describe('RunToolCheckUseCase: AI 判定つきの実行（端から端まで）'
     const repo = new InMemoryToolRepository();
     await repo.save(makeTool({ graph: judgeGraph() }));
     const engine = new EtlEngine(createDefaultRegistry());
-    const resolver = new ResolveAiJudgmentsUseCase(engine, new ScriptedModelProvider(), () => false);
+    const resolver = new ResolveAiJudgmentsUseCase(engine, new ScriptedModelProvider(), () => false, bundledPrompts());
     const useCase = new RunToolCheckUseCase(repo, engine, undefined, { now: () => checkedAt }, resolver);
     const result = await useCase.execute(input({ expectations: { judgments: [{ nodeId: 'judge', where: { column: 'id', value: 'E1' }, verdict: ['yes'] }] } }));
     expect(result.status).toBe('error');

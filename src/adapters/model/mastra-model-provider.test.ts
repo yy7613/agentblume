@@ -519,3 +519,33 @@ describe('MastraModelProvider', () => {
     });
   });
 });
+
+describe('MastraModelProvider: contextWindow（v49。url が LM Studio を指すときだけ問い合わせる）', () => {
+  it('正常: url が /v1 で終わる OpenAI 互換指定なら LM Studio の /api/v0/models/<id> から loaded_context_length を読む', async () => {
+    const calls: string[] = [];
+    const fetcher = (async (input: string | URL | Request) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ loaded_context_length: 200192, max_context_length: 262144 }), { status: 200 });
+    }) as typeof fetch;
+    vi.stubGlobal('fetch', fetcher);
+    try {
+      // 工場は OpenAI 互換の指定に擬似接頭辞 `local/` を付ける。サーバへ送る id はその後ろ。
+      const provider = new MastraModelProvider({ model: { id: 'local/google/gemma-4-12b', url: 'http://127.0.0.1:1234/v1' } });
+      await expect(provider.contextWindow()).resolves.toBe(200192);
+      expect(calls).toEqual(['http://127.0.0.1:1234/api/v0/models/google%2Fgemma-4-12b']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('従来どおり: レジストリ指定（url 無し）では問い合わせず undefined', async () => {
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    try {
+      await expect(new MastraModelProvider({ model: 'openai/gpt-4o' }).contextWindow()).resolves.toBeUndefined();
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

@@ -124,6 +124,12 @@ export class SwitchableModelProvider implements ModelProviderPort {
     return this.current.provider.capabilities();
   }
 
+  /** 実行時点の設定で解決したアダプタへ委譲する（v49）。アダプタが持たなければ undefined。 */
+  async contextWindow(): Promise<number | undefined> {
+    const resolved = await this.resolve();
+    return resolved.provider.contextWindow === undefined ? undefined : resolved.provider.contextWindow();
+  }
+
   /** 実行時点の設定で解決した指紋。観測・実験の再現性記録に使う。 */
   async currentSnapshot(): Promise<ModelSlotSnapshot> {
     return (await this.resolve()).snapshot;

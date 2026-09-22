@@ -8,6 +8,13 @@
 import { FactoryValidationError } from '../../../domain/factory/errors';
 import type { FactorySkillPlan } from '../../../domain/factory/factory-plan';
 import type { JsonSchemaObject, ModelProviderPort } from '../../model/model-provider';
+import type { PromptCatalogPort, PromptSpec } from '../../prompt/prompt-catalog-port';
+
+/**
+ * この役割がモデルへ送る文（v48 / ADR-0052）。文は `prompts/factory/skill-writer.md` にあり、
+ * 条件で入れ替わる行は無いので節は 1 つだけ。
+ */
+export const SKILL_WRITER_PROMPT: PromptSpec = { id: 'factory/skill-writer', sections: ['system'] };
 
 const SKILL_WRITER_SCHEMA: JsonSchemaObject = {
   type: 'object',
@@ -43,7 +50,7 @@ export interface SkillWriterProposal {
 const PROPOSAL_FIELDS = ['responsibility', 'activationCondition', 'inputDescription', 'outputDescription', 'instructions'] as const;
 
 export class SkillWriterRole {
-  constructor(private readonly model: ModelProviderPort) {}
+  constructor(private readonly model: ModelProviderPort, private readonly prompts: PromptCatalogPort) {}
 
   available(): boolean {
     return this.model.capabilities().includes('structured-output');
@@ -51,16 +58,7 @@ export class SkillWriterRole {
 
   async propose(input: SkillWriterRoleInput, signal?: AbortSignal): Promise<SkillWriterProposal> {
     if (!this.available()) throw new FactoryValidationError('SkillWriterRole: model does not support structured output');
-    const system = [
-      'You are the SkillWriter role of an internal Agent Factory generation pipeline.',
-      'Draft the responsibility, activation condition, input/output descriptions, and instructions for one skill plan.',
-      'Rules:',
-      '- Base the draft only on the given skill plan and the tool contracts it depends on.',
-      '- instructions must tell the agent exactly how and when to use the listed tools to fulfill the responsibility.',
-      '- If no tool contracts are given, write instructions that do not reference any tool.',
-      '- Keep all fields concise and actionable.',
-      'Return only the JSON object matching the provided schema. Do not include any prose outside the JSON.',
-    ].join('\n');
+    const system = this.prompts.get(SKILL_WRITER_PROMPT.id).render('system');
     const payload = { skillPlan: input.skillPlan, toolContracts: input.toolContracts };
     const completion = await this.model.complete({
       temperature: 0,

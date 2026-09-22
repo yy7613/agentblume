@@ -28,6 +28,7 @@ import { PersonaNotFoundError, ScenarioNotFoundError, ValidationDomainError } fr
 import type { ScenarioId } from '../../domain/validation/ids';
 import { buildPersonaSystemPrompt, composeScenarioPrompt, type PersonaLanguage } from '../../domain/validation/persona';
 import type { PersonaRepository } from '../../domain/validation/persona-repository';
+import type { PromptCatalogPort, PromptSpec } from '../prompt/prompt-catalog-port';
 import type { Scenario } from '../../domain/validation/scenario';
 import type { ScenarioRepository } from '../../domain/validation/scenario-repository';
 import { createScenarioRun, type ExpectedToolHit, type ScenarioRun, type ScenarioRunError, type ScenarioRunErrorStage, type ScenarioRunPseudoUserRef, type ScenarioRunStatus, type Turn } from '../../domain/validation/scenario-run';
@@ -88,15 +89,16 @@ class ScenarioStageError extends Error {
 }
 
 /**
- * 評点の向き（数が大きいほど高評価）を明示する一文。実測: 自由記述は「正確で明瞭」と好意的なのに
- * scale へ 1〜2 を付ける擬似ユーザーがいた（1 を「1位」と読んでいた）。アンケートの指示文と、
- * 検証落ちの再依頼文の両方へ同じ文言を添える（後者だけ抜けても同じ取り違えが再現するため）。
+ * 疑似ユーザーのアンケート回答（v48 / ADR-0052）。アンケートの指示文・検証落ちの再依頼文・
+ * 評点の向き（数が大きいほど高評価）を明示する一文は `prompts/validation/pseudo-user.md` にある。
+ * 実測: 自由記述は「正確で明瞭」と好意的なのに scale へ 1〜2 を付ける疑似ユーザーがいた
+ * （1 を「1位」と読んでいた）。評点の向きの一文はアンケートの指示文と検証落ちの再依頼文の
+ * 両方へ添える（後者だけ抜けても同じ取り違えが再現するため）。
  */
-function surveyDirectionNote(ja: boolean): string {
-  return ja
-    ? '評点は数が大きいほど高評価である（最小値 = 最も悪い、最大値 = 最も良い）。自由記述の内容と評点を一致させること。'
-    : 'Higher scores mean a better evaluation (the minimum value is the worst, the maximum value is the best). Keep your free-text answers consistent with your scores.';
-}
+export const PSEUDO_USER_PROMPT: PromptSpec = {
+  id: 'validation/pseudo-user',
+  sections: ['instruction.ja', 'instruction.en', 'direction.ja', 'direction.en', 'repair.ja', 'repair.en'],
+};
 
 /** 空の理由は記録側（createScenarioRun）で弾かれ、記録そのものを失う。必ず1文にする。 */
 function reason(text: string): string {
@@ -147,6 +149,8 @@ export class RunScenarioUseCase {
     private readonly scenarioRuns: ScenarioRunRepository,
     /** 疑似ユーザーAgent（kind==='pseudo-user'）解決用（v18）。 */
     private readonly agents: AgentRepository,
+    /** アンケートの指示文・再依頼文・評点の向きの一文（v48 / ADR-0052）。 */
+    private readonly prompts: PromptCatalogPort,
     private readonly makeId: () => string = randomUUID,
     private readonly now: () => Date = () => new Date(),
     /** 握り潰した失敗の痕跡（未配線なら何も出さない）。 */
@@ -311,6 +315,8 @@ export class RunScenarioUseCase {
    */
   private async surveyTurn(systemPrompt: string, language: PersonaLanguage, scenario: Scenario, state: ConversationState, signal?: AbortSignal): Promise<SurveyOutcome> {
     const ja = language === 'ja';
+    const template = this.prompts.get(PSEUDO_USER_PROMPT.id);
+    const direction = template.render(ja ? 'direction.ja' : 'direction.en');
     const conversation = state.transcript.length === 0
       ? (ja ? '（会話なし）' : '(no conversation)')
       : state.transcript.map((entry) => `${entry.speaker}: ${entry.message}`).join('\n');
@@ -320,10 +326,8 @@ export class RunScenarioUseCase {
       ja ? '会話全文:' : 'Conversation transcript:',
       conversation,
       '',
-      ja
-        ? '上記の会話を踏まえ、この人物として各設問へ回答する。指定されたJSONスキーマに従い全設問へ回答すること。'
-        : 'Based on the conversation above, answer every question as this persona, following the given JSON schema.',
-      surveyDirectionNote(ja),
+      template.render(ja ? 'instruction.ja' : 'instruction.en'),
+      direction,
     ].join('\n');
     const request = {
       messages: [{ role: 'system', content } satisfies ModelMessage],
@@ -340,9 +344,7 @@ export class RunScenarioUseCase {
         { role: 'assistant', content: first.message.content ?? '' },
         {
           role: 'user',
-          content: ja
-            ? `前回の回答は検証に通らなかった: ${parsedFirst.message}。指定のJSONスキーマ（範囲も含む）を満たすJSONだけを返し直すこと。${surveyDirectionNote(ja)}`
-            : `Your previous answer failed validation: ${parsedFirst.message}. Return only JSON that satisfies the given schema, including the allowed ranges. ${surveyDirectionNote(ja)}`,
+          content: template.render(ja ? 'repair.ja' : 'repair.en', { reason: parsedFirst.message, direction }),
         },
       ];
       const second = await this.model.complete({ ...request, messages: repair }, signal);

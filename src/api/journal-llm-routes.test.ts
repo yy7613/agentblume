@@ -6,6 +6,7 @@
  * リポジトリ・認可・直列化・エラー写像は本物のまま通すので、**UI が期待する形**（パス・包み・状態コード）が守られる。
  */
 import type { FastifyInstance } from 'fastify';
+import { bundledPrompts } from '../test-support/prompts';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ScriptedModelProvider } from '../adapters/model/scripted-model-provider';
 import { SingleUserAuthentication } from '../adapters/security/single-user-authentication';
@@ -79,9 +80,9 @@ describe('journal LLM routes（抽出・ヒアリング）', () => {
   function wire(enabled = true): void {
     const gate = (): boolean => enabled;
     Object.assign(app, {
-      extractJournalDocument: new ExtractJournalDocumentUseCase(model, gate),
-      startJournalHearing: new StartJournalHearingUseCase(app.journalDocumentRepo, app.journalHearingRepo, app.journalChartRepo, model, gate),
-      answerJournalHearing: new AnswerJournalHearingUseCase(app.journalDocumentRepo, app.journalHearingRepo, app.journalChartRepo, model, gate),
+      extractJournalDocument: new ExtractJournalDocumentUseCase(model, gate, bundledPrompts()),
+      startJournalHearing: new StartJournalHearingUseCase(app.journalDocumentRepo, app.journalHearingRepo, app.journalChartRepo, model, gate, bundledPrompts()),
+      answerJournalHearing: new AnswerJournalHearingUseCase(app.journalDocumentRepo, app.journalHearingRepo, app.journalChartRepo, model, gate, bundledPrompts()),
       acceptJournalHearing: new AcceptJournalHearingUseCase(app.journalDocumentRepo, app.journalHearingRepo, app.journalChartRepo, app.journalRuleRepo, app.journalEntryRepo, app.judgeJournalDocuments),
       cancelJournalHearing: new CancelJournalHearingUseCase(app.journalDocumentRepo, app.journalHearingRepo),
       getJournalHearing: new GetJournalHearingUseCase(app.journalHearingRepo),

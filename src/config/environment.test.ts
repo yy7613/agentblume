@@ -116,6 +116,44 @@ describe('validateEnvironment', () => {
     expect(validateEnvironment({ LM_STUDIO_TIMEOUT_MS: '600000' }).LM_STUDIO_TIMEOUT_MS).toBe(600_000);
   });
 
+  it('正常: AGENTCONTEXT_MAX_EXECUTION_ROWS は正の整数を受け付ける', () => {
+    expect(validateEnvironment({ AGENTCONTEXT_MAX_EXECUTION_ROWS: '500000' }).AGENTCONTEXT_MAX_EXECUTION_ROWS).toBe(500_000);
+    expect(validateEnvironment({ AGENTCONTEXT_MAX_EXECUTION_ROWS: '1' }).AGENTCONTEXT_MAX_EXECUTION_ROWS).toBe(1);
+  });
+
+  it('異常: AGENTCONTEXT_MAX_EXECUTION_ROWS の 0・負・小数・文字列は起動時エラー（何を期待するかを含む）', () => {
+    for (const bad of ['0', '-1', '1.5', 'many']) {
+      const issues = issuesOf({ AGENTCONTEXT_MAX_EXECUTION_ROWS: bad });
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toContain('AGENTCONTEXT_MAX_EXECUTION_ROWS: 正の整数');
+    }
+  });
+
+  it('正常: AGENTCONTEXT_PROMPTS_DIR は置き場所の並びをそのまま受ける（分け方は adapters が持つ）', () => {
+    expect(validateEnvironment({ AGENTCONTEXT_PROMPTS_DIR: 'C:\\ops\\prompts;/srv/prompts' }).AGENTCONTEXT_PROMPTS_DIR).toBe('C:\\ops\\prompts;/srv/prompts');
+    expect(validateEnvironment({ AGENTCONTEXT_PROMPTS_DIR: '' }).AGENTCONTEXT_PROMPTS_DIR).toBeUndefined();
+  });
+
+  it('正常: AGENTCONTEXT_TOOL_TEMPLATES_DIR も同じ形で受ける（プロンプトの置き場所と同じ検証。以前は検証されず素通しだった）', () => {
+    expect(validateEnvironment({ AGENTCONTEXT_TOOL_TEMPLATES_DIR: 'C:\ops\templates;/srv/templates' }).AGENTCONTEXT_TOOL_TEMPLATES_DIR).toBe('C:\ops\templates;/srv/templates');
+    expect(validateEnvironment({ AGENTCONTEXT_TOOL_TEMPLATES_DIR: '' }).AGENTCONTEXT_TOOL_TEMPLATES_DIR).toBeUndefined();
+  });
+
+  it('異常: AGENTCONTEXT_TOOL_TEMPLATES_DIR が区切り記号だけなら起動時エラー', () => {
+    const issues = issuesOf({ AGENTCONTEXT_TOOL_TEMPLATES_DIR: ';;' });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('AGENTCONTEXT_TOOL_TEMPLATES_DIR');
+  });
+
+  it('異常: AGENTCONTEXT_PROMPTS_DIR が区切り記号だけなら起動時エラー（上書きが黙って効かない値）', () => {
+    for (const bad of [';;', ' ; : ', ':']) {
+      const issues = issuesOf({ AGENTCONTEXT_PROMPTS_DIR: bad });
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toContain('AGENTCONTEXT_PROMPTS_DIR');
+      expect(issues[0]).toContain('後勝ち');
+    }
+  });
+
   it('AGENTCONTEXT_SHUTDOWN_GRACE_MS は 0 以上の整数だけを受ける（0 = 待たない）', () => {
     expect(validateEnvironment({ AGENTCONTEXT_SHUTDOWN_GRACE_MS: '0' }).AGENTCONTEXT_SHUTDOWN_GRACE_MS).toBe(0);
     expect(validateEnvironment({ AGENTCONTEXT_SHUTDOWN_GRACE_MS: '30000' }).AGENTCONTEXT_SHUTDOWN_GRACE_MS).toBe(30_000);

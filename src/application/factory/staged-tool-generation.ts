@@ -30,6 +30,7 @@ import {
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import type { EtlEngine } from '../etl/engine';
 import type { ModelProviderPort } from '../model/model-provider';
+import type { PromptCatalogPort } from '../prompt/prompt-catalog-port';
 import type { SuggestCalculateExpressionUseCase } from '../tool/suggest-calculate-expression';
 import { throwIfAborted } from './abort';
 import {
@@ -46,10 +47,10 @@ import { describeCompiledToolViolations, type CompiledToolCheckViolation } from 
 import { JOIN_NODE_TYPE } from './roles/tool-smith-role';
 import type { StagedToolGenerationPort, StagedToolGenerationRequest, StagedToolResult } from './staged-tool-port';
 import {
-  decideComputationsTask,
-  decideFiltersTask,
-  decideJoinTask,
-  decideOutputTask,
+  decideComputationsTaskOf,
+  decideFiltersTaskOf,
+  decideJoinTaskOf,
+  decideOutputTaskOf,
   runRoleTask,
   type RoleTask,
 } from './tasks';
@@ -107,6 +108,8 @@ export class StagedToolGeneration implements StagedToolGenerationPort {
     private readonly suggestExpression: SuggestCalculateExpressionUseCase | undefined,
     /** 検査と式の標本行に要る（未注入なら段階的経路は使えない）。 */
     private readonly resolveDataSources: ResolveDataSourceGraphUseCase | undefined,
+    /** モデルへ送る文の置き場所（v48）。4 つのタスクの目的文・規則はここから読む。 */
+    private readonly prompts: PromptCatalogPort,
   ) {}
 
   async generate(request: StagedToolGenerationRequest): Promise<StagedToolResult> {
@@ -132,9 +135,14 @@ export class StagedToolGeneration implements StagedToolGenerationPort {
       const context = toolSpecContextOf(plan, request.profiles);
       const joins = (plan.additionalDataSourceIds ?? []).length > 0;
 
+      const decideJoinTask = decideJoinTaskOf(this.prompts);
+      const decideFiltersTask = decideFiltersTaskOf(this.prompts);
+      const decideComputationsTask = decideComputationsTaskOf(this.prompts);
+      const decideOutputTask = decideOutputTaskOf(this.prompts);
+
       const run = async <I, O>(task: RoleTask<I, O>, input: I, feedback?: string): Promise<O> => {
         throwIfAborted(signal);
-        const result = await runRoleTask(this.model, task, input, {
+        const result = await runRoleTask(this.model, this.prompts, task, input, {
           ...(feedback === undefined ? {} : { feedback }),
           ...(signal === undefined ? {} : { signal }),
           onCall: request.onRoleCall,

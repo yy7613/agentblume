@@ -16,7 +16,6 @@ import type { ExpensePolicyHearingId } from './ids';
 import type { ClaimRules, ExpenseCategory, PreApprovalRule } from './policy';
 import type { SeverityOverride } from './reason-codes';
 
-export const EXPENSE_POLICY_HEARING_PROMPT_VERSION = 'expense-policy-hearing/v1';
 export const HEARING_MODES = ['document', 'questions'] as const;
 export type HearingMode = (typeof HEARING_MODES)[number];
 export const HEARING_STATUSES = ['open', 'proposed', 'accepted', 'cancelled'] as const;

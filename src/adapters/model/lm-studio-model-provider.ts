@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ContextWindowProbe } from './lm-studio-context-window';
 import {
   ModelProviderError,
   type JsonObject,
@@ -219,12 +220,20 @@ async function readStream(
 
 export class LmStudioModelProvider implements ModelProviderPort {
   private readonly endpoint: string;
+  /**
+   * 文脈の長さを引く口（`…/api/v0/models/<model>`）。`baseUrl` が `…/v1` で終わるときだけ組む。
+   * `/api/v0` は LM Studio 固有の REST API で、同じ `/v1` を喋る別のサーバには無いため、
+   * 口の形から LM Studio らしさが読み取れるときにしか叩かない。
+   */
+  private readonly contextWindowProbe: ContextWindowProbe;
   private readonly fetcher: typeof fetch;
   private readonly timeoutMs: number;
   private readonly idleTimeoutMs: number;
 
   constructor(private readonly options: LmStudioModelProviderOptions) {
-    this.endpoint = `${options.baseUrl.replace(/\/$/, '')}/chat/completions`;
+    const base = options.baseUrl.replace(/\/$/, '');
+    this.endpoint = `${base}/chat/completions`;
+    this.contextWindowProbe = new ContextWindowProbe({ baseUrl: options.baseUrl, model: options.model, ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}), ...(options.fetcher !== undefined ? { fetcher: options.fetcher } : {}) });
     this.fetcher = options.fetcher ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 600_000;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 60_000;
@@ -232,6 +241,11 @@ export class LmStudioModelProvider implements ModelProviderPort {
 
   capabilities(): readonly ModelCapability[] {
     return ['chat', 'tool-calling', 'structured-output', 'vision'];
+  }
+
+  /** いま載っているモデルへ送れる文脈の長さ（v49 §4）。best-effort で、取れなければ undefined（`lm-studio-context-window.ts`）。 */
+  async contextWindow(): Promise<number | undefined> {
+    return this.contextWindowProbe.read();
   }
 
   async complete(request: ModelCompletionRequest, signal?: AbortSignal): Promise<ModelCompletion> {

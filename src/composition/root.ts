@@ -28,9 +28,12 @@ import { EtlEngine } from '../application/etl/engine';
 import type { ModelProviderPort } from '../application/model/model-provider';
 import { DiagnoseToolUseCase } from '../application/tool/diagnose-tool';
 import { DraftToolUseCase } from '../application/tool/draft-tool';
-import { ResolveAiJudgmentsUseCase } from '../application/tool/resolve-ai-judgments';
-import { SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
+import { AI_JUDGE_PROMPT, ResolveAiJudgmentsUseCase } from '../application/tool/resolve-ai-judgments';
+import { ANALYSIS_CONFIG_PROMPT, SuggestAnalysisConfigUseCase } from '../application/tool/suggest-analysis-config';
 import { SuggestCalculateExpressionUseCase } from '../application/tool/suggest-calculate-expression';
+import { CALCULATE_PROMPT } from '../application/tool/calculate-expression-prompt';
+import { DESIGN_CHAT_COMPACT_PROMPT, DESIGN_CHAT_PROMPT } from '../application/tool/design-chat-prompt';
+import { DesignToolChatUseCase } from '../application/tool/design-tool-chat';
 import { PreviewToolUseCase } from '../application/tool/preview-tool';
 import { DeleteToolUseCase, GetToolUseCase, ListToolVersionsUseCase, ListToolsUseCase } from '../application/tool/query-tool';
 import { SaveToolUseCase } from '../application/tool/save-tool';
@@ -61,7 +64,7 @@ import { SqliteScenarioRunRepository } from '../adapters/storage/sqlite-scenario
 import { DeletePersonaUseCase, QueryPersonasUseCase } from '../application/validation/query-personas';
 import { QueryScenarioRunsUseCase } from '../application/validation/query-scenario-runs';
 import { DeleteScenarioUseCase, QueryScenariosUseCase } from '../application/validation/query-scenarios';
-import { RunScenarioUseCase } from '../application/validation/run-scenario';
+import { PSEUDO_USER_PROMPT, RunScenarioUseCase } from '../application/validation/run-scenario';
 import { RegisterPseudoUserAgentUseCase } from '../application/validation/register-pseudo-user-agent';
 import { EvaluateAgentRunUseCase } from '../application/evaluation/evaluate-agent-run';
 import { MastraEvalsEvaluator } from '../adapters/evaluation/mastra-evals-evaluator';
@@ -71,7 +74,7 @@ import { InMemoryMemoryProposalRepository } from '../adapters/storage/in-memory-
 import { SqliteMemoryProposalRepository } from '../adapters/storage/sqlite-memory-proposal-repository';
 import { SaveWikiPageUseCase } from '../application/memory/save-wiki-page';
 import { DeleteWikiPageUseCase, QueryWikiUseCase } from '../application/memory/query-wiki';
-import { ReflectRunUseCase } from '../application/memory/reflect-run';
+import { REFLECT_RUN_PROMPT, ReflectRunUseCase } from '../application/memory/reflect-run';
 import { ListProposalsUseCase } from '../application/memory/list-proposals';
 import { ReviewProposalUseCase } from '../application/memory/review-proposal';
 import type { WikiRepository } from '../domain/memory/wiki-repository';
@@ -112,7 +115,7 @@ import { SqliteJudgeRubricRepository } from '../adapters/storage/sqlite-judge-ru
 import type { JudgeRubricRepository } from '../domain/evaluation/evaluation-asset-repositories';
 import { SaveJudgeRubricUseCase } from '../application/evaluation/save-judge-rubric';
 import { DeleteJudgeRubricUseCase, QueryJudgeRubricsUseCase } from '../application/evaluation/query-judge-rubrics';
-import { StructuredJudgeEvaluator } from '../adapters/evaluation/structured-judge-evaluator';
+import { JUDGE_PROMPT, StructuredJudgeEvaluator } from '../adapters/evaluation/structured-judge-evaluator';
 import type { JudgeEvaluatorPort } from '../application/evaluation/judge-evaluator';
 import { InMemoryOperationsRepository } from '../adapters/storage/in-memory-operations-repository';
 import { SqliteOperationsRepository } from '../adapters/storage/sqlite-operations-repository';
@@ -171,11 +174,20 @@ import { GenerateAgentAssetsUseCase } from '../application/factory/generate-agen
 import { StagedToolGeneration } from '../application/factory/staged-tool-generation';
 import { TemplateToolGeneration } from '../application/factory/template-tool-generation';
 import { ProfileDataSourcesUseCase } from '../application/factory/profile-data-sources';
-import { AnalystRole } from '../application/factory/roles/analyst-role';
-import { AssemblerRole } from '../application/factory/roles/assembler-role';
-import { PlannerRole } from '../application/factory/roles/planner-role';
-import { SkillWriterRole } from '../application/factory/roles/skill-writer-role';
-import { ToolSmithRole } from '../application/factory/roles/tool-smith-role';
+import {
+  DECIDE_COMPUTATIONS_PROMPT,
+  DECIDE_FILTERS_PROMPT,
+  DECIDE_JOIN_PROMPT,
+  DECIDE_OUTPUT_PROMPT,
+  FILL_SLOTS_PROMPT,
+  ROLE_TASK_COMMON_PROMPT,
+  SELECT_TEMPLATE_PROMPT,
+} from '../application/factory/tasks';
+import { AnalystRole, ANALYST_PROMPT } from '../application/factory/roles/analyst-role';
+import { AssemblerRole, ASSEMBLER_PROMPT } from '../application/factory/roles/assembler-role';
+import { PlannerRole, PLANNER_PROMPT } from '../application/factory/roles/planner-role';
+import { SkillWriterRole, SKILL_WRITER_PROMPT } from '../application/factory/roles/skill-writer-role';
+import { ToolSmithRole, TOOL_SMITH_PROMPT } from '../application/factory/roles/tool-smith-role';
 import { RunFactoryUseCase } from '../application/factory/run-factory';
 import { CreateFactoryRunUseCase } from '../application/factory/create-factory-run';
 import { ResumeFactoryRunUseCase } from '../application/factory/resume-factory-run';
@@ -198,6 +210,8 @@ import { AesGcmSecretCipher } from '../adapters/security/aes-gcm-secret-cipher';
 import { MastraModelProviderFactory } from '../adapters/model/mastra-model-provider-factory';
 import { RegistryModelCatalog } from '../adapters/model/registry-model-catalog';
 import { FsToolTemplateCatalog } from '../adapters/templates/fs-tool-template-catalog';
+import { FsPromptCatalog } from '../adapters/prompts/fs-prompt-catalog';
+import type { PromptCatalogPort, PromptSpec } from '../application/prompt/prompt-catalog-port';
 import {
   InstantiateToolTemplateUseCase,
   ListToolTemplatesUseCase,
@@ -215,7 +229,14 @@ import type { ToolCheckCaseRepository } from '../domain/tool-check/tool-check-ca
 import { RunToolCheckUseCase } from '../application/tool-check/run-tool-check';
 import { DeleteToolCheckCaseUseCase, ListToolCheckCasesUseCase, SaveToolCheckCaseUseCase } from '../application/tool-check/manage-tool-check-cases';
 import { RunToolCheckCaseUseCase } from '../application/tool-check/run-tool-check-case';
-import { SuggestToolCheckCasesUseCase } from '../application/tool-check/suggest-tool-check-cases';
+import { TOOL_CHECK_CASES_PROMPT, SuggestToolCheckCasesUseCase } from '../application/tool-check/suggest-tool-check-cases';
+import { JOURNAL_EXTRACT_PROMPT } from '../application/journal/extract-document';
+import { JOURNAL_HEARING_PROMPT } from '../application/journal/hearing';
+import { EXPENSE_DETAIL_READ_PROMPT } from '../application/expense/input/detail-reader';
+import { EXPENSE_POLICY_HEARING_PROMPT } from '../application/expense/input/policy-hearing';
+import { CONTRACT_EXTRACT_PROMPT } from '../application/contract/extract-clauses';
+import { CONTRACT_REVIEW_PROMPT } from '../application/contract/llm-criteria';
+import { CONTRACT_TRANSCRIBE_PROMPT } from '../application/contract/transcribe-pages';
 import type { BusinessCompositionContext } from './business';
 import { composeJournal, type JournalAppFeature } from './journal';
 import { composeExpense, type ExpenseAppFeature } from './expense';
@@ -234,6 +255,48 @@ import { CreateBackupUseCase, ListBackupsUseCase, RestoreBackupUseCase, type Bac
 
 /** 実行プロファイル。 */
 export type Profile = 'local' | 'test';
+
+/**
+ * 起動時に揃っていなければならないプロンプト（v48 / ADR-0052）。
+ *
+ * **文をファイルへ移した use case は、自分の `PromptSpec` をここへ集める**
+ * （`export const XXX_PROMPT: PromptSpec = { id, sections }` を import して並べる）。
+ * ここに並んだ id と節が 1 つでも欠けていれば、`createApp` は「どのファイルの何が無いか・
+ * どう直すか」を出して止まる。節を欠いた上書きでモデルの挙動が静かに変わる方が高くつくため。
+ *
+ * 同時に、この配列は**生きている文の一覧**でもある（ここに無い節は誰も送らない死んだ文で、
+ * `src/application/prompt/bundled-prompts.test.ts` がいずれそれを落とす）。
+ */
+const REQUIRED_PROMPTS: readonly PromptSpec[] = [
+  PSEUDO_USER_PROMPT,
+  REFLECT_RUN_PROMPT,
+  JUDGE_PROMPT,
+  CALCULATE_PROMPT,
+  ANALYSIS_CONFIG_PROMPT,
+  AI_JUDGE_PROMPT,
+  DESIGN_CHAT_PROMPT,
+  DESIGN_CHAT_COMPACT_PROMPT,
+  TOOL_CHECK_CASES_PROMPT,
+  PLANNER_PROMPT,
+  TOOL_SMITH_PROMPT,
+  SKILL_WRITER_PROMPT,
+  ASSEMBLER_PROMPT,
+  ANALYST_PROMPT,
+  ROLE_TASK_COMMON_PROMPT,
+  DECIDE_JOIN_PROMPT,
+  DECIDE_FILTERS_PROMPT,
+  DECIDE_COMPUTATIONS_PROMPT,
+  DECIDE_OUTPUT_PROMPT,
+  SELECT_TEMPLATE_PROMPT,
+  FILL_SLOTS_PROMPT,
+  JOURNAL_EXTRACT_PROMPT,
+  JOURNAL_HEARING_PROMPT,
+  EXPENSE_DETAIL_READ_PROMPT,
+  EXPENSE_POLICY_HEARING_PROMPT,
+  CONTRACT_EXTRACT_PROMPT,
+  CONTRACT_REVIEW_PROMPT,
+  CONTRACT_TRANSCRIBE_PROMPT,
+];
 
 /** createApp のオプション。 */
 export interface AppOptions {
@@ -362,6 +425,11 @@ export interface App extends JournalAppFeature, ExpenseAppFeature, ReceivablesAp
   readonly deleteAgent: DeleteAgentUseCase;
   readonly diagnoseAgentTools: DiagnoseAgentToolsUseCase;
   readonly diagnoseTool: DiagnoseToolUseCase;
+  /**
+   * モデルへ送る指示文の置き場所（v48）。文をファイルへ移した use case はこれを受け取る。
+   * 起動時に `REQUIRED_PROMPTS` の検査を済ませてあるので、`get` は同期で安全に呼べる。
+   */
+  readonly promptCatalog: PromptCatalogPort;
   /** ツールテンプレート（v43）: 一覧・スロット候補・実体化。Tool Builder の「テンプレートから作成」。 */
   readonly listToolTemplates: ListToolTemplatesUseCase;
   readonly templateSlotCandidates: TemplateSlotCandidatesUseCase;
@@ -468,6 +536,8 @@ export interface App extends JournalAppFeature, ExpenseAppFeature, ReceivablesAp
   readonly resolveAiJudgments: ResolveAiJudgmentsUseCase;
   readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
   readonly suggestCalculateExpression: SuggestCalculateExpressionUseCase;
+  /** ツール作成画面の設計アシスタント（v47）。式提案と同じモデル・同じ有効判定を使う。 */
+  readonly designToolChat: DesignToolChatUseCase;
   /** judge スロットの設定状態（`GET /runtime/capabilities` と実験起票のガードが同じ判定を使う）。 */
   readonly judgeReadiness: () => Promise<JudgeReadiness>;
   readonly saveTool: SaveToolUseCase;
@@ -571,6 +641,22 @@ function resolveModelMaxTokens(): number | undefined {
   return value;
 }
 
+/**
+ * 未設定なら `EtlEngine` 自身の既定（`DEFAULT_MAX_EXECUTION_ROWS` = 250,000）に委ねる（v46）。
+ * `src/config/environment.ts` の起動時検証（AGENTCONTEXT_MAX_EXECUTION_ROWS）が既に正の整数であることを
+ * 保証しているが、`createApp` は test プロファイルなど検証を経ずに呼ばれる経路もあるため、
+ * 他の env 読み取りヘルパー（`resolveModelMaxTokens` 等）と同じくここでも自前で検査する。
+ */
+function resolveMaxExecutionRows(): number | undefined {
+  const raw = process.env['AGENTCONTEXT_MAX_EXECUTION_ROWS'];
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new ToolValidationError(`createApp: invalid AGENTCONTEXT_MAX_EXECUTION_ROWS: "${raw}"`);
+  }
+  return value;
+}
+
 function hashConfig(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 
 function resolvePricingCatalog(profile: Profile): ModelPriceSnapshot[] {
@@ -641,12 +727,19 @@ export function createApp(options?: AppOptions): App {
 
   // registry は engine とツールテンプレートのカタログ（ノード種別の検査）で共有する。
   const nodeRegistry = createDefaultRegistry();
-  const engine = new EtlEngine(nodeRegistry);
+  const engine = new EtlEngine(nodeRegistry, { maxRows: resolveMaxExecutionRows() });
   /**
    * ツールテンプレート（v43 / ADR-0049）。Agent Factory とツール作成画面が**同じ 1 つの**
    * カタログを読む（別々に読むと、片方だけ古いキャッシュを見る）。置き場所が無ければ空の一覧。
    */
   const toolTemplateCatalog = new FsToolTemplateCatalog({ registry: nodeRegistry, logger: errorLogger });
+  /**
+   * モデルへ送る指示文（v48 / ADR-0052）。ここで**全件読み込み**、コードが要求する id と節が
+   * 揃っているかを検査する。欠けていれば `MissingPromptsError` で起動が止まる（fail-fast）。
+   * 以後の再読込は更新時刻を見て `get` が行うので、文を直すのに再起動は要らない。
+   */
+  const promptCatalog = new FsPromptCatalog({ logger: errorLogger });
+  promptCatalog.require(REQUIRED_PROMPTS);
   const modelMaxTokens = resolveModelMaxTokens();
 
   // モデル設定（v34）: 設定は暗号化してDBへ、鍵はDBの外（鍵ファイル）へ置く。
@@ -715,6 +808,7 @@ export function createApp(options?: AppOptions): App {
   const judgeEvaluator = new StructuredJudgeEvaluator(
     judgeModelProvider,
     options?.judgeModelSnapshot ?? (judgeSwitchable === undefined ? staticJudgeSnapshot : () => judgeSwitchable.lastSnapshot()),
+    promptCatalog,
   );
   /**
    * judge の指紋を評価の**前**に解決する。これが無いと、UIでjudgeを切り替えた直後の
@@ -771,6 +865,8 @@ export function createApp(options?: AppOptions): App {
     errorLogger,
     // 業務の個人情報（経費精算の口座番号）もモデル設定と同じ鍵で封緘する（鍵を 2 つにすると運用で片方を失いやすい）。
     secretCipher,
+    // モデルへ送る指示文のカタログ（v48 / ADR-0052）。起動時に読み込み済みの 1 つを業務へ渡す。
+    promptCatalog,
   };
   const journal = composeJournal(businessContext);
   const expense = composeExpense(businessContext, { journal: journal.feature });
@@ -794,7 +890,7 @@ export function createApp(options?: AppOptions): App {
    * ツール検証 / Agent のツール実行）はすべて**この 1 インスタンス**を通す。
    * 判定のキャッシュを共有するのが狙いで、経路ごとに作ると同じ行を何度もモデルへ問うことになる。
    */
-  const resolveAiJudgments = new ResolveAiJudgmentsUseCase(engine, modelProvider, assistantEnabled, {
+  const resolveAiJudgments = new ResolveAiJudgmentsUseCase(engine, modelProvider, assistantEnabled, promptCatalog, {
     logger: errorLogger,
     ...(resolveModelSnapshot === undefined ? {} : { snapshot: async (): Promise<{ readonly provider: string; readonly model: string }> => resolveModelSnapshot() }),
   });
@@ -802,7 +898,7 @@ export function createApp(options?: AppOptions): App {
   const runAgentPreview = new RunAgentPreviewUseCase(repo, engine, modelProvider, runAdapter.repo, undefined, undefined, agentAdapter.repo, skillAdapter.repo, { telemetry, pricing, operations: operationsAdapter.repo, model: snapshot, logger: errorLogger, ...(resolveModelSnapshot === undefined ? {} : { resolveModel: resolveModelSnapshot }) }, wikiAdapter.repo, sessionAdapter.repo, sessionArtifactAdapter.repo, resolveDataSources, webSearch, mcpServerAdapter.repo, mcpClient, resolveAiJudgments);
   const saveSkill = new SaveSkillUseCase(skillAdapter.repo, repo);
   const saveWikiPage = new SaveWikiPageUseCase(wikiAdapter.repo);
-  const runScenario = new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo, undefined, undefined, errorLogger);
+  const runScenario = new RunScenarioUseCase(scenarioAdapter.repo, personaAdapter.repo, runAgentPreview, modelProvider, scenarioRunAdapter.repo, agentAdapter.repo, promptCatalog, undefined, undefined, errorLogger);
   const evaluator = new MastraEvalsEvaluator();
   const runExperiment = new RunExperimentUseCase(experimentAdapter.repo, evaluationDatasetAdapter.repo, evaluatorProfileAdapter.repo, agentAdapter.repo, scenarioAdapter.repo, runAgentPreview, runScenario, evaluator, undefined, undefined, { rubrics: judgeRubricAdapter.repo, evaluator: judgeEvaluator, ...(resolveJudgeSnapshot === undefined ? {} : { resolveSnapshot: resolveJudgeSnapshot }) }, telemetry, errorLogger);
   const experimentWorker = new InProcessExperimentWorker(runExperiment, errorLogger);
@@ -820,18 +916,18 @@ export function createApp(options?: AppOptions): App {
   const saveAgent = new SaveAgentUseCase(agentAdapter.repo, repo, skillAdapter.repo, wikiAdapter.repo);
   const generateAgentPrompt = new GenerateAgentPromptUseCase(repo, skillAdapter.repo, agentAdapter.repo);
   const profileDataSources = new ProfileDataSourcesUseCase(dataSourceAdapter.repo, resolveDataSources, engine);
-  const plannerRole = new PlannerRole(modelProvider);
-  const toolSmithRole = new ToolSmithRole(modelProvider);
-  const skillWriterRole = new SkillWriterRole(modelProvider);
-  const assemblerRole = new AssemblerRole(modelProvider);
-  const analystRole = new AnalystRole(modelProvider);
+  const plannerRole = new PlannerRole(modelProvider, promptCatalog);
+  const toolSmithRole = new ToolSmithRole(modelProvider, promptCatalog);
+  const skillWriterRole = new SkillWriterRole(modelProvider, promptCatalog);
+  const assemblerRole = new AssemblerRole(modelProvider, promptCatalog);
+  const analystRole = new AnalystRole(modelProvider, promptCatalog);
   // 式の提案は draft ツールの画面経路と**同じインスタンス**を使う（有効判定・モデル設定を1箇所に保つ）。
-  const suggestCalculateExpression = new SuggestCalculateExpressionUseCase(engine, modelProvider, assistantEnabled);
+  const suggestCalculateExpression = new SuggestCalculateExpressionUseCase(engine, modelProvider, assistantEnabled, promptCatalog);
   // 段階的ツール生成（ADR-0048）。Factory の新規Toolは既定でこちらを先に試す。
-  const stagedToolGeneration = new StagedToolGeneration(modelProvider, engine, suggestCalculateExpression, resolveDataSources);
+  const stagedToolGeneration = new StagedToolGeneration(modelProvider, engine, suggestCalculateExpression, resolveDataSources, promptCatalog);
   // ツールテンプレート経路（ADR-0049）。Factory の新規Toolは「テンプレート → 段階的 → 一括」の順に試す。
   // カタログは Tool Builder / API と**同じインスタンス**（更新時刻キャッシュを共有する）。
-  const templateToolGeneration = new TemplateToolGeneration(modelProvider, engine, toolTemplateCatalog, suggestCalculateExpression, resolveDataSources);
+  const templateToolGeneration = new TemplateToolGeneration(modelProvider, engine, toolTemplateCatalog, suggestCalculateExpression, resolveDataSources, promptCatalog);
   const generateAgentAssets = new GenerateAgentAssetsUseCase(toolSmithRole, skillWriterRole, assemblerRole, saveTool, saveSkill, saveAgent, generateAgentPrompt, engine, resolveDataSources, stagedToolGeneration, templateToolGeneration);
   // Stage 5（検証資産）が使うSave系ユースケース。既存の疑似ユーザー検証（validation-routes）と同じ配線を再利用する。
   const savePersona = new SavePersonaUseCase(personaAdapter.repo);
@@ -942,6 +1038,7 @@ export function createApp(options?: AppOptions): App {
     generateAgentPrompt,
     deleteAgent: new DeleteAgentUseCase(agentAdapter.repo),
     diagnoseTool,
+    promptCatalog,
     listToolTemplates: new ListToolTemplatesUseCase(toolTemplateCatalog),
     templateSlotCandidates: new TemplateSlotCandidatesUseCase(toolTemplateCatalog, profileDataSources),
     instantiateToolTemplate: new InstantiateToolTemplateUseCase(toolTemplateCatalog, profileDataSources, engine, resolveDataSources),
@@ -1038,7 +1135,7 @@ export function createApp(options?: AppOptions): App {
     saveWikiPage,
     queryWiki,
     deleteWikiPage: new DeleteWikiPageUseCase(wikiAdapter.repo),
-    reflectRun: new ReflectRunUseCase(modelProvider, memoryProposalAdapter.repo, wikiAdapter.repo, skillAdapter.repo),
+    reflectRun: new ReflectRunUseCase(modelProvider, memoryProposalAdapter.repo, wikiAdapter.repo, skillAdapter.repo, promptCatalog),
     listProposals: new ListProposalsUseCase(memoryProposalAdapter.repo),
     reviewProposal: new ReviewProposalUseCase(memoryProposalAdapter.repo, saveWikiPage, skillAdapter.repo, saveSkill, unitOfWork),
     saveWikiSpace,
@@ -1046,12 +1143,14 @@ export function createApp(options?: AppOptions): App {
     deleteWikiSpace: new DeleteWikiSpaceUseCase(wikiAdapter.repo),
     draftTool: new DraftToolUseCase(engine, resolveDataSources, resolveAiJudgments),
     resolveAiJudgments,
-    suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, assistantEnabled),
+    suggestAnalysisConfig: new SuggestAnalysisConfigUseCase(engine, modelProvider, assistantEnabled, promptCatalog),
     // 式の提案も分析アシスタントと同じ有効判定・同じモデルを使う（別スロットを増やさない）。
     suggestCalculateExpression,
+    // 設計アシスタント（v47）。材料（データソースの解決・プロファイル・一覧）は既存のものをそのまま渡す。
+    designToolChat: new DesignToolChatUseCase(engine, modelProvider, assistantEnabled, promptCatalog, resolveDataSources, profileDataSources, queryDataSources),
     judgeReadiness,
     // ツール検証のケース提案は分析アシスタントと同じ有効判定・同じモデルを使う（別スロットを増やさない）。
-    suggestToolCheckCases: new SuggestToolCheckCasesUseCase(repo, engine, modelProvider, assistantEnabled, resolveDataSources, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot(), resolveAiJudgments),
+    suggestToolCheckCases: new SuggestToolCheckCasesUseCase(repo, engine, modelProvider, assistantEnabled, promptCatalog, resolveDataSources, resolveModelSnapshot === undefined ? undefined : async () => resolveModelSnapshot(), resolveAiJudgments),
     saveTool,
     getTool,
     listToolVersions: new ListToolVersionsUseCase(repo),

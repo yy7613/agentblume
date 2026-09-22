@@ -89,6 +89,10 @@ import type {
   WebSearchFetchDto,
   AnalysisConfigProposalDto,
   CalculateExpressionProposalDto,
+  DesignChatRequestDto,
+  DesignChatResultDto,
+  CompactDesignChatRequestDto,
+  CompactDesignChatResultDto,
   SaveHarnessDto,
   SerializedAgentHarnessDto,
   HarnessSummaryDto,
@@ -137,6 +141,7 @@ import type {
   SaveJournalEntryDto,
   JournalExportResultDto,
   ToolTemplateCatalogDto,
+  TemplateArgumentNullabilityDto,
   TemplateSlotCandidatesResultDto,
   TemplateSlotValuesDto,
   InstantiatedTemplateDto,
@@ -277,6 +282,34 @@ export class ToolApiClient {
     return (await this.request<{ proposal: CalculateExpressionProposalDto }>('/tool-drafts/suggest-calculate-expression', { method: 'POST', body: JSON.stringify(input) })).proposal;
   }
 
+  /** ツール作成画面の設計アシスタント（v47）を実行できるか。項目を返さない旧サーバーでは「使えない」として扱う。 */
+  async designAssistantCapability(): Promise<boolean> {
+    return (await this.runtimeCapabilities()).designAssistant?.enabled ?? false;
+  }
+
+  /**
+   * 自由な指示でいまのキャンバスを編集させる（v47 / ADR-0051）。
+   *
+   * 適用できなかった・変更が要らなかったときも 200 で返り、`graph` が無いだけになる
+   * （失敗はアシスタントの応答であって API の失敗ではない）。モデル未設定だけが 409。
+   * 省略されうる配列は空で埋めて返し、呼び出し側が毎回 undefined を数えずに済むようにする。
+   */
+  async designChat(input: DesignChatRequestDto, signal?: AbortSignal): Promise<DesignChatResultDto> {
+    const result = await this.request<DesignChatResultDto>('/tool-drafts/design-chat', { method: 'POST', body: JSON.stringify(input), signal });
+    return { ...result, changes: result.changes ?? [], problems: result.problems ?? [] };
+  }
+
+  /**
+   * 会話の古いターンをモデルに要約させる（v49）。
+   *
+   * 機械的に切り詰めると「全国は除く」「地域は引数にする」のような**決めたこと**が落ちるので、
+   * 適用した変更の要約も材料に添えて 1 ブロックの覚え書きにまとめさせる。
+   * 失敗（モデル未設定の 502 など）は投げる: 会話を畳むかどうかは画面が決める。
+   */
+  async compactDesignChat(input: CompactDesignChatRequestDto, signal?: AbortSignal): Promise<CompactDesignChatResultDto> {
+    return this.request<CompactDesignChatResultDto>('/tool-drafts/design-chat/compact', { method: 'POST', body: JSON.stringify(input), signal });
+  }
+
   /**
    * ツールテンプレートの一覧（v43）。読めなかったファイルも `invalid` として一緒に返る
    * （画面は一覧の下に理由と直し方を出す）。置き場所が無いサーバーでは空の一覧。
@@ -295,6 +328,8 @@ export class ToolApiClient {
     readonly scope: TenantScopeDto;
     readonly dataSourceIds: readonly string[];
     readonly values?: TemplateSlotValuesDto;
+    /** 応答の `arguments`（説明・固定の理由）を埋め込む言語。 */
+    readonly language?: 'ja' | 'en';
   }): Promise<TemplateSlotCandidatesResultDto> {
     const { templateId, ...body } = input;
     return this.request<TemplateSlotCandidatesResultDto>(`/tool-templates/${encodeURIComponent(templateId)}/slot-candidates`, {
@@ -312,6 +347,8 @@ export class ToolApiClient {
     readonly language: 'ja' | 'en';
     /** モデルへ公開する function 名（v45 で必須。省略してテンプレート id へ落ちると 2 本目が 1 本目の別版になる）。 */
     readonly toolName: string;
+    /** 引数の必須 / 任意の上書き（既定から変えた引数だけ。変えなければ送らない）。 */
+    readonly argumentNullability?: TemplateArgumentNullabilityDto;
   }): Promise<InstantiatedTemplateDto> {
     const { templateId, ...body } = input;
     return this.request<InstantiatedTemplateDto>(`/tool-templates/${encodeURIComponent(templateId)}/instantiate`, {

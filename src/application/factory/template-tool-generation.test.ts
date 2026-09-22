@@ -7,6 +7,7 @@
  * 実データで走らせ、**返る値まで**見る（構成が正しいだけでなく答えが出ることを確かめる）。
  */
 import { join } from 'node:path';
+import { bundledPrompts } from '../../test-support/prompts';
 import { describe, expect, it } from 'vitest';
 import { ScriptedModelProvider } from '../../adapters/model/scripted-model-provider';
 import { InMemoryDataSourceRepository } from '../../adapters/storage/in-memory-data-source-repository';
@@ -132,9 +133,9 @@ async function setup(
   const tasks = new ScriptedModelProvider();
   const expressions = new ScriptedModelProvider();
   const mode = options?.expressionAssistant ?? 'on';
-  const assistant = new SuggestCalculateExpressionUseCase(engine, expressions, () => mode === 'on');
+  const assistant = new SuggestCalculateExpressionUseCase(engine, expressions, () => mode === 'on', bundledPrompts());
   const catalog = options?.catalog ?? new FsToolTemplateCatalog({ directories: [TEMPLATE_DIRECTORY], registry });
-  const templates = new TemplateToolGeneration(tasks, engine, catalog, assistant, resolver);
+  const templates = new TemplateToolGeneration(tasks, engine, catalog, assistant, resolver, bundledPrompts());
 
   let roleCalls = 0;
   const events: string[] = [];

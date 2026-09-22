@@ -670,7 +670,7 @@ describe('RunAgentPreviewUseCase', () => {
       const tool = sourceTool('huge-tool', 'huge_rows', Array.from({ length: 250_001 }, () => ({ v: 1 })));
       const runs = new MemoryRuns();
       const toolRef = { internalId: 'huge-tool', version: '1.0.0', publishName: 'huge_rows' };
-      const message = 'json-source: produced 250001 rows, exceeding the execution limit of 250000 rows';
+      const message = 'json-source: produced 250001 rows, exceeding the execution limit of 250000 rows; narrow the data upstream, or raise AGENTCONTEXT_MAX_EXECUTION_ROWS on the server';
       const rejection: unknown = await new RunAgentPreviewUseCase(new StaticRepository(tool), new EtlEngine(createDefaultRegistry()), new QueueModel([toolCall('c1', 'huge_rows', {})]), runs, () => 'run-1')
         .execute({ ...input, toolId: 'huge-tool' }).then(() => undefined, (error: unknown) => error);
 

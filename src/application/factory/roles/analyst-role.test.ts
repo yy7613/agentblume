@@ -1,4 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import type { AgentId } from '../../../domain/agent/ids';
+import type { SkillId } from '../../../domain/skill/ids';
+import type { ToolId } from '../../../domain/tool/ids';
+import type { ScenarioId } from '../../../domain/validation/ids';
 import { describe, expect, it } from 'vitest';
+import { bundledPrompts } from '../../../test-support/prompts';
 import { ScriptedModelProvider } from '../../../adapters/model/scripted-model-provider';
 import type { FactoryGoalInput, IterationMetrics } from '../../../domain/factory/factory-run';
 import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../../model/model-provider';
@@ -37,7 +44,7 @@ describe('AnalystRole', () => {
   it('正常な構造化出力からfindings/proposals/summaryを返す', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validAnalystJson() }, finishReason: 'stop' });
-    const role = new AnalystRole(model);
+    const role = new AnalystRole(model, bundledPrompts());
 
     const result = await role.propose(baseInput());
 
@@ -56,7 +63,7 @@ describe('AnalystRole', () => {
   it('不正なJSONはFactoryValidationErrorを投げる', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: '{not json' }, finishReason: 'stop' });
-    const role = new AnalystRole(model);
+    const role = new AnalystRole(model, bundledPrompts());
 
     await expect(role.propose(baseInput())).rejects.toThrow(/invalid JSON/);
   });
@@ -79,7 +86,7 @@ describe('AnalystRole', () => {
       },
       finishReason: 'stop',
     });
-    const role = new AnalystRole(model);
+    const role = new AnalystRole(model, bundledPrompts());
 
     const result = await role.propose(baseInput());
 
@@ -103,7 +110,7 @@ describe('AnalystRole', () => {
       },
       finishReason: 'stop',
     });
-    const role = new AnalystRole(model);
+    const role = new AnalystRole(model, bundledPrompts());
 
     const result = await role.propose({ ...baseInput(), availableDataSources: [{ dataSourceId: 'ds-1', name: 'Sales', format: 'csv', columns: ['id:number', 'amount:number'] }] });
 
@@ -124,7 +131,7 @@ describe('AnalystRole', () => {
       },
       finishReason: 'stop',
     });
-    const role = new AnalystRole(model);
+    const role = new AnalystRole(model, bundledPrompts());
 
     const result = await role.propose(baseInput());
 
@@ -145,7 +152,7 @@ describe('AnalystRole', () => {
       },
       finishReason: 'stop',
     });
-    const role = new AnalystRole(model);
+    const role = new AnalystRole(model, bundledPrompts());
 
     const result = await role.propose(baseInput());
 
@@ -171,7 +178,7 @@ describe('AnalystRole', () => {
       },
       finishReason: 'stop',
     });
-    const role = new AnalystRole(model);
+    const role = new AnalystRole(model, bundledPrompts());
 
     const result = await role.propose(baseInput());
 
@@ -192,7 +199,7 @@ describe('AnalystRole', () => {
       },
       finishReason: 'stop',
     });
-    const role = new AnalystRole(model);
+    const role = new AnalystRole(model, bundledPrompts());
 
     await expect(role.propose(baseInput())).rejects.toThrow(/plan.instructions must be a non-empty string/);
   });
@@ -205,7 +212,7 @@ describe('AnalystRole', () => {
         throw new Error('should not be called');
       },
     };
-    const role = new AnalystRole(model);
+    const role = new AnalystRole(model, bundledPrompts());
 
     expect(role.available()).toBe(false);
     await expect(role.propose(baseInput())).rejects.toThrow(/does not support structured output/);
@@ -225,7 +232,7 @@ describe('AnalystRole（悪化の明示・ツール呼び出し予算）', () =>
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validAnalystJson() }, finishReason: 'stop' });
 
-    await new AnalystRole(model).propose({ ...baseInput(), regressions: ['goalAchievedRate fell from 0.50 to 0.00 since the previous iteration'] });
+    await new AnalystRole(model, bundledPrompts()).propose({ ...baseInput(), regressions: ['goalAchievedRate fell from 0.50 to 0.00 since the previous iteration'] });
 
     const { system, user } = requestOf(model);
     expect(user).toContain('"regressions"');
@@ -238,7 +245,7 @@ describe('AnalystRole（悪化の明示・ツール呼び出し予算）', () =>
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validAnalystJson() }, finishReason: 'stop' });
 
-    await new AnalystRole(model).propose({ ...baseInput(), regressions: [] });
+    await new AnalystRole(model, bundledPrompts()).propose({ ...baseInput(), regressions: [] });
 
     expect(requestOf(model).user).not.toContain('"regressions"');
   });
@@ -247,7 +254,7 @@ describe('AnalystRole（悪化の明示・ツール呼び出し予算）', () =>
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validAnalystJson() }, finishReason: 'stop' });
 
-    await new AnalystRole(model).propose({ ...baseInput(), toolCallBudget: 4 });
+    await new AnalystRole(model, bundledPrompts()).propose({ ...baseInput(), toolCallBudget: 4 });
 
     const { system, user } = requestOf(model);
     expect(user).toContain('"toolCallBudget":4');
@@ -260,8 +267,52 @@ describe('AnalystRole（悪化の明示・ツール呼び出し予算）', () =>
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validAnalystJson() }, finishReason: 'stop' });
 
-    await new AnalystRole(model).propose(baseInput());
+    await new AnalystRole(model, bundledPrompts()).propose(baseInput());
 
     expect(requestOf(model).system).not.toMatch(/tool calls the agent may make in ONE conversation/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 移行の証明（v48 / ADR-0052）: 文を `prompts/factory/analyst.md` へ移す**前に**
+// 組み立てた system 文と差し戻し文を `__fixtures__/*.txt` へ固定してある。
+// ---------------------------------------------------------------------------
+
+/** 移行前に固定した文。 */
+function promptFixture(name: string): string {
+  return readFileSync(fileURLToPath(new URL(`./__fixtures__/${name}.txt`, import.meta.url)), 'utf8');
+}
+
+describe('AnalystRole の system 文', () => {
+  const fixtureInput = {
+    goal: { goal: '賃金の推移を説明する', language: 'ja' } as const,
+    metrics: {
+      iteration: 1, goalAchievedRate: 0.5, avgSatisfaction: 3, toolHitRate: 1, errorRate: 0,
+      avgUserTurns: 2, scenarioCount: 2, surveyMissingCount: 0, usage: {}, durationMs: 1,
+    },
+    scenarioSummaries: [{ scenarioId: 'sc-1' as ScenarioId, status: 'completed', goalAchieved: true, impressions: 'ok', surveyCollected: true }],
+    currentAgent: { id: 'agent-1' as AgentId, systemPrompt: 'p' },
+    currentSkills: [{ id: 'skill-1' as SkillId, instructions: 'i' }],
+    currentTools: [{ id: 'tool-1' as ToolId, name: 'n', description: 'd' }],
+  };
+
+  async function systemOf(input: Parameters<AnalystRole['propose']>[0]): Promise<string> {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: '{}' }, finishReason: 'stop' });
+    await new AnalystRole(model, bundledPrompts()).propose(input).catch(() => undefined);
+    return String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
+  }
+
+  it('従来どおり: 上限を渡さない分析では、移行前と一字一句同じ system 文になる', async () => {
+    expect(await systemOf(fixtureInput)).toBe(promptFixture('analyst.base'));
+  });
+
+  it('従来どおり: ツール呼び出し上限を渡したときだけ足す 4 行も移行前と同じ', async () => {
+    expect(await systemOf({ ...fixtureInput, toolCallBudget: 6 })).toBe(promptFixture('analyst.budget'));
+  });
+
+  it('従来どおり: proposals が空だったときの差し戻し文も移行前と同じ', () => {
+    expect(new AnalystRole(new ScriptedModelProvider(), bundledPrompts()).emptyProposalsFeedback())
+      .toBe(promptFixture('analyst.empty-proposals-feedback'));
   });
 });

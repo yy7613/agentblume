@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { bundledPrompts } from '../../../test-support/prompts';
 import { ScriptedModelProvider } from '../../../adapters/model/scripted-model-provider';
 import { DEFAULT_FACTORY_OPTIONS, type FactoryGoalInput } from '../../../domain/factory/factory-run';
 import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../../model/model-provider';
@@ -52,7 +55,7 @@ describe('PlannerRole', () => {
   it('温度0・厳格な構造化出力でFactoryPlanを提案し、アプリ側で再検証する', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
 
     const plan = await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
 
@@ -69,7 +72,7 @@ describe('PlannerRole', () => {
   it('既存ツールカタログをプロンプトへ載せ、「新規作成の前に再利用を検討する」よう指示する', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: reusePlanJson() }, finishReason: 'stop' });
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
 
     await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS, existingTools });
 
@@ -89,7 +92,7 @@ describe('PlannerRole', () => {
   it('reuse付きの計画をそのままパースする（dataSourceId空でも再利用計画なら通る）', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: reusePlanJson() }, finishReason: 'stop' });
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
 
     const plan = await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS, existingTools });
 
@@ -101,7 +104,7 @@ describe('PlannerRole', () => {
   it('カタログ未指定でも従来どおり計画できる（existingToolsは空配列として渡る）', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
 
     await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
 
@@ -117,7 +120,7 @@ describe('PlannerRole', () => {
     plan.tools[1] = { ...plan.tools[1], reuse: { internalId: 'builtin-current-datetime', rationale: 'keep' } };
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: JSON.stringify(plan) }, finishReason: 'stop' });
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
     const parsed = await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS, existingTools });
     expect(parsed.tools[0]?.reuse).toBeUndefined();
     expect(parsed.tools[1]?.reuse).toEqual({ internalId: 'builtin-current-datetime', rationale: 'keep' });
@@ -127,7 +130,7 @@ describe('PlannerRole', () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: reusePlanJson('  ') }, finishReason: 'stop' });
     model.enqueue({ message: { role: 'assistant', content: reusePlanJson('  ') }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS, existingTools })).rejects.toThrow(/dataSourceId/);
   });
 
@@ -135,7 +138,7 @@ describe('PlannerRole', () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: '{not json' }, finishReason: 'stop' });
     model.enqueue({ message: { role: 'assistant', content: '{not json' }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/invalid JSON/);
   });
 
@@ -148,7 +151,7 @@ describe('PlannerRole', () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content }, finishReason: 'stop' });
     model.enqueue({ message: { role: 'assistant', content }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(expected);
   });
 
@@ -156,7 +159,7 @@ describe('PlannerRole', () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: 'ds-unknown' }) }, finishReason: 'stop' });
     model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: 'ds-unknown' }) }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/unknown data source/);
   });
 
@@ -164,7 +167,7 @@ describe('PlannerRole', () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson({ sideEffect: 'write' }) }, finishReason: 'stop' });
     model.enqueue({ message: { role: 'assistant', content: validPlanJson({ sideEffect: 'write' }) }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/sideEffect must be/);
   });
 
@@ -176,7 +179,7 @@ describe('PlannerRole', () => {
         throw new Error('should not be called');
       },
     };
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
     expect(role.available()).toBe(false);
     await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/does not support structured output/);
   });
@@ -190,7 +193,7 @@ describe('PlannerRole: データソース id の写し間違い（e-Stat 実測:
   it('正常: 出力スキーマの tools[].dataSourceId を入力の id と空文字の enum に縛る', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: A }) }, finishReason: 'stop' });
-    await new PlannerRole(model).propose({ goal, profiles, dataSourceIds: [A, B], options: DEFAULT_FACTORY_OPTIONS });
+    await new PlannerRole(model, bundledPrompts()).propose({ goal, profiles, dataSourceIds: [A, B], options: DEFAULT_FACTORY_OPTIONS });
     const schema = model.requests[0]?.responseFormat?.schema;
     expect(schema?.properties['tools']?.items?.properties?.['dataSourceId']).toEqual({ type: 'string', enum: [A, B, ''] });
   });
@@ -202,7 +205,7 @@ describe('PlannerRole: データソース id の写し間違い（e-Stat 実測:
   it('異常: enum を守らないモデルが 1 文字足した id を返しても、一意に最も近い入力 id へ直して計画を通す', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: 'bf942594-d24e-4e-1a-83fe-089d44647404' }) }, finishReason: 'stop' });
-    const plan = await new PlannerRole(model).propose({ goal, profiles, dataSourceIds: [A, B], options: DEFAULT_FACTORY_OPTIONS });
+    const plan = await new PlannerRole(model, bundledPrompts()).propose({ goal, profiles, dataSourceIds: [A, B], options: DEFAULT_FACTORY_OPTIONS });
     expect(plan.tools[0]?.dataSourceId).toBe(A);
   });
 
@@ -210,7 +213,7 @@ describe('PlannerRole: データソース id の写し間違い（e-Stat 実測:
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: 'totally-different-source' }) }, finishReason: 'stop' });
     model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: 'totally-different-source' }) }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
-    await expect(new PlannerRole(model).propose({ goal, profiles, dataSourceIds: [A, B], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/references unknown data source/);
+    await expect(new PlannerRole(model, bundledPrompts()).propose({ goal, profiles, dataSourceIds: [A, B], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/references unknown data source/);
   });
 
   it('境界: 同じ距離の候補が複数あるときは当て推量で選ばない（別の表を読ませない）', () => {
@@ -281,7 +284,7 @@ describe('PlannerRole（複数データソースを結合するTool計画）', (
       joinCandidates: [{ leftDataSourceId: 'ds-1', rightDataSourceId: 'ds-2', keys: ['時点', '地域コード'], overlap: { 時点: 1, 地域コード: 1 }, uniqueLeft: true, uniqueRight: false }],
     };
 
-    await new PlannerRole(model).propose({ goal, profiles: [joined], dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
+    await new PlannerRole(model, bundledPrompts()).propose({ goal, profiles: [joined], dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
 
     const system = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
     const user = String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
@@ -301,7 +304,7 @@ describe('PlannerRole: 計画の検証に落ちたら、理由を添えて 1 回
   it('正常: 1 回目が規則違反でも、2 回目が正しければ計画を返す（依頼には前回の応答と違反理由が入る）', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: rejected }, finishReason: 'stop' }, { message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
-    const plan = await new PlannerRole(model).propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
+    const plan = await new PlannerRole(model, bundledPrompts()).propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
     expect(plan.tools[0]?.sideEffect).toBe('read-only');
     expect(model.requests).toHaveLength(2);
     const retry = model.requests[1]?.messages ?? [];
@@ -313,14 +316,14 @@ describe('PlannerRole: 計画の検証に落ちたら、理由を添えて 1 回
   it('異常: 2 回目も規則違反なら従来どおり FactoryValidationError（3 回目は呼ばない）', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: rejected }, finishReason: 'stop' }, { message: { role: 'assistant', content: rejected }, finishReason: 'stop' });
-    await expect(new PlannerRole(model).propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/sideEffect/);
+    await expect(new PlannerRole(model, bundledPrompts()).propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS })).rejects.toThrow(/sideEffect/);
     expect(model.requests).toHaveLength(2);
   });
 
   it('従来どおり: 1 回目が正しければ再提案はしない', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
-    await new PlannerRole(model).propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
+    await new PlannerRole(model, bundledPrompts()).propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
     expect(model.requests).toHaveLength(1);
   });
 });
@@ -402,7 +405,7 @@ describe('inferAdditionalDataSources: 文章が別ソースの列を名指しし
     const forgotten = JSON.parse(validPlanJson({ dataSourceId: 'wage' })) as { tools: Record<string, unknown>[] };
     forgotten.tools[0] = { ...forgotten.tools[0], purpose: '現金給与総額を総実労働時間で割る' };
     model.enqueue({ message: { role: 'assistant', content: JSON.stringify(forgotten) }, finishReason: 'stop' });
-    const plan = await new PlannerRole(model).propose({ goal, profiles: three.slice(0, 2), dataSourceIds: ['wage', 'hours'], options: DEFAULT_FACTORY_OPTIONS });
+    const plan = await new PlannerRole(model, bundledPrompts()).propose({ goal, profiles: three.slice(0, 2), dataSourceIds: ['wage', 'hours'], options: DEFAULT_FACTORY_OPTIONS });
     expect(plan.tools[0]?.additionalDataSourceIds).toEqual(['hours']);
   });
 });
@@ -416,7 +419,7 @@ describe('PlannerRole: 使えるツールテンプレートを材料に足す（
   it('正常: テンプレートの id と要約を untrusted data 側へ載せ、規則を 1 行だけ足す', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
 
     await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS, templates });
 
@@ -435,7 +438,7 @@ describe('PlannerRole: 使えるツールテンプレートを材料に足す（
   it('従来どおり: テンプレートが無い（未配線・0 件）なら材料も規則も足さない', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
 
     await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS, templates: [] });
 
@@ -467,7 +470,7 @@ describe('PlannerRole: 計画の接地検査（データの期間外の年を名
     const outOfRange = planJsonWithScenarioGoal('2030年の総支給額を教えてほしい');
     const inRange = planJsonWithScenarioGoal('直近の総支給額を教えてほしい');
     model.enqueue({ message: { role: 'assistant', content: outOfRange }, finishReason: 'stop' }, { message: { role: 'assistant', content: inRange }, finishReason: 'stop' });
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
 
     const plan = await role.propose({ goal, profiles: periodProfiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
 
@@ -481,7 +484,7 @@ describe('PlannerRole: 計画の接地検査（データの期間外の年を名
   it('従来どおり: 違反が無ければモデル呼び出しは 1 回', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: planJsonWithScenarioGoal('直近の総支給額を教えてほしい') }, finishReason: 'stop' });
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
 
     const plan = await role.propose({ goal, profiles: periodProfiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
 
@@ -493,7 +496,7 @@ describe('PlannerRole: 計画の接地検査（データの期間外の年を名
     const model = new ScriptedModelProvider();
     const outOfRange = planJsonWithScenarioGoal('2030年の総支給額を教えてほしい');
     model.enqueue({ message: { role: 'assistant', content: outOfRange }, finishReason: 'stop' }, { message: { role: 'assistant', content: outOfRange }, finishReason: 'stop' });
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
 
     const plan = await role.propose({ goal, profiles: periodProfiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
 
@@ -504,12 +507,84 @@ describe('PlannerRole: 計画の接地検査（データの期間外の年を名
   it('正常: system プロンプトに接地検査に関わる2つの規則が入っている', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
-    const role = new PlannerRole(model);
+    const role = new PlannerRole(model, bundledPrompts());
 
     await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
 
     const systemMessage = String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
     expect(systemMessage).toContain('extraInstructions describes the USER only');
     expect(systemMessage).toContain('goal must be answerable from the listed data');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 移行の証明（v48 / ADR-0052）: 文を `prompts/factory/planner.md` へ移す**前に**
+// 組み立てた system 文を `__fixtures__/*.txt` へ固定してある。ここが一字一句一致する限り、
+// ファイル化は等価変換である（移行前のコードでも同じ文が出るので、旧コードでも緑が正しい）。
+// ---------------------------------------------------------------------------
+
+/** 移行前に固定した文。 */
+function promptFixture(name: string): string {
+  return readFileSync(fileURLToPath(new URL(`./__fixtures__/${name}.txt`, import.meta.url)), 'utf8');
+}
+
+function fixtureProfile(id: string, name: string, format: 'csv' | 'json'): DataProfile {
+  return {
+    dataSourceId: id, name, kind: 'file', format,
+    columns: [{ name: '時点', type: 'string', nullable: false }, { name: '値', type: 'number', nullable: false }],
+    sampleRowCount: 1, sampleRows: [{ 時点: '2024年', 値: 1 }], rowCount: 1,
+    periodColumns: [], categoricalColumns: [], joinCandidates: [],
+  };
+}
+
+const fixtureGoal: FactoryGoalInput = { goal: '賃金の推移を説明する', language: 'ja' };
+
+/** propose を 1 回走らせて、モデルが受け取った system 文（と差し戻し文）を取り出す。 */
+async function systemMessagesOf(input: Parameters<PlannerRole['propose']>[0]): Promise<{ system: string; repair: string }> {
+  const model = new ScriptedModelProvider();
+  model.enqueue(
+    { message: { role: 'assistant', content: '{}' }, finishReason: 'stop' },
+    { message: { role: 'assistant', content: '{}' }, finishReason: 'stop' },
+  );
+  await new PlannerRole(model, bundledPrompts()).propose(input).catch(() => undefined);
+  const messages = model.requests[1]?.messages ?? [];
+  return {
+    system: String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content),
+    repair: String(messages[messages.length - 1]?.content),
+  };
+}
+
+describe('PlannerRole の system 文', () => {
+  const base = { goal: fixtureGoal, profiles: [fixtureProfile('ds-1', 'Wage', 'csv')], dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS } as const;
+
+  it('従来どおり: 目標とプロファイルだけの計画は、移行前と一字一句同じ system 文になる', async () => {
+    expect((await systemMessagesOf(base)).system).toBe(promptFixture('planner.base'));
+  });
+
+  it('従来どおり: テンプレートを渡したときだけ足す 1 行も、移行前と一字一句同じ', async () => {
+    const { system } = await systemMessagesOf({ ...base, templates: [{ id: 'period-series', summary: '推移' }] });
+    expect(system).toBe(promptFixture('planner.templates'));
+  });
+
+  it('従来どおり: 既存Agent強化モードの規則と、options 由来の件数も移行前と一字一句同じ', async () => {
+    const { system } = await systemMessagesOf({
+      ...base,
+      options: { ...DEFAULT_FACTORY_OPTIONS, personaCount: 3, scenarioCount: 5 },
+      currentAgent: { displayName: 'A', systemPrompt: 'p', tools: [], skills: [] },
+    });
+    expect(system).toBe(promptFixture('planner.enhancement'));
+  });
+
+  it('従来どおり: テンプレートと強化モードを同時に渡しても、節の順序は移行前と同じ', async () => {
+    const { system } = await systemMessagesOf({
+      ...base,
+      templates: [{ id: 'period-series', summary: '推移' }],
+      currentAgent: { displayName: 'A', systemPrompt: 'p', tools: [], skills: [] },
+    });
+    expect(system).toBe(promptFixture('planner.both'));
+  });
+
+  it('従来どおり: 検証に落ちたときの差し戻し文も、理由を差し込んだ形まで移行前と同じ', async () => {
+    expect((await systemMessagesOf(base)).repair).toBe(promptFixture('planner.repair'));
   });
 });

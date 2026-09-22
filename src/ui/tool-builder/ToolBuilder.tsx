@@ -9,6 +9,7 @@ import { draftKey, useDraftPersistence } from '../hooks/useDraftPersistence';
 import { useReportUnsavedChanges } from '../unsaved-changes';
 import { useI18n } from '../i18n';
 import { ScreenLink, usePendingOpen, type OpenTarget } from '../navigation';
+import { DesignChatPanel, restoreDesignChatPanelOpen } from './DesignChatPanel';
 import { FlowCanvas } from './FlowCanvas';
 import { MetadataBar } from './MetadataBar';
 import { NodeInspector } from './NodeInspector';
@@ -69,6 +70,9 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
   // 「テンプレートから作成」（v43）。作成に成功したらキャンバス（editor）へ移る。
   const [templateOpen, setTemplateOpen] = useState(false);
   const createdFromTemplate = useToolBuilderStore((state) => state.createdFromTemplate);
+  // 設計アシスタント（v47）。会話は store が持ち、開閉だけ前回の状態を復元する。
+  const designChatOpen = useToolBuilderStore((state) => state.designChat.open);
+  useEffect(restoreDesignChatPanelOpen, []);
 
   // 下書きの自動保存。グラフとメタデータだけを退避し、推論結果やプレビューは復元時に再計算させる。
   const metadata = useToolBuilderStore((state) => state.metadata);
@@ -184,7 +188,7 @@ export function ToolBuilder({ client }: { readonly client: ToolApiClient }) {
       onDiscard={draft.discard} />}
     <div className="tool-builder">
       <MetadataBar client={client} onSaved={draft.clear} />
-      <div className="builder-workspace"><NodePalette client={client} /><FlowCanvas /><NodeInspector client={client} /></div>
+      <div className={`builder-workspace${designChatOpen ? ' with-design-chat' : ''}`}><NodePalette client={client} /><FlowCanvas /><NodeInspector client={client} />{designChatOpen && <DesignChatPanel client={client} />}</div>
       <div className="result-workspace"><ToolDraftDiagnostics /><PreviewPanel /><AgentToolContextPanel /></div>
     </div>
   </div>;

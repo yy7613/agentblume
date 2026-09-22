@@ -2,6 +2,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { z } from 'zod';
 import type { JudgeReadiness } from '../application/evaluation/judge-readiness';
+import type { DesignToolChatUseCase } from '../application/tool/design-tool-chat';
 import type { DiagnoseToolUseCase } from '../application/tool/diagnose-tool';
 import type { DraftToolUseCase } from '../application/tool/draft-tool';
 import type { ResolveAiJudgmentsUseCase } from '../application/tool/resolve-ai-judgments';
@@ -12,7 +13,7 @@ import { SemVer } from '../domain/tool/semver';
 import { createTool } from '../domain/tool/tool';
 import { scopeOf } from './authentication';
 import { BadRequestError } from './error-mapping';
-import { analysisSuggestionBodySchema, calculateSuggestionBodySchema, draftInspectBodySchema, draftPreviewBodySchema, saveToolBodySchema } from './schemas';
+import { analysisSuggestionBodySchema, calculateSuggestionBodySchema, designChatBodySchema, designChatCompactBodySchema, draftInspectBodySchema, draftPreviewBodySchema, saveToolBodySchema } from './schemas';
 import { previewResponse } from './tool-routes';
 import { journalRuntimeCapabilities, type JournalRuntimeCapabilityDeps } from './journal-routes';
 import { expenseRuntimeCapabilities, type ExpenseRuntimeCapabilityDeps } from './expense-routes';
@@ -26,6 +27,8 @@ export interface DraftToolRouteDeps extends BusinessRuntimeCapabilityDeps {
   readonly draftTool: DraftToolUseCase;
   readonly suggestAnalysisConfig: SuggestAnalysisConfigUseCase;
   readonly suggestCalculateExpression: SuggestCalculateExpressionUseCase;
+  /** ツール作成画面の設計アシスタント（v47）。式提案と同じモデル・同じ有効化条件。 */
+  readonly designToolChat: DesignToolChatUseCase;
   readonly suggestToolCheckCases: SuggestToolCheckCasesUseCase;
   readonly diagnoseTool: DiagnoseToolUseCase;
   /** `ai-judge` ノードを実際に回せるか（main スロット + 構造化出力）。UI がノードを出すかの機能フラグ。 */
@@ -88,6 +91,8 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
   app.get('/runtime/capabilities', async () => ({
     analysisAssistant: { enabled: await deps.suggestAnalysisConfig.available() },
     calculateAssistant: { enabled: await deps.suggestCalculateExpression.available() },
+    // 設計アシスタント（v47）。関数電卓と同じ判定で、UI はこれを見てパネルの入力欄を開閉する。
+    designAssistant: { enabled: await deps.designToolChat.available() },
     toolCheckSuggestions: { enabled: await deps.suggestToolCheckCases.available() },
     // AI 判定ノード。判定はモデルを要するので、使えないときは UI が設定ダイアログで先に警告する（実行して初めて失敗させない）。
     aiJudge: { enabled: await deps.resolveAiJudgments.available() },
@@ -106,5 +111,38 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
   app.post('/tool-drafts/suggest-calculate-expression', async (request) => {
     const body = parseWith(calculateSuggestionBodySchema, request.body);
     return { proposal: await deps.suggestCalculateExpression.execute({ graph: body.graph, nodeId: body.nodeId, intent: body.intent }) };
+  });
+  /**
+   * 設計アシスタント 1 ターン（v47 §3）。編集後のグラフをそのまま返し、保存はしない。
+   *
+   * 適用できなかったこと（差し戻しても通らなかった）はアシスタントの応答であって API の失敗ではないので、
+   * `graph` を省き `problems` を添えて 200 で返す。モデル呼び出し自体の失敗は従来どおり `MODEL_PROVIDER`。
+   */
+  app.post('/tool-drafts/design-chat', async (request) => {
+    const body = parseWith(designChatBodySchema, request.body);
+    return deps.designToolChat.execute({
+      scope: scopeOf(request),
+      graph: body.graph,
+      instruction: body.instruction,
+      transcript: body.transcript ?? [],
+      ...(body.inputSchema === undefined ? {} : { inputSchema: body.inputSchema }),
+      ...(body.agentTool === undefined ? {} : { agentTool: body.agentTool }),
+      ...(body.transcriptSummary === undefined ? {} : { transcriptSummary: body.transcriptSummary }),
+    });
+  });
+  /**
+   * 会話の圧縮（v49 §3.1）。古いターンを覚え書き 1 ブロックへ畳んで返すだけで、何も保存しない。
+   *
+   * 会話は画面が持つ資産（下書き）なので、畳む範囲を決めるのも、返った要約で置き換えるのも画面の仕事。
+   * モデル未設定は 1 ターンと同じ 502 `MODEL_PROVIDER`。
+   */
+  app.post('/tool-drafts/design-chat/compact', async (request) => {
+    const body = parseWith(designChatCompactBodySchema, request.body);
+    return deps.designToolChat.compact({
+      scope: scopeOf(request),
+      turns: body.turns,
+      language: body.language,
+      ...(body.previousSummary === undefined ? {} : { previousSummary: body.previousSummary }),
+    });
   });
 }

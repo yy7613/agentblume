@@ -6,6 +6,7 @@ import type {
   DataSourceDto,
   InvalidToolTemplateDto,
   LocalizedTextDto,
+  TemplateArgumentDto,
   TemplateSlotCandidatesDto,
   TemplateSlotOptionDto,
   TemplateSlotProblemDto,
@@ -28,7 +29,8 @@ import { FUNCTION_NAME_PATTERN, useToolBuilderStore } from './store';
  * 並べて、当てずっぽうの選択を避けさせること。壊れて読めなかったテンプレートも一覧の下に
  * 理由と直し方つきで出す（黙って消すと「足したのに出てこない」になる）。
  *
- * 2 段階: (1) テンプレートを選ぶ → (2) データソースとスロットを埋め、名前を決めて作成。
+ * 2 段階: (1) テンプレートを選ぶ → (2) データソースとスロットを埋め、エージェントの引数の
+ * 必須 / 任意を必要なら切り替え（v46 §B）、名前を決めて作成。
  * 作成は保存ではなく、実体化したグラフをキャンバスへ展開するところまで。
  */
 
@@ -67,11 +69,34 @@ export function chosenDataSourceIds(template: ToolTemplateDto, values: TemplateS
     .filter((value): value is string => typeof value === 'string' && value !== '');
 }
 
-/** 候補の再取得が要る選択だけを写した鍵（データソースと列。文字入力では取り直さない）。 */
+/**
+ * 候補の再取得が要る選択だけを写した鍵（データソース・列・choice。文字入力では取り直さない）。
+ * choice も含めるのは、残る引数（`arguments`）を決める `when` が choice の値を見ることがあるため。
+ */
 function candidateDependencyKey(template: ToolTemplateDto, values: TemplateSlotValuesDto): string {
   return JSON.stringify(template.slots
-    .filter((slot) => slot.kind === 'dataSource' || slot.kind === 'column')
+    .filter((slot) => slot.kind === 'dataSource' || slot.kind === 'column' || slot.kind === 'choice')
     .map((slot) => values[slot.name] ?? null));
+}
+
+/** 引数の違反が載る 422 の `slot`（サーバーの `argumentSlotOf` と同じ形）。 */
+function argumentProblemSlot(name: string): string {
+  return `argument:${name}`;
+}
+
+/**
+ * 送る上書き（既定から変えた引数のうち、今の画面に出ている引数だけ）。何も無ければ undefined —
+ * 何も変えていないのに空の上書きを送らない（サーバーではテンプレートの既定のままと同じ意味だが、
+ * 「変えていない」ことを本文の形で残しておく）。
+ */
+export function argumentNullabilityToSend(
+  shown: readonly TemplateArgumentDto[],
+  overrides: Readonly<Record<string, boolean>>,
+): Readonly<Record<string, boolean>> | undefined {
+  const entries = shown
+    .filter((argument) => overrides[argument.name] !== undefined && overrides[argument.name] !== argument.nullable)
+    .map((argument) => [argument.name, overrides[argument.name]!] as const);
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
 }
 
 /** 候補 1 件の表示（値 + 選ぶ根拠）。 */
@@ -203,6 +228,44 @@ function SlotField({ slot, candidate, value, dataSources, problems, onChange }: 
   </label>;
 }
 
+/**
+ * 「エージェントの引数」の区画（v46 §B）。引数ごとに必須 / 任意を切り替える。
+ *
+ * 既定はテンプレートの値。任意の引数はエージェントが省略するとその条件ごと外れる（絞らない）ので、
+ * そのことを冒頭に 1 文で書く。外れると結果の意味が変わる引数（粒度など）はテンプレートが `lock` し、
+ * その行はチェックボックスを無効にして理由を出す。
+ */
+function ArgumentsSection({ args, overrides, problems, onToggle }: {
+  readonly args: readonly TemplateArgumentDto[];
+  readonly overrides: Readonly<Record<string, boolean>>;
+  readonly problems: readonly TemplateSlotProblemDto[];
+  readonly onToggle: (argument: TemplateArgumentDto, required: boolean) => void;
+}) {
+  const { text } = useI18n();
+  if (args.length === 0) return null;
+  return <fieldset className="template-arguments">
+    <legend>{text('Agent arguments', 'エージェントの引数')}</legend>
+    <small>{text('If you make an argument optional and the agent omits it, the tool does not filter on that condition.', '任意にした引数は、エージェントが省略するとその条件で絞りません')}</small>
+    {args.map((argument) => {
+      const nullable = overrides[argument.name] ?? argument.nullable;
+      const locked = argument.lock !== undefined;
+      const errors = problems.filter((problem) => problem.slot === argumentProblemSlot(argument.name));
+      return <div className="template-argument" key={argument.name}>
+        <code>{argument.name}</code>
+        <small>{argument.description}</small>
+        <label>
+          <input type="checkbox" checked={!nullable} disabled={locked}
+            aria-label={text(`Require ${argument.name}`, `${argument.name} を必須にする`)}
+            onChange={(event) => onToggle(argument, event.target.checked)} />
+          {text('Required', '必須')}
+        </label>
+        {locked && <small className="template-argument-lock">{argument.lock}</small>}
+        {errors.map((problem, index) => <small className="field-error" key={index} role="alert">{problem.message}</small>)}
+      </div>;
+    })}
+  </fieldset>;
+}
+
 export function TemplateDialog({ client, open, onClose }: {
   readonly client: ToolApiClient;
   readonly open: boolean;
@@ -224,6 +287,9 @@ export function TemplateDialog({ client, open, onClose }: {
   const [toolFunctionName, setToolFunctionName] = useState('');
   const [values, setValues] = useState<TemplateSlotValuesDto>({});
   const [candidates, setCandidates] = useState<readonly TemplateSlotCandidatesDto[]>([]);
+  // 今のスロットで残る引数（候補と一緒にサーバーから来る）と、既定から切り替えた引数（名前 → nullable）。
+  const [templateArguments, setTemplateArguments] = useState<readonly TemplateArgumentDto[]>([]);
+  const [argumentOverrides, setArgumentOverrides] = useState<Readonly<Record<string, boolean>>>({});
   const [problems, setProblems] = useState<readonly TemplateSlotProblemDto[]>([]);
   const [formError, setFormError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -254,21 +320,24 @@ export function TemplateDialog({ client, open, onClose }: {
     if (template === undefined) return;
     if (dataSourceIds.length < template.sources.min || dataSourceIds.length > template.sources.max) {
       setCandidates([]);
+      setTemplateArguments([]);
       return;
     }
     let active = true;
-    void client.toolTemplateSlotCandidates({ templateId: template.id, scope, dataSourceIds, values })
-      .then((result) => { if (active) setCandidates(result.candidates); })
-      .catch((cause: unknown) => { if (active) { setCandidates([]); setFormError(messageOf(cause)); } });
+    // 引数の説明と固定の理由はサーバーが表示言語で埋めて返すので、言語を変えたら取り直す。
+    void client.toolTemplateSlotCandidates({ templateId: template.id, scope, dataSourceIds, values, language })
+      .then((result) => { if (active) { setCandidates(result.candidates); setTemplateArguments(result.arguments ?? []); } })
+      .catch((cause: unknown) => { if (active) { setCandidates([]); setTemplateArguments([]); setFormError(messageOf(cause)); } });
     return () => { active = false; };
     // values 全体ではなく dependencyKey で回す（文字入力のたびに取り直さない）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, template, dependencyKey]);
+  }, [client, template, dependencyKey, language]);
 
   if (!open) return null;
 
   const close = () => {
     setTemplate(undefined); setValues({}); setCandidates([]); setProblems([]); setFormError(undefined); setFilter('');
+    setTemplateArguments([]); setArgumentOverrides({});
     setToolDisplayName(''); setToolFunctionName('');
     onClose();
   };
@@ -295,8 +364,19 @@ export function TemplateDialog({ client, open, onClose }: {
     setTemplate(chosen);
     setValues(initialSlotValues(chosen));
     setCandidates([]);
+    setTemplateArguments([]);
+    setArgumentOverrides({});
     setProblems([]);
     setFormError(undefined);
+  };
+
+  // 既定と同じ値へ戻したら上書きから外す（「変えた引数だけを送る」を state の形で保つ）。
+  const toggleArgument = (argument: TemplateArgumentDto, required: boolean) => {
+    setArgumentOverrides((current) => {
+      const { [argument.name]: _previous, ...rest } = current;
+      return !required === argument.nullable ? rest : { ...rest, [argument.name]: !required };
+    });
+    setProblems((current) => current.filter((problem) => problem.slot !== argumentProblemSlot(argument.name)));
   };
 
   const setValue = (name: string, value: TemplateSlotValueDto | undefined) => {
@@ -309,8 +389,10 @@ export function TemplateDialog({ client, open, onClose }: {
     if (template === undefined || !namesReady) return;
     setBusy(true); setFormError(undefined); setProblems([]);
     try {
+      const argumentNullability = argumentNullabilityToSend(templateArguments, argumentOverrides);
       const instantiated = await client.instantiateToolTemplate({
         templateId: template.id, scope, dataSourceIds, values, language, toolName: toolFunctionName,
+        ...(argumentNullability === undefined ? {} : { argumentNullability }),
       });
       useToolBuilderStore.getState().loadTemplate(instantiated, displayName);
       close();
@@ -331,7 +413,10 @@ export function TemplateDialog({ client, open, onClose }: {
     return [candidate.id, pick(candidate.title, language), pick(candidate.summary, language), ...candidate.tags]
       .some((field) => field.toLowerCase().includes(needle));
   });
-  const generalProblems = problems.filter((problem) => problem.slot === undefined);
+  // 行の無い引数への指摘（画面に出ていない引数。スロットを変えた直後など）は、見失わないよう全体へ出す。
+  const shownArgumentSlots = new Set(templateArguments.map((argument) => argumentProblemSlot(argument.name)));
+  const generalProblems = problems.filter((problem) =>
+    problem.slot === undefined || (problem.slot.startsWith('argument:') && !shownArgumentSlots.has(problem.slot)));
   const title = template === undefined
     ? text('Create from a template', 'テンプレートから作成')
     : `${text('Create from a template', 'テンプレートから作成')}: ${pick(template.title, language)}`;
@@ -373,6 +458,8 @@ export function TemplateDialog({ client, open, onClose }: {
           problems={problems.filter((problem) => problem.slot === slot.name)}
           onChange={(next) => setValue(slot.name, next)}
         />)}</div>
+        {/* 引数はスロットの後・名前の前（スロットで残る引数が決まり、名前はその後に考える順）。 */}
+        <ArgumentsSection args={templateArguments} overrides={argumentOverrides} problems={problems} onToggle={toggleArgument} />
         {/*
           名前はスロットの後（テンプレートとデータソースを選んでから考える順）。既定値を入れないのは、
           同じテンプレートから 2 本目を作ったときに内部IDまで同じになり、1 本目の新しいバージョンに

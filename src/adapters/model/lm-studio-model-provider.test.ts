@@ -231,6 +231,100 @@ describe('LmStudioModelProvider', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  /**
+   * 文脈の長さ（v49 §4）。画面の消費比率のためだけに引く best-effort な問い合わせで、
+   * 取れないこと自体は正常系（LM Studio 以外のサーバ・古い版・停止中）。
+   */
+  describe('contextWindow', () => {
+    function jsonFetcher(body: unknown, status = 200): FetchMock {
+      return fetchMock(() => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })));
+    }
+
+    it('正常: /v1 の隣の /api/v0/models/<id> を GET し、loaded_context_length を優先する', async () => {
+      const fetcher = jsonFetcher({ loaded_context_length: 8192, max_context_length: 131072 });
+      const provider = new LmStudioModelProvider({ baseUrl: 'http://localhost:1234/v1/', model: 'local', apiKey: 'lm-studio', fetcher });
+
+      await expect(provider.contextWindow()).resolves.toBe(8192);
+      expect(fetcher).toHaveBeenCalledWith('http://localhost:1234/api/v0/models/local', expect.objectContaining({ method: 'GET' }));
+      expect((fetcher.mock.calls[0]?.[1] as RequestInit).headers).toMatchObject({ authorization: 'Bearer lm-studio' });
+    });
+
+    it('正常: 載っている長さが無ければ max_context_length で代える', async () => {
+      const provider = new LmStudioModelProvider({ baseUrl: 'http://x/v1', model: 'm', fetcher: jsonFetcher({ max_context_length: 131072 }) });
+      await expect(provider.contextWindow()).resolves.toBe(131072);
+    });
+
+    it('正常: `/` を含むモデル id は 1 つのパス要素へ符号化する', async () => {
+      const fetcher = jsonFetcher({ loaded_context_length: 4096 });
+      await new LmStudioModelProvider({ baseUrl: 'http://x/v1', model: 'google/gemma-4-12b', fetcher }).contextWindow();
+      expect(fetcher.mock.calls[0]?.[0]).toBe('http://x/api/v0/models/google%2Fgemma-4-12b');
+    });
+
+    it.each([
+      ['非数', { loaded_context_length: 'many', max_context_length: null }],
+      ['0 や負', { loaded_context_length: 0, max_context_length: -1 }],
+      ['小数', { loaded_context_length: 4096.5 }],
+      ['項目が無い', { id: 'm' }],
+      ['JSON ですらない', 'not json'],
+    ])('異常: 応答が%sなら undefined（比率が出ないだけで、呼び出しは止めない）', async (_name, body) => {
+      const fetcher = fetchMock(() => Promise.resolve(new Response(typeof body === 'string' ? body : JSON.stringify(body), { status: 200 })));
+      await expect(new LmStudioModelProvider({ baseUrl: 'http://x/v1', model: 'm', fetcher }).contextWindow()).resolves.toBeUndefined();
+    });
+
+    it.each([
+      ['HTTP エラー', () => new LmStudioModelProvider({ baseUrl: 'http://x/v1', model: 'm', fetcher: fetchMock(() => Promise.resolve(new Response('nope', { status: 404 }))) })],
+      ['通信の失敗', () => new LmStudioModelProvider({ baseUrl: 'http://x/v1', model: 'm', fetcher: fetchMock(() => Promise.reject(new Error('ECONNREFUSED'))) })],
+    ])('異常: %s は例外にせず undefined', async (_name, make) => {
+      await expect(make().contextWindow()).resolves.toBeUndefined();
+    });
+
+    it.each([
+      ['/v1 で終わらない baseUrl', { baseUrl: 'http://x/openai', model: 'm' }],
+      ['モデル未設定', { baseUrl: 'http://x/v1', model: '' }],
+    ])('境界: %s では問い合わせない（LM Studio の口だと分かるときだけ叩く）', async (_name, options) => {
+      const fetcher = vi.fn<typeof fetch>();
+      await expect(new LmStudioModelProvider({ ...options, fetcher }).contextWindow()).resolves.toBeUndefined();
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it('境界: 60 秒は同じ答えを返し、超えたら引き直す', async () => {
+      vi.useFakeTimers();
+      const fetcher = jsonFetcher({ loaded_context_length: 4096 });
+      const provider = new LmStudioModelProvider({ baseUrl: 'http://x/v1', model: 'm', fetcher });
+
+      await expect(provider.contextWindow()).resolves.toBe(4096);
+      await vi.advanceTimersByTimeAsync(59_000);
+      await expect(provider.contextWindow()).resolves.toBe(4096);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      await expect(provider.contextWindow()).resolves.toBe(4096);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it('境界: 取れなかったことも 60 秒憶える（毎ターン引き直さない）', async () => {
+      vi.useFakeTimers();
+      const fetcher = fetchMock(() => Promise.reject(new Error('ECONNREFUSED')));
+      const provider = new LmStudioModelProvider({ baseUrl: 'http://x/v1', model: 'm', fetcher });
+
+      await expect(provider.contextWindow()).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(59_000);
+      await expect(provider.contextWindow()).resolves.toBeUndefined();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('異常: 3 秒で応答が無ければ諦める（比率の表示のために 1 ターンを待たせない）', async () => {
+      vi.useFakeTimers();
+      const fetcher = vi.fn<typeof fetch>((_url, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => { reject(new Error('aborted')); });
+      }));
+      const pending = new LmStudioModelProvider({ baseUrl: 'http://x/v1', model: 'm', fetcher }).contextWindow();
+
+      await vi.advanceTimersByTimeAsync(3_001);
+      await expect(pending).resolves.toBeUndefined();
+    });
+  });
+
   describe('timeout', () => {
     it('出力が途絶えたらidleTimeoutMsで打ち切る（原因が分かるメッセージ）', async () => {
       vi.useFakeTimers();

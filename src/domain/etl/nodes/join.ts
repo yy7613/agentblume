@@ -13,8 +13,9 @@
  *   outer 系では無マッチ行として残す）。複数マッチは直積。行順: 左行順 →
  *   (right/full) 右の無マッチ行順。
  *   キーペアの型不一致は inferSchema と同条件で `SchemaError`（型検査なしだと
- *   型タグ付きキーで無言の0行になる）。出力行数が `MAX_JOIN_ROWS` を超えたら
- *   その時点で打ち切って `SchemaError`（キー誤りによる直積の暴走を防ぐ）。
+ *   型タグ付きキーで無言の0行になる）。出力行数が上限（`config.maxRows` 省略時は
+ *   `DEFAULT_JOIN_MAX_ROWS`）を超えたらその時点で打ち切って `SchemaError`
+ *   （キー誤りによる直積の暴走を防ぐ。v46: 上限は Tool 作成者が `maxRows` で変えられる）。
  * - `coerceKeys: 'string'` を指定すると型タグを外し、キーを文字列として比較する
  *   （CSV のゼロ埋め ID が number に推論された `1` と JSON の `'1'` を結合できる）。
  */
@@ -44,16 +45,28 @@ export interface JoinConfig {
   readonly rightSuffix?: string;
   /** 既定 'none'（型タグ付きの厳密比較）。'string' は文字列化して比較する。 */
   readonly coerceKeys?: JoinCoerceKeys;
+  /**
+   * この join が生成してよい出力行数の上限（省略時 `DEFAULT_JOIN_MAX_ROWS`）。
+   * キー指定ミス（直積）でメモリが尽きるのを防ぐ安全弁で、正しいキーでも
+   * 既定を超える結合（都道府県×月次×複数指標など）を作れるように Tool 作成者が上げられる（v46）。
+   * 実際に効くのはこれとサーバーの実行上限（`AGENTCONTEXT_MAX_EXECUTION_ROWS`）の小さい方。
+   */
+  readonly maxRows?: number;
 }
 
 /** 右列名の衝突時に付与する既定サフィックス。 */
 const DEFAULT_RIGHT_SUFFIX = '_right';
 
 /**
- * 出力行数の上限。キー誤りによる直積（例: 2000×2000）でメモリが枯渇するのを防ぐ。
- * 超えた時点で打ち切り、`SchemaError` を投げる。
+ * 出力行数の上限の既定値。キー誤りによる直積（例: 2000×2000）でメモリが枯渇するのを防ぐ。
+ * 超えた時点で打ち切り、`SchemaError` を投げる。`config.maxRows` を指定すればノードごとに上げ下げできる
+ * （v46。以前は `MAX_JOIN_ROWS` という名前の固定値だった。既存の保存済み Tool は `maxRows` を持たないので
+ * 変わらずこの値のまま動く）。
  */
-export const MAX_JOIN_ROWS = 100_000;
+export const DEFAULT_JOIN_MAX_ROWS = 100_000;
+
+/** `config.maxRows` に許す最大値。これより大きい値は `validateConfig` で弾く。 */
+export const JOIN_MAX_ROWS_CEILING = 10_000_000;
 
 const configSchema = z.object({
   mode: z.enum(['inner', 'left', 'right', 'full']),
@@ -61,7 +74,14 @@ const configSchema = z.object({
     .array(
       // 省略記法: 左右で同じ列名なら文字列 1 つで書ける（`"時点"` ≡ `{ left: "時点", right: "時点" }`）。
       // 同名キーで結ぶのが大半で、手書きでも LLM が書く設定でも `keys: ["時点", "地域コード"]` と書かれやすい。
-      z.preprocess((key) => (typeof key === 'string' ? { left: key, right: key } : key), z.object({
+      // 配列の省略記法も受ける: `["時点", "時点"]` ≡ `{ left, right }`、`["時点"]` ≡ 同名（実測: 設計アシスタントの 12B が書いた）。
+      z.preprocess((key) => {
+        if (typeof key === 'string') return { left: key, right: key };
+        if (Array.isArray(key) && (key.length === 1 || key.length === 2) && key.every((part) => typeof part === 'string')) {
+          return { left: key[0], right: key[key.length - 1] };
+        }
+        return key;
+      }, z.object({
         left: z.string(),
         right: z.string(),
       })),
@@ -70,6 +90,8 @@ const configSchema = z.object({
   rightSuffix: z.string().optional(),
   // 既存の保存済み Tool（coerceKeys なし）をそのまま読めるよう optional のままにする。
   coerceKeys: z.enum(['none', 'string']).optional(),
+  // 既存の保存済み Tool（maxRows なし）は DEFAULT_JOIN_MAX_ROWS のまま動く（optional）。
+  maxRows: z.number().int().min(1).max(JOIN_MAX_ROWS_CEILING).optional(),
 });
 
 /** 行からセルを取り出す（欠損キーは null 扱い）。 */
@@ -293,11 +315,15 @@ class JoinNode implements EtlNode<JoinConfig> {
 
     const matchedRight = new Array<boolean>(right.rows.length).fill(false);
     const rows: Row[] = [];
+    const maxRows = config.maxRows ?? DEFAULT_JOIN_MAX_ROWS;
 
     // 上限超過をインクリメンタルに検出する（全 materialize してから数えない）。
+    // 「何が悪いか」（キー誤りの疑い）と「どう直すか」（正しければ maxRows を上げる）の両方を文に含める。
     const pushRow = (leftRow: Row | undefined, rightRow: Row | undefined): void => {
-      if (rows.length >= MAX_JOIN_ROWS) {
-        throw new SchemaError(`join: output exceeded ${MAX_JOIN_ROWS} rows; check join keys`);
+      if (rows.length >= maxRows) {
+        throw new SchemaError(
+          `join: output exceeded ${maxRows} rows (this join's maxRows); check the join keys, and if they are right, raise maxRows on this join`,
+        );
       }
       rows.push(buildRow(leftRow, rightRow));
     };

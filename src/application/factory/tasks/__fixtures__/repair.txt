@@ -1,0 +1,4 @@
+Your previous answer was rejected. Fix exactly these problems:
+- first problem.
+- second problem.
+Return the complete corrected JSON object matching the schema. Do not repeat the rejected answer.

@@ -6,12 +6,19 @@ import type { Clause, ContractDocument } from '../../domain/contract/document';
 import { ContractDocumentNotFoundError, ContractDomainError, ContractReviewNotFoundError, ContractStateError } from '../../domain/contract/errors';
 import type { PlaybookCriterion } from '../../domain/contract/playbook';
 import { NoopUnitOfWork } from '../persistence/unit-of-work';
+import { bundledPrompts } from '../../test-support/prompts';
 import { criteriaContext, FakeModel, gateFor, sequentialIds } from './contract.fixtures';
 import { ContractCriteriaAnswerer } from './llm-criteria';
 import { ContractPlaybookResolver } from './manage-playbooks';
 import {
   clausesFingerprintOf, criteriaRequestsFor, FinalizeContractReviewUseCase, GetContractReviewUseCase, RunContractReviewUseCase, SaveContractReviewDecisionsUseCase,
 } from './run-review';
+import type { ContractModelGate } from './support';
+
+/** テスト用の生成関数。application は adapters を import できないので、必ずここで `bundledPrompts()` を渡す。 */
+function answerer(gate: ContractModelGate): ContractCriteriaAnswerer {
+  return new ContractCriteriaAnswerer(gate, bundledPrompts());
+}
 
 const playbook = playbookFixture('pb-1', { isDefault: true });
 const fifthArticle = (document: ContractDocument) => { const article = document.articles.find((entry) => entry.ref === '第5条')!; return document.body.slice(article.start, article.end); };
@@ -88,7 +95,7 @@ describe('RunContractReviewUseCase', () => {
     let tick = 0;
     const clock = () => new Date(Date.UTC(2026, 8, 15, 1, 0, tick++));
     const resolver = new ContractPlaybookResolver(repos.playbooks, clock);
-    const run = new RunContractReviewUseCase(repos.documents, repos.reviews, resolver, new ContractCriteriaAnswerer(gateFor(model, options)), new NoopUnitOfWork(), clock, sequentialIds('rv'));
+    const run = new RunContractReviewUseCase(repos.documents, repos.reviews, resolver, answerer(gateFor(model, options)), new NoopUnitOfWork(), clock, sequentialIds('rv'));
     return { ...repos, run };
   }
 
@@ -165,7 +172,7 @@ describe('GetContractReviewUseCase（stale の判定）', () => {
     const repos = inMemoryContractRepositories();
     await repos.playbooks.save(playbook);
     const clock = () => new Date('2026-09-15T01:00:00.000Z');
-    const run = new RunContractReviewUseCase(repos.documents, repos.reviews, new ContractPlaybookResolver(repos.playbooks, clock), new ContractCriteriaAnswerer(gateFor(new FakeModel(['chat']))), new NoopUnitOfWork(), clock, sequentialIds('rv'));
+    const run = new RunContractReviewUseCase(repos.documents, repos.reviews, new ContractPlaybookResolver(repos.playbooks, clock), answerer(gateFor(new FakeModel(['chat']))), new NoopUnitOfWork(), clock, sequentialIds('rv'));
     await repos.documents.save(confirmedDocument());
     const review = await run.execute({ scope, documentId: 'doc-1' });
     return { ...repos, review, get: new GetContractReviewUseCase(repos.reviews, repos.documents, repos.playbooks) };
@@ -209,7 +216,7 @@ describe('SaveContractReviewDecisionsUseCase / FinalizeContractReviewUseCase', (
     const repos = inMemoryContractRepositories();
     await repos.playbooks.save(playbook);
     const clock = () => NOW;
-    const run = new RunContractReviewUseCase(repos.documents, repos.reviews, new ContractPlaybookResolver(repos.playbooks, clock), new ContractCriteriaAnswerer(gateFor(new FakeModel(['chat']))), new NoopUnitOfWork(), clock, sequentialIds('rv'));
+    const run = new RunContractReviewUseCase(repos.documents, repos.reviews, new ContractPlaybookResolver(repos.playbooks, clock), answerer(gateFor(new FakeModel(['chat']))), new NoopUnitOfWork(), clock, sequentialIds('rv'));
     await repos.documents.save(confirmedDocument());
     const review = await run.execute({ scope, documentId: 'doc-1' });
     if (Object.keys(documentOverrides).length > 0) await repos.documents.save(confirmedDocument({ reviewId: review.id, ...documentOverrides }));

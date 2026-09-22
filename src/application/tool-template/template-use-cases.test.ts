@@ -215,6 +215,27 @@ describe('TemplateSlotCandidatesUseCase', () => {
     expect(candidateOf(result.candidates, 'computationIntent')).toEqual({ slot: 'computationIntent', kind: 'intent', freeText: true });
   });
 
+  it('正常: 今のスロットで残る引数を、既定の nullable・lock の理由・埋め込み済みの説明つきで返す（v46 §B）', async () => {
+    const { candidates } = await singleSource();
+    const result = await candidates.execute({
+      scope, templateId: 'period-series', dataSourceIds: ['ds-population'], values: { source: 'ds-population', categoryColumn: '地域' },
+    });
+    expect(result.arguments.map((argument) => argument.name)).toEqual(['granularity', 'period_from', 'period_to', 'categories']);
+    expect(result.arguments[0]).toMatchObject({ name: 'granularity', type: 'string', nullable: false, lock: '省略できると月次と年次が混ざるため、必須に固定しています' });
+    const categories = result.arguments.find((argument) => argument.name === 'categories');
+    expect(categories).toMatchObject({ nullable: true, description: expect.stringContaining('地域 の値') });
+    expect(categories).not.toHaveProperty('lock');
+  });
+
+  it('境界: when に従う（カテゴリ列を選ぶまで categories は出ない）。language が en なら英語で埋める', async () => {
+    const { candidates } = await singleSource();
+    const before = await candidates.execute({ scope, templateId: 'period-series', dataSourceIds: ['ds-population'], language: 'en' });
+    expect(before.arguments.map((argument) => argument.name)).toEqual(['granularity', 'period_from', 'period_to']);
+    expect(before.arguments[0]?.lock).toBe('Required: omitting it would mix monthly and annual rows');
+    const after = await candidates.execute({ scope, templateId: 'period-series', dataSourceIds: ['ds-population'], values: { categoryColumn: '地域' }, language: 'en' });
+    expect(after.arguments.find((argument) => argument.name === 'categories')?.description).toContain('Comma-separated values of 地域');
+  });
+
   it('異常: 知らないテンプレート id は、使える id を挙げて not found', async () => {
     const { candidates } = await singleSource();
     await expect(candidates.execute({ scope, templateId: 'no-such-template', dataSourceIds: ['ds-population'] }))
@@ -305,6 +326,38 @@ describe('InstantiateToolTemplateUseCase', () => {
       values: { source: 'ds-population', periodColumn: '人口', valueColumns: ['地域'], defaultGranularity: 'year' }, language: 'ja', toolName: 'population_series',
     }));
     expect(error.slots.map((problem) => problem.slot)).toEqual(expect.arrayContaining(['periodColumn', 'valueColumns']));
+  });
+
+  it('正常: 引数の上書き（任意 → 必須）が入力スキーマと説明文に効き、実エンジンの検査も通る（v46 §B）', async () => {
+    const { instantiate } = await singleSource();
+    const result = await instantiate.execute({
+      scope, templateId: 'period-series', dataSourceIds: ['ds-population'], values: seriesValues, language: 'ja', toolName: 'population_series',
+      argumentNullability: { categories: false },
+    });
+    expect(result.inputSchema?.columns.find((column) => column.name === 'categories')?.nullable).toBe(false);
+    expect(result.agentTool.description).toContain('- categories (必須):');
+  });
+
+  it('異常: 成立しない引数の上書きは slot: argument:<name> の違反で、スロットの違反と一緒に返す', async () => {
+    const { instantiate } = await singleSource();
+    const error = await slotsErrorOf(instantiate.execute({
+      scope, templateId: 'period-series', dataSourceIds: ['ds-population'],
+      values: { ...seriesValues, valueColumns: ['世帯数'] }, language: 'ja', toolName: 'population_series',
+      argumentNullability: { granularity: true, region: false },
+    }));
+    expect(error.slots.map((problem) => problem.slot)).toEqual(['valueColumns', 'argument:granularity', 'argument:region']);
+    expect(error.slots[1]?.message).toContain("argument 'granularity' cannot be changed: Required: omitting it would mix monthly and annual rows");
+    expect(error.slots[2]?.message).toContain('choose one of granularity, period_from, period_to, categories');
+  });
+
+  it('異常: 引数の違反だけなら、見出しは引数の設定が成り立たないことを言う', async () => {
+    const { instantiate } = await singleSource();
+    const error = await slotsErrorOf(instantiate.execute({
+      scope, templateId: 'period-series', dataSourceIds: ['ds-population'], values: seriesValues, language: 'ja', toolName: 'population_series',
+      argumentNullability: { granularity: true },
+    }));
+    expect(error.message).toContain("argument setting(s) for the template 'period-series' cannot be applied");
+    expect(error.slots).toEqual([{ slot: 'argument:granularity', message: expect.stringContaining('cannot be changed') }]);
   });
 
   it('例外: 知らないテンプレート id は not found（実体化の前に止める）', async () => {

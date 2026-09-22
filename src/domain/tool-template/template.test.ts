@@ -73,6 +73,32 @@ describe('parseToolTemplate', () => {
     expect((parsed.template as { $schema?: unknown }).$schema).toBeUndefined();
   });
 
+  describe('引数の lock（v46 §B）', () => {
+    /** 引数 1 つを filter に束縛したテンプレート（lock の有無だけを変えて確かめる）。 */
+    const withArgument = (argument: Record<string, unknown>) => baseTemplate({
+      arguments: [{ name: 'minimum', type: 'number', nullable: false, description: { ja: '下限', en: 'Minimum' }, sample: 0, ...argument }],
+      nodes: [
+        ...(baseTemplate().nodes as unknown[]),
+        { id: 'f', type: 'filter', config: { column: { $slot: 'value' }, op: 'gte', value: 0, valueBinding: { $argument: 'minimum' } } },
+      ],
+      edges: [{ from: 'src', to: 'f' }, { from: 'f', to: 'sort' }, { from: 'sort', to: 'limit' }, { from: 'limit', to: 'out' }],
+    });
+
+    it('正常: 日英の理由つきの lock を受理し、引数にそのまま載せる', () => {
+      const lock = { ja: '省略できると混ざるため、必須に固定しています', en: 'Required: omitting it would mix rows' };
+      const parsed = parseToolTemplate(withArgument({ lock }));
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.template.arguments[0]?.lock).toEqual(lock);
+    });
+
+    it('異常: lock に英語が無ければ、その項目と schema の場所を示して直させる', () => {
+      const problems = problemsOf(withArgument({ lock: { ja: '固定' } }));
+      expect(problems.join('\n')).toContain('arguments.0.lock.en');
+      expect(everyProblemSaysHowToFix(problems)).toBe(true);
+    });
+  });
+
   it('異常: 形式（zod）に合わないときは、どの項目をどう直すかを言う', () => {
     const problems = problemsOf(baseTemplate({ formatVersion: 2 }));
     expect(problems.join('\n')).toContain('formatVersion');

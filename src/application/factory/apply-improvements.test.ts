@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { bundledPrompts } from '../../test-support/prompts';
 import { ScriptedModelProvider } from '../../adapters/model/scripted-model-provider';
 import { InMemoryAgentRepository } from '../../adapters/storage/in-memory-agent-repository';
 import { InMemoryDataSourceRepository } from '../../adapters/storage/in-memory-data-source-repository';
@@ -93,7 +94,7 @@ async function setup(options?: { readonly withToolCreation?: boolean; readonly u
   const generateAgentPrompt = new GenerateAgentPromptUseCase(toolRepo, skillRepo, agentRepo);
   const model = options?.model ?? new ScriptedModelProvider();
   const toolCreation = options?.withToolCreation === true
-    ? { toolSmith: new ToolSmithRole(model), resolveDataSources: resolver, profiler: new ProfileDataSourcesUseCase(dataSources, resolver, engine) }
+    ? { toolSmith: new ToolSmithRole(model, bundledPrompts()), resolveDataSources: resolver, profiler: new ProfileDataSourcesUseCase(dataSources, resolver, engine) }
     : undefined;
   const useCase = new ApplyImprovementsUseCase(
     agentRepo, skillRepo, toolRepo, saveAgent, saveSkill, saveTool, generateAgentPrompt, engine, undefined, toolCreation, makeSequentialId('new'),

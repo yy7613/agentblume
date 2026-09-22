@@ -31,6 +31,7 @@ import type {
   ToolTemplateSlot,
 } from '../../../domain/tool-template/template';
 import type { JsonSchemaObject, JsonSchemaProperty } from '../../model/model-provider';
+import type { PromptCatalogPort, PromptSpec } from '../../prompt/prompt-catalog-port';
 import type { DataProfile } from '../profile-data-sources';
 import type { RoleTask, RoleTaskParseResult } from './role-task';
 
@@ -108,18 +109,13 @@ export function templateChoices(input: SelectTemplateInput): string[] {
   return [...input.templates.map((template) => template.id), NO_TEMPLATE];
 }
 
-export const selectTemplateTask: RoleTask<SelectTemplateInput, SelectTemplateOutput> = {
+/** このタスクがモデルへ送る文（v48 / ADR-0052）。文は `prompts/factory/tasks/select-template.md`。 */
+export const SELECT_TEMPLATE_PROMPT: PromptSpec = { id: 'factory/tasks/select-template', sections: ['goal', 'rules'] };
+
+export const selectTemplateTaskOf = (prompts: PromptCatalogPort): RoleTask<SelectTemplateInput, SelectTemplateOutput> => ({
   name: 'select-template',
-  goal: 'You choose which prepared tool template builds the tool described by this plan, or answer "none" when no template fits.',
-  rules: [
-    '- Choose the template whose whenToUse lines match what the purpose asks for. Read notFor too: if it names what this tool must do, that template is the wrong one.',
-    '- When the goal asks for a NUMBER that has to be computed (a change versus last year, a growth rate, a ratio or per-capita value, an average/min/max, a correlation, a ranking), prefer the template that computes it, over a template that only looks values up. The agent must never do the arithmetic itself.',
-    '- Prefer a plain lookup template only when the purpose really is "return the values" and no computed number is asked for.',
-    '- A template that reads two data sources is only right when the plan itself joins sources; templates are listed only when they fit this plan\'s data, so pick by meaning, not by source count.',
-    `- Answer "${NO_TEMPLATE}" when none of the listed templates matches the purpose. That is a normal, correct answer: the tool is then built another way.`,
-    '- templateId must be copied exactly from the listed ids. Never invent one.',
-    '- reason is ONE short sentence naming the part of the purpose that decided it.',
-  ],
+  goal: prompts.get(SELECT_TEMPLATE_PROMPT.id).render('goal'),
+  rules: prompts.get(SELECT_TEMPLATE_PROMPT.id).render('rules', { noTemplate: NO_TEMPLATE }).split('\n'),
   schema(input) {
     return {
       type: 'object',
@@ -165,7 +161,7 @@ export const selectTemplateTask: RoleTask<SelectTemplateInput, SelectTemplateOut
     }
     return { ok: true, value: { template, reason: text } };
   },
-};
+});
 
 // ---------------------------------------------------------------------------
 // T2 fill-slots
@@ -341,18 +337,13 @@ function slotValueOf(slot: ToolTemplateSlot, raw: unknown): string | number | re
   return String(raw);
 }
 
-export const fillSlotsTask: RoleTask<FillSlotsInput, TemplateSlotValues> = {
+/** このタスクがモデルへ送る文（v48 / ADR-0052）。文は `prompts/factory/tasks/fill-slots.md`。 */
+export const FILL_SLOTS_PROMPT: PromptSpec = { id: 'factory/tasks/fill-slots', sections: ['goal', 'rules'] };
+
+export const fillSlotsTaskOf = (prompts: PromptCatalogPort): RoleTask<FillSlotsInput, TemplateSlotValues> => ({
   name: 'fill-slots',
-  goal: 'You fill in the slots of a prepared tool template, choosing every value from the candidates listed for that slot.',
-  rules: [
-    '- Every column, key and choice MUST be copied from that slot\'s candidates. Never write a column name that is not listed.',
-    '- Pick the column that answers the purpose: the period column is the one whose granularities cover the periods the goal talks about, the value column(s) are the figures the purpose is about.',
-    '- For a slot that takes several columns, choose the smallest set that answers the purpose — every extra column is noise in the answer.',
-    '- An optional slot takes null unless the purpose really narrows or splits by that column (for example "by region"). Filling it adds a call argument the agent can get wrong.',
-    '- A joinKeys slot takes EVERY shared key column listed (for example BOTH the period AND the region code). One key alone matches every region with every region and multiplies the rows.',
-    '- A number slot must stay inside its min..max; when in doubt keep its default.',
-    '- A text slot is a short output column name written in the goal language. An intent slot is ONE plain sentence saying what to compute — never a formula.',
-  ],
+  goal: prompts.get(FILL_SLOTS_PROMPT.id).render('goal'),
+  rules: prompts.get(FILL_SLOTS_PROMPT.id).render('rules').split('\n'),
   schema(input) {
     const candidates = candidatesOf(input);
     const properties: Record<string, JsonSchemaProperty> = {};
@@ -395,4 +386,4 @@ export const fillSlotsTask: RoleTask<FillSlotsInput, TemplateSlotValues> = {
     if (violations.length > 0) return { ok: false, issues: violations.map((violation) => violation.message) };
     return { ok: true, value: merged };
   },
-};
+});

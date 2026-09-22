@@ -462,6 +462,64 @@ describe('ToolApiClient の実行環境機能と判定エラーの rubric', () =
     expect(capabilities.judge).toBeUndefined();
   });
 
+  it('正常: 設計アシスタントの可否は designAssistant.enabled を見る（v47）', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ analysisAssistant: { enabled: true }, designAssistant: { enabled: true } }));
+    await expect(new ToolApiClient('', fetcher as typeof fetch).designAssistantCapability()).resolves.toBe(true);
+  });
+
+  it('境界: designAssistant を返さない旧サーバーでは、設計アシスタントは使えない扱いにする', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ analysisAssistant: { enabled: true } }));
+    await expect(new ToolApiClient('', fetcher as typeof fetch).designAssistantCapability()).resolves.toBe(false);
+  });
+});
+
+describe('ToolApiClient の設計アシスタント（v47 / POST /tool-drafts/design-chat）', () => {
+  const request = { scope, graph, instruction: '年次に絞って', transcript: [{ role: 'user' as const, content: '前の指示' }] };
+
+  it('正常: 指示・いまのグラフ・直近の会話を本文へ載せ、編集後のグラフを返す', async () => {
+    const body = { message: '絞りました。', graph, changes: [{ op: 'add-node', nodeId: 'filter-1', summary: 'filter を追加' }], repaired: false, problems: [] };
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse(body));
+    const controller = new AbortController();
+
+    await expect(new ToolApiClient('/api', fetcher as typeof fetch).designChat(request, controller.signal)).resolves.toEqual(body);
+    expect(fetcher).toHaveBeenCalledWith('/api/tool-drafts/design-chat', expect.objectContaining({
+      method: 'POST', signal: controller.signal, body: JSON.stringify(request),
+    }));
+  });
+
+  it('境界: 変更なしの応答（changes / problems 省略）は空配列として受け取る', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ message: '足りています。' }));
+    await expect(new ToolApiClient('', fetcher as typeof fetch).designChat(request)).resolves.toEqual({ message: '足りています。', changes: [], problems: [] });
+  });
+
+  it('異常: モデル未設定は 409 MODEL_NOT_CONFIGURED として投げる（応答として握り潰さない）', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'MODEL_NOT_CONFIGURED', message: 'model is not configured' } }, 409));
+    await expect(new ToolApiClient('', fetcher as typeof fetch).designChat(request)).rejects.toMatchObject({ status: 409, code: 'MODEL_NOT_CONFIGURED' });
+  });
+
+  it('正常: 履歴の圧縮は古いターンと前回の覚え書きを本文へ載せ、要約と消費を返す（v49）', async () => {
+    const compact = {
+      scope,
+      previousSummary: '前回の覚え書き',
+      turns: [{ user: '年次に絞って', assistant: '絞りました。', changes: ['added filter'] }],
+      language: 'ja' as const,
+    };
+    const body = { summary: '- 地域は引数にする', usage: { promptTokens: 1200, completionTokens: 180, contextWindow: 200192 } };
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse(body));
+    const controller = new AbortController();
+
+    await expect(new ToolApiClient('/api', fetcher as typeof fetch).compactDesignChat(compact, controller.signal)).resolves.toEqual(body);
+    expect(fetcher).toHaveBeenCalledWith('/api/tool-drafts/design-chat/compact', expect.objectContaining({
+      method: 'POST', signal: controller.signal, body: JSON.stringify(compact),
+    }));
+  });
+
+  it('異常: 圧縮でモデルが使えなければ 502 MODEL_PROVIDER として投げる（会話を畳むかは画面が決める）', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'MODEL_PROVIDER', message: 'model is not configured' } }, 502));
+    const compact = { scope, turns: [{ user: '年次に絞って', changes: [] }], language: 'ja' as const };
+    await expect(new ToolApiClient('', fetcher as typeof fetch).compactDesignChat(compact)).rejects.toMatchObject({ status: 502, code: 'MODEL_PROVIDER' });
+  });
+
   it('JUDGE_TRACE_UNAVAILABLE の本文 rubric を ApiError.rubric へ載せ、文言にも ID を埋める。無いときはキー自体を持たない', async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ error: { code: 'JUDGE_TRACE_UNAVAILABLE', message: 'rubric requires a trace', rubric: { id: 'quality-rubric', version: '1.2.0' } } }, 409))

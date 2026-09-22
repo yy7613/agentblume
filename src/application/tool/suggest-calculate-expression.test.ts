@@ -3,6 +3,7 @@ import { ScriptedModelProvider } from '../../adapters/model/scripted-model-provi
 import { EtlEngine } from '../etl/engine';
 import { createDefaultRegistry } from '../../domain/etl/nodes';
 import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../model/model-provider';
+import { bundledPrompts } from '../../test-support/prompts';
 import { SuggestCalculateExpressionUseCase } from './suggest-calculate-expression';
 
 const rows = [
@@ -29,7 +30,7 @@ function completion(proposal: Record<string, unknown>): ModelCompletion {
 }
 
 function usecaseOf(model: ModelProviderPort, enabled: () => boolean | Promise<boolean> = () => true) {
-  return new SuggestCalculateExpressionUseCase(new EtlEngine(createDefaultRegistry()), model, enabled);
+  return new SuggestCalculateExpressionUseCase(new EtlEngine(createDefaultRegistry()), model, enabled, bundledPrompts());
 }
 
 /** 修復要求の user メッセージ（差し戻しの本文）。 */

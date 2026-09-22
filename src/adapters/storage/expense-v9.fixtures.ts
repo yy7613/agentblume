@@ -19,7 +19,7 @@ import { createExpenseEmployee, type CreateExpenseEmployeeProps, type ExpenseEmp
 import { createExpenseFareTable, type ExpenseFareTable } from '../../domain/expense/fare-table';
 import { createExpenseOrganization, type ExpenseOrganization } from '../../domain/expense/organization';
 import { createExpensePayoutBatch, createExpensePayoutSettings, type ExpensePayoutBatch, type ExpensePayoutSettings } from '../../domain/expense/payout';
-import { createExpensePolicyHearing, EXPENSE_POLICY_HEARING_PROMPT_VERSION, type ExpensePolicyHearing } from '../../domain/expense/policy-hearing';
+import { createExpensePolicyHearing, type ExpensePolicyHearing } from '../../domain/expense/policy-hearing';
 import type { SealedSecret } from '../../domain/model-settings/sealed-secret';
 import type { TenantScope } from '../../domain/shared/tenant-scope';
 import { SecretCipherError, type SecretCipherPort } from '../../application/model-settings/secret-cipher';
@@ -28,6 +28,12 @@ import { scope } from './expense-repository.fixtures';
 export { otherTenant, otherWorkspace, scope } from './expense-repository.fixtures';
 
 export const V9_AT = '2026-09-15T00:00:00.000Z';
+
+/**
+ * 規程ヒアリングの版のフィクスチャ用の写し。版の正は `prompts/expense/policy-hearing.md` の frontmatter
+ * （v48 / ADR-0052）で、domain には定数を置かない。ここは固定のテストデータが持つ値をそのまま書く。
+ */
+const V9_POLICY_HEARING_PROMPT_VERSION = 'expense-policy-hearing/v1';
 
 /** 偽の暗号の印（本物の封緘値と取り違えないよう iv / tag を固定の値にする）。 */
 const FIXTURE_IV = 'Zml4dHVyZS1pdg==';
@@ -305,7 +311,7 @@ export function hearingFixture(id: string, overrides: Partial<ExpensePolicyHeari
     status: 'open',
     turns: [{ questions: [{ id: 'q1', text: 'タクシーの利用に上限はありますか', kind: 'number', topic: 'transport.taxi.limit' }], askedAt: V9_AT }],
     basePolicyUpdatedAt: '2026-09-14T09:00:00.000Z',
-    promptVersion: EXPENSE_POLICY_HEARING_PROMPT_VERSION,
+    promptVersion: V9_POLICY_HEARING_PROMPT_VERSION,
     createdAt: V9_AT,
     updatedAt: V9_AT,
     ...overrides,

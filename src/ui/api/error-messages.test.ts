@@ -397,6 +397,28 @@ describe('ETL定型文の日本語化（GraphError / ConfigError / SchemaError�
     expect(localizeDiagnosticDetail('aggregate-1: group-by: produced 300000 rows, exceeding the execution limit of 250000 rows', 'ja')).toContain('実行上限');
   });
 
+  it('正常: v46の実行上限メッセージ（AGENTCONTEXT_MAX_EXECUTION_ROWSへの案内つき）を和訳し、英語は原文を保つ', () => {
+    const capNew = 'group-by: produced 300000 rows, exceeding the execution limit of 250000 rows; narrow the data upstream, or raise AGENTCONTEXT_MAX_EXECUTION_ROWS on the server';
+    expect(ja(422, 'ETL_SCHEMA', capNew)).toContain('ノード（group-by）の出力が 300,000 行になり、実行上限の 250,000 行を超えました。上流で行を絞るか、サーバーの環境変数 AGENTCONTEXT_MAX_EXECUTION_ROWS を上げてください');
+    expect(en(422, 'ETL_SCHEMA', capNew)).toContain('narrow the data upstream, or raise AGENTCONTEXT_MAX_EXECUTION_ROWS on the server');
+  });
+
+  it('正常: v46の結合(join)の上限超過メッセージ（maxRowsが実際に効いた値・直し方つき）を任意の行数で和訳する', () => {
+    const joinNew = "join: output exceeded 500000 rows (this join's maxRows); check the join keys, and if they are right, raise maxRows on this join";
+    expect(ja(422, 'ETL_SCHEMA', joinNew))
+      .toBe('列名または型が一致していません。上流ノードの出力を確認してください（結合結果が500,000行を超えました。結合キーが正しいか確認し、正しければこの結合ノードの「最大行数」を上げてください）');
+    // 英語は未対応（ja以外は etlWhole が undefined を返す）なので localizeDetail の既定の
+    // セミコロン分割へ落ち、区切りが「; 」から「, 」に変わる（他のETL定型文と同じ既存挙動）。
+    // 原文の語そのものは保たれることだけを確認する（詳細を握りつぶさない）。
+    expect(en(422, 'ETL_SCHEMA', joinNew)).toContain("output exceeded 500000 rows (this join's maxRows)");
+    expect(en(422, 'ETL_SCHEMA', joinNew)).toContain('raise maxRows on this join');
+  });
+
+  it('境界: v46の結合の上限超過メッセージは maxRows=1 のような小さい値でも和訳できる', () => {
+    const joinTiny = "join: output exceeded 1 rows (this join's maxRows); check the join keys, and if they are right, raise maxRows on this join";
+    expect(ja(422, 'ETL_SCHEMA', joinTiny)).toContain('結合結果が1行を超えました');
+  });
+
   it('join: output exceeded 100000 rows 系（セミコロン無し）を10万行超過の案内へ変換する', () => {
     expect(ja(422, 'ETL_SCHEMA', 'join: output exceeded 100000 rows'))
       .toBe('列名または型が一致していません。上流ノードの出力を確認してください（結合結果が10万行を超えました。結合キーが正しいか確認してください）');

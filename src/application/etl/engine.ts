@@ -60,7 +60,8 @@ export interface PreviewOptions {
    */
   readonly rowLimit?: number;
   /**
-   * 1ノードが生成してよい最大行数（既定 DEFAULT_MAX_EXECUTION_ROWS、1 以上の整数）。
+   * 1ノードが生成してよい最大行数（既定はコンストラクタの `options.maxRows`、
+   * さらに省略なら `DEFAULT_MAX_EXECUTION_ROWS`。1 以上の整数）。
    * 超過は黙って切り捨てず SchemaError（nodeId 付き）で実行を止める。
    */
   readonly maxRows?: number;
@@ -106,9 +107,12 @@ export interface PreviewResult {
 export const DEFAULT_ROW_LIMIT = 100;
 
 /**
- * 1ノードが生成してよい行数の既定上限。join の MAX_JOIN_ROWS（10万）や
+ * 1ノードが生成してよい行数の既定上限。join の DEFAULT_JOIN_MAX_ROWS（10万）や
  * time-series の fill 上限（10万/パーティション）を越えた「全行実行」の総量を
  * 単一プロセスのサーバが抱えられる範囲に留めるための安全弁。
+ *
+ * `EtlEngine` のコンストラクタ引数 `options.maxRows`（`AGENTCONTEXT_MAX_EXECUTION_ROWS`、v46）で
+ * 運用者が変えられる。この定数は「その環境変数も未設定のときの」既定値であり続ける。
  */
 export const DEFAULT_MAX_EXECUTION_ROWS = 250_000;
 
@@ -133,9 +137,19 @@ interface ValidatedGraph {
 
 export class EtlEngine {
   private readonly registry: NodeRegistry;
+  /** `preview` の `options.maxRows` 省略時に使う上限（既定 `DEFAULT_MAX_EXECUTION_ROWS`）。 */
+  private readonly defaultMaxRows: number;
 
-  constructor(registry: NodeRegistry) {
+  /**
+   * `options.maxRows` はサーバー全体の実行上限の既定値（`AGENTCONTEXT_MAX_EXECUTION_ROWS`、v46）。
+   * `preview` 呼び出しごとの `options.maxRows` は従来どおりこれより優先する。
+   */
+  constructor(registry: NodeRegistry, options?: { readonly maxRows?: number }) {
     this.registry = registry;
+    if (options?.maxRows !== undefined && (!Number.isInteger(options.maxRows) || options.maxRows < 1)) {
+      throw new ConfigError(`EtlEngine: maxRows must be a positive integer, received ${String(options.maxRows)}`);
+    }
+    this.defaultMaxRows = options?.maxRows ?? DEFAULT_MAX_EXECUTION_ROWS;
   }
 
   /**
@@ -239,7 +253,7 @@ export class EtlEngine {
     const v = this.validate(graph);
 
     const rowLimit = resolveRowLimit(options?.rowLimit);
-    const maxRows = resolveMaxRows(options?.maxRows);
+    const maxRows = resolveMaxRows(options?.maxRows, this.defaultMaxRows);
 
     const tableById = new Map<string, Table>();
     const nodes: Record<string, NodePreview> = {};
@@ -265,7 +279,7 @@ export class EtlEngine {
         // 中間ノードにも適用する（終端だけ見ても、途中で膨れた行は既にメモリを食っている）。
         if (produced.rows.length > maxRows) {
           throw new SchemaError(
-            `${graphNode.type}: produced ${produced.rows.length} rows, exceeding the execution limit of ${maxRows} rows`,
+            `${graphNode.type}: produced ${produced.rows.length} rows, exceeding the execution limit of ${maxRows} rows; narrow the data upstream, or raise AGENTCONTEXT_MAX_EXECUTION_ROWS on the server`,
           );
         }
       } catch (error) {
@@ -459,11 +473,12 @@ function resolveRowLimit(value: number | undefined): number {
 }
 
 /**
- * `maxRows` の検証。省略は既定値。0 は空でないソースを一切実行できなくなる
- * 設定ミスとしか考えられないので、1 以上を要求する。
+ * `maxRows` の検証。省略はエンジンの既定値（`fallback`、コンストラクタの `options.maxRows` または
+ * `DEFAULT_MAX_EXECUTION_ROWS`）。0 は空でないソースを一切実行できなくなる設定ミスとしか
+ * 考えられないので、1 以上を要求する。
  */
-function resolveMaxRows(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_MAX_EXECUTION_ROWS;
+function resolveMaxRows(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
   if (!Number.isInteger(value) || value < 1) {
     throw new ConfigError(`preview: maxRows must be a positive integer, received ${String(value)}`);
   }

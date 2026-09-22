@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Row, Schema, Table } from '../../data/types';
 import { ConfigError, SchemaError } from '../errors';
-import { MAX_JOIN_ROWS, joinNode } from './join';
+import { DEFAULT_JOIN_MAX_ROWS, JOIN_MAX_ROWS_CEILING, joinNode } from './join';
 
 const leftSchema: Schema = {
   columns: [
@@ -72,6 +72,21 @@ describe('join: validateConfig', () => {
     expect(() =>
       joinNode.validateConfig({ mode: 'inner', keys: [{ left: 'a' }] }),
     ).toThrowError(ConfigError);
+  });
+
+  it('従来どおり: maxRows を省略すると undefined のまま（既存の保存済み Tool は 10万行のまま動く）', () => {
+    const config = joinNode.validateConfig({ mode: 'inner', keys });
+    expect(config.maxRows).toBeUndefined();
+  });
+
+  it('正常: maxRows に 1〜1,000万の整数を指定できる', () => {
+    expect(joinNode.validateConfig({ mode: 'inner', keys, maxRows: 500_000 }).maxRows).toBe(500_000);
+    expect(joinNode.validateConfig({ mode: 'inner', keys, maxRows: 1 }).maxRows).toBe(1);
+    expect(joinNode.validateConfig({ mode: 'inner', keys, maxRows: JOIN_MAX_ROWS_CEILING }).maxRows).toBe(JOIN_MAX_ROWS_CEILING);
+  });
+
+  it.each([0, -1, 1.5, JOIN_MAX_ROWS_CEILING + 1])('異常: maxRows %s は範囲外として ConfigError', (maxRows) => {
+    expect(() => joinNode.validateConfig({ mode: 'inner', keys, maxRows })).toThrowError(ConfigError);
   });
 });
 
@@ -569,10 +584,12 @@ const bigRightSchema: Schema = {
 const bigKeys = [{ left: 'k', right: 'k' }];
 const leftRows = (count: number, k = 'a'): Row[] => Array.from({ length: count }, (_, i) => ({ k, l: i }));
 const rightRows = (count: number, k = 'a'): Row[] => Array.from({ length: count }, (_, i) => ({ k, r: i }));
-const overflowMessage = `join: output exceeded ${MAX_JOIN_ROWS} rows; check join keys`;
+/** `maxRows` 省略時（既定 `DEFAULT_JOIN_MAX_ROWS`）のエラー文の断片。実際に効いた上限と直し方の両方を含む。 */
+const overflowMessage = (limit: number): string =>
+  `join: output exceeded ${limit} rows (this join's maxRows); check the join keys, and if they are right, raise maxRows on this join`;
 
 describe('join: cartesian product guard', () => {
-  it(`allows exactly ${MAX_JOIN_ROWS} output rows`, () => {
+  it(`従来どおり: maxRows を省略すると DEFAULT_JOIN_MAX_ROWS（${DEFAULT_JOIN_MAX_ROWS}）ちょうどまでは通る`, () => {
     const out = joinNode.execute(
       [
         { schema: bigLeftSchema, rows: leftRows(400) },
@@ -580,10 +597,10 @@ describe('join: cartesian product guard', () => {
       ],
       { mode: 'inner', keys: bigKeys },
     );
-    expect(out.rows).toHaveLength(MAX_JOIN_ROWS);
+    expect(out.rows).toHaveLength(DEFAULT_JOIN_MAX_ROWS);
   });
 
-  it('stops the cartesian product as soon as the limit is exceeded', () => {
+  it('従来どおり: maxRows を省略すると DEFAULT_JOIN_MAX_ROWS を1行超えた時点で止まる', () => {
     const call = (): unknown =>
       joinNode.execute(
         [
@@ -593,26 +610,65 @@ describe('join: cartesian product guard', () => {
         { mode: 'inner', keys: bigKeys },
       );
     expect(call).toThrowError(SchemaError);
-    expect(call).toThrowError(overflowMessage);
+    expect(call).toThrowError(overflowMessage(DEFAULT_JOIN_MAX_ROWS));
   });
 
   it('applies the limit while appending unmatched right rows', () => {
     const right = { schema: bigRightSchema, rows: [...rightRows(249), ...rightRows(401, 'b')] };
     expect(() =>
       joinNode.execute([{ schema: bigLeftSchema, rows: leftRows(400) }, right], { mode: 'full', keys: bigKeys }),
-    ).toThrowError(overflowMessage);
+    ).toThrowError(overflowMessage(DEFAULT_JOIN_MAX_ROWS));
   });
 
   it('applies the limit to unmatched left rows as well', () => {
     expect(() =>
       joinNode.execute(
         [
-          { schema: bigLeftSchema, rows: leftRows(MAX_JOIN_ROWS + 1, 'x') },
+          { schema: bigLeftSchema, rows: leftRows(DEFAULT_JOIN_MAX_ROWS + 1, 'x') },
           { schema: bigRightSchema, rows: rightRows(1) },
         ],
         { mode: 'left', keys: bigKeys },
       ),
-    ).toThrowError(overflowMessage);
+    ).toThrowError(overflowMessage(DEFAULT_JOIN_MAX_ROWS));
+  });
+});
+
+describe('join: maxRows（v46: ノードごとに上限を変えられる）', () => {
+  it('正常: maxRows を上げると DEFAULT_JOIN_MAX_ROWS 超の行数を返せる', () => {
+    const wanted = DEFAULT_JOIN_MAX_ROWS + 10;
+    const out = joinNode.execute(
+      [
+        { schema: bigLeftSchema, rows: leftRows(1, 'a') },
+        { schema: bigRightSchema, rows: rightRows(wanted, 'a') },
+      ],
+      { mode: 'inner', keys: bigKeys, maxRows: wanted },
+    );
+    expect(out.rows).toHaveLength(wanted);
+  });
+
+  it('境界: maxRows を下げるとその値ちょうどまでは通り、1行超えると実際の上限と直し方を含むエラーで止まる', () => {
+    // ちょうどの行数だけを検査すると「maxRows を無視して既定の10万で処理しても偶然通る」テストになって
+    // しまう（10行は10万を大きく下回るため）。1行超過側もあわせて検査し、下げた値が実際に効いている
+    // ことを確認する。
+    const atCap = joinNode.execute(
+      [
+        { schema: bigLeftSchema, rows: leftRows(1, 'a') },
+        { schema: bigRightSchema, rows: rightRows(10, 'a') },
+      ],
+      { mode: 'inner', keys: bigKeys, maxRows: 10 },
+    );
+    expect(atCap.rows).toHaveLength(10);
+
+    const call = (): unknown =>
+      joinNode.execute(
+        [
+          { schema: bigLeftSchema, rows: leftRows(1, 'a') },
+          { schema: bigRightSchema, rows: rightRows(11, 'a') },
+        ],
+        { mode: 'inner', keys: bigKeys, maxRows: 10 },
+      );
+    expect(call).toThrowError(SchemaError);
+    expect(call).toThrowError(overflowMessage(10));
   });
 });
 
@@ -638,6 +694,18 @@ describe('join: キーの省略記法（左右で同じ列名なら文字列 1 �
     const mixed = joinNode.validateConfig({ mode: 'left', keys: ['時点', { left: '地域コード', right: '地域コード' }] });
     expect(mixed.keys).toHaveLength(2);
     expect(joinNode.execute([wage, hours], mixed).rows).toHaveLength(2);
+  });
+
+  it('正常: 配列の省略記法 ["左", "右"] と ["同名"] も { left, right } になる（実測: 設計アシスタントの 12B が書いた）', () => {
+    const pairs = joinNode.validateConfig({ mode: 'inner', keys: [['時点', '時点'], ['地域コード']] });
+    expect(pairs.keys).toEqual([{ left: '時点', right: '時点' }, { left: '地域コード', right: '地域コード' }]);
+    expect(joinNode.execute([wage, hours], pairs).rows).toEqual([{ 時点: '2024年', 地域コード: '00000', 給与: 349388, 労働時間: 136.3 }]);
+  });
+
+  it('従来どおり: 3 要素の配列・文字列でない要素を含む配列は ConfigError（意味が決まらない形は直さない）', () => {
+    expect(() => joinNode.validateConfig({ mode: 'inner', keys: [['a', 'b', 'c']] })).toThrow(ConfigError);
+    expect(() => joinNode.validateConfig({ mode: 'inner', keys: [['a', 1]] })).toThrow(ConfigError);
+    expect(() => joinNode.validateConfig({ mode: 'inner', keys: [[]] })).toThrow(ConfigError);
   });
 
   it('異常: 文字列でもオブジェクトでもないキー・空の keys は従来どおり ConfigError', () => {

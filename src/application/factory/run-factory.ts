@@ -65,7 +65,7 @@ import { aggregateIterationMetrics } from './metrics';
 import { ProfileDataSourcesUseCase, type DataProfile } from './profile-data-sources';
 import { composeScenarioContext, describeScenarioGrounding } from './scenario-grounding';
 import { buildExistingToolCatalog } from './tool-catalog';
-import { AnalystRole, EMPTY_PROPOSALS_FEEDBACK, type AnalystDataSourceSummary, type AnalystScenarioSummary, type AnalystToolCallSummary } from './roles/analyst-role';
+import { AnalystRole, type AnalystDataSourceSummary, type AnalystScenarioSummary, type AnalystToolCallSummary } from './roles/analyst-role';
 import { PlannerRole, type PlannerCurrentAgent } from './roles/planner-role';
 import type { ScenarioRunnerPort } from './scenario-runner-port';
 import type { SavePersonaUseCase } from '../validation/save-persona';
@@ -586,7 +586,7 @@ export class RunFactoryUseCase {
       // 「改訂すると書きながら proposals が空」はロールの失敗（ADR-0047）。黙ってループを終わらせず、
       // 明示的な差し戻し文言で1回だけ再依頼する（予算 `maxRoleCalls` に余裕があるときだけ）。
       if (analystResult.proposals.length === 0 && current.budget.consumed.roleCalls + analystCalls < budget.maxRoleCalls) {
-        analystResult = await this.analyst.propose({ ...analystInput, feedback: EMPTY_PROPOSALS_FEEDBACK }, signal);
+        analystResult = await this.analyst.propose({ ...analystInput, feedback: this.analyst.emptyProposalsFeedback() }, signal);
         throwIfAborted(signal);
         analystCalls += 1;
       }

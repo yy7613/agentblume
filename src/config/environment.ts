@@ -128,6 +128,14 @@ function json<T extends z.ZodType>(inner: T): z.ZodType<z.infer<T>, string> {
 
 const nonEmpty = z.string().min(1);
 /**
+ * 置き場所の並び（`;` / `:` 区切り）。プロンプトやテンプレートの追加フォルダに使う。
+ *
+ * 分け方そのもの（Windows のドライブ接頭辞 `C:\` の `:` では切らない）は adapters が持つ。
+ * ここは leaf モジュールなので実装を共有せず、**「書いたのに 1 つも置き場所にならない」値だけ**を弾く
+ * （`;;` や `:` だけの値は打ち間違いで、そのまま起動すると上書きが黙って効かない）。
+ */
+const directoryList = z.string().min(1).refine((value) => /[^;:\s]/.test(value), '区切り記号だけでなく、実際のパスを1つ以上含む');
+/**
  * APIキー類。空白・改行を含まないことまで見る。
  *
  * `.env` からのコピー&ペーストで末尾に空白や改行が混ざるのは定番の事故で、そのまま
@@ -230,6 +238,11 @@ export const environmentSchema = z.object({
   AGENTCONTEXT_SHUTDOWN_GRACE_MS: optional(nonNegativeInteger),
   AGENTCONTEXT_RETENTION_INTERVAL_MS: optional(nonNegativeInteger),
   AGENTCONTEXT_LOG_LEVEL: optional(z.enum(LOG_LEVELS)),
+  // ETL実行エンジンの安全弁（v46）: 1ノードが生成してよい行数のサーバー全体の上限。
+  AGENTCONTEXT_MAX_EXECUTION_ROWS: optional(positiveInteger),
+  // モデルへ送る指示文（v48）: 同梱の prompts/ を上書きする追加の置き場所。
+  AGENTCONTEXT_TOOL_TEMPLATES_DIR: optional(directoryList),
+  AGENTCONTEXT_PROMPTS_DIR: optional(directoryList),
   // 認証（未設定なら単一ユーザーモード。ただし非ループバックへのバインドでは設定必須）
   AGENTCONTEXT_AUTH_MODE: optional(z.enum(AUTH_MODES)),
   AGENTCONTEXT_AUTH_TOKENS: optional(json(authTokensSchema)),
@@ -289,6 +302,9 @@ const EXPECTATIONS: Readonly<Record<string, string>> = {
   AGENTCONTEXT_SHUTDOWN_GRACE_MS: '0以上の整数（ミリ秒・0 は「待たずに中断」）',
   AGENTCONTEXT_RETENTION_INTERVAL_MS: '0以上の整数（ミリ秒・既定 86400000＝24時間・0 は自動実行を無効化）',
   AGENTCONTEXT_LOG_LEVEL: `${LOG_LEVELS.join(' / ')} のいずれか（既定は local=info・test=silent）`,
+  AGENTCONTEXT_MAX_EXECUTION_ROWS: '正の整数（ETLの1ノードが生成してよい行数のサーバー全体の上限。既定 250,000。結合(join)ノードの maxRows がこれより大きくても、実際に効くのはこの値）',
+  AGENTCONTEXT_TOOL_TEMPLATES_DIR: `ツールテンプレート（templates/tools/*.json）の追加の置き場所。';' か ':' 区切りで複数指定できる（Windowsのドライブ接頭辞 C:\ の ':' は区切りにならない）。区切り記号だけの値は不可`,
+  AGENTCONTEXT_PROMPTS_DIR: `プロンプト（prompts/*.md）の追加の置き場所。';' か ':' 区切りで複数指定できる（Windowsのドライブ接頭辞 C:\\ の ':' は区切りにならない）。同じ id はこの置き場所が後勝ち。節を欠いた上書きは起動時に止まる`,
   AGENTCONTEXT_AUTH_MODE: `${AUTH_MODES.join(' / ')} のいずれか（既定: AGENTCONTEXT_AUTH_TOKENS があれば token、無ければ single-user）`,
   AGENTCONTEXT_AUTH_TOKENS: `[{subject, token, tenantId?, workspaceId?, displayName?, roles?}] のJSON配列（token は${MINIMUM_AUTH_TOKEN_LENGTH}文字以上・空白を含まない / roles は ${AUTH_ROLES.join(' / ')} から選ぶ・既定は editor）`,
   LM_STUDIO_BASE_URL: 'URL（例 http://127.0.0.1:1234/v1）',

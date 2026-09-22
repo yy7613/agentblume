@@ -8,8 +8,6 @@
 import { assertIsoDateTime, type IsoDateTime } from '../shared/time';
 import { ExpenseDomainError } from './errors';
 
-export const EXPENSE_DETAIL_PROMPT_VERSION = 'expense-detail/v1';
-
 /** 構造化した読取メタ（判定は flags だけを見る）。人がその欄を編集して保存したら、画面が対応する印を外して送る。 */
 export const EXTRACTION_FLAGS = [
   'transaction-date-substituted', 'registration-number-rejected', 'payee-from-report', 'reads-disagree',
@@ -108,7 +106,7 @@ export function validateDetailRecord(value: unknown, label: string): ExpenseDeta
   if (typeof raw['promptVersion'] !== 'string' || raw['promptVersion'] === '') throw fail(`${label}.promptVersion must be a non-empty string`);
   assertIsoDateTime(raw['readAt'], `${label}.readAt`, fail);
   const read = parseExpenseDetailRead(raw['raw']);
-  if (read === undefined) throw fail(`${label}.raw must match the ${EXPENSE_DETAIL_PROMPT_VERSION} response schema`);
+  if (read === undefined) throw fail(`${label}.raw must match the expense detail read response schema`);
   let model: ExpenseDetailRecord['model'];
   if (raw['model'] !== undefined) {
     const candidate = raw['model'] as Record<string, unknown> | null;

@@ -181,7 +181,8 @@
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$" },
         "type": { "enum": ["string", "number", "boolean", "date"] },
-        "nullable": { "type": "boolean" },
+        "nullable": { "type": "boolean", "description": "既定の必須 / 任意。作成画面で切り替えられる（lock があれば切り替えられない）" },
+        "lock": { "$ref": "#/definitions/localizedText", "description": "作成画面で必須 / 任意を切り替えさせない理由（画面にそのまま出る）。省略すると切り替えられる" },
         "when": { "$ref": "#/definitions/when" },
         "description": { "$ref": "#/definitions/localizedText" },
         "sample": { "description": "リテラル、または $slot / $profile ディレクティブ" }

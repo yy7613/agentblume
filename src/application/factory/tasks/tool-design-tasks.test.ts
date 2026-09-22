@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { ScriptedModelProvider } from '../../../adapters/model/scripted-model-provider';
 import type { FactoryToolPlan } from '../../../domain/factory/factory-plan';
@@ -5,7 +7,8 @@ import type { FactoryGoalInput } from '../../../domain/factory/factory-run';
 import { MAX_TOOL_CALLS } from '../../agent/run-agent-preview';
 import type { DataProfile } from '../profile-data-sources';
 import { supportsMultiValueFilterOps } from '../roles/tool-smith-role';
-import { runRoleTask } from './role-task';
+import { bundledPrompts } from '../../../test-support/prompts';
+import { buildRoleTaskSystemPrompt, runRoleTask } from './role-task';
 import {
   MAX_TOOL_SPEC_CATEGORY_FILTERS,
   MAX_TOOL_SPEC_COMPUTATIONS,
@@ -18,16 +21,24 @@ import {
 import {
   CATEGORY_VALUE_SAMPLE,
   categoricalColumnsOf,
-  decideComputationsTask,
-  decideFiltersTask,
-  decideJoinTask,
-  decideOutputTask,
+  DECIDE_FILTERS_PROMPT,
+  decideComputationsTaskOf,
+  decideFiltersTaskOf,
+  decideJoinTaskOf,
+  decideOutputTaskOf,
   joinKeyChoices,
   periodColumnsOf,
   type DecideFiltersInput,
   type DecideJoinInput,
   type DecideOutputInput,
 } from './tool-design-tasks';
+
+// 文はファイル（`prompts/factory/tasks/*.md`）にあるので、タスク定義は同梱のカタログから組み立てる。
+const prompts = bundledPrompts();
+const decideJoinTask = decideJoinTaskOf(prompts);
+const decideFiltersTask = decideFiltersTaskOf(prompts);
+const decideComputationsTask = decideComputationsTaskOf(prompts);
+const decideOutputTask = decideOutputTaskOf(prompts);
 
 // ---------------------------------------------------------------------------
 // 材料（e-Stat 風の2ソース。無関係な3本目 ds-3 は「関係ない候補を混ぜない」検査に使う）
@@ -103,10 +114,10 @@ const outputInput: DecideOutputInput = {
 };
 
 /** タスクを実際にランナーへ通して、モデルが受け取るuser messageの中身を見る。 */
-async function userMessageOf<I, O>(task: Parameters<typeof runRoleTask<I, O>>[1], input: I, content: string): Promise<string> {
+async function userMessageOf<I, O>(task: Parameters<typeof runRoleTask<I, O>>[2], input: I, content: string): Promise<string> {
   const model = new ScriptedModelProvider();
   model.enqueue({ message: { role: 'assistant', content }, finishReason: 'stop' });
-  await runRoleTask(model, task, input);
+  await runRoleTask(model, prompts, task, input);
   return String(model.requests[0]?.messages.find((message) => message.role === 'user')?.content);
 }
 
@@ -475,5 +486,40 @@ describe('decideOutputTask', () => {
     expect(rules).toContain('EMPTY columns array');
     expect(rules).toContain(`between ${MIN_TOOL_SPEC_LIMIT} and ${MAX_TOOL_SPEC_LIMIT}`);
     expect(rules).toContain('no arguments at all');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 移行の証明（v48 / ADR-0052）: 文を `prompts/factory/tasks/*.md` へ移す**前に**
+// 組み立てた system 文を `__fixtures__/*.txt` へ固定してある。一字一句一致する限り等価変換である。
+// ---------------------------------------------------------------------------
+
+/** 移行前に固定した文。 */
+function promptFixture(name: string): string {
+  return readFileSync(fileURLToPath(new URL(`./__fixtures__/${name}.txt`, import.meta.url)), 'utf8');
+}
+
+describe('設計タスクの system 文', () => {
+  it('従来どおり: decide-join の目的・規則・共通の締めは移行前と一字一句同じ', () => {
+    expect(buildRoleTaskSystemPrompt(prompts, decideJoinTask)).toBe(promptFixture('decide-join'));
+  });
+
+  it('従来どおり: decide-filters（複数値フィルタを持つビルド）は移行前と一字一句同じ', () => {
+    expect(supportsMultiValueFilterOps()).toBe(true);
+    expect(buildRoleTaskSystemPrompt(prompts, decideFiltersTask)).toBe(promptFixture('decide-filters'));
+  });
+
+  it('従来どおり: 複数値フィルタを持たないビルド向けの 1 行も、移行前の文のまま残っている', () => {
+    // このビルドでは選ばれない節。文が消えていないこと（死んだ文ではないこと）をここで固定する。
+    expect(prompts.get(DECIDE_FILTERS_PROMPT.id).render('rules.category.single'))
+      .toBe(promptFixture('decide-filters.category-single'));
+  });
+
+  it('従来どおり: decide-computations は移行前と一字一句同じ', () => {
+    expect(buildRoleTaskSystemPrompt(prompts, decideComputationsTask)).toBe(promptFixture('decide-computations'));
+  });
+
+  it('従来どおり: decide-output は移行前と一字一句同じ', () => {
+    expect(buildRoleTaskSystemPrompt(prompts, decideOutputTask)).toBe(promptFixture('decide-output'));
   });
 });

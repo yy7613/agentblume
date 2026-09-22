@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   applicableTemplates,
+  argumentNullabilityViolations,
   instantiateTemplate,
   slotCandidates,
+  templateArgumentViews,
   validateSlotValues,
   withPendingExpression,
   withSlotDefaults,
@@ -457,6 +459,126 @@ describe('instantiateTemplate', () => {
   it('例外: 知らないデータソース id を渡したら、プロファイル済みの id を挙げて止める', () => {
     expect(() => instantiateTemplate(SINGLE, { ...FULL, source: 'ds-none' }, CONTEXT, options))
       .toThrow(/not among the profiled sources/);
+  });
+});
+
+// ── 引数の必須 / 任意の上書き（v46 §B） ─────────────────────────────────────────────
+
+/**
+ * SINGLE に「固定された粒度の引数」と「見本の無い任意の引数」を足したもの。
+ * 粒度は granularity の filter に束縛する（省略されると条件ごと外れ、月次と年次が混ざる型）。
+ */
+const LOCKED: ToolTemplate = {
+  ...SINGLE,
+  arguments: [
+    {
+      name: 'granularity', type: 'string', nullable: false,
+      lock: { ja: '省略できると月次と年次が混ざるため、必須に固定しています', en: 'Required: omitting it would mix monthly and annual rows' },
+      description: { ja: '粒度', en: 'Granularity' }, sample: { $slot: 'granularity' },
+    },
+    ...SINGLE.arguments,
+    { name: 'note', type: 'string', nullable: true, description: { ja: '注記', en: 'Note' }, sample: null },
+  ],
+  nodes: SINGLE.nodes.map((node) => (node.id === 'f_granularity'
+    ? { ...node, config: { ...(node.config as Record<string, unknown>), valueBinding: { $argument: 'granularity' } } }
+    : node)),
+};
+
+describe('instantiateTemplate: 引数の必須 / 任意の上書き', () => {
+  const options = { toolName: 'wage_series', language: 'ja' as const };
+  const columnOf = (instantiated: ReturnType<typeof instantiateTemplate>, name: string) =>
+    instantiated.inputSchema?.columns.find((column) => column.name === name);
+
+  it('従来どおり: 上書きを渡さない・空で渡すなら、テンプレートの既定のまま（Factory の呼び方）', () => {
+    const plain = instantiateTemplate(LOCKED, FULL, CONTEXT, options);
+    expect(JSON.stringify(instantiateTemplate(LOCKED, FULL, CONTEXT, { ...options, argumentNullability: {} }))).toBe(JSON.stringify(plain));
+    expect(columnOf(plain, 'period_from')?.nullable).toBe(true);
+    expect(columnOf(plain, 'granularity')?.nullable).toBe(false);
+  });
+
+  it('正常: 任意 → 必須にすると、入力スキーマの列・説明文の「必須」・設計時の見本がそろって必須になる', () => {
+    const instantiated = instantiateTemplate(LOCKED, FULL, CONTEXT, { ...options, argumentNullability: { period_from: false } });
+    expect(columnOf(instantiated, 'period_from')).toEqual({ name: 'period_from', type: 'date', nullable: false });
+    expect(instantiated.agentTool.description).toContain('- period_from (必須): 開始');
+    expect(instantiated.agentTool.description).not.toContain('- period_from (省略可)');
+    expect(nodeById(instantiated.graph.nodes, 'args').config['sample']).toMatchObject({ period_from: '2022-01-01' });
+    // 他の引数は既定のまま。
+    expect(columnOf(instantiated, 'categories')?.nullable).toBe(true);
+  });
+
+  it('正常: 必須 → 任意にすると、入力スキーマの列と説明文が「省略可」になる（英語でも）', () => {
+    const required = { ...LOCKED, arguments: LOCKED.arguments.map((argument) => (argument.name === 'period_from' ? { ...argument, nullable: false } : argument)) };
+    const ja = instantiateTemplate(required, FULL, CONTEXT, { ...options, argumentNullability: { period_from: true } });
+    expect(columnOf(ja, 'period_from')?.nullable).toBe(true);
+    expect(ja.agentTool.description).toContain('- period_from (省略可): 開始');
+    const en = instantiateTemplate(required, FULL, CONTEXT, { ...options, language: 'en', argumentNullability: { period_from: true } });
+    expect(en.agentTool.description).toContain('- period_from (optional): From');
+  });
+
+  it('境界: lock のある引数を既定と同じ値で送るのは可（変えていないので止めない）', () => {
+    expect(argumentNullabilityViolations(LOCKED, FULL, { granularity: false })).toEqual([]);
+    const instantiated = instantiateTemplate(LOCKED, FULL, CONTEXT, { ...options, argumentNullability: { granularity: false } });
+    expect(columnOf(instantiated, 'granularity')?.nullable).toBe(false);
+  });
+
+  it('境界: when で落ちた引数への指定は無視する（その引数は作られない）', () => {
+    const withoutCategory = { ...FULL, categoryColumn: undefined };
+    const instantiated = instantiateTemplate(LOCKED, withoutCategory, CONTEXT, { ...options, argumentNullability: { categories: false } });
+    expect(instantiated.inputSchema?.columns.map((column) => column.name)).not.toContain('categories');
+    expect(argumentNullabilityViolations(LOCKED, withoutCategory, { categories: false })).toEqual([]);
+  });
+
+  it('異常: テンプレートに無い引数名は、使える名前を挙げて argument:<name> の違反にする', () => {
+    const violations = argumentNullabilityViolations(LOCKED, FULL, { period_form: false });
+    expect(violations).toEqual([{ slot: 'argument:period_form', message: expect.stringContaining("argument 'period_form' is not in this template") }]);
+    expect(violations[0]?.message).toContain('choose one of granularity, period_from, categories, note');
+  });
+
+  it('異常: lock のある引数を既定と違う値にすると、lock の理由つきで止める', () => {
+    const violations = argumentNullabilityViolations(LOCKED, FULL, { granularity: true });
+    expect(violations).toEqual([{
+      slot: 'argument:granularity',
+      message: "argument 'granularity' cannot be changed: Required: omitting it would mix monthly and annual rows; leave it required",
+    }]);
+  });
+
+  it('異常: 設計時の見本が無い引数は必須にできない（テンプレートに sample を書くよう言う）', () => {
+    const violations = argumentNullabilityViolations(LOCKED, FULL, { note: false });
+    expect(violations).toEqual([{ slot: 'argument:note', message: expect.stringContaining("argument 'note' has no design-time sample, so it cannot be made required") }]);
+    expect(violations[0]?.message).toContain('write a "sample" for it in the template');
+  });
+
+  it('異常: 違反は 1 度に全部返す', () => {
+    const violations = argumentNullabilityViolations(LOCKED, FULL, { nope: true, granularity: true, note: false });
+    expect(violations.map((violation) => violation.slot)).toEqual(['argument:nope', 'argument:granularity', 'argument:note']);
+  });
+
+  it('例外: 検査を通らない上書きを instantiateTemplate へ直に渡すと、黙って効かせずに止める', () => {
+    expect(() => instantiateTemplate(LOCKED, FULL, CONTEXT, { ...options, argumentNullability: { granularity: true } }))
+      .toThrow(ToolTemplateError);
+    expect(() => instantiateTemplate(LOCKED, FULL, CONTEXT, { ...options, argumentNullability: { note: false } }))
+      .toThrow(/no design-time sample/);
+  });
+});
+
+describe('templateArgumentViews', () => {
+  it('正常: 今のスロット値で残る引数を、表示言語の説明と lock の理由つきで返す（既定の nullable のまま）', () => {
+    const views = templateArgumentViews(LOCKED, FULL, 'ja');
+    expect(views.map((view) => view.name)).toEqual(['granularity', 'period_from', 'categories', 'note']);
+    expect(views[0]).toEqual({ name: 'granularity', type: 'string', nullable: false, lock: '省略できると月次と年次が混ざるため、必須に固定しています', description: '粒度' });
+    expect(views.find((view) => view.name === 'categories')).toEqual({ name: 'categories', type: 'string', nullable: true, description: '地域 の値' });
+    expect(templateArgumentViews(LOCKED, FULL, 'en')[0]?.lock).toBe('Required: omitting it would mix monthly and annual rows');
+  });
+
+  it('境界: when で落ちる引数は返さない（カテゴリ列を選ぶと categories が現れる）', () => {
+    expect(templateArgumentViews(LOCKED, { source: 'ds-wage' }, 'ja').map((view) => view.name)).not.toContain('categories');
+    expect(templateArgumentViews(LOCKED, { source: 'ds-wage', categoryColumn: '地域' }, 'ja').map((view) => view.name)).toContain('categories');
+  });
+
+  it('境界: 説明文が参照するスロットがまだ選ばれていなければ、例外にせずスロットの表示名で埋める', () => {
+    const pending = { ...LOCKED, arguments: [{ ...LOCKED.arguments[1]!, description: { ja: '{{periodColumn}} の開始', en: 'start of {{periodColumn}}' } }] };
+    expect(templateArgumentViews(pending, { source: 'ds-wage' }, 'ja')[0]?.description).toBe('期間 の開始');
+    expect(templateArgumentViews(pending, { source: 'ds-wage', periodColumn: '時点' }, 'en')[0]?.description).toBe('start of 時点');
   });
 });
 

@@ -169,7 +169,14 @@ export type ToolTemplateSlot =
 export interface ToolTemplateArgument {
   readonly name: string;
   readonly type: TemplateArgumentType;
+  /** 既定の必須 / 任意（作成画面で切り替えられる。`lock` があれば切り替えられない）。 */
   readonly nullable: boolean;
+  /**
+   * 作成画面で必須 / 任意を切り替えさせない理由（v46 §B）。書いてある引数は `nullable` に固定され、
+   * 画面は切り替えの代わりにこの文を出す。任意の引数は省略されると束縛された条件ごと外れる
+   * （`graphWithArguments`）ので、外れると結果の意味が変わる引数（粒度など）に書く。
+   */
+  readonly lock?: LocalizedText;
   readonly when?: TemplateWhen;
   readonly description: LocalizedText;
   /** 設計時サンプル（リテラル / `{"$slot":…}` / `{"$profile":…}`）。 */
@@ -285,6 +292,7 @@ const argumentSchema = z.object({
   name: z.string(),
   type: z.enum(TEMPLATE_ARGUMENT_TYPES),
   nullable: z.boolean(),
+  lock: localizedText.optional(),
   when: whenSchema.optional(),
   description: localizedText,
   sample: z.unknown(),

@@ -2,7 +2,7 @@
   "$schema": "./tool-template.schema.json",
   "formatVersion": 1,
   "id": "period-series",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "title": { "ja": "時系列の取り出し", "en": "Time series lookup" },
   "summary": {
     "ja": "期間の範囲・粒度（月次/年次など）・カテゴリ（地域など）で絞って、値の推移を新しい順に返す。",
@@ -29,6 +29,7 @@
   "arguments": [
     {
       "name": "granularity", "type": "string", "nullable": false, "sample": { "$slot": "defaultGranularity" },
+      "lock": { "ja": "省略できると月次と年次が混ざるため、必須に固定しています", "en": "Required: omitting it would mix monthly and annual rows" },
       "description": { "ja": "期間の粒度。month / quarter / half / year / fiscal-year のうちデータにあるものを、この綴りのまま渡す（monthly・yearly・月次・年次 などは不可）。必ず指定する。", "en": "Period granularity: one of month / quarter / half / year / fiscal-year that exists in the data, spelled exactly like this (not monthly, yearly or a translation). Required." }
     },
     {
