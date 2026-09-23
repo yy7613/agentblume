@@ -5,6 +5,7 @@ import type {
   RunRecordDto, ScenarioRunDto, ScenarioRunErrorDto, ScenarioSummaryDto, SerializedScenarioDto, SurveyQuestionDto, TenantScopeDto,
 } from '../api/types';
 import { useI18n } from '../i18n';
+import { scenarioRunStatusLabel } from './status-labels';
 
 export function RunsTab({ client, scope }: { readonly client: ToolApiClient; readonly scope: TenantScopeDto }) {
   const { language, text } = useI18n();
@@ -49,7 +50,7 @@ export function RunsTab({ client, scope }: { readonly client: ToolApiClient; rea
       <div className="validation-list">
         {runs.length === 0 && !loading && <p className="empty-state">{text('No scenario runs yet.', 'シナリオ実行はまだありません。')}</p>}
         {runs.map((run) => <button type="button" key={run.id} className={selected?.id === run.id ? 'selected' : ''} onClick={() => void select(run)}>
-          <span className={`run-status scenario-${run.status}`}>{run.status}</span>
+          <span className={`run-status scenario-${run.status}`}>{scenarioRunStatusLabel(run.status, text)}</span>
           <strong>{scenarioNames[run.scenario.id] ?? run.scenario.id}</strong>
           <span className="run-meta">
             {run.goalAchieved === null ? '—' : run.goalAchieved ? text('goal achieved', '目標達成') : text('goal not achieved', '目標未達')}
@@ -61,7 +62,7 @@ export function RunsTab({ client, scope }: { readonly client: ToolApiClient; rea
     </section>
     <section className="workspace-card" aria-label={text('Scenario run detail', 'シナリオ実行詳細')}>
       {selected === undefined ? <p className="empty-state">{text('Select a run to view the transcript and survey.', '実行を選択するとトランスクリプトとアンケートを表示します。')}</p> : <>
-        <div className="panel-title"><div><span className={`run-status scenario-${selected.status}`}>{selected.status}</span> <h2>{scenarioNames[selected.scenario.id] ?? selected.scenario.id} · {selected.scenario.version}</h2></div><code>{selected.id}</code></div>
+        <div className="panel-title"><div><span className={`run-status scenario-${selected.status}`}>{scenarioRunStatusLabel(selected.status, text)}</span> <h2>{scenarioNames[selected.scenario.id] ?? selected.scenario.id} · {selected.scenario.version}</h2></div><code>{selected.id}</code></div>
         {/* 失敗・アンケート未回収は「どの段で何が起きたか」を出す（survey:[] だけでは不満なユーザーと区別できない）。 */}
         <RunFailureNote failure={selected.error} />
         <h3>{text('Transcript', 'トランスクリプト')}</h3>

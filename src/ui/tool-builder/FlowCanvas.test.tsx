@@ -3,7 +3,7 @@ import type { Edge } from '@xyflow/react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
-import { canConnect, highlightNodes, MINIMAP_NODE_COLOR, FlowCanvas } from './FlowCanvas';
+import { canConnect, highlightNodes, isRectVisible, MINIMAP_NODE_COLOR, FlowCanvas, revealNodes, type RevealTarget } from './FlowCanvas';
 import { useToolBuilderStore, type ToolFlowNode } from './store';
 import type { SerializedToolDto } from '../api/types';
 
@@ -270,5 +270,104 @@ describe('node-highlight（設計アシスタントが変えたノードの強�
   it('異常: 既に消えたノードidを強調しても、残りのノードは素のまま', () => {
     const highlighted = highlightNodes(nodes, ['gone']);
     expect(highlighted.every((node) => node.className === undefined)).toBe(true);
+  });
+});
+
+describe('ToolNode: ノードのカードの種別名（v53）', () => {
+  it('正常: 日本語表示ではパレット・設定欄と同じ日本語名と区分を出す', () => {
+    useToolBuilderStore.getState().reset();
+    useToolBuilderStore.getState().addNode('csv-source');
+    render(<I18nProvider initialLanguage="ja"><FlowCanvas /></I18nProvider>);
+    const card = (id: string) => document.querySelector(`.react-flow__node[data-id="${id}"] .tool-node strong`)?.textContent;
+    expect(card('source-1')).toBe('JSON入力');
+    expect(card('filter-1')).toBe('行フィルター');
+    const csv = useToolBuilderStore.getState().nodes.find((flowNode) => flowNode.data.nodeType === 'csv-source')?.id ?? '';
+    expect(card(csv)).toBe('CSV入力');
+    expect(document.querySelector('.react-flow__node[data-id="source-1"] .node-kind')?.textContent).toBe('入力');
+    expect(document.querySelector('.react-flow__node[data-id="filter-1"] .node-kind')?.textContent).toBe('変換');
+    expect(screen.queryByText('CSV source')).toBeNull();
+    expect(screen.queryByText('Filter')).toBeNull();
+  });
+
+  it('従来どおり: 英語表示では英語名を出す', () => {
+    useToolBuilderStore.getState().reset();
+    render(<FlowCanvas />);
+    expect(document.querySelector('.react-flow__node[data-id="filter-1"] .tool-node strong')?.textContent).toBe('Filter');
+    expect(document.querySelector('.react-flow__node[data-id="filter-1"] .node-kind')?.textContent).toBe('TRANSFORM');
+  });
+});
+
+describe('isRectVisible（足したノードが表示範囲に収まっているか v53）', () => {
+  const size = { width: 800, height: 600 };
+  it('正常: 表示範囲の内側に丸ごと収まっていれば見えている', () => {
+    expect(isRectVisible({ x: 100, y: 100, width: 200, height: 80 }, { x: 0, y: 0, zoom: 1 }, size)).toBe(true);
+  });
+  it('異常: 右にはみ出す・左（パレットの陰）にはみ出すノードは見えていない', () => {
+    expect(isRectVisible({ x: 700, y: 100, width: 200, height: 80 }, { x: 0, y: 0, zoom: 1 }, size)).toBe(false);
+    expect(isRectVisible({ x: 100, y: 100, width: 200, height: 80 }, { x: -150, y: 0, zoom: 1 }, size)).toBe(false);
+  });
+  it('境界: ズームと平行移動を画面座標へ反映し、端ちょうどは見えているとする', () => {
+    expect(isRectVisible({ x: 1600, y: 0, width: 200, height: 80 }, { x: 0, y: 0, zoom: 0.5 }, size)).toBe(false);
+    expect(isRectVisible({ x: 1000, y: 0, width: 200, height: 80 }, { x: 0, y: 0, zoom: 0.5 }, size)).toBe(true);
+    expect(isRectVisible({ x: 1000, y: 0, width: 500, height: 80 }, { x: -700, y: 0, zoom: 1 }, size)).toBe(true);
+  });
+  it('例外: キャンバスの寸法が測れない（0）ときは見えていないものとする（見せに行く側へ倒す）', () => {
+    expect(isRectVisible({ x: 0, y: 0, width: 10, height: 10 }, { x: 0, y: 0, zoom: 1 }, { width: 0, height: 0 })).toBe(false);
+  });
+});
+
+describe('revealNodes（設計アシスタントが足したノードを見せる v53）', () => {
+  /** 位置だけを持つ最小の React Flow。fitView の呼び出しを記録し、呼ばれたら次の表示へ切り替える。 */
+  function fakeFlow(positions: Record<string, { x: number; y: number }>, viewports: { x: number; y: number; zoom: number }[]) {
+    let current = 0;
+    const fitView = vi.fn(async () => { current = Math.min(current + 1, viewports.length - 1); return true; });
+    const flow: RevealTarget = {
+      getViewport: () => viewports[current] ?? { x: 0, y: 0, zoom: 1 },
+      getInternalNode: (id) => {
+        const position = positions[id];
+        return position === undefined ? undefined : { internals: { positionAbsolute: position }, measured: { width: 200, height: 80 } };
+      },
+      fitView,
+    };
+    return { flow, fitView };
+  }
+  const size = () => ({ width: 800, height: 600 });
+
+  it('正常: 足したノードが見えていれば表示を動かさない（人が合わせた表示を崩さない）', async () => {
+    const { flow, fitView } = fakeFlow({ 'sort-1': { x: 100, y: 100 } }, [{ x: 0, y: 0, zoom: 1 }]);
+    expect(await revealNodes(flow, ['sort-1'], size)).toBe('visible');
+    expect(fitView).not.toHaveBeenCalled();
+  });
+
+  it('異常: 表示範囲の外なら全体に fitView して見せる', async () => {
+    const { flow, fitView } = fakeFlow({ 'sort-1': { x: 1400, y: 100 } }, [{ x: 0, y: 0, zoom: 1 }, { x: 0, y: 0, zoom: 0.5 }]);
+    expect(await revealNodes(flow, ['sort-1'], size)).toBe('fit-all');
+    expect(fitView).toHaveBeenCalledTimes(1);
+    expect(fitView).toHaveBeenCalledWith({ padding: 0.2, duration: 200 });
+  });
+
+  it('異常: 全体の fitView でも収まらない（最小ズームで入り切らない）なら、足したノードへ fitView する', async () => {
+    const { flow, fitView } = fakeFlow({ 'sort-1': { x: 4000, y: 100 } }, [{ x: 0, y: 0, zoom: 1 }, { x: 0, y: 0, zoom: 0.5 }, { x: -3800, y: 0, zoom: 1 }]);
+    expect(await revealNodes(flow, ['sort-1', 'gone'], size)).toBe('fit-added');
+    expect(fitView).toHaveBeenLastCalledWith({ padding: 0.2, duration: 200, nodes: [{ id: 'sort-1' }] });
+  });
+
+  it('境界: 直前の全体 fitView（settled）の終わりを待ってから確かめる', async () => {
+    const { flow, fitView } = fakeFlow({ 'sort-1': { x: 100, y: 100 } }, [{ x: 0, y: 0, zoom: 1 }]);
+    let release: () => void = () => undefined;
+    const settled = new Promise<void>((resolve) => { release = resolve; });
+    const getViewport = vi.spyOn(flow, 'getViewport');
+    const pending = revealNodes(flow, ['sort-1'], size, settled);
+    await Promise.resolve();
+    expect(getViewport).not.toHaveBeenCalled();
+    release();
+    expect(await pending).toBe('visible');
+    expect(fitView).not.toHaveBeenCalled();
+  });
+
+  it('例外: 足したノードが既に消えていれば何もしない', async () => {
+    const { flow, fitView } = fakeFlow({}, [{ x: 0, y: 0, zoom: 1 }]);
+    expect(await revealNodes(flow, ['gone'], size)).toBe('visible');
+    expect(fitView).not.toHaveBeenCalled();
   });
 });

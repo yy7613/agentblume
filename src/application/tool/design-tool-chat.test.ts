@@ -718,7 +718,7 @@ describe('DesignToolChatUseCase: 有効化と応答の検証', () => {
     const model = new ScriptedModelProvider();
     model.enqueue(completion({ message: 'ok', operations: [] }));
     const result = await usecaseOf(model).execute({ scope: SCOPE, graph: graphOf(), instruction: '何ができる？' });
-    expect(result.promptTemplateVersion).toBe('design-chat/v2');
+    expect(result.promptTemplateVersion).toBe('design-chat/v3');
   });
 });
 

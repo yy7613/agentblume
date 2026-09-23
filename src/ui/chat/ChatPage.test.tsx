@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, type ToolApiClient } from '../api/tool-api';
@@ -7,6 +7,9 @@ import { I18nProvider } from '../i18n';
 import { NavigationProvider, consumePendingOpen } from '../navigation';
 import { ChatPage } from './ChatPage';
 afterEach(cleanup);
+// ApiError の文言は構築時に localStorage の言語で決まる（error-messages.ts）。日本語UIテストが残した
+// 'ja' を後続のテストへ引きずらない（ExperimentsTab.test.tsx と同じ作法）。
+afterEach(() => { localStorage.removeItem('agentcontext.language'); });
 async function sendMessage(message = 'hello'): Promise<void> {
   await userEvent.type(screen.getByLabelText('Chat message'), message);
   await userEvent.click(screen.getByRole('button', { name: 'Send' }));
@@ -19,6 +22,22 @@ describe('ChatPage', () => {
     await sendMessage();
     await waitFor(() => expect(client.runSavedAgent).toHaveBeenCalledWith(expect.objectContaining({ agent: { internalId: 'agent', version: '2.0.0' }, mode: 'preview' }), expect.any(AbortSignal)));
     expect(await screen.findByText('done')).toBeTruthy();
+  });
+
+  it('正常: 応答本文のMarkdownの表（| a | b |）は表として描かれる', async () => {
+    const response = 'Here are the totals:\n\n| Region | Total |\n| --- | --- |\n| East | 120 |\n| West | 80 |';
+    const client = {
+      listAgents: vi.fn().mockResolvedValue([{ internalId: 'agent', displayName: 'Agent', publishName: 'agent', latestVersion: '2.0.0', kind: 'normal', state: 'draft' }]),
+      runSavedAgent: vi.fn().mockResolvedValue({ runId: 'run-1', response, trace: [], usage: {}, mode: 'preview' }),
+    } as unknown as ToolApiClient;
+    render(<ChatPage client={client} />);
+    await screen.findByRole('option', { name: /Agent/ });
+    await sendMessage();
+    const table = await screen.findByRole('table');
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['Region', 'Total']);
+    expect(within(table).getByText('East').closest('tr')?.textContent).toBe('East120');
+    // 生のMarkdown記法（パイプ・ハイフンの区切り行）は残らない。
+    expect(screen.queryByText(/\| --- \| --- \|/)).toBeNull();
   });
 
   it('会話ログにユーザー発話とアシスタント応答を積み上げ、送信で入力を空にし、New chatで消去する', async () => {
@@ -100,6 +119,17 @@ describe('ChatPage', () => {
     expect(screen.getByText(/55 tokens/)).toBeTruthy();
     expect(screen.getByText(/Model response/)).toBeTruthy();
     expect(screen.getByText(/E_X: bad/)).toBeTruthy();
+  });
+
+  it('正常: 日本語UIでは応答フッターのトークン数が「N トークン」になり、英語の "tokens" は残らない', async () => {
+    const run = { runId: 'run-s', mode: 'preview', response: 'text', usage: { totalTokens: 55 }, trace: [] };
+    const client = { listAgents: vi.fn().mockResolvedValue(oneAgent), runSavedAgent: vi.fn().mockResolvedValue(run) } as unknown as ToolApiClient;
+    render(<I18nProvider initialLanguage="ja"><ChatPage client={client} /></I18nProvider>);
+    await screen.findByRole('option', { name: /Agent/ });
+    await userEvent.type(screen.getByLabelText('チャットメッセージ'), 'hello');
+    await userEvent.click(screen.getByRole('button', { name: '送信' }));
+    expect(await screen.findByText(/55 トークン/)).toBeTruthy();
+    expect(screen.queryByText(/55 tokens/)).toBeNull();
   });
 
   it('Run の失敗（ApiError）は失敗トレースを引き直し、次の一手・失敗箇所・直す場所へのボタン・技術的な詳細を返答の位置に出す', async () => {

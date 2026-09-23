@@ -48,8 +48,9 @@ export function ToolNode({ id, data, selected }: NodeProps<ToolFlowNode>) {
           <span className="input-label" style={{ top: '70%' }}>{text('right', '右')}</span>
         </>
       )}
-      <span className="node-kind">{isSource ? 'SOURCE' : item.kind === 'sink' ? 'OUTPUT' : item.kind === 'analyze' ? 'ANALYZE' : 'TRANSFORM'}</span>
-      <strong>{data.label}</strong>
+      {/* 区分と種別名はパレット・設定欄と同じ言葉で出す（v53: 以前は英語固定の data.label だった）。 */}
+      <span className="node-kind">{isSource ? text('SOURCE', '入力') : item.kind === 'sink' ? text('OUTPUT', '出力') : item.kind === 'analyze' ? text('ANALYZE', '分析') : text('TRANSFORM', '変換')}</span>
+      <strong>{text(item.label, item.labelJa)}</strong>
       <code>{id}</code>
       {inference !== undefined && (
         <span className={`state-badge state-${inference.state}`}>{STATE_LABEL[inference.state]}</span>

@@ -1,5 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
-import { localizeDiagnosticDetail } from '../api/error-messages';
+import { localizeDesignChatChange, localizeDiagnosticDetail } from '../api/error-messages';
 import type { ToolApiClient } from '../api/tool-api';
 import type { DesignChatUsageDto } from '../api/types';
 import {
@@ -13,7 +13,9 @@ import {
   DESIGN_CHAT_KEEP_TURNS,
   type DesignChatTurn,
 } from './store';
+import { NODE_CATALOG } from './node-catalog';
 import { useI18n } from '../i18n';
+import { ScreenLink } from '../navigation';
 import { scope } from '../scope';
 
 /**
@@ -146,7 +148,7 @@ export function DesignChatPanel({ client }: { readonly client: ToolApiClient }) 
   const busy = designChat.busy || designChat.compacting;
   // 押せない理由は title に置く（ボタンを消すと「そもそも何ができるのか」が読めなくなる）。
   const compactBlocked = !available
-    ? text('The local LLM is not configured', 'ローカルLLMが未設定です')
+    ? text('No model is set. Set the main model under "Model provider" in Settings', 'モデルが未設定です。設定画面の「モデルプロバイダ」でメインモデルを設定してください')
     : designChat.turns.length < DESIGN_CHAT_COMPACT_MIN_TURNS
       ? text(
           `Available once the conversation has ${DESIGN_CHAT_COMPACT_MIN_TURNS} turns or more (the last ${DESIGN_CHAT_KEEP_TURNS} are always kept)`,
@@ -173,8 +175,17 @@ export function DesignChatPanel({ client }: { readonly client: ToolApiClient }) 
       {/* 畳んだターンは戻り先ごと消える。押す前に読める場所へ置く。 */}
       <small>{text('Undo stops working for compacted turns', '圧縮したターンの変更は取り消せなくなります')}</small>
     </div>}
-    {/* 関数電卓の式提案と同じ条件で有効になるので、案内も同じ文言にする（直し方は 1 箇所）。 */}
-    {!available && <small className="calc-ai-unavailable">{text('The local LLM is not configured. Set the main model slot in Settings > Models, then reload, to let AI write formulas.', 'ローカルLLMが未設定です。設定 > モデル で main スロットを設定して再読み込みすると、AIに式を書かせられます。')}</small>}
+    {/*
+      可否は関数電卓の式提案と同じ判定（main スロット）だが、案内は設計アシスタント用の文にする（v53）。
+      直す場所は設定画面の実際の見出し「モデルプロバイダ」で、ボタンからそのまま設定画面へ行ける。
+    */}
+    {!available && <div className="calc-ai-unavailable design-chat-unavailable" role="note">
+      <small>{text(
+        'The design assistant needs a model. Set the main model under "Model provider" in Settings, then reopen this panel to design the tool by chatting.',
+        '設計アシスタントを使うにはモデルが必要です。設定画面の「モデルプロバイダ」でメインモデル（main スロット）を設定してから、このパネルを開き直すと、会話でツールを設計できます。',
+      )}</small>
+      <ScreenLink to="Settings">{text('Open Settings', '設定画面を開く')}</ScreenLink>
+    </div>}
     {available && designChat.turns.length === 0 && <p className="empty-state">{text('Describe the tool you want and the canvas changes as you talk. For example: "Return the top 10 prefectures by population, yearly only."', '作りたいツールを文章で伝えると、話しながらキャンバスが変わります。例: 「都道府県別の人口を年次に絞って多い順に 10 件返して」')}</p>}
     <div className="design-chat-turns">
       {/* 畳んだターンはモデルの覚え書きとしてだけ残る。既定では閉じておき、読みたい人だけが開く。 */}
@@ -233,6 +244,11 @@ function DesignChatMeter({ usage }: { readonly usage?: DesignChatUsageDto }) {
   </p>;
 }
 
+/** 変更一覧のノード種別を、パレット・設定欄と同じ日本語名にする（カタログに無い種別は原文のまま）。 */
+function nodeTypeLabelJa(type: string): string | undefined {
+  return NODE_CATALOG.find((item) => item.type === type)?.labelJa;
+}
+
 /** 1 往復の表示。指示 → 返答 → 変更一覧 → 適用できなかった理由 → 取り消し、の順で読める並びにする。 */
 function DesignChatTurnView({ turn }: { readonly turn: DesignChatTurn }) {
   const { text, language } = useI18n();
@@ -240,10 +256,13 @@ function DesignChatTurnView({ turn }: { readonly turn: DesignChatTurn }) {
     <p className="design-chat-user">{turn.user}</p>
     {turn.assistant !== undefined && <p className="design-chat-assistant">{turn.assistant}</p>}
     {turn.changes.length > 0 && <ul className="design-chat-changes">
-      {turn.changes.map((change, index) => <li key={`${change.nodeId ?? change.op}-${index}`}>{change.summary}</li>)}
+      {/* summary はサーバーの英語の定型文（モデルへもそのまま戻る契約）。表示のときだけ訳し、種別はパレットと同じ名前にする。 */}
+      {turn.changes.map((change, index) => <li key={`${change.nodeId ?? change.op}-${index}`}>{localizeDesignChatChange(change.summary, language, nodeTypeLabelJa)}</li>)}
     </ul>}
     {/* problems は英語の原文で届く。実行エラーと同じ変換表を通し、訳が無ければ原文のまま出す。 */}
+    {/* 返答の文は「追加しました」と言っていても、ここに来たターンはキャンバスを変えていない。どちらが正かを先頭で言い切る。 */}
     {turn.problems.length > 0 && <div className="design-chat-problems" role="alert">
+      <strong>{text('Not applied — the canvas is unchanged. The reply above describes a change that failed these checks:', '適用していません（キャンバスは変わっていません）。上の返答の変更は、次の理由で通りませんでした:')}</strong>
       {turn.problems.map((problem, index) => <small key={index}>{localizeDiagnosticDetail(problem, language)}</small>)}
     </div>}
     {/* warnings は適用済みの注記（赤枠ではない）。粒度の混在のように、指示によっては正しい形なので止めていない。 */}

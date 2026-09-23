@@ -374,6 +374,19 @@ describe('ToolCheckPage: 結果表示の境界', () => {
     await userEvent.click(screen.getByRole('button', { name: '実行' }));
     expect(await screen.findByText('100 行')).toBeTruthy();
   });
+
+  it('正常: 出力スキーマのnullable注記は日本語表示で英語のまま残らない', async () => {
+    renderPage(makeClient({ runToolCheck: vi.fn().mockResolvedValue(makeResult({
+      output: { schema: { columns: [{ name: 'total', type: 'number', nullable: false }, { name: 'region', type: 'string', nullable: true }] }, rows: [{ total: 1, region: null }] },
+      rowCount: 1,
+    })) }));
+    await waitForArguments();
+    await userEvent.click(screen.getByRole('button', { name: '実行' }));
+    const resultHeading = await screen.findByRole('heading', { name: '結果' });
+    const resultSection = resultHeading.closest('section') as HTMLElement;
+    expect(within(resultSection).getByText(/null可/)).toBeTruthy();
+    expect(resultSection.textContent).not.toContain('· nullable');
+  });
 });
 
 describe('ToolCheckPage: 行の期待と AI判定の期待', () => {
@@ -527,7 +540,9 @@ describe('ToolCheckPage: ケースの保存・一覧・削除', () => {
     const rows = within(list).getAllByRole('listitem');
     expect(rows).toHaveLength(2);
     expect((rows[0])?.textContent).toContain('Three rows');
-    expect((rows[0])?.textContent).toContain('sales_summary@latest');
+    // 版未固定（toolVersion省略）は日本語表示では「最新」（英語の 'latest' を残さない）。
+    expect((rows[0])?.textContent).toContain('sales_summary@最新');
+    expect((rows[0])?.textContent).not.toContain('@latest');
     expect((rows[0])?.textContent).toContain('未実行');
     expect((rows[1])?.textContent).toContain('sales_summary@1.1.0');
     expect((rows[1])?.textContent).toContain('不合格');

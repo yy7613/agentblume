@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
@@ -186,5 +186,38 @@ describe('DatasetsTab の軌跡ポリシー「必須」の注意と openRubric �
     rerender(<DatasetsTab client={client} scope={scope} openRubric={{ internalId: 'missing' }} />);
     expect((await screen.findByRole('alert')).textContent).toBe('rubric gone');
     expect((screen.getByRole('textbox', { name: 'Judge rubric internal ID' }) as HTMLInputElement).value).toBe('default-quality-rubric');
+  });
+});
+
+describe('DatasetsTab の日本語表示（Judge Rubric・版種別・ケース種別・メトリクス種別を英語のまま残さない）', () => {
+  it('正常: 一覧見出し・編集見出しは「審査ルーブリック」になり、英語の "Judge Rubric" は出ない', async () => {
+    renderTab(makeClient({ listJudgeRubrics: vi.fn().mockResolvedValue([rubricSummary]) }), 'ja');
+    expect(await screen.findAllByText('審査ルーブリック')).not.toHaveLength(0);
+    expect(screen.queryByText(/Judge Rubric/)).toBeNull();
+  });
+
+  it('正常: バージョン更新種別セレクトは日本語表示になるが、保存される値は patch/minor/major のまま', async () => {
+    const client = makeClient();
+    renderTab(client, 'ja');
+    const select = await screen.findByRole('combobox', { name: '審査ルーブリックのバージョン更新種別' }) as HTMLSelectElement;
+    expect(select.value).toBe('patch');
+    expect(within(select).getByRole('option', { name: 'パッチ' })).toBeTruthy();
+    expect(within(select).queryByRole('option', { name: 'patch' })).toBeNull();
+    await userEvent.selectOptions(select, 'マイナー');
+    expect(select.value).toBe('minor');
+    await userEvent.click(screen.getByRole('button', { name: 'ルーブリックを保存' }));
+    await waitFor(() => expect(client.saveJudgeRubric).toHaveBeenCalled());
+    expect(savedInput(client)).toMatchObject({ bump: 'minor' });
+  });
+
+  it('正常: ケース種別（turn/scenario）とメトリクス種別（code/judge）のセレクトは日本語表示で英語のまま残らない', async () => {
+    renderTab(makeClient(), 'ja');
+    await screen.findByRole('combobox', { name: '判定実行履歴ポリシー' });
+    expect(within(screen.getByRole('combobox', { name: 'Case 1 kind' })).getByRole('option', { name: 'ターン事例' })).toBeTruthy();
+    expect(within(screen.getByRole('combobox', { name: 'Case 1 kind' })).getByRole('option', { name: 'シナリオ事例' })).toBeTruthy();
+    expect(within(screen.getByRole('combobox', { name: 'Metric 1 kind' })).getByRole('option', { name: 'コード採点' })).toBeTruthy();
+    expect(within(screen.getByRole('combobox', { name: 'Metric 1 kind' })).getByRole('option', { name: 'LLM判定' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'turn' })).toBeNull();
+    expect(screen.queryByRole('option', { name: 'scenario' })).toBeNull();
   });
 });

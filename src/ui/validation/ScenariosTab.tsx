@@ -189,7 +189,7 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
     <section className="workspace-card" aria-label={text('Scenario form', 'シナリオフォーム')}>
       <div className="panel-title"><h2>{editingId === undefined ? text('New scenario', '新規シナリオ') : text('Edit scenario', 'シナリオを編集')}</h2><div className="save-actions">
         {savedVersion !== undefined && <span className="version-chip">{text('saved', '保存済み')} {savedVersion}</span>}
-        <select aria-label={text('Scenario version bump', 'シナリオのバージョン更新種別')} value={bump} onChange={(event) => setBump(event.target.value as typeof bump)}><option value="patch">patch</option><option value="minor">minor</option><option value="major">major</option></select>
+        <select aria-label={text('Scenario version bump', 'シナリオのバージョン更新種別')} value={bump} onChange={(event) => setBump(event.target.value as typeof bump)}><option value="patch">{text('patch', 'パッチ')}</option><option value="minor">{text('minor', 'マイナー')}</option><option value="major">{text('major', 'メジャー')}</option></select>
         <button type="button" className="primary" disabled={busy !== undefined || !valid} onClick={() => void save()}>{busy === 'save' ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
         <button type="button" className="primary" disabled={busy !== undefined || savedVersion === undefined} onClick={() => void run()}>{busy === 'run' ? <span className="spinner">{text('Running…', '実行中…')}</span> : text('Run scenario', 'シナリオを実行')}</button>
       </div></div>
@@ -216,7 +216,7 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
           <input aria-label={`${text('Question', '設問')} ${index + 1} ID`} value={question.id} onChange={(event) => updateQuestion(index, { id: event.target.value })} />
           <input aria-label={`${text('Question', '設問')} ${index + 1} ${text('text (Japanese)', '設問文（日本語）')}`} value={question.textJa} onChange={(event) => updateQuestion(index, { textJa: event.target.value })} />
           <input aria-label={`${text('Question', '設問')} ${index + 1} ${text('text (English)', '設問文（英語）')}`} value={question.textEn} onChange={(event) => updateQuestion(index, { textEn: event.target.value })} />
-          <select aria-label={`${text('Question', '設問')} ${index + 1} ${text('kind', '型')}`} value={question.kind} onChange={(event) => updateQuestion(index, { kind: event.target.value as SurveyQuestionKindDto })}><option value="scale">scale</option><option value="boolean">boolean</option><option value="text">text</option></select>
+          <select aria-label={`${text('Question', '設問')} ${index + 1} ${text('kind', '型')}`} value={question.kind} onChange={(event) => updateQuestion(index, { kind: event.target.value as SurveyQuestionKindDto })}><option value="scale">{text('scale', '尺度')}</option><option value="boolean">{text('boolean', 'はい/いいえ')}</option><option value="text">{text('text', '自由記述')}</option></select>
           {question.kind === 'scale'
             ? <><input aria-label={`${text('Question', '設問')} ${index + 1} min`} type="number" value={question.min ?? 1} onChange={(event) => updateQuestion(index, { min: Number(event.target.value) })} />
               <input aria-label={`${text('Question', '設問')} ${index + 1} max`} type="number" value={question.max ?? 5} onChange={(event) => updateQuestion(index, { max: Number(event.target.value) })} /></>

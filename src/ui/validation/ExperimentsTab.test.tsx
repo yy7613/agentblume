@@ -77,6 +77,29 @@ describe('ExperimentsTab のトレース表示', () => {
   });
 });
 
+describe('ExperimentsTab の実行/実験の状態語', () => {
+  it('正常: 日本語表示では実験一覧・詳細・ケース結果の状態語が日本語になり、英語の値のままは出ない', async () => {
+    const client = makeClient([]);
+    render(<I18nProvider initialLanguage="ja"><ExperimentsTab client={client} scope={scope} /></I18nProvider>);
+    // 一覧の状態バッジ（experiment.status = 'completed'）。
+    expect(await screen.findByText('完了')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: /agent@1\.0\.0/ }));
+    // 詳細の状態（同じく 'completed'）とケース結果の状態（caseResult.status = 'failed'）。
+    expect(screen.getAllByText('完了').length).toBeGreaterThan(0);
+    expect(await screen.findByText('失敗')).toBeTruthy();
+    expect(screen.queryByText('completed')).toBeNull();
+    expect(screen.queryByText('failed')).toBeNull();
+  });
+
+  it('境界: 英語表示（既定）ではこれまでどおり状態語の値をそのまま出す', async () => {
+    const client = makeClient([]);
+    render(<ExperimentsTab client={client} scope={scope} />);
+    expect(await screen.findByText('completed')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: /agent@1\.0\.0/ }));
+    expect(await screen.findByText('failed')).toBeTruthy();
+  });
+});
+
 // ---- 判定サンプル数（P4）の入力と DTO ----
 
 const catalog = {
@@ -173,7 +196,8 @@ async function openResultWith(judges: readonly unknown[], language?: Language): 
   const tab = <ExperimentsTab client={client} scope={scope} />;
   render(language === undefined ? tab : <I18nProvider initialLanguage={language}>{tab}</I18nProvider>);
   await userEvent.click(await screen.findByRole('button', { name: /agent@1\.0\.0/ }));
-  const line = await screen.findByText(/judge · succeeded · rubric@1\.2\.0/);
+  // status語は言語で変わるため、metricId・rubric参照だけで1行目を見つける。
+  const line = await screen.findByText(/^judge · .+ · rubric@1\.2\.0/);
   return line.closest('.judge-record') as HTMLElement;
 }
 

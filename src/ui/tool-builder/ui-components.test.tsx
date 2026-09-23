@@ -479,12 +479,17 @@ describe('MetadataBar', () => {
     expect(save().disabled).toBe(true);
     expect(screen.getByText(/"customer search" is not a valid function name for models\. Set an agent-facing name/)).toBeTruthy();
 
-    // 名前 + 説明の両方が入ると agentTool.name がモデルに見える名前になるので保存できる。
-    act(() => useToolBuilderStore.getState().setMetadata('agentName', 'search_customers'));
-    expect(save().disabled).toBe(true);
+    // v53: 説明だけ入れても名前は publishName で補うので、黙って送らず同じ理由で止め続ける（「ツール名」欄へ導く）。
     act(() => useToolBuilderStore.getState().setMetadata('agentDescription', 'Search customers by age.'));
+    expect(save().disabled).toBe(true);
+    expect(screen.getByText(/"customer search" is not a valid function name for models\. Set an agent-facing name/)).toBeTruthy();
+    // 名前が入ると agentTool.name がモデルに見える名前になるので保存できる。
+    act(() => useToolBuilderStore.getState().setMetadata('agentName', 'search_customers'));
     expect(save().disabled).toBe(false);
     expect(screen.queryByText(/is not a valid function name/)).toBeNull();
+    // v53: 名前だけでも（説明は既定で補って）送るので、名前だけで保存できる。
+    act(() => useToolBuilderStore.getState().setMetadata('agentDescription', ''));
+    expect(save().disabled).toBe(false);
   });
 
   it('複数の Agent Input が違う引数を宣言していると保存を止める', () => {

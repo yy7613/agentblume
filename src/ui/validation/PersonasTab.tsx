@@ -135,7 +135,7 @@ export function PersonasTab({ client, scope }: { readonly client: ToolApiClient;
         {savedVersion !== undefined && <span className="version-chip">{text('saved', '保存済み')} {savedVersion}</span>}
         {registeredAgent !== undefined && <span className="version-chip">{text('pseudo-user agent', '疑似ユーザーAgent')} {registeredAgent}</span>}
         <button type="button" className="secondary" disabled={busy || editingId === undefined} title={editingId === undefined ? text('Save the persona first', '先にペルソナを保存してください') : undefined} onClick={() => void registerAgent()}>{text('Register pseudo-user agent', '疑似ユーザーAgentとして登録')}</button>
-        <select aria-label={text('Persona version bump', 'ペルソナのバージョン更新種別')} value={bump} onChange={(event) => setBump(event.target.value as typeof bump)}><option value="patch">patch</option><option value="minor">minor</option><option value="major">major</option></select>
+        <select aria-label={text('Persona version bump', 'ペルソナのバージョン更新種別')} value={bump} onChange={(event) => setBump(event.target.value as typeof bump)}><option value="patch">{text('patch', 'パッチ')}</option><option value="minor">{text('minor', 'マイナー')}</option><option value="major">{text('major', 'メジャー')}</option></select>
         <button type="button" className="primary" disabled={busy || !valid} onClick={() => void save()}>{busy ? text('Saving…', '保存中…') : text('Save version', 'バージョンを保存')}</button>
       </div></div>
       <div className="agent-fields">

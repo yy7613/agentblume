@@ -81,3 +81,18 @@ describe('RunsTab のトレース表示', () => {
     expect(screen.getByText('MCPサーバー「files」のツールを読み込めませんでした（無効化中）。MCP設定画面でサーバーを有効化し、接続をテストしてください')).toBeTruthy();
   });
 });
+
+describe('RunsTab の実行状態語', () => {
+  it('正常: 日本語表示ではシナリオ実行の状態語（completed等）が日本語になる', async () => {
+    render(<I18nProvider initialLanguage="ja"><RunsTab client={makeClient([])} scope={scope} /></I18nProvider>);
+    expect(await screen.findByText('完了')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: /Sales scenario/ }));
+    expect(screen.getAllByText('完了').length).toBeGreaterThan(0);
+    expect(screen.queryByText('completed')).toBeNull();
+  });
+
+  it('境界: 英語表示（既定）ではこれまでどおり状態語の値をそのまま出す', async () => {
+    render(<RunsTab client={makeClient([])} scope={scope} />);
+    expect(await screen.findByText('completed')).toBeTruthy();
+  });
+});

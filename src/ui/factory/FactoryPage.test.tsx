@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentSummaryDto, DataSourceDto, FactoryPlanDto, FactoryRunDto } from '../api/types';
+import { I18nProvider } from '../i18n';
 import { FactoryPage } from './FactoryPage';
 
 afterEach(cleanup);
@@ -142,7 +143,7 @@ describe('FactoryPage', () => {
     render(<FactoryPage client={client} />);
 
     await userEvent.click(await screen.findByRole('button', { name: /Sales Assistant/ }));
-    await screen.findByText('Approve this plan?');
+    await screen.findByText('Plan approval required');
     expect(screen.getByText('Tools: 1')).toBeTruthy();
     expect(screen.getByText('Personas: 1')).toBeTruthy();
     expect(screen.getByText('Scenarios: 1')).toBeTruthy();
@@ -171,7 +172,7 @@ describe('FactoryPage', () => {
     render(<FactoryPage client={client} />);
 
     await userEvent.click(await screen.findByRole('button', { name: /Sales Assistant/ }));
-    await screen.findByText('Approve this plan?');
+    await screen.findByText('Plan approval required');
     const reviseButton = screen.getByRole('button', { name: 'Request revision' });
     expect((reviseButton as HTMLButtonElement).disabled).toBe(true);
 
@@ -534,7 +535,7 @@ describe('FactoryPage', () => {
     });
     render(<FactoryPage client={client} />);
     await userEvent.click(await screen.findByRole('button', { name: /Enhance: Sales Assistant/ }));
-    await screen.findByText('Approve this change?');
+    await screen.findByText('Change plan approval required');
 
     expect(screen.getByText('Change plan approval required')).toBeTruthy();
     expect(screen.getByText(/Change plan for existing agent/).textContent).toContain('Sales Assistant');
@@ -583,5 +584,76 @@ describe('FactoryPage', () => {
     const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([enhanceRun]) });
     render(<FactoryPage client={client} />);
     expect(await screen.findByRole('button', { name: /Enhance: agent-removed/ })).toBeTruthy();
+  });
+
+  it('正常: 日本語表示では計画承認の説明文がサーバー生成の英文のまま出ず、日本語で組み立て直される', async () => {
+    const waiting = baseRun({
+      status: 'waiting-approval',
+      stage: 'planning',
+      plan,
+      checkpoint: {
+        kind: 'plan-approval', expiresAt: '2026-07-21T00:00:00.000Z',
+        prompt: 'Review the proposed plan for "Answer sales questions": agent "Sales Assistant" with 1 tool(s), 1 skill(s), 1 persona(s), 1 scenario(s).',
+        plan,
+      },
+    });
+    const client = stubClient({
+      listFactoryRuns: vi.fn().mockResolvedValue([waiting]),
+      getFactoryRun: vi.fn().mockResolvedValue(waiting),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+    });
+    render(<I18nProvider initialLanguage="ja"><FactoryPage client={client} /></I18nProvider>);
+    await userEvent.click(await screen.findByRole('button', { name: /Sales Assistant/ }));
+    await screen.findByText('計画の承認が必要です');
+    // サーバーが生成した英文そのままは出ない。
+    expect(screen.queryByText(/Review the proposed plan for/)).toBeNull();
+    // goal・エージェント名・件数を含む日本語文になっている。
+    expect(screen.getByText(/「Answer sales questions」の計画案です/).textContent).toContain('Sales Assistant');
+  });
+
+  it('正常: レポート総括がFactory側の決定的フォールバック文なら日本語にする（Analyst生成の自由文はそのまま）', async () => {
+    const succeeded = baseRun({
+      status: 'succeeded',
+      stage: 'reporting',
+      report: {
+        bestIteration: 1,
+        candidate: { agentId: 'asset-3', version: '1.0.1' },
+        summary: 'Factory run stopped after 2 iteration(s); latest goalAchievedRate=0.50, avgSatisfaction=3.00.',
+        openFindings: [],
+        metricsByIteration: [],
+        quality: 'unverified',
+        qualityReasons: [],
+      },
+      finishedAt: '2026-07-20T00:00:00.500Z',
+    });
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([succeeded]) });
+    render(<I18nProvider initialLanguage="ja"><FactoryPage client={client} /></I18nProvider>);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText('レポート');
+    expect(screen.queryByText(/Factory run stopped after/)).toBeNull();
+    expect(screen.getByText(/2 回のイテレーション後にFactory runが停止しました/)).toBeTruthy();
+  });
+
+  it('境界: レポートの候補がAgent一覧に見つかれば表示名で出す（見つからなければ内部IDのまま）', async () => {
+    const succeeded = baseRun({
+      status: 'succeeded',
+      stage: 'reporting',
+      report: {
+        bestIteration: 1,
+        candidate: { agentId: 'agent-sales', version: '1.2.0' },
+        summary: 'Enhanced.',
+        openFindings: [],
+        metricsByIteration: [],
+        quality: 'met-targets',
+        qualityReasons: [],
+      },
+      finishedAt: '2026-07-20T00:00:00.500Z',
+    });
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([succeeded]) });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText('Report');
+    expect(screen.getByText(/Candidate/).textContent).toContain('Sales Assistant@1.2.0');
+    expect(screen.queryByText(/agent-sales@1.2.0/)).toBeNull();
   });
 });

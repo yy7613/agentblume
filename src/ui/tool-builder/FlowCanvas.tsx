@@ -8,6 +8,7 @@ import {
   type Edge,
   type NodeTypes,
   type ReactFlowInstance,
+  type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useEffect, useRef, useState } from 'react';
@@ -60,6 +61,59 @@ export function highlightNodes(nodes: ToolFlowNode[], highlight: readonly string
   return nodes.map((node) => highlight.includes(node.id) ? { ...node, className: 'node-highlight' } : node);
 }
 
+/** キャンバス上の矩形（flow 座標）。 */
+export interface FlowRect { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+
+/**
+ * flow 座標の矩形が、いまの表示（viewport）でキャンバスの内側に丸ごと収まっているか。
+ * 端がはみ出すノードは、隣の区画（パレット・設定欄）の陰になってクリックできないので「見えていない」とする。
+ * キャンバスの寸法が測れない（0）ときは確かめようがないので、見えていないものとして扱う（見せに行く側へ倒す）。
+ */
+export function isRectVisible(rect: FlowRect, viewport: Viewport, size: { readonly width: number; readonly height: number }): boolean {
+  if (size.width <= 0 || size.height <= 0) return false;
+  const left = rect.x * viewport.zoom + viewport.x;
+  const top = rect.y * viewport.zoom + viewport.y;
+  return left >= 0 && top >= 0 && left + rect.width * viewport.zoom <= size.width && top + rect.height * viewport.zoom <= size.height;
+}
+
+/** revealNodes が使う React Flow の最小限の操作（テストで差し替えられるように型を絞る）。 */
+export interface RevealTarget {
+  getViewport(): Viewport;
+  getInternalNode(id: string): { readonly internals: { readonly positionAbsolute: { readonly x: number; readonly y: number } }; readonly measured: { readonly width?: number; readonly height?: number } } | undefined;
+  fitView(options?: { readonly padding?: number; readonly duration?: number; nodes?: { id: string }[] }): Promise<boolean>;
+}
+
+const FIT_OPTIONS = { padding: 0.2, duration: 200 } as const;
+
+/**
+ * 設計アシスタントが既存のキャンバスへ足したノードを見せる（v53）。
+ *
+ * 1. 足したノードが全部見えていれば何もしない（人が合わせた表示を崩さない）。
+ * 2. 見えていなければ全体に fitView する。
+ * 3. それでも見えない（ノードが多く、最小ズームで全体が収まらない）なら、足したノードへ fitView する。
+ * `settled` は直前に始めた全体の fitView（ノード数の変化で走る）。重ねて動かさないよう終わるのを待つ。
+ */
+export async function revealNodes(
+  flow: RevealTarget,
+  nodeIds: readonly string[],
+  size: () => { readonly width: number; readonly height: number },
+  settled?: Promise<unknown>,
+): Promise<'visible' | 'fit-all' | 'fit-added'> {
+  await settled;
+  const present = nodeIds.filter((id) => flow.getInternalNode(id) !== undefined);
+  const hidden = (): boolean => present.some((id) => {
+    const node = flow.getInternalNode(id);
+    if (node === undefined) return false;
+    const rect = { ...node.internals.positionAbsolute, width: node.measured.width ?? 0, height: node.measured.height ?? 0 };
+    return !isRectVisible(rect, flow.getViewport(), size());
+  });
+  if (present.length === 0 || !hidden()) return 'visible';
+  await flow.fitView(FIT_OPTIONS);
+  if (!hidden()) return 'fit-all';
+  await flow.fitView({ ...FIT_OPTIONS, nodes: present.map((id) => ({ id })) });
+  return 'fit-added';
+}
+
 export function FlowCanvas() {
   const storedNodes = useToolBuilderStore((state) => state.nodes);
   const highlight = useToolBuilderStore((state) => state.designChat.highlight);
@@ -86,11 +140,26 @@ export function FlowCanvas() {
   // 全体を並べ直したとき（整列・元に戻す・折り返しての読み込み）はノード数が変わらないこともあるので、
   // store の layoutRevision でも再フィットする（v51）。
   const nodeCount = nodes.length;
+  // 直近の全体 fitView。足したノードを見せる処理（下）がこれの終わりを待ってから確かめる。
+  const fitAll = useRef<Promise<unknown> | undefined>(undefined);
   useEffect(() => {
     if (instance === undefined) return;
-    const timer = window.setTimeout(() => { void instance.fitView({ padding: 0.2, duration: 200 }); }, 0);
+    const timer = window.setTimeout(() => { fitAll.current = instance.fitView(FIT_OPTIONS); }, 0);
     return () => window.clearTimeout(timer);
   }, [instance, nodeCount, layoutRevision]);
+
+  // 設計アシスタントが既存のキャンバスへ足したノード（v53）。全体 fitView だけでは最小ズームで収まらない・
+  // ノード数が変わらない（足して消した）ときに画面外へ残るので、足したノードが見えるまで表示を合わせる。
+  // 上の fitView と同じ tick のタイマーで、宣言順に後から走る（fitAll.current が先に入る）。
+  const reveal = useToolBuilderStore((state) => state.designChatReveal);
+  useEffect(() => {
+    if (instance === undefined || reveal === undefined) return;
+    const timer = window.setTimeout(() => {
+      const size = () => ({ width: canvasRef.current?.clientWidth ?? 0, height: canvasRef.current?.clientHeight ?? 0 });
+      void revealNodes(instance, reveal.nodeIds, size, fitAll.current);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [instance, reveal]);
 
   return (
     <main ref={canvasRef} className="flow-canvas" aria-label={text('ETL canvas', 'ETLキャンバス')}>

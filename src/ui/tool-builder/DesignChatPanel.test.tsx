@@ -236,6 +236,19 @@ describe('DesignChatPanel: 適用結果の扱い', () => {
     expect(screen.queryByRole('button', { name: 'この変更を取り消す' })).toBeNull();
   });
 
+  it('異常: 返答の文が「追加しました」と言っていても、通らなかったターンは赤枠の先頭で「適用していません」と言い切る', async () => {
+    const api = client({ designChat: vi.fn().mockResolvedValue({
+      message: '月ごとの合計に集計して、新しい順に並べるノードを追加しました。',
+      changes: [],
+      problems: ['sort: column(s) not found: periodStart'],
+    } satisfies DesignChatResultDto) });
+    const input = await renderPanel(api);
+    await send(input, '月ごとの合計に集計して新しい順に');
+
+    const problems = await screen.findByRole('alert');
+    expect(problems.textContent).toMatch(/^適用していません（キャンバスは変わっていません）/);
+  });
+
   it('正常: 変更したノードの強調は数秒で消える', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
@@ -253,11 +266,16 @@ describe('DesignChatPanel: 適用結果の扱い', () => {
 });
 
 describe('DesignChatPanel: モデル未設定', () => {
-  it('異常: モデルが未設定なら入力欄を無効にし、関数電卓と同じ直し方を案内する', async () => {
+  it('異常: モデルが未設定なら入力欄を無効にし、設計アシスタント用の文で設定画面の「モデルプロバイダ」へ導く', async () => {
     const api = client({ designAssistantCapability: vi.fn().mockResolvedValue(false) });
-    render(<I18nProvider initialLanguage="ja"><DesignChatPanel client={api} /></I18nProvider>);
+    const navigate = vi.fn();
+    render(<NavigationProvider navigate={navigate}><I18nProvider initialLanguage="ja"><DesignChatPanel client={api} /></I18nProvider></NavigationProvider>);
 
-    expect(await screen.findByText(/ローカルLLMが未設定です。設定 > モデル で main スロットを設定して/)).toBeTruthy();
+    expect(await screen.findByText(/設計アシスタントを使うにはモデルが必要です。設定画面の「モデルプロバイダ」でメインモデル/)).toBeTruthy();
+    // 関数電卓用の文（「AIに式を書かせられます」）を出さない。
+    expect(screen.queryByText(/式を書かせられます/)).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '設定画面を開く' }));
+    expect(navigate).toHaveBeenCalledWith('Settings');
     const input = screen.getByLabelText('指示') as HTMLTextAreaElement;
     expect(input.disabled).toBe(true);
     fireEvent.change(input, { target: { value: '年次に絞って' } });
@@ -265,10 +283,17 @@ describe('DesignChatPanel: モデル未設定', () => {
     expect(api.designChat).not.toHaveBeenCalled();
   });
 
+  it('異常: 英語表示でも設計アシスタント用の文で「Model provider」へ導く', async () => {
+    const api = client({ designAssistantCapability: vi.fn().mockResolvedValue(false) });
+    render(<I18nProvider initialLanguage="en"><DesignChatPanel client={api} /></I18nProvider>);
+    expect(await screen.findByText(/The design assistant needs a model\. Set the main model under "Model provider" in Settings/)).toBeTruthy();
+    expect(screen.queryByText(/write formulas/)).toBeNull();
+  });
+
   it('異常: 可否を答えられない古いサーバーでも落ちず、使えないものとして案内する', async () => {
     const api = client({ designAssistantCapability: vi.fn().mockRejectedValue(new Error('offline')) });
     render(<I18nProvider initialLanguage="ja"><DesignChatPanel client={api} /></I18nProvider>);
-    expect(await screen.findByText(/ローカルLLMが未設定です/)).toBeTruthy();
+    expect(await screen.findByText(/設計アシスタントを使うにはモデルが必要です/)).toBeTruthy();
   });
 });
 
@@ -430,8 +455,10 @@ describe('DesignChatPanel: 履歴の圧縮（v49）', () => {
   it('異常: モデルが未設定なら圧縮も押せない（要約もモデルが書くため）', async () => {
     const api = client({ designAssistantCapability: vi.fn().mockResolvedValue(false) });
     await renderSeeded(api, 6);
-    await screen.findByText(/ローカルLLMが未設定です/);
-    expect((screen.getByRole('button', { name: '履歴を圧縮' }) as HTMLButtonElement).disabled).toBe(true);
+    await screen.findByText(/設計アシスタントを使うにはモデルが必要です/);
+    const compact = screen.getByRole('button', { name: '履歴を圧縮' }) as HTMLButtonElement;
+    expect(compact.disabled).toBe(true);
+    expect(compact.title).toContain('モデルプロバイダ');
   });
 
   it('正常: 取り消せなくなることを、押す前に補助文で伝える', async () => {
@@ -563,5 +590,44 @@ describe('ToolBuilder: 設計アシスタントの開閉', () => {
     } finally {
       setItem.mockRestore();
     }
+  });
+});
+
+describe('DesignChatPanel: 変更一覧の表示（v53）', () => {
+  /** サーバーの英語の定型文（graph-edit.ts / design-chat-agent-tool.ts が書く原文）で 1 ターン積む。 */
+  function seedEnglishChanges(): void {
+    useToolBuilderStore.getState().setDesignChatOpen(true);
+    const id = useToolBuilderStore.getState().startDesignChatTurn('地域で絞って');
+    useToolBuilderStore.getState().completeDesignChatTurn(id, {
+      message: '地域で絞りました。',
+      graph: currentGraph(),
+      changes: [
+        { op: 'add-node', nodeId: 'filter-region', summary: `added filter 'filter-region' after 'source-1', before 'filter-1' with column="region", op="eq", value="関東"` },
+        { op: 'set-config', nodeId: 'filter-1', summary: `set config of filter 'filter-1': column="age"` },
+        { op: 'connect', nodeId: 'join-1', summary: `connected 'source-1' to join 'join-1' on input 1` },
+        { op: 'set-agent-tool', nodeId: 'agent-tool', summary: `set the tool description for the agent (Returns rows), and the name 'region_rows'` },
+      ],
+      problems: [],
+    });
+  }
+
+  it('正常: 日本語表示ではサーバーの英文を日本語にし、ノード種別はパレットと同じ日本語名で出す', async () => {
+    seedEnglishChanges();
+    await renderPanel(client(), 'ja');
+    const items = [...document.querySelectorAll('.design-chat-changes li')].map((item) => item.textContent);
+    expect(items).toEqual([
+      '行フィルター「filter-region」を追加しました（「source-1」の後ろ・「filter-1」の手前）（設定: column="region", op="eq", value="関東"）',
+      '行フィルター「filter-1」の設定を変更しました: column="age"',
+      '「source-1」を結合「join-1」につなぎました（右の入力）',
+      'エージェント向けのツール説明を設定しました（Returns rows）、ツール名を「region_rows」にしました',
+    ]);
+    expect(document.querySelector('.design-chat-changes')?.textContent).not.toMatch(/added|set config|connected/);
+  });
+
+  it('従来どおり: 英語表示ではサーバーの原文のまま出し、会話の履歴としてモデルへ戻す文も原文のまま', async () => {
+    seedEnglishChanges();
+    await renderPanel(client(), 'en');
+    expect(screen.getByText(`added filter 'filter-region' after 'source-1', before 'filter-1' with column="region", op="eq", value="関東"`)).toBeTruthy();
+    expect(useToolBuilderStore.getState().designChat.turns[0]?.changes[0]?.summary).toMatch(/^added filter /);
   });
 });

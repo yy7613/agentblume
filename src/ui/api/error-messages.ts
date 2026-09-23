@@ -529,16 +529,18 @@ const FILTER_OP_JA: Record<string, string> = { in: 'いずれかに一致', notI
  *
  * 英語UIでは原文で十分なので ja のときだけ変換し、en は undefined を返して原文を残す。
  */
-function localizeTemplateSlotDetail(message: string, language: ErrorLanguage): string | undefined {
+function localizeTemplateSlotDetail(message: string, language: ErrorLanguage, slotLabel: TemplateSlotLabel = () => undefined): string | undefined {
   if (language !== 'ja') return undefined;
 
   // 必須スロットが空。候補があればそのまま挙げる（「何を選べばよいか」が最優先）。
-  let matched = /^slot '(?:.+)' \((.+)\) has no value; choose one of (.+)$/.exec(message);
-  if (matched !== null) return `「${matched[1]}」を選んでください（候補: ${matched[2]}）`;
-  matched = /^slot '(?:.+)' \((.+)\) has no value; this data source offers no column that fits, so this template cannot be used here$/.exec(message);
-  if (matched !== null) return `「${matched[1]}」に選べる列がこのデータソースにありません。別のデータソースを選ぶか、別のテンプレートを使ってください`;
-  matched = /^slot '(?:.+)' \((.+)\) has no value; fill it in$/.exec(message);
-  if (matched !== null) return `「${matched[1]}」を入力してください`;
+  // 原文の括弧内はテンプレートの英語ラベル（`slot.label.en`）なので、画面の欄と同じ日本語ラベルへ差し替える（v53）。
+  // 日本語ラベルが引けない（テンプレートを読み込めていない）ときだけ原文のラベルを残す。
+  let matched = /^slot '(.+?)' \((.+)\) has no value; choose one of (.+)$/.exec(message);
+  if (matched !== null) return `「${slotLabel(matched[1] ?? '') ?? matched[2]}」を選んでください（候補: ${matched[3]}）`;
+  matched = /^slot '(.+?)' \((.+)\) has no value; this data source offers no column that fits, so this template cannot be used here$/.exec(message);
+  if (matched !== null) return `「${slotLabel(matched[1] ?? '') ?? matched[2]}」に選べる列がこのデータソースにありません。別のデータソースを選ぶか、別のテンプレートを使ってください`;
+  matched = /^slot '(.+?)' \((.+)\) has no value; fill it in$/.exec(message);
+  if (matched !== null) return `「${slotLabel(matched[1] ?? '') ?? matched[2]}」を入力してください`;
 
   // 列の選択。
   matched = /^slot '(?:.+)' is set to '(.+)', which is not a (.+) column of that data source; choose one of (.+)$/.exec(message);
@@ -608,6 +610,9 @@ function localizeTemplateSlotDetail(message: string, language: ErrorLanguage): s
   return undefined;
 }
 
+/** スロット名（`slot.name`）→ 画面に出している日本語ラベル。引けなければ undefined（原文のラベルを残す）。 */
+export type TemplateSlotLabel = (slotName: string) => string | undefined;
+
 /** `column.role` → 画面の言い回し（テンプレートの問題文に出てくる役割名）。 */
 const TEMPLATE_COLUMN_ROLE_JA: Record<string, string> = {
   period: '期間',
@@ -629,8 +634,8 @@ function TEMPLATE_SOURCE_COUNT_JA(text: string): string {
  * ツールテンプレートのスロット違反 1 件の表示文言（画面がスロットの真下へ出す）。
  * 変換できなければ原文を残す（原文も直し方を含んでいるので、握りつぶさない）。
  */
-export function localizeTemplateSlotMessage(message: string, language: ErrorLanguage = detectErrorLanguage()): string {
-  return localizeTemplateSlotDetail(message.trim(), language) ?? message;
+export function localizeTemplateSlotMessage(message: string, language: ErrorLanguage = detectErrorLanguage(), slotLabel?: TemplateSlotLabel): string {
+  return localizeTemplateSlotDetail(message.trim(), language, slotLabel) ?? message;
 }
 
 /**
@@ -640,6 +645,7 @@ export function localizeTemplateSlotMessage(message: string, language: ErrorLang
 export function toolTemplateSlotProblems(
   error: { readonly code?: string; readonly details?: Readonly<Record<string, unknown>> },
   language: ErrorLanguage = detectErrorLanguage(),
+  slotLabel?: TemplateSlotLabel,
 ): readonly { readonly slot?: string; readonly message: string }[] {
   const slots = error.details?.['slots'];
   if (!Array.isArray(slots)) return [];
@@ -647,7 +653,7 @@ export function toolTemplateSlotProblems(
     if (entry === null || typeof entry !== 'object') return [];
     const { slot, message } = entry as { slot?: unknown; message?: unknown };
     if (typeof message !== 'string') return [];
-    return [{ ...(typeof slot === 'string' && slot !== '' ? { slot } : {}), message: localizeTemplateSlotMessage(message, language) }];
+    return [{ ...(typeof slot === 'string' && slot !== '' ? { slot } : {}), message: localizeTemplateSlotMessage(message, language, slotLabel) }];
   });
 }
 
@@ -939,6 +945,60 @@ function localizeDesignChatDetail(message: string, language: ErrorLanguage): str
   if (matched !== null) return `ノード「${matched[1]}」: ${localizeMessageText(matched[2] ?? '', language) ?? matched[2]}`;
 
   return undefined;
+}
+
+/**
+ * 設計アシスタントの変更一覧（`changes[].summary`）の日本語化（v53）。
+ *
+ * 原文は `src/domain/etl/graph-edit.ts`（add-node / remove-node / set-config / connect / disconnect）と
+ * `src/application/tool/design-chat-agent-tool.ts`（set-agent-tool）が書く英語の定型文で、会話の履歴として
+ * モデルへもそのまま戻る（契約）。サーバーの文は変えず、画面に出すときだけここで訳す。
+ * `nodeTypeLabel` はノード種別（`filter` など）→ 画面の日本語名。UI（tool-builder）が node-catalog から渡す。
+ * 訳せない形・en は原文のまま返す（詳細を握りつぶさない）。設定の要約（`key=value`）は設定欄のキーなので訳さない。
+ */
+export function localizeDesignChatChange(
+  summary: string,
+  language: ErrorLanguage = detectErrorLanguage(),
+  nodeTypeLabel: (type: string) => string | undefined = () => undefined,
+): string {
+  if (language !== 'ja') return summary;
+  const node = (type: string, id: string): string => `${nodeTypeLabel(type) ?? type}「${id}」`;
+  const settings = (digest: string | undefined): string => (digest === undefined ? '' : `（設定: ${digest}）`);
+
+  let matched = /^added (\S+) '([^']+)' after '([^']+)'(?:, before '([^']+)')?(?: with ([\s\S]+))?$/.exec(summary);
+  if (matched !== null) {
+    const before = matched[4] === undefined ? '' : `・「${matched[4]}」の手前`;
+    return `${node(matched[1] ?? '', matched[2] ?? '')}を追加しました（「${matched[3]}」の後ろ${before}）${settings(matched[5])}`;
+  }
+
+  matched = /^added (\S+) '([^']+)'(?: with ([\s\S]+))?$/.exec(summary);
+  if (matched !== null) return `${node(matched[1] ?? '', matched[2] ?? '')}を追加しました${settings(matched[3])}`;
+
+  matched = /^removed (\S+) '([^']+)'(?:, connecting '([^']+)' to '([^']+)')?$/.exec(summary);
+  if (matched !== null) {
+    const bridge = matched[3] === undefined ? '' : `（「${matched[3]}」と「${matched[4]}」をつなぎ直しました）`;
+    return `${node(matched[1] ?? '', matched[2] ?? '')}を削除しました${bridge}`;
+  }
+
+  matched = /^set config of (\S+) '([^']+)': ([\s\S]*)$/.exec(summary);
+  if (matched !== null) return `${node(matched[1] ?? '', matched[2] ?? '')}の設定を変更しました${matched[3] === '' ? '' : `: ${matched[3]}`}`;
+
+  matched = /^connected '([^']+)' to (\S+) '([^']+)'(?: on input (\d+))?$/.exec(summary);
+  if (matched !== null) {
+    const port = matched[4] === undefined ? '' : matched[4] === '0' ? '（左の入力）' : matched[4] === '1' ? '（右の入力）' : `（入力 ${matched[4]}）`;
+    return `「${matched[1]}」を${node(matched[2] ?? '', matched[3] ?? '')}につなぎました${port}`;
+  }
+
+  matched = /^disconnected '([^']+)' from (\S+) '([^']+)'$/.exec(summary);
+  if (matched !== null) return `「${matched[1]}」と${node(matched[2] ?? '', matched[3] ?? '')}の接続を外しました`;
+
+  matched = /^set the tool description for the agent \(([\s\S]*)\)(?:, and the name '([^']*)')?$/.exec(summary);
+  if (matched !== null) {
+    const name = matched[2] === undefined ? '' : `、ツール名を「${matched[2]}」にしました`;
+    return `エージェント向けのツール説明を設定しました（${matched[1]}）${name}`;
+  }
+
+  return summary;
 }
 
 /**

@@ -400,12 +400,14 @@ function SettingsTail() {
     </section>
     <section className="workspace-card">
       <h2>{text('Security gates', '安全ゲート')}</h2>
+      {/* docs/08-security-auth.md §0 の実装状況（認証・テナント境界・RBAC・監査ログまで実装済み）と対で保守する。 */}
       <ul className="gate-list">
         <li className="ready">{text('Preview blocks write Tools', 'プレビューでは書き込みToolを遮断')}</li>
         <li className="ready">{text('Run trace persistence enabled', '実行トレースの永続化が有効')}</li>
         <li className="ready">{text('Tenant scope comes from the authenticated principal', 'テナントスコープは認証済みPrincipalから決まる')}</li>
-        <li className="locked">{text('MCP publication locked until audit adapters exist', '監査アダプター実装までMCP公開をロック')}</li>
-        <li className="locked">{text('Role-based authorization not implemented yet', 'ロールベースの認可は未実装')}</li>
+        <li className="ready">{text('Role-based authorization (RBAC) is enforced on every route', 'ロールベースの認可（RBAC）を全ルートに適用')}</li>
+        <li className="ready">{text('Deletions, approvals, publishing, and executions are recorded in the audit log', '削除・承認・公開・実行は監査ログに記録')}</li>
+        <li className="ready">{text('MCP server changes require the Operator role', 'MCPサーバー設定の変更にはOperator権限が必要')}</li>
         <li className="locked">{text('Production execution unavailable', '本番実行は利用不可')}</li>
       </ul>
     </section>

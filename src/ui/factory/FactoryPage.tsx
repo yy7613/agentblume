@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
-import type { AgentSummaryDto, CreateFactoryRunDto, DataSourceDto, FactoryEventDto, FactoryPlanDto, FactoryPromptStrategyDto, FactoryRunDto, FactoryToolGenerationDto } from '../api/types';
+import type { AgentSummaryDto, CreateFactoryRunDto, DataSourceDto, FactoryEventDto, FactoryPlanDto, FactoryPromptStrategyDto, FactoryReportDto, FactoryRunDto, FactoryToolGenerationDto } from '../api/types';
 import { useI18n } from '../i18n';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ScreenLink } from '../navigation';
@@ -63,6 +63,52 @@ function qualityLabel(quality: NonNullable<FactoryRunDto['report']>['quality'], 
 /** 計画のうち、複数データソースを結合するToolの件数（ADR-0047 round 3）。 */
 function joinedToolCount(plan: FactoryPlanDto): number {
   return plan.tools.filter((tool) => (tool.additionalDataSourceIds ?? []).length > 0).length;
+}
+
+/**
+ * 計画承認カードの説明文。`checkpoint.prompt` はサーバー生成の英文（モデル・APIの契約なので変えない）だが、
+ * 画面にはそのまま出さず、同じ情報（goal・対象・tool/skill/persona/scenario件数）から日本語表示を組み立て直す。
+ * `buildCheckpoint`（run-factory.ts）の2つの定型文と対になっている。
+ */
+function planApprovalSummary(run: FactoryRunDto, text: Translate, agents: readonly AgentSummaryDto[]): string {
+  const checkpoint = run.checkpoint;
+  if (checkpoint === undefined) return '';
+  const goal = run.input.goal.goal;
+  const plan = checkpoint.plan;
+  if (isEnhanceRun(run)) {
+    const target = baseAgentLabel(run, agents);
+    return text(
+      `Review the proposed enhancement for "${goal}": add ${plan.tools.length} tool(s) and ${plan.skills.length} skill(s) to the existing agent "${target}", then validate it with ${plan.scenarios.length} scenario(s) across ${plan.personas.length} persona(s).`,
+      `「${goal}」に対する変更計画です: 既存エージェント「${target}」に Tool ${plan.tools.length} 件・Skill ${plan.skills.length} 件を追加し、ペルソナ ${plan.personas.length} 件・シナリオ ${plan.scenarios.length} 件で検証します。`,
+    );
+  }
+  return text(
+    `Review the proposed plan for "${goal}": agent "${plan.agentBrief.displayName}" with ${plan.tools.length} tool(s), ${plan.skills.length} skill(s), ${plan.personas.length} persona(s), ${plan.scenarios.length} scenario(s).`,
+    `「${goal}」の計画案です: エージェント「${plan.agentBrief.displayName}」、Tool ${plan.tools.length} 件、Skill ${plan.skills.length} 件、ペルソナ ${plan.personas.length} 件、シナリオ ${plan.scenarios.length} 件。`,
+  );
+}
+
+/**
+ * `defaultSummary`（run-factory.ts）が返す決定的な定型文だけを見分けて日本語にする。Analystが実際に書いた
+ * 総括（LLM生成・goal.languageで既にその言語になっている）はここでは判定できないため、パターンに合わなければ
+ * そのまま返す（英文のまま出すことはあっても、意味のある文章を壊さない）。
+ */
+const FACTORY_STOPPED_PATTERN = /^Factory run stopped after (\d+) iteration\(s\); latest goalAchievedRate=([-\d.]+), avgSatisfaction=([-\d.]+)\.$/;
+function reportSummaryText(summary: string, text: Translate): string {
+  if (summary === 'Factory run stopped with no iterations.') {
+    return text(summary, 'イテレーションが1件も実行されないまま、Factory runが停止しました。');
+  }
+  const match = FACTORY_STOPPED_PATTERN.exec(summary);
+  if (match === null) return summary;
+  const [, iterations, goalRate, satisfaction] = match;
+  return text(summary, `${iterations} 回のイテレーション後にFactory runが停止しました（直近の目標達成率=${goalRate}、平均満足度=${satisfaction}）。`);
+}
+
+/** レポートの候補Agent。agentsに見つかれば表示名（無ければ内部IDのまま）で示す。 */
+function candidateLabel(candidate: FactoryReportDto['candidate'], agents: readonly AgentSummaryDto[]): string {
+  const found = agents.find((agent) => agent.internalId === candidate.agentId);
+  const name = found === undefined || found.displayName.trim() === '' ? candidate.agentId : found.displayName;
+  return `${name}@${candidate.version}`;
 }
 
 function stageLabel(stage: FactoryRunDto['stage'], text: Translate): string {
@@ -389,7 +435,7 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
 
           {selectedRun.status === 'waiting-approval' && selectedRun.checkpoint !== undefined && <div className="notice-card" aria-label={text('Plan approval', '計画承認')}>
             <strong>{isEnhanceRun(selectedRun) ? text('Change plan approval required', '変更計画の承認が必要です') : text('Plan approval required', '計画の承認が必要です')}</strong>
-            <p>{selectedRun.checkpoint.prompt}</p>
+            <p>{planApprovalSummary(selectedRun, text, agents)}</p>
             {isEnhanceRun(selectedRun)
               ? <p>{text('Change plan for existing agent', '既存エージェントに対する変更計画')}: <strong>{baseAgentLabel(selectedRun, agents)}</strong></p>
               : <p>{text('Agent', 'エージェント')}: <strong>{selectedRun.checkpoint.plan.agentBrief.displayName}</strong> — {selectedRun.checkpoint.plan.agentBrief.role}</p>}
@@ -426,8 +472,8 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
               {selectedRun.report.qualityReasons.map((reason) => <li key={reason}>{reason}</li>)}
             </ul>}
             <p>{text('Best iteration', '最良イテレーション')}: <strong>{selectedRun.report.bestIteration}</strong></p>
-            <p>{text('Candidate', '候補')}: <strong>{selectedRun.report.candidate.agentId}@{selectedRun.report.candidate.version}</strong></p>
-            <p>{selectedRun.report.summary}</p>
+            <p>{text('Candidate', '候補')}: <strong>{candidateLabel(selectedRun.report.candidate, agents)}</strong></p>
+            <p>{reportSummaryText(selectedRun.report.summary, text)}</p>
             <div className="table-wrap"><table>
               {/* APIのフィールド名（goalAchievedRate 等）をそのまま出さず、利用者に意味が通る見出しにする。 */}
               <thead><tr><th>{text('Iteration', 'イテレーション')}</th><th>{text('Goal achieved rate', '目標達成率')}</th><th>{text('Avg. satisfaction', '平均満足度')}</th><th>{text('Tool hit rate', 'ツール命中率')}</th><th>{text('Survey not collected', 'アンケート未回収')}</th></tr></thead>

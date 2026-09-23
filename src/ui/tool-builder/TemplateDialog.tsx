@@ -398,7 +398,13 @@ export function TemplateDialog({ client, open, onClose }: {
       close();
     } catch (cause) {
       if (cause instanceof ApiError) {
-        const slots = toolTemplateSlotProblems(cause, language);
+        // 「未選択」の文は原文がテンプレートの英語ラベルを持つので、欄と同じラベル（日本語表示なら日本語）へ差し替える（v53）。
+        const slotLabel = (name: string): string | undefined => {
+          const slot = template.slots.find((candidate) => candidate.name === name);
+          const label = slot === undefined ? '' : pick(slot.label, language);
+          return label === '' ? undefined : label;
+        };
+        const slots = toolTemplateSlotProblems(cause, language, slotLabel);
         setProblems(slots);
         // 欄ごとの指摘があるときは、それ自体が「どこを直すか」なので見出しを重ねない。
         // 指摘が 1 つも無い失敗（404・実体化そのものの失敗）だけを作成ボタンの近くへ出す。

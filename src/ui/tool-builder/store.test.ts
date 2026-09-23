@@ -456,13 +456,25 @@ describe('tool builder store', () => {
 
     it('agentTool（名前 + 説明）があればその名前を function 名として検証する', () => {
       fillMetadata();
+      // v53: 名前だけでも agentTool を送る（説明は既定で補う）ので、その名前で判定する。
       state().setMetadata('agentName', 'bad name');
-      // 説明が無い間は agentTool を送らないので publishName で判定する。
-      expect(effectiveFunctionName(state().metadata)).toBe('adult_customers');
+      expect(effectiveFunctionName(state().metadata)).toBe('bad name');
       state().setMetadata('agentDescription', 'desc');
       expect(effectiveFunctionName(state().metadata)).toBe('bad name');
       state().setPropagation(okPropagation);
       expect(saveBlocker(state())).toEqual({ kind: 'invalid-function-name', name: 'bad name' });
+    });
+
+    it('異常: 説明だけで名前を publishName から補うとき、publishName が関数名の規則外なら従来どおり保存を止める（補った名前を黙って送らない）', () => {
+      fillMetadata();
+      state().setPropagation(okPropagation);
+      state().setMetadata('agentDescription', '成人の顧客を返します。');
+      state().setMetadata('publishName', '成人顧客');
+      // 名前が空なら function 名は publishName のまま（effectiveFunctionName は変わらない）。
+      expect(effectiveFunctionName(state().metadata)).toBe('成人顧客');
+      expect(saveBlocker(state())).toEqual({ kind: 'invalid-function-name', name: '成人顧客' });
+      state().setMetadata('agentName', 'adult_customers');
+      expect(saveBlocker(state())).toBeUndefined();
     });
 
     it('自動検証の失敗（draftIssue）や実行中（previewLoading）も保存を止める', () => {
@@ -535,17 +547,40 @@ describe('tool builder store', () => {
       expect(dto.outputSchema).toEqual(okPropagation.nodes['filter-1'].schema);
     });
 
-    it('agentTool は名前と説明の片方だけ（空白だけを含む）では載せない', () => {
+    it('正常: 説明だけなら名前に publishName を補って載せる（設計アシスタントの説明文を捨てない）', () => {
+      fillMetadata();
+      useToolBuilderStore.getState().setMetadata('agentDescription', 'Find adults.');
+      expect(buildSaveDto().agentTool).toEqual({ name: 'adult_customers', description: 'Find adults.' });
+      // 空白だけの名前も「空」として補う。
+      useToolBuilderStore.getState().setMetadata('agentName', '   ');
+      expect(buildSaveDto().agentTool).toEqual({ name: 'adult_customers', description: 'Find adults.' });
+    });
+
+    it('正常: 名前だけなら説明に読み込み時と同じ既定（表示名 (副作用)）を補って載せる', () => {
       fillMetadata();
       useToolBuilderStore.getState().setMetadata('agentName', 'find_adults');
-      expect(buildSaveDto()).not.toHaveProperty('agentTool');
-      useToolBuilderStore.getState().setMetadata('agentName', '');
-      useToolBuilderStore.getState().setMetadata('agentDescription', 'Find adults.');
+      expect(buildSaveDto().agentTool).toEqual({ name: 'find_adults', description: 'Customer filter (read-only)' });
+      useToolBuilderStore.getState().setMetadata('agentDescription', '  ');
+      expect(buildSaveDto().agentTool).toEqual({ name: 'find_adults', description: 'Customer filter (read-only)' });
+    });
+
+    it('従来どおり: 名前と説明の両方があればそのまま載せ、両方空（空白だけを含む）なら載せない', () => {
+      fillMetadata();
       expect(buildSaveDto()).not.toHaveProperty('agentTool');
       useToolBuilderStore.getState().setMetadata('agentName', '   ');
+      useToolBuilderStore.getState().setMetadata('agentDescription', ' ');
       expect(buildSaveDto()).not.toHaveProperty('agentTool');
       useToolBuilderStore.getState().setMetadata('agentName', 'find_adults');
+      useToolBuilderStore.getState().setMetadata('agentDescription', 'Find adults.');
       expect(buildSaveDto().agentTool).toEqual({ name: 'find_adults', description: 'Find adults.' });
+    });
+
+    it('正常: 設計アシスタントが説明文だけを書いた後に保存すると、その説明文が保存ペイロードに載る', () => {
+      fillMetadata();
+      const turn = useToolBuilderStore.getState().startDesignChatTurn('説明を書いて');
+      useToolBuilderStore.getState().completeDesignChatTurn(turn, { message: '説明を書きました。', agentTool: { description: '成人の顧客を返します。' } });
+      expect(useToolBuilderStore.getState().metadata.agentName).toBe('');
+      expect(buildSaveDto().agentTool).toEqual({ name: 'adult_customers', description: '成人の顧客を返します。' });
     });
 
     it('outputSchema は order の末尾ではなく terminalId の推論結果で、終端が結果に無ければ載せない', () => {
@@ -1173,5 +1208,49 @@ describe('自動配置（段組み＋折り返し）', () => {
     useToolBuilderStore.getState().arrangeNodes();
     expect(useToolBuilderStore.getState().arrangeUndo).toBeUndefined();
     expect(useToolBuilderStore.getState().layoutRevision).toBe(revision);
+  });
+});
+
+describe('designChatReveal（設計アシスタントが既存のキャンバスへ足したノードを画面が見せる v53）', () => {
+  const graph = (extra: { id: string; type: string }[]) => ({
+    nodes: [
+      { id: 'source-1', type: 'json-source', config: { rows: [] }, position: { x: 80, y: 120 } },
+      { id: 'filter-1', type: 'filter', config: {}, position: { x: 390, y: 120 } },
+      ...extra.map((node) => ({ ...node, config: {} })),
+    ],
+    edges: [{ from: 'source-1', to: 'filter-1' }],
+  });
+
+  it('正常: 既存のキャンバスへノードを足した応答では、足したノードだけを見せる対象にする', () => {
+    const turn = useToolBuilderStore.getState().startDesignChatTurn('並べ替えて');
+    useToolBuilderStore.getState().completeDesignChatTurn(turn, {
+      message: '足しました。', graph: graph([{ id: 'sort-1', type: 'sort' }, { id: 'limit-1', type: 'limit' }]),
+      changes: [{ op: 'set-config', nodeId: 'filter-1', summary: 'x' }, { op: 'add-node', nodeId: 'sort-1', summary: 'y' }],
+    });
+    expect(useToolBuilderStore.getState().designChatReveal).toEqual({ nodeIds: ['sort-1', 'limit-1'] });
+  });
+
+  it('境界: 同じノードを足す応答が続いても、毎回新しい合図（別のオブジェクト）にする', () => {
+    const first = useToolBuilderStore.getState().startDesignChatTurn('1');
+    useToolBuilderStore.getState().completeDesignChatTurn(first, { message: 'a', graph: graph([{ id: 'sort-1', type: 'sort' }]) });
+    const before = useToolBuilderStore.getState().designChatReveal;
+    useToolBuilderStore.getState().revertDesignChatTurn(first);
+    const second = useToolBuilderStore.getState().startDesignChatTurn('2');
+    useToolBuilderStore.getState().completeDesignChatTurn(second, { message: 'b', graph: graph([{ id: 'sort-1', type: 'sort' }]) });
+    expect(useToolBuilderStore.getState().designChatReveal).toEqual({ nodeIds: ['sort-1'] });
+    expect(useToolBuilderStore.getState().designChatReveal).not.toBe(before);
+  });
+
+  it('従来どおり: 足さない応答（設定だけ）と空のキャンバスへの適用（全体を並べて見せる）では合図を出さない', () => {
+    const turn = useToolBuilderStore.getState().startDesignChatTurn('設定だけ');
+    useToolBuilderStore.getState().completeDesignChatTurn(turn, { message: 'a', graph: graph([]) });
+    expect(useToolBuilderStore.getState().designChatReveal).toBeUndefined();
+
+    useToolBuilderStore.getState().onNodesChange([{ type: 'remove', id: 'source-1' }, { type: 'remove', id: 'filter-1' }]);
+    const revision = useToolBuilderStore.getState().layoutRevision;
+    const fresh = useToolBuilderStore.getState().startDesignChatTurn('作って');
+    useToolBuilderStore.getState().completeDesignChatTurn(fresh, { message: 'b', graph: graph([{ id: 'sort-1', type: 'sort' }]) });
+    expect(useToolBuilderStore.getState().designChatReveal).toBeUndefined();
+    expect(useToolBuilderStore.getState().layoutRevision).toBe(revision + 1);
   });
 });

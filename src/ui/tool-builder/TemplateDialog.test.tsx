@@ -419,6 +419,25 @@ describe('TemplateDialog: 作成', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('異常: 必須スロットの未選択は、原文の英語ラベルではなく欄と同じ日本語ラベルで出す', async () => {
+    const failure = new ApiError(422, 'TOOL_TEMPLATE_SLOTS', 'slots need a value', undefined, {
+      details: { slots: [{ slot: 'defaultGranularity', message: "slot 'defaultGranularity' (Default granularity) has no value; choose one of month, year" }] },
+    });
+    renderDialog(fakeClient({ instantiateToolTemplate: vi.fn().mockRejectedValue(failure) }), 'ja');
+    await choose('時系列の取り出し');
+    await userEvent.selectOptions(screen.getByLabelText('データソース'), 'ds-population');
+    await screen.findByRole('option', { name: /時点/ });
+    await userEvent.selectOptions(screen.getByLabelText('期間の列'), '時点');
+    const values = (screen.getByText('値の列')).closest('fieldset') as HTMLElement;
+    await userEvent.click(within(values).getByRole('checkbox', { name: /人口/ }));
+    await userEvent.selectOptions(screen.getByLabelText('既定の粒度'), 'year');
+    fillNames();
+    await userEvent.click(createButton());
+
+    await waitFor(() => expect(problemUnder(/^既定の粒度$/)).toBe('「既定の粒度」を選んでください（候補: month, year）'));
+    expect(document.querySelector('.template-dialog')?.textContent).not.toContain('Default granularity');
+  });
+
   it('異常: 欄に紐づかない失敗は作成ボタンの近くへ出す', async () => {
     const onClose = vi.fn();
     renderDialog(fakeClient({ instantiateToolTemplate: vi.fn().mockRejectedValue(new Error('server is down')) }), 'en', onClose);

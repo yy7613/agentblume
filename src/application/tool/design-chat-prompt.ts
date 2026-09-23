@@ -17,7 +17,7 @@ import { wrapUntrusted } from '../factory/roles/untrusted';
 import { nodeCatalogText } from './node-catalog';
 
 /**
- * 文の置き場所（v48 / ADR-0052）。版（`design-chat/v2`）はファイルの frontmatter が正。
+ * 文の置き場所（v48 / ADR-0052）。版（`design-chat/v3`）はファイルの frontmatter が正。
  * 差し戻しの見出しは段ごとに入れ替わるので、条件ではなく節を分けてコードで選ぶ。
  * ノードカタログは domain の正準リストから語彙を組むのでコードに残し、`{{nodeCatalog}}` で差し込む。
  */

@@ -61,7 +61,7 @@ describe('SettingsPage', () => {
     renderPage(api);
     await waitFor(() => expect(api.health).toHaveBeenCalled());
     expect(await screen.findByText('ok')).toBeTruthy();
-    expect(screen.getByText(/MCP publication locked/)).toBeTruthy();
+    expect(screen.getByText('Role-based authorization (RBAC) is enforced on every route')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
     await waitFor(() => expect(api.health).toHaveBeenCalledTimes(2));
   });
@@ -424,7 +424,31 @@ describe('SettingsPage モデル設定', () => {
     const failure = await screen.findByText('API offline');
     expect(failure.getAttribute('role')).toBe('alert');
     // 読み込めなくても既存セクションは表示され続ける。
-    expect(screen.getByText(/MCP publication locked/)).toBeTruthy();
+    expect(screen.getByText('Role-based authorization (RBAC) is enforced on every route')).toBeTruthy();
+  });
+});
+
+// v53 F4: 「安全ゲート」カードが docs/08 の実装状況（RBAC・監査ログ実装済み）と食い違っていた。
+describe('SettingsPage の安全ゲートカード（docs/08 の実装状況と一致させる）', () => {
+  it('正常: RBAC・監査ログが実装済みである旨を出し、「未実装」「ロック」という古い文言は出ない', async () => {
+    renderPage(createApi());
+    expect(await screen.findByText('Role-based authorization (RBAC) is enforced on every route')).toBeTruthy();
+    expect(screen.getByText('Deletions, approvals, publishing, and executions are recorded in the audit log')).toBeTruthy();
+    expect(screen.getByText('MCP server changes require the Operator role')).toBeTruthy();
+    expect(screen.queryByText(/Role-based authorization not implemented/)).toBeNull();
+    expect(screen.queryByText(/MCP publication locked/)).toBeNull();
+    // 実装されていない機能（本番実行）は引き続き locked のまま。
+    expect(screen.getByText('Production execution unavailable')).toBeTruthy();
+  });
+
+  it('正常: 日本語UIでも同じ内容が日本語で出て、古い訳（未実装・ロック）は残らない', async () => {
+    render(<I18nProvider initialLanguage="ja"><SettingsPage client={createApi() as unknown as ToolApiClient} /></I18nProvider>);
+    expect(await screen.findByText('ロールベースの認可（RBAC）を全ルートに適用')).toBeTruthy();
+    expect(screen.getByText('削除・承認・公開・実行は監査ログに記録')).toBeTruthy();
+    expect(screen.getByText('MCPサーバー設定の変更にはOperator権限が必要')).toBeTruthy();
+    expect(screen.queryByText('ロールベースの認可は未実装')).toBeNull();
+    expect(screen.queryByText(/監査アダプター実装までMCP公開をロック/)).toBeNull();
+    expect(screen.getByText('本番実行は利用不可')).toBeTruthy();
   });
 });
 

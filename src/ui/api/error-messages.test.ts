@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { describeMcpServerSkipped, detectErrorLanguage, isJudgeModelNotConfigured, localizeApiErrorMessage, localizeDiagnosticDetail, localizeJudgeFailure, localizeRunFailure, localizeRunTraceError, localizeSchemaIssueMessage, localizeTemplateSlotMessage, localizeToolCheckAssertion, splitFailureMessage, toolTemplateSlotProblems } from './error-messages';
+import { describeMcpServerSkipped, detectErrorLanguage, isJudgeModelNotConfigured, localizeApiErrorMessage, localizeDesignChatChange, localizeDiagnosticDetail, localizeJudgeFailure, localizeRunFailure, localizeRunTraceError, localizeSchemaIssueMessage, localizeTemplateSlotMessage, localizeToolCheckAssertion, splitFailureMessage, toolTemplateSlotProblems } from './error-messages';
 
 function ja(status: number, code: string, serverMessage: string): string {
   return localizeApiErrorMessage({ status, code, serverMessage }, 'ja');
@@ -1789,5 +1789,68 @@ describe('localizeApiErrorMessage: ツールテンプレート', () => {
 
   it('正常: 未知のテンプレートは一覧の読み直しへ導く', () => {
     expect(ja(404, 'TOOL_TEMPLATE_NOT_FOUND', "tool template 'x' was not found; choose one of period-series")).toContain('一覧を読み込み直して');
+  });
+});
+
+describe('localizeDesignChatChange（設計アシスタントの変更一覧 v53）', () => {
+  const label = (type: string): string | undefined => ({ filter: '行フィルター', sort: '並べ替え', join: '結合', 'csv-source': 'CSV入力' } as Record<string, string>)[type];
+
+  it('正常: add-node（孤立・直後へ挿入・手前あり・設定あり）を日本語にし、種別は渡された日本語名で出す', () => {
+    expect(localizeDesignChatChange(`added csv-source 'src-2'`, 'ja', label)).toBe('CSV入力「src-2」を追加しました');
+    expect(localizeDesignChatChange(`added sort 'sort-1' with keys=[{"column":"age"}]`, 'ja', label)).toBe('並べ替え「sort-1」を追加しました（設定: keys=[{"column":"age"}]）');
+    expect(localizeDesignChatChange(`added filter 'filter-region' after 'source-1'`, 'ja', label)).toBe('行フィルター「filter-region」を追加しました（「source-1」の後ろ）');
+    expect(localizeDesignChatChange(`added filter 'filter-region' after 'source-1', before 'filter-1' with column="region"`, 'ja', label))
+      .toBe('行フィルター「filter-region」を追加しました（「source-1」の後ろ・「filter-1」の手前）（設定: column="region"）');
+  });
+
+  it('正常: remove-node / set-config / connect / disconnect / set-agent-tool を日本語にする', () => {
+    expect(localizeDesignChatChange(`removed filter 'filter-1'`, 'ja', label)).toBe('行フィルター「filter-1」を削除しました');
+    expect(localizeDesignChatChange(`removed filter 'filter-1', connecting 'source-1' to 'sort-1'`, 'ja', label)).toBe('行フィルター「filter-1」を削除しました（「source-1」と「sort-1」をつなぎ直しました）');
+    expect(localizeDesignChatChange(`set config of filter 'filter-1': column="age", op="gte"`, 'ja', label)).toBe('行フィルター「filter-1」の設定を変更しました: column="age", op="gte"');
+    expect(localizeDesignChatChange(`connected 'a' to join 'join-1' on input 0`, 'ja', label)).toBe('「a」を結合「join-1」につなぎました（左の入力）');
+    expect(localizeDesignChatChange(`connected 'a' to sort 'sort-1'`, 'ja', label)).toBe('「a」を並べ替え「sort-1」につなぎました');
+    expect(localizeDesignChatChange(`disconnected 'a' from sort 'sort-1'`, 'ja', label)).toBe('「a」と並べ替え「sort-1」の接続を外しました');
+    expect(localizeDesignChatChange('set the tool description for the agent (Returns (yearly) rows)', 'ja', label)).toBe('エージェント向けのツール説明を設定しました（Returns (yearly) rows）');
+    expect(localizeDesignChatChange(`set the tool description for the agent (Rows...), and the name 'pop_top'`, 'ja', label)).toBe('エージェント向けのツール説明を設定しました（Rows...）、ツール名を「pop_top」にしました');
+  });
+
+  it('境界: 日本語名の無い種別は種別名のまま、set-config の要約が空なら「:」を付けない', () => {
+    expect(localizeDesignChatChange(`added future-node 'x-1'`, 'ja', label)).toBe('future-node「x-1」を追加しました');
+    expect(localizeDesignChatChange(`set config of filter 'filter-1': `, 'ja', label)).toBe('行フィルター「filter-1」の設定を変更しました');
+    expect(localizeDesignChatChange(`connected 'a' to join 'join-1' on input 2`, 'ja', label)).toBe('「a」を結合「join-1」につなぎました（入力 2）');
+  });
+
+  it('例外: 英語表示・知らない形は原文のまま返す（詳細を握りつぶさない）', () => {
+    expect(localizeDesignChatChange(`added filter 'filter-1'`, 'en', label)).toBe(`added filter 'filter-1'`);
+    expect(localizeDesignChatChange('sort を追加（age の降順）', 'ja', label)).toBe('sort を追加（age の降順）');
+    expect(localizeDesignChatChange('something new happened', 'ja')).toBe('something new happened');
+  });
+});
+
+describe('localizeTemplateSlotMessage / toolTemplateSlotProblems: 未選択の欄のラベル（v53）', () => {
+  const labels: Record<string, string> = { defaultGranularity: '既定の粒度', periodColumn: '期間の列', note: 'メモ' };
+  const slotLabel = (name: string): string | undefined => labels[name];
+
+  it('正常: 未選択・入力なし・候補なしの 3 形とも、括弧内の英語ラベルを画面の日本語ラベルへ差し替える', () => {
+    expect(localizeTemplateSlotMessage("slot 'defaultGranularity' (Default granularity) has no value; choose one of month, year", 'ja', slotLabel))
+      .toBe('「既定の粒度」を選んでください（候補: month, year）');
+    expect(localizeTemplateSlotMessage("slot 'note' (Note) has no value; fill it in", 'ja', slotLabel)).toBe('「メモ」を入力してください');
+    expect(localizeTemplateSlotMessage("slot 'periodColumn' (Period column) has no value; this data source offers no column that fits, so this template cannot be used here", 'ja', slotLabel))
+      .toBe('「期間の列」に選べる列がこのデータソースにありません。別のデータソースを選ぶか、別のテンプレートを使ってください');
+  });
+
+  it('正常: 422 本文の欄ごとの指摘にもラベルの差し替えが効く', () => {
+    const problems = toolTemplateSlotProblems({ code: 'TOOL_TEMPLATE_SLOTS', details: { slots: [{ slot: 'defaultGranularity', message: "slot 'defaultGranularity' (Default granularity) has no value; choose one of year" }] } }, 'ja', slotLabel);
+    expect(problems).toEqual([{ slot: 'defaultGranularity', message: '「既定の粒度」を選んでください（候補: year）' }]);
+  });
+
+  it('境界: ラベルが引けないスロットは原文のラベルを残す（従来どおり）', () => {
+    expect(localizeTemplateSlotMessage("slot 'unknown' (Default granularity) has no value; choose one of year", 'ja', slotLabel)).toBe('「Default granularity」を選んでください（候補: year）');
+    expect(localizeTemplateSlotMessage("slot 'defaultGranularity' (Default granularity) has no value; choose one of year", 'ja')).toBe('「Default granularity」を選んでください（候補: year）');
+  });
+
+  it('例外: 英語表示では原文のまま（従来どおり）', () => {
+    const message = "slot 'defaultGranularity' (Default granularity) has no value; choose one of year";
+    expect(localizeTemplateSlotMessage(message, 'en', slotLabel)).toBe(message);
   });
 });

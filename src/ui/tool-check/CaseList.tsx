@@ -37,7 +37,7 @@ export function CaseList({ cases, tools, results, selectedId, busyId, disabled, 
         const status: ResultStatus | undefined = latest?.status ?? item.lastResult?.status;
         const checkedAt = latest?.checkedAt ?? item.lastResult?.checkedAt;
         const [statusEn, statusJa] = statusLabel(status);
-        const version = item.toolVersion ?? 'latest';
+        const version = item.toolVersion ?? text('latest', '最新');
         return (
           <li key={item.id} className={`tool-check-case${selectedId === item.id ? ' selected' : ''}`}>
             <div className="tool-check-case-body">

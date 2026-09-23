@@ -62,6 +62,14 @@ describe('設計チャットの system プロンプト', () => {
     expect(systemPrompt).toContain('EXACTLY ONE agent-output');
     expect(systemPrompt).toContain('language of the instruction');
   });
+
+  /** v53 F3: 返答文と実際の変更が食い違う・頼んでいない変更が入る、の 2 つを規則で縛る。 */
+  it('正常: 頼まれていないキー・列・ノードを足さない規則と、message は返した操作だけを述べる規則を持つ（v53）', () => {
+    expect(systemPrompt).toContain('Do not add a key, column, or node the instruction did not ask for');
+    expect(systemPrompt).toContain('say so and why in "message" — never add it silently');
+    expect(systemPrompt).toContain('"message" describes ONLY the operations you are returning in this same answer');
+    expect(systemPrompt).toContain('say plainly that you made no change');
+  });
 });
 
 describe('buildDesignChatRequest', () => {
@@ -241,6 +249,8 @@ describe('設計チャットのプロンプト: 文をファイルへ移して�
       '- The data sources are fixed: you cannot register a new file. If the instruction needs data that is not in the list, say so and ask the user to register it on the data source screen.',
       '- "agentTool.description" is the ONLY text the agent reads before it calls this tool: write the format of every argument (a date as ISO 8601, a period as the start date of that period), the exact spelling of the granularities and of the other values it may pass, what the data covers, and the columns that come back.',
       '- When you add or change an argument, update the description with set-agent-tool in the same answer: an agent that reads a stale description passes wrong values.',
+      '- Do not add a key, column, or node the instruction did not ask for (for example, a sort key slipped into a group-by you were not asked to add). If a rule above forces you to add one anyway (a bound output, a parse-period step for a text period, an id a node needs to exist), say so and why in "message" — never add it silently.',
+      '- "message" describes ONLY the operations you are returning in this same answer, and nothing else: do not describe a change you did not make, and do not promise one for later. If you return no operations, say plainly that you made no change (and why, or what you need to know) instead of describing what you would have done.',
       '- "message" is written in the language of the instruction, and says what you changed, what is missing, or what you need to know. Keep it to a few sentences; the user can see the list of changes.',
       '',
       '"earlierConversationSummary", when the user message has it, is the older turns of this same conversation folded into one block — for each turn the instruction, the changes that were applied, and the reply.',
@@ -254,7 +264,7 @@ describe('設計チャットのプロンプト: 文をファイルへ移して�
   });
 
   it('従来どおり: 版はファイルの frontmatter が正（コードに定数を持たない）', () => {
-    expect(bundledPrompts().get(DESIGN_CHAT_PROMPT.id).version).toBe('design-chat/v2');
+    expect(bundledPrompts().get(DESIGN_CHAT_PROMPT.id).version).toBe('design-chat/v3');
   });
 
   it.each([

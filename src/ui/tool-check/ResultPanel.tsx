@@ -100,7 +100,7 @@ export function ResultPanel({ result, argumentFields, onFocusArgument }: {
 
       <h3>{text('Output', '出力')}</h3>
       {result.output.schema.columns.length > 0 && (
-        <div className="schema-strip">{result.output.schema.columns.map((column) => <div key={column.name}><strong>{column.name}</strong><span>{column.type}{column.nullable ? ' · nullable' : ''}</span></div>)}</div>
+        <div className="schema-strip">{result.output.schema.columns.map((column) => <div key={column.name}><strong>{column.name}</strong><span>{column.type}{column.nullable ? ` · ${text('nullable', 'null可')}` : ''}</span></div>)}</div>
       )}
       {shown === 0
         ? <p className="empty-state">{text(result.rowCount === 0 ? 'The tool returned 0 rows.' : 'No rows to show.', result.rowCount === 0 ? '出力は 0 行でした' : '表示できる行がありません')}</p>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { describeMcpServerSkipped, localizeRunTraceError, type ErrorLanguage } from '../api/error-messages';
 import { ApiError, isAbortError, type ToolApiClient } from '../api/tool-api';
 import type { AgentPreviewRunDto, AgentSummaryDto, HarnessRunDto, HarnessSummaryDto, RunImageAttachmentDto, RunTextAttachmentDto, RunTraceEventDto, SessionArtifactDto } from '../api/types';
+import { Markdown } from '../components/Markdown';
 import { RunFailureNotice, type RunFailureNoticeProps } from '../components/RunFailureNotice';
 import { useModalBehavior } from '../hooks/useModalBehavior';
 import { useI18n } from '../i18n';
@@ -504,7 +505,7 @@ function Turn({ turn, agentName, text, busy, approvalRunId, onResolveApproval }:
       : run.checkpoint?.kind === 'magentic-approval'
         ? `${text('Plan approval required:', '計画の承認が必要です:')} ${run.checkpoint.plan}`
         : undefined;
-    return <div className="cc-msg assistant"><span className="cc-avatar assistant" aria-hidden="true">{sparkIcon}</span><div className="cc-bubble"><span className="cc-name">{agentName}</span><p>{run.response ?? run.failure?.message ?? waiting ?? ''}</p>{waiting !== undefined && run.response !== undefined && <p>{waiting}</p>}<div className="cc-steps">{run.events.filter((event) => event.kind !== 'harness_started' && event.kind !== 'harness_completed').map((event) => <span className="cc-step" key={event.sequence}><i className="cc-step-dot" />{event.kind}{event.slotId === undefined ? '' : ` · ${event.slotId}`}</span>)}</div><span className="cc-meta">multi-agent run {run.runId}</span></div></div>;
+    return <div className="cc-msg assistant"><span className="cc-avatar assistant" aria-hidden="true">{sparkIcon}</span><div className="cc-bubble"><span className="cc-name">{agentName}</span><Markdown text={run.response ?? run.failure?.message ?? waiting ?? ''} />{waiting !== undefined && run.response !== undefined && <p>{waiting}</p>}<div className="cc-steps">{run.events.filter((event) => event.kind !== 'harness_started' && event.kind !== 'harness_completed').map((event) => <span className="cc-step" key={event.sequence}><i className="cc-step-dot" />{event.kind}{event.slotId === undefined ? '' : ` · ${event.slotId}`}</span>)}</div><span className="cc-meta">multi-agent run {run.runId}</span></div></div>;
   }
   // 承認待ちで止まったRunは、応答本文がプロンプトと同文なのでバナー側だけに出す（二重表示を避ける）。
   const approvalPrompt = run.status === 'waiting-approval' ? (run.checkpoint?.prompt ?? run.response) : undefined;
@@ -516,7 +517,7 @@ function Turn({ turn, agentName, text, busy, approvalRunId, onResolveApproval }:
         <span className="cc-name">{agentName}</span>
         {run.structuredResponse !== undefined
           ? <pre>{JSON.stringify(run.structuredResponse, null, 2)}</pre>
-          : approvalPrompt === run.response ? null : <p>{run.response}</p>}
+          : approvalPrompt === run.response ? null : <Markdown text={run.response ?? ''} />}
         {pendingApproval && <div className="run-approval" role="group" aria-label={text('Tool approval', 'ツール承認')}>
           <p>{approvalPrompt}{run.checkpoint !== undefined && <small>{run.checkpoint.tool} · {run.checkpoint.sideEffect}</small>}</p>
           <div className="run-approval-actions">
@@ -533,7 +534,7 @@ function Turn({ turn, agentName, text, busy, approvalRunId, onResolveApproval }:
             ))}
           </div>
         )}
-        <span className="cc-meta">run {run.runId}{usageLabel(run)}</span>
+        <span className="cc-meta">run {run.runId}{usageLabel(run, text)}</span>
       </div>
     </div>
   );
@@ -602,9 +603,9 @@ function compactJson(value: unknown): string {
   return json.length > 60 ? `${json.slice(0, 57)}…` : json;
 }
 
-function usageLabel(run: AgentPreviewRunDto): string {
+function usageLabel(run: AgentPreviewRunDto, text: Translate): string {
   const total = run.usage.totalTokens;
-  return total === undefined ? '' : ` · ${total} tokens`;
+  return total === undefined ? '' : ` · ${text(`${total} tokens`, `${total} トークン`)}`;
 }
 
 function messageOf(cause: unknown) { return cause instanceof Error ? cause.message : 'Request failed'; }

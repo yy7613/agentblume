@@ -135,6 +135,12 @@ interface ToolBuilderState {
    * ノード数が変わらない並べ替え（整列・元に戻す）でも見せ直すために、ノード数とは別に持つ。
    */
   layoutRevision: number;
+  /**
+   * 設計アシスタントが**既存の**キャンバスへ足したノード（v53）。画面はこれが替わるたびに、足したノードが
+   * 表示範囲の外（パレットや設定欄の陰）にあれば表示を合わせる。空のキャンバスへの適用は layoutRevision で全体を見せる。
+   * 描画の合図なので下書きには入れず、オブジェクトの同一性で「新しい依頼」を見分ける。
+   */
+  designChatReveal?: { readonly nodeIds: readonly string[] };
   setMetadata<K extends keyof ToolMetadataState>(key: K, value: ToolMetadataState[K]): void;
   addNode(type: ToolNodeType): void;
   onNodesChange(changes: NodeChange<ToolFlowNode>[]): void;
@@ -210,16 +216,24 @@ export function missingRequiredMetadata(metadata: ToolMetadataState): readonly R
 export const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
- * 保存ペイロードの agentTool。名前と説明の両方が入っているときだけ載せる（片方だけではサーバーが400にする）。
- * 載せないときはサーバーが publishName を function 名として公開する。
+ * 保存ペイロードの agentTool（v53）。名前か説明の**どちらか**が入っていれば載せ、空の側は補う。
+ * - 名前が空: publishName（載せない場合にサーバーが公開する名前と同じ）。
+ * - 説明が空: 読み込み時と同じ既定の `${displayName} (${sideEffect})`。
+ * 以前は両方揃ったときだけ載せたため、設計アシスタントが説明だけを書くと保存で黙って捨てられた。
+ * 両方空なら従来どおり載せない（サーバーが publishName を function 名として公開する）。
+ * 補った名前が関数名の規則外なら saveBlocker の invalid-function-name が保存を止める。
  */
 export function agentToolOf(metadata: ToolMetadataState): { readonly name: string; readonly description: string } | undefined {
-  return metadata.agentName.trim() !== '' && metadata.agentDescription.trim() !== ''
-    ? { name: metadata.agentName, description: metadata.agentDescription }
-    : undefined;
+  const hasName = metadata.agentName.trim() !== '';
+  const hasDescription = metadata.agentDescription.trim() !== '';
+  if (!hasName && !hasDescription) return undefined;
+  return {
+    name: hasName ? metadata.agentName : metadata.publishName,
+    description: hasDescription ? metadata.agentDescription : `${metadata.displayName} (${metadata.sideEffect})`,
+  };
 }
 
-/** モデルに実際に見える function 名。agentTool があればその名前、なければ publishName。 */
+/** モデルに実際に見える function 名。agentTool があればその名前（名前が空なら publishName を補う）、なければ publishName。 */
 export function effectiveFunctionName(metadata: ToolMetadataState): string {
   return agentToolOf(metadata)?.name ?? metadata.publishName;
 }
@@ -466,6 +480,7 @@ function initialState() {
     createdFromTemplate: undefined,
     designChat: emptyDesignChat(false),
     arrangeUndo: undefined,
+    designChatReveal: undefined,
   };
 }
 
@@ -713,6 +728,8 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
     const touched = changes
       .map((change) => change.nodeId)
       .filter((nodeId): nodeId is string => nodeId !== undefined && nodes.some((node) => node.id === nodeId));
+    // 既存のキャンバスへ足したノード。人の配置を保つので、足した先が表示範囲の外になりうる（画面が見せに行く）。
+    const added = fresh ? [] : nodes.filter((node) => !state.nodes.some((previous) => previous.id === node.id)).map((node) => node.id);
     return {
       nodes,
       edges,
@@ -727,6 +744,7 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
       },
       ...clearSaveError, ...markPending, ...dropArrangeUndo,
       ...(fresh ? { layoutRevision: state.layoutRevision + 1 } : {}),
+      ...(added.length > 0 ? { designChatReveal: { nodeIds: added } } : {}),
       ...(tool === undefined ? {} : { metadata }),
       // 説明文の更新と同じターンで sink が増えることもあるので、更新後のメタデータを渡して上書きを避ける。
       ...bumpSideEffect(metadata, nodes),
