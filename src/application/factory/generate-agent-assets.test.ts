@@ -1915,6 +1915,7 @@ describe('GenerateAgentAssetsUseCase（実測の3つの書き間違いを修復�
     const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: joinedPlan, profiles, maxRepairAttempts: 2, onEvent: (event) => events.push({ kind: event.kind, ...(event.message === undefined ? {} : { message: event.message }) }) })
 
     // 修復試行は1回も消費していない（ToolSmith呼び出しは1回）。
+    if (events.some((event) => event.kind === 'tool_repair_attempted')) throw new Error(JSON.stringify(events.filter((e) => e.kind === 'tool_repair_attempted'), null, 1).slice(0, 1500));
     expect(events.filter((event) => event.kind === 'tool_repair_attempted')).toEqual([]);
     expect(result.toolRefs).toHaveLength(1);
     const tool = await toolRepo.findVersion(scope, result.toolRefs[0]!.internalId, SemVer.parse(result.toolRefs[0]!.version));
@@ -2186,6 +2187,7 @@ describe('GenerateAgentAssetsUseCase（実測5つの書き癖を1つの提案で
     const result = await useCase.execute({ scope, runId: 'run-1', goal, plan: singleSourcePlan, profiles, maxRepairAttempts: 2, onEvent: (event) => events.push({ kind: event.kind, ...(event.message === undefined ? {} : { message: event.message }) }) });
 
     // 修復試行ゼロ（ToolSmith 呼び出しは1回）。
+    if (events.some((event) => event.kind === 'tool_repair_attempted')) throw new Error(JSON.stringify(events.filter((e) => e.kind === 'tool_repair_attempted'), null, 1).slice(0, 1500));
     expect(events.filter((event) => event.kind === 'tool_repair_attempted')).toEqual([]);
     expect(result.toolRefs).toHaveLength(1);
 
@@ -2460,6 +2462,7 @@ describe('GenerateAgentAssetsUseCase（テンプレート経路の組み込み�
 
     expect(templateTasks.requests).toHaveLength(0);
     // 試していないものを「失敗した」と書かない（記録を無意味に増やさない）。
+    if (events.some((event) => event.kind === 'tool_repair_attempted')) throw new Error(JSON.stringify(events.filter((e) => e.kind === 'tool_repair_attempted'), null, 1).slice(0, 1500));
     expect(events.filter((event) => event.kind === 'tool_repair_attempted')).toEqual([]);
     expect(events.find((event) => event.kind === 'tool_generated')?.message).toContain('staged:');
   });
