@@ -11,7 +11,7 @@
 
 | 目的 | 内容 |
 |---|---|
-| 入力 | 3 系統: **画像/PDF**（vision モデルで読取）、**構造化データ**（CSV/JSON/手入力。銀行・カード明細 CSV は銀行別プリセットで正規化）、**テキスト**（メール本文・メモから LLM 抽出） |
+| 入力 | 取込タブの入口は 5 系統: **CSV**（銀行・カード明細、銀行別プリセットで正規化）、**事実フォーム**（手入力）、**JSON 貼り付け**、**テキスト**（メール本文・メモから LLM 抽出）、**画像 / PDF**（vision モデルで読取） |
 | 判定 | **Stage 1**: 決定的なルール照合。一意に確定できれば仕訳ドラフトを作る。**Stage 2**: 確定できない理由（該当ルール無し / 複数ルール競合 / 必要項目不足 / 「迷うケース」該当）を出し、LLM ヒアリングで質問→回答→**新ルールと必要項目の提案**→利用者が確認して登録→再判定 |
 | 出力 | 汎用仕訳 CSV（UTF-8 BOM, CRLF）。列は弥生 25 項目を最大公約数に取引先・品目・インボイス区分・税額を加えた 25 列（§8）。弥生 / freee / MF 形式への写像はプリセットとして追加可能な構造 |
 | 保持 | SQLite（`journal_*` テーブル、migration v5）。証憑本体（画像 data URL / PDF 由来の画像 / テキスト）は `journal_documents.record_json` に同梱（1 件 8 MiB 上限） |
@@ -175,14 +175,17 @@ UI は理由ごとに「原因 → 次の一手 → 修正場所へのボタン�
 - **柔軟性の担保**: すべて string id。削除は論理（`enabled: false`）で、ルール・仕訳からの参照は残る（判定時に `unknown-account` として検出し導線を出す）。CSV 取込 / 出力（`id,code,name,category,defaultTaxCode,aliases,enabled`）。
 - ヒアリング提案の `newAccounts[]` は利用者が「登録」を押したときだけマスタに入る。
 
-## 6. 取込（3 系統）
+## 6. 取込（5 系統）
+
+画面の取込タブは 5 つの入口を横並びのボタンで切り替える（`src/ui/journal/IngestTab.tsx` の `Source` 型・`sources`）。
 
 | 系統 | 経路 | 備考 |
 |---|---|---|
-| 画像 | UI で縮小（長辺 2000px、JPEG）→ data URL → `POST /journal/documents/extract`（vision + 構造化出力、スキーマ = DocumentFacts + kind + fieldEvidence）→ 利用者が確認・修正して保存 | vision 非対応モデルなら機能フラグで案内 |
-| PDF | **ブラウザ側**で `pdfjs-dist` によりページを画像化（テキスト層があればテキストも添付）→ 画像系統と同じ | サーバーに PDF ライブラリを持ち込まない（ADR-0038） |
+| CSV（銀行 / カード） | **CSV プリセット**（楽天銀行 4 列、MUFG 9 列、SMBC 7 列、ゆうちょ 12 列、楽天カード、汎用「日付,摘要,出金,入金,残高」、全銀協固定長は対象外）→ 1 行 1 document | 列名署名でプリセット自動判定、失敗時は列マッピング UI |
+| 事実フォーム | 手入力フォームで facts を直接編集 → 1 document | 判定タブの「項目を編集」もこの入口を再利用する |
+| JSON 貼り付け | DocumentFacts の JSON を貼り付け → 1 document | `SaveJournalDocumentDto` の形 |
 | テキスト | `POST /journal/documents/extract` に `text` を渡して LLM 抽出 | メール本文・メモ |
-| 構造化 | 手入力フォーム（facts を直接編集）/ JSON 貼付（DocumentFacts）/ **CSV プリセット**（楽天銀行 4 列、MUFG 9 列、SMBC 7 列、ゆうちょ 12 列、楽天カード、汎用「日付,摘要,出金,入金,残高」、全銀協固定長は対象外）→ 1 行 1 document | 列名署名でプリセット自動判定、失敗時は列マッピング UI |
+| 画像 / PDF | UI で縮小（長辺 2000px、JPEG）→ data URL → `POST /journal/documents/extract`（vision + 構造化出力、スキーマ = DocumentFacts + kind + fieldEvidence）→ 利用者が確認・修正して保存。PDF は**ブラウザ側**で `pdfjs-dist` によりページを画像化（テキスト層があればテキストも添付）してから同じ経路を通る | vision 非対応モデルなら機能フラグで案内。サーバーに PDF ライブラリを持ち込まない（ADR-0038） |
 
 `POST /journal/documents/extract`（`ExtractJournalDocumentUseCase`）は構造化出力で `kind` + `DocumentFacts` + `fieldEvidence` を受け取り、**保存はしない**（利用者が確認・修正してから保存する）。プロンプト版は `journal-extract/v1`、温度 0、スキーマ違反は 1 回だけ修復を求める。入力の上限は画像 4 枚 × 4,200,000 文字（data URL。SVG と外部 URL は不可）とテキスト 100,000 文字。
 

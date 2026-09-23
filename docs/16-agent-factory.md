@@ -647,7 +647,7 @@ POST   /factory-runs/:runId/cancel
 ```
 
 1. 入力はgoal必須・データソース1件以上（強化モードでは対象Agent必須・データソース任意）。`requirePlanApproval` 有効時は計画カードに承認・修正・却下ボタンを表示する。詳細オプションには、ツールの作り方（`toolGeneration`: 段階的（推奨）/ 一括）を常に出し、強化モードのときだけ systemPrompt の扱い（`promptStrategy`: 既存プロンプトを保つ / モデルに役割・ルールを書き直させる）を足す。
-2. タイムラインはevents購読（ポーリング）で更新し、各StageからArtifact（Tool / Agent / ScenarioRun）の既存画面へリンクする。
+2. タイムラインはevents購読（ポーリング）で更新する。生成物の一覧（Agent / Tool / Skill / Validation）は、それぞれの**画面を開くボタン**（`ScreenLink`）が並ぶだけで、生成したAgentやToolを個別に直接開くわけではない — 開いた先の一覧・検索から自分で見つける（`src/ui/factory/FactoryPage.tsx`）。
 3. レポートは**品質判定（`report.quality` とその理由）**を先頭に出し、続けてイテレーション別メトリクスの推移（アンケート未回収件数を含む）、最良候補版、未解決Findingを表示する。Runの状態（成功）と成果物の質を同じ画面で必ず並べて読ませる（§6.1）。**昇格ボタンは置かない**（既存のQuality画面へ誘導する）。
 
 ## 11. 検証と評価
