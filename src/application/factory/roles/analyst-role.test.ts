@@ -303,12 +303,27 @@ describe('AnalystRole の system 文', () => {
     return String(model.requests[0]?.messages.find((message) => message.role === 'system')?.content);
   }
 
-  it('従来どおり: 上限を渡さない分析では、移行前と一字一句同じ system 文になる', async () => {
+  it('従来どおり: 上限を渡さない分析では、移行前の system 文に言語の 1 行（v54）を足しただけになる', async () => {
     expect(await systemOf(fixtureInput)).toBe(promptFixture('analyst.base'));
   });
 
   it('従来どおり: ツール呼び出し上限を渡したときだけ足す 4 行も移行前と同じ', async () => {
     expect(await systemOf({ ...fixtureInput, toolCallBudget: 6 })).toBe(promptFixture('analyst.budget'));
+  });
+
+  it('正常: Run の言語が en なら総括と所見を英語で書くよう指示する', async () => {
+    const system = await systemOf({ ...fixtureInput, goal: { goal: 'Explain wage trends', language: 'en' } });
+    expect(system).toContain('Write summary and every findings[].detail in English');
+    expect(system).not.toContain('in Japanese');
+  });
+
+  it('正常: Run の言語が ja なら総括と所見を日本語で書くよう指示する', async () => {
+    expect(await systemOf(fixtureInput)).toContain('Write summary and every findings[].detail in Japanese');
+  });
+
+  it('境界: 言語が欠けた古い保存データでも既定の日本語で書かせる', async () => {
+    const goalWithoutLanguage = { goal: '賃金の推移を説明する' } as unknown as typeof fixtureInput.goal;
+    expect(await systemOf({ ...fixtureInput, goal: goalWithoutLanguage })).toContain('in Japanese');
   });
 
   it('従来どおり: proposals が空だったときの差し戻し文も移行前と同じ', () => {

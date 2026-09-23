@@ -41,12 +41,14 @@ import { wrapUntrusted } from './untrusted';
  *
  * - `rules.budget`: 1 会話あたりのツール呼び出し上限を渡されたときだけ足す（ADR-0047 round 2 /
  *   Defect C: 「一度に一つ」へ絞る改訂が会話ごと落とした実測への対策）。
+ * - `rules.language`: 総括（summary）と所見（findings[].detail）を Run の言語（`goal.language`、無ければ `ja`）で
+ *   書かせる（v54 G2: 日本語の画面に英語の総括が出ていた）。どちらも画面にそのまま出る文なので。
  * - `repair.empty-proposals`: 「総括では改訂すると言っているのに proposals が空」というロール失敗を
  *   差し戻すときの文言（`RunFactoryUseCase` が `emptyProposalsFeedback()` 経由で使う）。
  */
 export const ANALYST_PROMPT: PromptSpec = {
   id: 'factory/analyst',
-  sections: ['system', 'rules.budget', 'rules', 'closing', 'repair.empty-proposals'],
+  sections: ['system', 'rules.budget', 'rules', 'rules.language', 'closing', 'repair.empty-proposals'],
 };
 
 /**
@@ -309,6 +311,11 @@ const ANALYST_SCHEMA: JsonSchemaObject = {
  */
 export const MAX_ADDITIVE_PROPOSALS_PER_ITERATION = 2;
 
+/** 総括を書かせる言語の名前（モデルへの指示文に埋める）。古い保存データで言語が欠けていても既定の日本語に倒す。 */
+function languageName(language: FactoryGoalInput['language'] | undefined): string {
+  return language === 'en' ? 'English' : 'Japanese';
+}
+
 export class AnalystRole {
   constructor(private readonly model: ModelProviderPort, private readonly prompts: PromptCatalogPort) {}
 
@@ -331,6 +338,7 @@ export class AnalystRole {
       prompt.render('system'),
       ...(input.toolCallBudget === undefined ? [] : [prompt.render('rules.budget', { toolCallBudget: input.toolCallBudget })]),
       prompt.render('rules', { maxAdditiveProposals: MAX_ADDITIVE_PROPOSALS_PER_ITERATION }),
+      prompt.render('rules.language', { languageName: languageName(input.goal.language) }),
       prompt.render('closing'),
     ].join('\n');
     const payload = {

@@ -7,7 +7,7 @@ import { DEFAULT_FACTORY_OPTIONS, type FactoryGoalInput } from '../../../domain/
 import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../../model/model-provider';
 import type { DataProfile } from '../profile-data-sources';
 import type { ExistingToolCatalog } from '../tool-catalog';
-import { inferAdditionalDataSources, normalizePlan, PlannerRole, planSchemaFor, repairDataSourceIds } from './planner-role';
+import { fillEmptyDataSourceIds, inferAdditionalDataSources, normalizePlan, PlannerRole, planSchemaFor, repairDataSourceIds } from './planner-role';
 import type { FactoryPlan } from '../../../domain/factory/factory-plan';
 
 const goal: FactoryGoalInput = { goal: 'Answer sales questions and summarize trends.', language: 'ja' };
@@ -126,12 +126,14 @@ describe('PlannerRole', () => {
     expect(parsed.tools[1]?.reuse).toEqual({ internalId: 'builtin-current-datetime', rationale: 'keep' });
   });
 
-  it('空のreuseを剥がした結果dataSourceIdが空なら、dataSourceIdエラーとして拒否する', async () => {
+  it('正常: 空のreuseを剥がした結果dataSourceIdが空の新規ツールも、Runのデータソースが1つならそれで補う（v54 G3）', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: reusePlanJson('  ') }, finishReason: 'stop' });
-    model.enqueue({ message: { role: 'assistant', content: reusePlanJson('  ') }, finishReason: 'stop' }); // 検証に落ちると理由つきで 1 回だけ再提案させるので、2 回とも不正な応答を返す
     const role = new PlannerRole(model, bundledPrompts());
-    await expect(role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS, existingTools })).rejects.toThrow(/dataSourceId/);
+    const plan = await role.propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS, existingTools });
+    expect(plan.tools[1]?.reuse).toBeUndefined();
+    expect(plan.tools[1]?.dataSourceId).toBe('ds-1');
+    expect(model.requests).toHaveLength(1);
   });
 
   it('壊れたJSONはFactoryValidationErrorになる', async () => {
@@ -325,6 +327,93 @@ describe('PlannerRole: 計画の検証に落ちたら、理由を添えて 1 回
     model.enqueue({ message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' });
     await new PlannerRole(model, bundledPrompts()).propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
     expect(model.requests).toHaveLength(1);
+  });
+});
+
+describe('PlannerRole: 新規ツールのデータソースが空の計画（v54 G3: `tools.1.dataSourceId must be a non-empty string` で Run ごと落ちた）', () => {
+  const twoProfiles: readonly DataProfile[] = [
+    profiles[0] as DataProfile,
+    { ...(profiles[0] as DataProfile), dataSourceId: 'ds-2', name: 'Costs' },
+  ];
+  /** 新規ツール 2 件の計画。dataSourceId をそれぞれ指定する。 */
+  function twoToolPlan(first: string, second: string): string {
+    const plan = JSON.parse(validPlanJson()) as { tools: Record<string, unknown>[] };
+    plan.tools = [
+      { ...plan.tools[0], dataSourceId: first },
+      { key: 'costs', displayName: 'Lookup Costs', purpose: 'Look up cost rows.', dataSourceId: second, sideEffect: 'read-only' },
+    ];
+    return JSON.stringify(plan);
+  }
+  const asPlan = (json: string): FactoryPlan => JSON.parse(json) as FactoryPlan;
+
+  it('正常: Run のデータソースが 1 つなら、空の新規ツールはそれで補い、出し直させない', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validPlanJson({ dataSourceId: '' }) }, finishReason: 'stop' });
+    const plan = await new PlannerRole(model, bundledPrompts()).propose({ goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS });
+    expect(plan.tools[0]?.dataSourceId).toBe('ds-1');
+    expect(model.requests).toHaveLength(1);
+  });
+
+  it('正常: 複数あっても、ほかのツールが使っていない残りがちょうど 1 つならそれで補う', () => {
+    const filled = fillEmptyDataSourceIds(asPlan(twoToolPlan('ds-1', '')), ['ds-1', 'ds-2']);
+    expect(filled.tools.map((tool) => tool.dataSourceId)).toEqual(['ds-1', 'ds-2']);
+  });
+
+  it('境界: 結合先（additionalDataSourceIds）に使われているソースも「使用済み」として数える', () => {
+    const plan = asPlan(twoToolPlan('ds-1', ''));
+    const [first, second] = plan.tools;
+    if (first === undefined || second === undefined) throw new Error('plan must have two tools');
+    const withJoin: FactoryPlan = { ...plan, tools: [{ ...first, additionalDataSourceIds: ['ds-2'] as FactoryPlan['tools'][number]['dataSourceId'][] }, second] };
+    // ds-1 も ds-2 も使用済み → 残り 0 → 補わない。
+    expect(fillEmptyDataSourceIds(withJoin, ['ds-1', 'ds-2']).tools[1]?.dataSourceId).toBe('');
+    // 3 つ目が残っていればそれ。
+    expect(fillEmptyDataSourceIds(withJoin, ['ds-1', 'ds-2', 'ds-3']).tools[1]?.dataSourceId).toBe('ds-3');
+  });
+
+  it('境界: 残りが 2 つ以上・空のツールが 2 つ以上なら当て推量で補わない', () => {
+    expect(fillEmptyDataSourceIds(asPlan(twoToolPlan('ds-1', '')), ['ds-1', 'ds-2', 'ds-3']).tools[1]?.dataSourceId).toBe('');
+    expect(fillEmptyDataSourceIds(asPlan(twoToolPlan('', '')), ['ds-1', 'ds-2']).tools.map((tool) => tool.dataSourceId)).toEqual(['', '']);
+  });
+
+  it('従来どおり: 再利用（reuse）の空は補わずに許す', () => {
+    const plan = asPlan(reusePlanJson());
+    expect(fillEmptyDataSourceIds(plan, ['ds-1']).tools[1]?.dataSourceId).toBe('');
+  });
+
+  it('異常: 補えなければ「どのツールが空か・選べる id の一覧」を理由に出し直させ、2 回目が正しければ通す', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue(
+      { message: { role: 'assistant', content: twoToolPlan('', '') }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: twoToolPlan('ds-1', 'ds-2') }, finishReason: 'stop' },
+    );
+    const plan = await new PlannerRole(model, bundledPrompts()).propose({ goal, profiles: twoProfiles, dataSourceIds: ['ds-1', 'ds-2'], options: DEFAULT_FACTORY_OPTIONS });
+    expect(plan.tools.map((tool) => tool.dataSourceId)).toEqual(['ds-1', 'ds-2']);
+    const reason = String(model.requests[1]?.messages.at(-1)?.content);
+    expect(reason).toContain('tools.0 "Lookup Sales", tools.1 "Lookup Costs"');
+    expect(reason).toContain('ds-1 (Sales), ds-2 (Costs)');
+    expect(reason).not.toContain('must be a non-empty string');
+  });
+
+  it('異常: 出し直しても空なら、直し方（データソースを 1 つに絞る等）が分かる失敗理由で落とす', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue(
+      { message: { role: 'assistant', content: twoToolPlan('', '') }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: twoToolPlan('', '') }, finishReason: 'stop' },
+    );
+    const failure = new PlannerRole(model, bundledPrompts()).propose({ goal, profiles: twoProfiles, dataSourceIds: ['ds-1', 'ds-2'], options: DEFAULT_FACTORY_OPTIONS });
+    await expect(failure).rejects.toThrow(/^Planning failed: the plan left the data source empty for the new tool\(s\) "Lookup Sales", "Lookup Costs" .*the run has 2 data sources\. To fix it, start the run again with only the data source .* Data sources: ds-1 \(Sales\), ds-2 \(Costs\)\.$/);
+    expect(model.requests).toHaveLength(2);
+  });
+
+  it('境界: データソースの無い Run（強化モード）で新規ツールを計画し続けたら、データソースを選び直すよう案内する', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue(
+      { message: { role: 'assistant', content: validPlanJson({ dataSourceId: '' }) }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validPlanJson({ dataSourceId: '' }) }, finishReason: 'stop' },
+    );
+    const failure = new PlannerRole(model, bundledPrompts()).propose({ goal, profiles: [], dataSourceIds: [], options: DEFAULT_FACTORY_OPTIONS });
+    await expect(failure).rejects.toThrow(/no data sources for them to read\. To fix it, start the run again and select the data source/);
+    expect(String(model.requests[1]?.messages.at(-1)?.content)).toContain('this run has no data sources');
   });
 });
 

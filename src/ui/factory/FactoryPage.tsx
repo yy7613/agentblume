@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ToolApiClient } from '../api/tool-api';
 import type { AgentSummaryDto, CreateFactoryRunDto, DataSourceDto, FactoryEventDto, FactoryPlanDto, FactoryPromptStrategyDto, FactoryReportDto, FactoryRunDto, FactoryToolGenerationDto } from '../api/types';
 import { useI18n } from '../i18n';
@@ -73,19 +73,97 @@ function joinedToolCount(plan: FactoryPlanDto): number {
 function planApprovalSummary(run: FactoryRunDto, text: Translate, agents: readonly AgentSummaryDto[]): string {
   const checkpoint = run.checkpoint;
   if (checkpoint === undefined) return '';
-  const goal = run.input.goal.goal;
   const plan = checkpoint.plan;
-  if (isEnhanceRun(run)) {
-    const target = baseAgentLabel(run, agents);
+  const counts = { tools: plan.tools.length, skills: plan.skills.length, personas: plan.personas.length, scenarios: plan.scenarios.length };
+  return formatPlanApproval(isEnhanceRun(run)
+    ? { kind: 'enhance', goal: run.input.goal.goal, target: baseAgentLabel(run, agents), ...counts }
+    : { kind: 'create', goal: run.input.goal.goal, agentName: plan.agentBrief.displayName, ...counts }, text);
+}
+
+/** 承認依頼の文に載る事実。カード（今の checkpoint から）とタイムライン（保存された英文から）で共有する。 */
+type PlanApprovalFacts =
+  | { readonly kind: 'create'; readonly goal: string; readonly agentName: string; readonly tools: number; readonly skills: number; readonly personas: number; readonly scenarios: number }
+  | { readonly kind: 'enhance'; readonly goal: string; readonly target: string; readonly tools: number; readonly skills: number; readonly personas: number; readonly scenarios: number };
+
+function formatPlanApproval(facts: PlanApprovalFacts, text: Translate): string {
+  const { goal, tools, skills, personas, scenarios } = facts;
+  if (facts.kind === 'enhance') {
     return text(
-      `Review the proposed enhancement for "${goal}": add ${plan.tools.length} tool(s) and ${plan.skills.length} skill(s) to the existing agent "${target}", then validate it with ${plan.scenarios.length} scenario(s) across ${plan.personas.length} persona(s).`,
-      `「${goal}」に対する変更計画です: 既存エージェント「${target}」に Tool ${plan.tools.length} 件・Skill ${plan.skills.length} 件を追加し、ペルソナ ${plan.personas.length} 件・シナリオ ${plan.scenarios.length} 件で検証します。`,
+      `Review the proposed enhancement for "${goal}": add ${tools} tool(s) and ${skills} skill(s) to the existing agent "${facts.target}", then validate it with ${scenarios} scenario(s) across ${personas} persona(s).`,
+      `「${goal}」に対する変更計画です: 既存エージェント「${facts.target}」に Tool ${tools} 件・Skill ${skills} 件を追加し、ペルソナ ${personas} 件・シナリオ ${scenarios} 件で検証します。`,
     );
   }
   return text(
-    `Review the proposed plan for "${goal}": agent "${plan.agentBrief.displayName}" with ${plan.tools.length} tool(s), ${plan.skills.length} skill(s), ${plan.personas.length} persona(s), ${plan.scenarios.length} scenario(s).`,
-    `「${goal}」の計画案です: エージェント「${plan.agentBrief.displayName}」、Tool ${plan.tools.length} 件、Skill ${plan.skills.length} 件、ペルソナ ${plan.personas.length} 件、シナリオ ${plan.scenarios.length} 件。`,
+    `Review the proposed plan for "${goal}": agent "${facts.agentName}" with ${tools} tool(s), ${skills} skill(s), ${personas} persona(s), ${scenarios} scenario(s).`,
+    `「${goal}」の計画案です: エージェント「${facts.agentName}」、Tool ${tools} 件、Skill ${skills} 件、ペルソナ ${personas} 件、シナリオ ${scenarios} 件。`,
   );
+}
+
+/** `buildCheckpoint`（run-factory.ts）の 2 つの定型文。承認依頼イベントの message はこの英文がそのまま入る。 */
+const PLAN_APPROVAL_CREATE_PATTERN = /^Review the proposed plan for "([\s\S]*)": agent "([\s\S]*)" with (\d+) tool\(s\), (\d+) skill\(s\), (\d+) persona\(s\), (\d+) scenario\(s\)\.$/;
+const PLAN_APPROVAL_ENHANCE_PATTERN = /^Review the proposed enhancement for "([\s\S]*)": add (\d+) tool\(s\) and (\d+) skill\(s\) to the existing agent "([\s\S]*)" \([\s\S]*\), then validate it with (\d+) scenario\(s\) across (\d+) persona\(s\)\.$/;
+
+/**
+ * タイムラインのイベント文。承認依頼（`approval_requested`）の message は `checkpoint.prompt` の英文なので、
+ * 計画承認カードと同じ文（`formatPlanApproval`）に組み直す。修正依頼で計画が変わった過去の承認依頼も
+ * その時点の件数で出せるよう、今の checkpoint ではなく保存された英文から数を読む。読めなければ原文のまま。
+ */
+function eventMessageText(event: FactoryEventDto, text: Translate): string | undefined {
+  const message = event.message;
+  if (message === undefined || event.kind !== 'approval_requested') return message;
+  const created = PLAN_APPROVAL_CREATE_PATTERN.exec(message);
+  if (created !== null) {
+    const [, goal = '', agentName = '', tools, skills, personas, scenarios] = created;
+    return formatPlanApproval({ kind: 'create', goal, agentName, tools: Number(tools), skills: Number(skills), personas: Number(personas), scenarios: Number(scenarios) }, text);
+  }
+  const enhanced = PLAN_APPROVAL_ENHANCE_PATTERN.exec(message);
+  if (enhanced !== null) {
+    const [, goal = '', tools, skills, target = '', scenarios, personas] = enhanced;
+    return formatPlanApproval({ kind: 'enhance', goal, target, tools: Number(tools), skills: Number(skills), personas: Number(personas), scenarios: Number(scenarios) }, text);
+  }
+  return message;
+}
+
+/**
+ * 品質判定の理由（`assessReportQuality`・run-factory.ts の定型文）を表示用に訳す。保存データとサーバーの文は
+ * 英語のまま（モデル・APIの契約）で、画面でだけ訳す。定型文に合わない文は原文のまま出す。
+ */
+const GOAL_RATE_BELOW_PATTERN = /^goalAchievedRate ([-\d.]+) is below the target ([-\d.]+)$/;
+const SATISFACTION_BELOW_PATTERN = /^avgSatisfaction ([-\d.]+) is below the target ([-\d.]+)$/;
+const SURVEY_MISSING_PATTERN = /^(\d+) of (\d+) scenario\(s\) returned no satisfaction survey$/;
+function qualityReasonText(reason: string, text: Translate): string {
+  switch (reason) {
+    case 'no scenario was validated': return text(reason, 'シナリオを1件も検証できませんでした。');
+    case 'every scenario ended in an error, so no behaviour was actually observed':
+      return text(reason, 'すべてのシナリオがエラーで終わったため、エージェントの実際の振る舞いを確認できていません。');
+    case 'no satisfaction survey could be collected, so avgSatisfaction is missing rather than low':
+      return text(reason, '満足度アンケートを1件も回収できなかったため、平均満足度は「低い」のではなく「未計測」です。');
+  }
+  const goalRate = GOAL_RATE_BELOW_PATTERN.exec(reason);
+  if (goalRate !== null) return text(reason, `目標達成率 ${goalRate[1]} が目標値 ${goalRate[2]} を下回っています。`);
+  const satisfaction = SATISFACTION_BELOW_PATTERN.exec(reason);
+  if (satisfaction !== null) return text(reason, `平均満足度 ${satisfaction[1]} が目標値 ${satisfaction[2]} を下回っています。`);
+  const survey = SURVEY_MISSING_PATTERN.exec(reason);
+  if (survey !== null) return text(reason, `${survey[2]} 件中 ${survey[1]} 件のシナリオで満足度アンケートを回収できませんでした。`);
+  return reason;
+}
+
+/**
+ * Run の失敗理由。計画でデータソースが空のまま補えなかったとき（`describeUnfillableDataSources`・planner-role.ts）の
+ * 定型文だけは直し方ごと訳す。それ以外は原文のまま。
+ */
+const UNFILLABLE_DATA_SOURCE_PATTERN = /^Planning failed: the plan left the data source empty for the new tool\(s\) ([\s\S]+) and it could not be filled in automatically because the run has (\d+) data sources\. [\s\S]* Data sources: ([\s\S]+)\.$/;
+const NO_DATA_SOURCE_PATTERN = /^Planning failed: the plan needs new tool\(s\) ([\s\S]+), but the run has no data sources for them to read\. /;
+function failureReasonText(reason: string, text: Translate): string {
+  const unfillable = UNFILLABLE_DATA_SOURCE_PATTERN.exec(reason);
+  if (unfillable !== null) {
+    return text(reason, `計画で新しいツール ${unfillable[1]} のデータソースが空のままで、この実行にはデータソースが ${unfillable[2]} 件あるため自動では補えませんでした。直し方: そのツールが読むデータソースだけを選んで開始し直すか、どのツールにどのデータソースを使うかを「やりたいこと」に書いてください（データソース: ${unfillable[3]}）。`);
+  }
+  const none = NO_DATA_SOURCE_PATTERN.exec(reason);
+  if (none !== null) {
+    return text(reason, `計画に新しいツール ${none[1]} が必要ですが、この実行にはそのツールが読むデータソースがありません。直し方: 開始し直すときに、そのツールが読むデータソースを選んでください。`);
+  }
+  return reason;
 }
 
 /**
@@ -194,6 +272,10 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
   const [actionError, setActionError] = useState<string>();
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  // 候補Agentの表示名を引くために一覧を読み直した id（同じ id で何度も取りに行かない）。
+  const refetchedAgentIds = useRef(new Set<string>());
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   useEffect(() => {
     let active = true;
@@ -226,6 +308,18 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
     const timer = setInterval(() => void refresh(), 1000);
     return () => { active = false; clearInterval(timer); };
   }, [client, selectedRunId, selectedRun?.status]);
+
+  // Agent一覧は画面を開いたときに一度だけ読む。開いたままRunの完了を待つと、Runが作った候補Agentが一覧に無く
+  // 内部IDのまま出るので、引けないidが現れたら一度だけ読み直す（読み直しても無ければ内部IDのまま）。
+  const candidateAgentId = selectedRun?.report?.candidate.agentId;
+  useEffect(() => {
+    if (candidateAgentId === undefined || candidateAgentId === '') return;
+    if (agents.some((agent) => agent.internalId === candidateAgentId) || refetchedAgentIds.current.has(candidateAgentId)) return;
+    refetchedAgentIds.current.add(candidateAgentId);
+    void client.listAgents(scope, 'normal')
+      .then((latest) => { if (mounted.current) setAgents(latest); })
+      .catch(() => undefined); // 表示名が引けないだけなので、内部IDのまま出す（従来どおり）。
+  }, [client, candidateAgentId, agents]);
 
   // 実行中のrunの「生きているか」を判断できるよう、run開始からの経過時間を1秒毎に更新する。
   useEffect(() => {
@@ -426,11 +520,11 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
             </div>
           </div>
 
-          {selectedRun.failure !== undefined && <div className="api-error" role="alert">{stageLabel(selectedRun.failure.stage, text)}: {selectedRun.failure.reason}</div>}
+          {selectedRun.failure !== undefined && <div className="api-error" role="alert">{stageLabel(selectedRun.failure.stage, text)}: {failureReasonText(selectedRun.failure.reason, text)}</div>}
 
           <h3>{text('Timeline', 'タイムライン')}</h3>
           {events.length === 0 ? <p className="empty-state">{text('No events yet.', 'イベントはまだありません。')}</p> : <ol className="factory-timeline">
-            {events.map((event) => <li key={event.sequence}><span className="factory-event-kind">{eventKindLabel(event.kind, text)}</span>{event.stage !== undefined && <span> · {stageLabel(event.stage, text)}</span>}{event.iteration !== undefined && <span> · it.{event.iteration}</span>}{event.message !== undefined && <span> · {event.message}</span>}</li>)}
+            {events.map((event) => <li key={event.sequence}><span className="factory-event-kind">{eventKindLabel(event.kind, text)}</span>{event.stage !== undefined && <span> · {stageLabel(event.stage, text)}</span>}{event.iteration !== undefined && <span> · it.{event.iteration}</span>}{event.message !== undefined && <span> · {eventMessageText(event, text)}</span>}</li>)}
           </ol>}
 
           {selectedRun.status === 'waiting-approval' && selectedRun.checkpoint !== undefined && <div className="notice-card" aria-label={text('Plan approval', '計画承認')}>
@@ -469,7 +563,7 @@ export function FactoryPage({ client }: { readonly client: ToolApiClient }) {
               {text('Quality', '品質判定')}: <strong className={`factory-quality ${selectedRun.report.quality}`}>{qualityLabel(selectedRun.report.quality, text)}</strong>
             </p>
             {selectedRun.report.qualityReasons.length > 0 && <ul className="factory-quality-reasons">
-              {selectedRun.report.qualityReasons.map((reason) => <li key={reason}>{reason}</li>)}
+              {selectedRun.report.qualityReasons.map((reason) => <li key={reason}>{qualityReasonText(reason, text)}</li>)}
             </ul>}
             <p>{text('Best iteration', '最良イテレーション')}: <strong>{selectedRun.report.bestIteration}</strong></p>
             <p>{text('Candidate', '候補')}: <strong>{candidateLabel(selectedRun.report.candidate, agents)}</strong></p>

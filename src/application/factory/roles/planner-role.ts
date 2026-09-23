@@ -238,7 +238,11 @@ export class PlannerRole {
     // 名指しするシナリオは「柔らかい違反」として理由つきで 1 回だけ出し直させるが、2 回目にも
     // 残っていたら Run は落とさず受理する（検証シナリオの言い回し 1 つで生成を失敗させない）。
     const accept = (content: string | null, checkGrounding: boolean): FactoryPlan => {
-      const plan = inferAdditionalDataSources(normalizePlan(repairDataSourceIds(parsePlan(content), input.dataSourceIds), catalog), input.profiles);
+      const filled = fillEmptyDataSourceIds(normalizePlan(repairDataSourceIds(parsePlan(content), input.dataSourceIds), catalog), input.dataSourceIds);
+      // 決定的に補えなかった空は、検証の短い定型文（`tools.1.dataSourceId must be a non-empty string`）ではなく、
+      // 「どのツールが空か・選べる id の一覧」を理由にして出し直させる（v54 G3）。
+      throwIfEmptyDataSourceIds(filled, input.dataSourceIds, input.profiles);
+      const plan = inferAdditionalDataSources(filled, input.profiles);
       validateFactoryPlan(plan, {
         dataSourceIds: input.dataSourceIds,
         limits: { maxTools: MAX_TOOLS, maxSkills: MAX_SKILLS, maxPersonas: input.options.personaCount, maxScenarios: input.options.scenarioCount },
@@ -264,7 +268,13 @@ export class PlannerRole {
           { role: 'user', content: prompt.render('repair', { reason: error.message }) },
         ],
       }, signal);
-      return accept(second.message.content, false);
+      try {
+        return accept(second.message.content, false);
+      } catch (secondError) {
+        // 出し直しても空のまま → Run の失敗理由は「利用者がどう直せばよいか」が分かる文にする。
+        if (secondError instanceof EmptyDataSourceIdError) throw new FactoryValidationError(describeUnfillableDataSources(secondError, input.dataSourceIds.length));
+        throw secondError;
+      }
     }
   }
 }
@@ -289,6 +299,80 @@ export function normalizePlan(plan: FactoryPlan, catalog: ExistingToolCatalog | 
       return rest;
     }),
   };
+}
+
+/** 新規作成のツールで、データソースが空（または文字列でない）か。再利用（`reuse`）の空は従来どおり許す。 */
+function hasEmptyDataSource(tool: FactoryPlan['tools'][number]): boolean {
+  return tool.reuse === undefined && (typeof tool.dataSourceId !== 'string' || tool.dataSourceId.trim() === '');
+}
+
+/**
+ * 新規作成のツールの空の `dataSourceId` を、**決定的に一つに決まる場合だけ**補う（v54 G3）。
+ *
+ * 実測: 12B 級のモデルが構造化出力の enum に入っている空文字（再利用計画用）を新規ツールにも書き、
+ * `validateFactoryPlan` が Run ごと落とした。当て推量で別の表を読ませないよう、補うのは次の 2 通りだけ:
+ * - Run のデータソースが 1 つだけ → それ（空のツールがいくつあっても同じ答え）。
+ * - 複数あり、空のツールがちょうど 1 つ → ほかのツールの主データソースにも、どのツールの結合先にも
+ *   使われていない残りがちょうど 1 つならそれ。
+ * それ以外は触らず、`throwIfEmptyDataSourceIds` が出し直しの理由にする。
+ */
+export function fillEmptyDataSourceIds(plan: FactoryPlan, dataSourceIds: readonly string[]): FactoryPlan {
+  const emptyCount = plan.tools.filter(hasEmptyDataSource).length;
+  if (emptyCount === 0) return plan;
+  let fill: string | undefined;
+  if (dataSourceIds.length === 1) {
+    fill = dataSourceIds[0];
+  } else if (emptyCount === 1) {
+    const used = new Set<string>();
+    for (const tool of plan.tools) {
+      if (!hasEmptyDataSource(tool)) used.add(tool.dataSourceId);
+      if (Array.isArray(tool.additionalDataSourceIds)) for (const id of tool.additionalDataSourceIds) used.add(id);
+    }
+    const remaining = dataSourceIds.filter((id) => !used.has(id));
+    if (remaining.length === 1) fill = remaining[0];
+  }
+  if (fill === undefined) return plan;
+  const dataSourceId = fill as FactoryPlan['tools'][number]['dataSourceId'];
+  return { ...plan, tools: plan.tools.map((tool) => (hasEmptyDataSource(tool) ? { ...tool, dataSourceId } : tool)) };
+}
+
+/** 補えなかった空のデータソース。出し直しの理由（モデル向け）と、最終的な失敗理由（利用者向け）の両方の材料。 */
+export class EmptyDataSourceIdError extends FactoryValidationError {
+  constructor(message: string, readonly toolNames: readonly string[], readonly choices: string) {
+    super(message);
+    this.name = 'EmptyDataSourceIdError';
+  }
+}
+
+/** 空のまま残った新規ツールがあれば、どのツールか・選べる id の一覧を添えて投げる。 */
+function throwIfEmptyDataSourceIds(plan: FactoryPlan, dataSourceIds: readonly string[], profiles: readonly DataProfile[]): void {
+  const empty = plan.tools.flatMap((tool, index) => (hasEmptyDataSource(tool) ? [{ index, name: typeof tool.displayName === 'string' && tool.displayName.trim() !== '' ? tool.displayName : `tools.${index}` }] : []));
+  if (empty.length === 0) return;
+  const choices = dataSourceIds.map((id) => {
+    const name = profiles.find((profile) => profile.dataSourceId === id)?.name;
+    return name === undefined || name.trim() === '' ? id : `${id} (${name})`;
+  }).join(', ');
+  const which = empty.map((tool) => `tools.${tool.index} "${tool.name}"`).join(', ');
+  throw new EmptyDataSourceIdError(
+    dataSourceIds.length === 0
+      ? `the new tool(s) ${which} have an empty dataSourceId, but this run has no data sources, so it cannot create new tools. Remove those tools, or reuse an existing tool (reuse) instead.`
+      : `the new tool(s) ${which} have an empty dataSourceId. A new tool must read one of the run's data sources: set dataSourceId to exactly one of ${choices}. Only a tool that reuses an existing tool (reuse) may leave it empty.`,
+    empty.map((tool) => tool.name),
+    choices,
+  );
+}
+
+/**
+ * 出し直しても空のままだったときの Run の失敗理由（利用者向け）。直し方（データソースを 1 つに絞る /
+ * やりたいことにどのツールがどのデータソースを使うかを書く）まで含める。UI はこの定型文を見分けて訳す
+ * （`src/ui/factory/FactoryPage.tsx` の `failureReasonText`）。
+ */
+export function describeUnfillableDataSources(error: EmptyDataSourceIdError, dataSourceCount: number): string {
+  const tools = error.toolNames.map((name) => `"${name}"`).join(', ');
+  if (dataSourceCount === 0) {
+    return `Planning failed: the plan needs new tool(s) ${tools}, but the run has no data sources for them to read. To fix it, start the run again and select the data source those tools should read.`;
+  }
+  return `Planning failed: the plan left the data source empty for the new tool(s) ${tools} and it could not be filled in automatically because the run has ${dataSourceCount} data sources. To fix it, start the run again with only the data source those tools should read, or state in the goal which data source each tool should use. Data sources: ${error.choices}.`;
 }
 
 /** 単位の注記（`現金給与総額【円】` の `【円】`）を外した列名。計画の文章は単位抜きで列を呼ぶことが多い。 */

@@ -657,3 +657,190 @@ describe('FactoryPage', () => {
     expect(screen.queryByText(/agent-sales@1.2.0/)).toBeNull();
   });
 });
+
+describe('FactoryPage（v54: マニュアル撮影で見つかった残り）', () => {
+  function succeededWith(report: Partial<NonNullable<FactoryRunDto['report']>>): FactoryRunDto {
+    return baseRun({
+      status: 'succeeded',
+      stage: 'reporting',
+      report: {
+        bestIteration: 1,
+        candidate: { agentId: 'agent-new', version: '1.0.0' },
+        summary: 'Done.',
+        openFindings: [],
+        metricsByIteration: [],
+        quality: 'met-targets',
+        qualityReasons: [],
+        ...report,
+      },
+      finishedAt: '2026-07-20T00:00:00.500Z',
+    });
+  }
+  const newAgent: AgentSummaryDto = { internalId: 'agent-new', displayName: 'New Sales Bot', publishName: 'new_sales_bot', latestVersion: '1.0.0', kind: 'normal', state: 'draft' };
+
+  it('正常: 候補が画面を開いたときの一覧に無ければ一覧を読み直し、表示名で出す（G1）', async () => {
+    const listAgents = vi.fn().mockResolvedValueOnce(agents).mockResolvedValue([...agents, newAgent]);
+    const client = stubClient({ listAgents, listFactoryRuns: vi.fn().mockResolvedValue([succeededWith({})]) });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText('Report');
+    await waitFor(() => expect(screen.getByText(/Candidate/).textContent).toContain('New Sales Bot@1.0.0'));
+    expect(screen.queryByText(/agent-new@1.0.0/)).toBeNull();
+    expect(listAgents).toHaveBeenCalledTimes(2);
+  });
+
+  it('正常: 開いたまま Run が完了して候補が現れたときも読み直す（G1）', async () => {
+    const running = baseRun({ status: 'running', stage: 'validating' });
+    const done = succeededWith({});
+    const listAgents = vi.fn().mockResolvedValueOnce(agents).mockResolvedValue([...agents, newAgent]);
+    const client = stubClient({
+      listAgents,
+      listFactoryRuns: vi.fn().mockResolvedValue([running]),
+      getFactoryRun: vi.fn().mockResolvedValue(done),
+      getFactoryRunEvents: vi.fn().mockResolvedValue([]),
+    });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText('Report');
+    await waitFor(() => expect(screen.getByText(/Candidate/).textContent).toContain('New Sales Bot@1.0.0'));
+  });
+
+  it('境界: 読み直しても見つからなければ内部IDのまま出し、同じ id で繰り返し取りに行かない（G1）', async () => {
+    const listAgents = vi.fn().mockResolvedValue(agents);
+    const other = { ...succeededWith({}), id: 'run-2' };
+    const client = stubClient({ listAgents, listFactoryRuns: vi.fn().mockResolvedValue([succeededWith({}), other]) });
+    render(<FactoryPage client={client} />);
+    const [first, second] = await screen.findAllByRole('button', { name: /Answer sales questions/ });
+    await userEvent.click(first!);
+    await screen.findByText('Report');
+    await waitFor(() => expect(listAgents).toHaveBeenCalledTimes(2));
+    // 同じ候補 id の別の Run を開き直しても、もう取りに行かない。
+    await userEvent.click(second!);
+    await userEvent.click(first!);
+    expect(screen.getByText(/Candidate/).textContent).toContain('agent-new@1.0.0');
+    expect(listAgents).toHaveBeenCalledTimes(2);
+  });
+
+  it('従来どおり: 候補が最初の一覧にあれば読み直さない（G1）', async () => {
+    const listAgents = vi.fn().mockResolvedValue([...agents, newAgent]);
+    const client = stubClient({ listAgents, listFactoryRuns: vi.fn().mockResolvedValue([succeededWith({})]) });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText('Report');
+    expect(screen.getByText(/Candidate/).textContent).toContain('New Sales Bot@1.0.0');
+    expect(listAgents).toHaveBeenCalledTimes(1);
+  });
+
+  it('例外: 読み直しが失敗しても画面は落ちず、内部IDのまま出す（G1）', async () => {
+    const listAgents = vi.fn().mockResolvedValueOnce(agents).mockRejectedValue(new Error('agents unavailable'));
+    const client = stubClient({ listAgents, listFactoryRuns: vi.fn().mockResolvedValue([succeededWith({})]) });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText('Report');
+    await waitFor(() => expect(listAgents).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(/Candidate/).textContent).toContain('agent-new@1.0.0');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  function runWithEvents(events: FactoryRunDto['events']): FactoryRunDto {
+    return { ...succeededWith({}), events };
+  }
+
+  it('正常: タイムラインの承認依頼の行も、計画承認カードと同じ日本語文で出す（G2）', async () => {
+    const run = runWithEvents([
+      { sequence: 1, kind: 'approval_requested', at: '2026-07-20T00:00:00.000Z', stage: 'planning', message: 'Review the proposed plan for "Answer sales questions": agent "Sales Assistant" with 2 tool(s), 1 skill(s), 2 persona(s), 4 scenario(s).' },
+      { sequence: 2, kind: 'approval_requested', at: '2026-07-20T00:00:01.000Z', stage: 'planning', message: 'Review the proposed enhancement for "Improve totals": add 1 tool(s) and 0 skill(s) to the existing agent "Sales (v2)" (Sales (v2)@1.2.0), then validate it with 3 scenario(s) across 2 persona(s).' },
+    ]);
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([run]) });
+    render(<I18nProvider initialLanguage="ja"><FactoryPage client={client} /></I18nProvider>);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText('タイムライン');
+    expect(screen.queryByText(/Review the proposed/)).toBeNull();
+    expect(screen.getByText(/「Answer sales questions」の計画案です: エージェント「Sales Assistant」、Tool 2 件、Skill 1 件、ペルソナ 2 件、シナリオ 4 件。/)).toBeTruthy();
+    expect(screen.getByText(/「Improve totals」に対する変更計画です: 既存エージェント「Sales \(v2\)」に Tool 1 件・Skill 0 件を追加し、ペルソナ 2 件・シナリオ 3 件で検証します。/)).toBeTruthy();
+  });
+
+  it('従来どおり: 定型文に合わないイベント文と、承認依頼以外のイベント文は原文のまま（G2）', async () => {
+    const run = runWithEvents([
+      { sequence: 1, kind: 'approval_requested', at: '2026-07-20T00:00:00.000Z', stage: 'planning', message: 'Please review.' },
+      { sequence: 2, kind: 'stage_started', at: '2026-07-20T00:00:01.000Z', stage: 'profiling', message: 'enhancing agent Sales@1.0.0' },
+    ]);
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([run]) });
+    render(<I18nProvider initialLanguage="ja"><FactoryPage client={client} /></I18nProvider>);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText('タイムライン');
+    expect(screen.getByText(/Please review\./)).toBeTruthy();
+    expect(screen.getByText(/enhancing agent Sales@1\.0\.0/)).toBeTruthy();
+  });
+
+  const allReasons = [
+    'no scenario was validated',
+    'every scenario ended in an error, so no behaviour was actually observed',
+    'no satisfaction survey could be collected, so avgSatisfaction is missing rather than low',
+    'goalAchievedRate 0.50 is below the target 0.75',
+    'avgSatisfaction 3.00 is below the target 4',
+    '1 of 4 scenario(s) returned no satisfaction survey',
+    'some future reason',
+  ];
+
+  it('正常: 目標未達の理由（run-factory.ts の定型文）を日本語の画面では日本語で出す（G2）', async () => {
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([succeededWith({ quality: 'below-targets', qualityReasons: allReasons })]) });
+    render(<I18nProvider initialLanguage="ja"><FactoryPage client={client} /></I18nProvider>);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText('レポート');
+    const items = [...document.querySelectorAll('.factory-quality-reasons li')].map((item) => item.textContent);
+    expect(items).toEqual([
+      'シナリオを1件も検証できませんでした。',
+      'すべてのシナリオがエラーで終わったため、エージェントの実際の振る舞いを確認できていません。',
+      '満足度アンケートを1件も回収できなかったため、平均満足度は「低い」のではなく「未計測」です。',
+      '目標達成率 0.50 が目標値 0.75 を下回っています。',
+      '平均満足度 3.00 が目標値 4 を下回っています。',
+      '4 件中 1 件のシナリオで満足度アンケートを回収できませんでした。',
+      // 訳の無い文は原文のまま。
+      'some future reason',
+    ]);
+  });
+
+  it('従来どおり: 英語の画面では理由を原文のまま出す（G2）', async () => {
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([succeededWith({ quality: 'below-targets', qualityReasons: allReasons })]) });
+    render(<FactoryPage client={client} />);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    await screen.findByText('Report');
+    const items = [...document.querySelectorAll('.factory-quality-reasons li')].map((item) => item.textContent);
+    expect(items).toEqual(allReasons);
+  });
+
+  it('異常: 計画でデータソースが空のまま補えず失敗した Run は、日本語の画面で直し方つきの理由を出す（G3）', async () => {
+    const failed = baseRun({
+      status: 'failed',
+      stage: 'planning',
+      failure: {
+        stage: 'planning',
+        reason: 'Planning failed: the plan left the data source empty for the new tool(s) "Lookup Sales", "Lookup Costs" and it could not be filled in automatically because the run has 2 data sources. To fix it, start the run again with only the data source those tools should read, or state in the goal which data source each tool should use. Data sources: ds-1 (Sales), ds-2 (Costs).',
+      },
+      finishedAt: '2026-07-20T00:00:00.500Z',
+    });
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([failed]) });
+    render(<I18nProvider initialLanguage="ja"><FactoryPage client={client} /></I18nProvider>);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('計画で新しいツール "Lookup Sales", "Lookup Costs" のデータソースが空のままで');
+    expect(alert.textContent).toContain('直し方: そのツールが読むデータソースだけを選んで開始し直す');
+    expect(alert.textContent).toContain('ds-1 (Sales), ds-2 (Costs)');
+    expect(alert.textContent).not.toContain('Planning failed');
+  });
+
+  it('境界: データソースの無い Run の失敗も、データソースを選び直すよう日本語で案内する（G3）', async () => {
+    const failed = baseRun({
+      status: 'failed',
+      stage: 'planning',
+      failure: { stage: 'planning', reason: 'Planning failed: the plan needs new tool(s) "Lookup Sales", but the run has no data sources for them to read. To fix it, start the run again and select the data source those tools should read.' },
+      finishedAt: '2026-07-20T00:00:00.500Z',
+    });
+    const client = stubClient({ listFactoryRuns: vi.fn().mockResolvedValue([failed]) });
+    render(<I18nProvider initialLanguage="ja"><FactoryPage client={client} /></I18nProvider>);
+    await userEvent.click(await screen.findByRole('button', { name: /Answer sales questions/ }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('直し方: 開始し直すときに、そのツールが読むデータソースを選んでください。');
+  });
+});
