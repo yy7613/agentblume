@@ -826,6 +826,122 @@ function localizeEtlDetail(message: string, language: ErrorLanguage): string | u
 }
 
 /**
+ * 設計アシスタント（v50 R5）の定型文の日本語化。v47〜v49 で増えた文で、画面（DesignChatPanel）は
+ * `problems` / `warnings` を `localizeDiagnosticDetail` 経由でここへ通す。対象は3つ:
+ *
+ * - `src/domain/etl/graph-edit.ts` の `GraphEditError`（`operation N ('op'): 理由. 直し方`。契約 §4）。
+ * - `src/application/tool/design-chat-agent-tool.ts` の `set-agent-tool` 違反（同じ書式）。
+ * - `src/application/tool/design-rules.ts` の意味の検査（期間ラベルでの並べ替え・粒度の混在・0行の
+ *   プレビュー）と結合Toolの設計の違反（`describeJoinDesignViolations`）、
+ *   `src/application/tool/design-tool-chat.ts` の材料が読めない/グラフが不正なときの文。
+ *
+ * どれも差し戻しの理由としてモデルへそのまま渡る英語の原文。ETL定型文（`localizeEtlDetail`）と
+ * 同じ作法で、ja のときだけ変換し en は undefined を返す（英語UIは原文のままで十分）。
+ * セミコロンを含む1文があるので、呼び出し側（`localizeDetail`）の `;` 分割より前に丸ごと判定する。
+ */
+function localizeDesignChatDetail(message: string, language: ErrorLanguage): string | undefined {
+  if (language !== 'ja') return undefined;
+
+  // --- graph-edit.ts: GraphEditError（`operation N ('op'): 理由. 直し方`） -------------------------
+  let matched = /^operation (\d+) \('([a-z-]+)'\): ([a-z]+) is missing\. Set "\3" to the id of a node that exists in the current graph\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('${matched[2]}'): 「${matched[3]}」が指定されていません。「${matched[3]}」には、いまのグラフに存在するノードの id を指定してください`;
+
+  matched = /^operation (\d+) \('([a-z-]+)'\): ([a-z]+) '(.+)' is not a node in the current graph\. Use one of the existing node ids \((.+)\), or add the node first with 'add-node'\.$/.exec(message);
+  if (matched !== null) {
+    const known = matched[5];
+    const guidance = known === 'the graph is empty'
+      ? 'いまのグラフに存在するノードではありません（グラフは空です）。まず \'add-node\' でノードを追加してください'
+      : `いまのグラフに存在するノードではありません。既存のノード id（${known}）のいずれかを使うか、先に 'add-node' でノードを追加してください`;
+    return `操作${matched[1]} ('${matched[2]}'): 「${matched[3]}」に指定された「${matched[4]}」は${guidance}`;
+  }
+
+  matched = /^operation (\d+) \('add-node'\): the node id (.+) does not match \^\[a-z\]\[a-z0-9-\]\{0,39\}\$\. Use lower-case letters, digits and hyphens only, starting with a letter \(for example "sort-1"\)\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('add-node'): ノード id ${matched[2]} が形式（小文字英字で始まり、英小文字・数字・ハイフンだけ）に合いません。小文字の英字・数字・ハイフンだけを使い、英字で始めてください（例: "sort-1"）`;
+
+  matched = /^operation (\d+) \('add-node'\): a node with the id '(.+)' already exists\. Pick a new id, or use 'set-config' to change the existing '\2'\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('add-node'): id「${matched[2]}」のノードは既に存在します。新しい id を選ぶか、'set-config' で既存の「${matched[2]}」を変更してください`;
+
+  matched = /^operation (\d+) \('add-node'\): the node type of '(.+)' is missing\. Set "type" to one of the node types in the catalog\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('add-node'): ノード「${matched[2]}」の type が指定されていません。カタログにあるノード種別のいずれかを "type" に指定してください`;
+
+  matched = /^operation (\d+) \('set-config'\): the config of '(.+)' is not an object\. Send the complete config object for that node type; it replaces the current one\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('set-config'): ノード「${matched[2]}」の config がオブジェクトではありません。そのノード種別の config をまるごと送ってください（既存の設定を置き換えます）`;
+
+  matched = /^operation (\d+) \('connect'\): '(.+)' cannot be connected to itself\. Connect two different nodes; a node never feeds itself\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('connect'): 「${matched[2]}」は自分自身に接続できません。異なる2つのノードを接続してください（ノードが自分自身の入力になることはありません）`;
+
+  matched = /^operation (\d+) \('connect'\): "toInput": (.+) is not an input port\. Use 0 \(left\) or 1 \(right\), and only on a node that takes two inputs \(join, union\)\. Leave it out everywhere else\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('connect'): "toInput" の値 ${matched[2]} は入力ポートとして不正です。0（左）か 1（右）を、2入力を取るノード（join・union）でだけ指定してください。それ以外のノードでは指定しないでください`;
+
+  matched = /^operation (\d+) \('connect'\): '(.+)' is already connected to '(.+)'\. Leave the existing edge alone, or 'disconnect' it first if you want a different input port\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('connect'): 「${matched[2]}」は既に「${matched[3]}」に接続されています。既存の接続をそのままにするか、別の入力ポートにしたい場合は先に 'disconnect' で外してください`;
+
+  matched = /^operation (\d+) \('disconnect'\): there is no edge from '(.+)' to '(.+)'\. Only disconnect edges that exist in the current graph\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('disconnect'): 「${matched[2]}」から「${matched[3]}」への接続はありません。いまのグラフに存在する接続だけを外せます`;
+
+  matched = /^operation (\d+): unknown operation (.+)\. Use one of 'add-node', 'remove-node', 'set-config', 'connect', 'disconnect'\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]}: 不明な操作 ${matched[2]} です。'add-node' / 'remove-node' / 'set-config' / 'connect' / 'disconnect' のいずれかを使ってください`;
+
+  // --- design-chat-agent-tool.ts: `set-agent-tool` の違反（契約 §4） -------------------------------
+  matched = /^operation (\d+) \('set-agent-tool'\): the tool description is missing\. Set "description" to the text the agent reads before it calls this tool \(1 to (\d+) characters\): the format of every argument, the exact spelling of the values it may pass, what the data covers and the columns that come back\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('set-agent-tool'): ツールの説明文（description）が指定されていません。"description" に、エージェントがこのツールを呼ぶ前に読むテキスト（1〜${matched[2]}文字）を書いてください: 各引数の書式、渡してよい値の正確な綴り、データが何を扱っているか、返ってくる列は何かを含めてください`;
+
+  matched = /^operation (\d+) \('set-agent-tool'\): the tool description is (\d+) characters, which is longer than the limit of (\d+)\. Shorten it to at most \3 characters, keeping the format of the arguments, the values the agent may pass and the columns that come back\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('set-agent-tool'): ツールの説明文（description）が${matched[2]}文字あり、上限の${matched[3]}文字を超えています。引数の書式・渡してよい値・返ってくる列は残したまま、${matched[3]}文字以内に短くしてください`;
+
+  matched = /^operation (\d+) \('set-agent-tool'\): the tool name (.+) does not match \^\[A-Za-z0-9_-\]\{1,64\}\$\. Use letters, digits, '_' and '-' only \(for example "population_top"\), or leave "name" out to keep the current name\.$/.exec(message);
+  if (matched !== null) return `操作${matched[1]} ('set-agent-tool'): ツール名 ${matched[2]} が形式に合いません。英字・数字・"_"・"-" だけを使ってください（例: "population_top"）。いまの名前のままにする場合は "name" を省略してください`;
+
+  // --- design-rules.ts: 意味の検査（期間ラベルでの並べ替え・粒度の混在・0行のプレビュー） -----------------
+  matched = /^node '(.+)': sorting on '(.+)' orders the period LABELS as text \('2025年9月' comes after '2025年12月'\), not by time; add a parse-period node upstream \(column "\2"\) and sort on its start column "periodStart" instead$/.exec(message);
+  if (matched !== null) return `ノード「${matched[1]}」: 列「${matched[2]}」で並べ替えていますが、期間ラベルを文字列として並べているため時系列になりません（例: '2025年9月' が '2025年12月' より後になってしまいます）。上流に期間解釈(parse-period)ノードを追加し（対象列: "${matched[2]}"）、その開始日を表す列 "periodStart" で並べ替えてください`;
+
+  matched = /^node '(.+)': the period column '(.+)' mixes granularities \(monthly, quarterly, yearly and fiscal-year rows share it\), but no filter narrows "(.+)" to one granularity; add a filter \{ "column": "\3", "op": "eq", "value": "<one of the granularities in the profile>" \} right after the parse-period node so the rows are not mixed$/.exec(message);
+  if (matched !== null) return `ノード「${matched[1]}」: 期間列「${matched[2]}」は月次・四半期・年次・年度などの粒度が混在していますが、"${matched[3]}" を1つの粒度に絞るフィルターがありません。期間解釈(parse-period)ノードの直後に、フィルター { "column": "${matched[3]}", "op": "eq", "value": "<プロファイルにある粒度のいずれか>" } を追加して、行が混ざらないようにしてください`;
+
+  if (message === 'the design-time preview returned 0 rows, so the tool shows nothing on the canvas; use design-time values that exist in the data (see the profiles) so that the preview has rows') {
+    return '設計時プレビューが0行になり、キャンバスに何も表示されません。データに実在する値（プロファイルを参照）を設計時の値として使い、プレビューに行が出るようにしてください';
+  }
+
+  matched = /^the design-time preview returned 0 rows: ([\s\S]+); use design-time values that exist in the data so that the preview has rows$/.exec(message);
+  if (matched !== null) return `設計時プレビューが0行になりました: ${matched[1]}。データに実在する値を設計時の値として使い、プレビューに行が出るようにしてください`;
+
+  // --- design-rules.ts: 結合Toolの設計の違反（describeJoinDesignViolations。1件のときだけ丸ごと変換。
+  //     複数の違反が '. ' で連結されると形が定まらないため、その形は従来どおり原文で出す） --------------
+  matched = /^joined tool design is wrong: this joined tool runs 'parse-period' (\d+) times \((.+)\)\. Each run adds 'periodStart' \/ 'periodGranularity', so the second join cannot merge them \("still conflicts after suffix"\)\. Run it exactly ONCE, after the LAST join, on the primary period label column — the label column survives the join because it is a key$/.exec(message);
+  if (matched !== null) return `結合ツールの設計に誤りがあります: このツールは 'parse-period' を${matched[1]}回実行しています（${matched[2]}）。実行するたびに 'periodStart' / 'periodGranularity' が追加されるため、2回目以降の結合でこれらを統合できません（"still conflicts after suffix"）。'parse-period' は最後の結合の後に1回だけ、主となる期間ラベル列に対して実行してください — ラベル列は結合キーのため、結合後も残ります`;
+
+  matched = /^joined tool design is wrong: 'parse-period' node '(.+)' sits on a branch BEFORE the join\. Move it after the last join \(the period label column survives the join as a key\), so that 'periodStart' exists once instead of once per branch$/.exec(message);
+  if (matched !== null) return `結合ツールの設計に誤りがあります: 'parse-period' ノード「${matched[1]}」が結合より前の枝にあります。最後の結合の後に移動してください（期間ラベル列は結合キーとして結合後も残ります）。これで 'periodStart' が枝ごとではなく1つだけ存在するようになります`;
+
+  matched = /^joined tool design is wrong: the 'join' node '(.+)' joins on (.+), which (is free-text \(a note\/remark column\): rows whose notes differ are silently dropped|the data profile did not list as a shared key)\. Remove \2 from "keys" and join only on the columns joinCandidates lists( \(.+\))?( The code column alone already identifies the row, so a redundant name column next to it can be dropped too\.)?$/.exec(message);
+  if (matched !== null) {
+    const reason = matched[3] === 'the data profile did not list as a shared key'
+      ? 'データプロファイルが共通キーとして挙げていません'
+      : '自由記述（注記・備考）列です。値が異なる行が黙って落ちます';
+    const allowed = matched[4] === undefined ? '' : matched[4];
+    const tail = matched[5] === undefined ? '' : 'コード列だけで行を一意に識別できるため、隣にある冗長な名称列も削除できます。';
+    return `結合ツールの設計に誤りがあります: 'join' ノード「${matched[1]}」が ${matched[2]} で結合していますが、これは${reason}。"keys" から ${matched[2]} を外し、joinCandidates が挙げる列だけで結合してください${allowed}。${tail}`.trimEnd();
+  }
+
+  // --- design-tool-chat.ts: 材料が読めない/グラフが不正なときの文（埋め込まれた理由は再帰的に和訳を試みる） ---
+  matched = /^the data sources of this tool cannot be read: ([\s\S]+)$/.exec(message);
+  if (matched !== null) return `このツールのデータソースを読み込めません: ${localizeMessageText(matched[1] ?? '', language) ?? matched[1]}`;
+
+  matched = /^the tool graph is not valid: ([\s\S]+)$/.exec(message);
+  if (matched !== null) return `ツールグラフが不正です: ${localizeMessageText(matched[1] ?? '', language) ?? matched[1]}`;
+
+  matched = /^the design-time preview failed: ([\s\S]+)$/.exec(message);
+  if (matched !== null) return `設計時プレビューに失敗しました: ${localizeMessageText(matched[1] ?? '', language) ?? matched[1]}`;
+
+  // スキーマ伝播issue（`node '<id>': <issue>`）。issueは既存のETL定型文と同じ形なので再帰的に和訳を試みる。
+  matched = /^node '(.+)': ([\s\S]+)$/.exec(message);
+  if (matched !== null) return `ノード「${matched[1]}」: ${localizeMessageText(matched[2] ?? '', language) ?? matched[2]}`;
+
+  return undefined;
+}
+
+/**
  * エージェント実行の内部エラー（`AGENT_RUN` / `TOOL_ARGUMENTS` / `UNSAFE_TOOL`）の定型文。
  *
  * `src/application/agent/**` が投げる英語メッセージはそのままだと「何が起きたか」しか分からず、
@@ -1578,6 +1694,9 @@ function localizeDetail(raw: string, language: ErrorLanguage): string {
   // テンプレートの問題文も「直し方」をセミコロンの後ろに持つ 1 文なので、分割前に丸ごと判定する。
   const templateWhole = localizeTemplateSlotDetail(stripped, language);
   if (templateWhole !== undefined) return templateWhole;
+  // 設計アシスタント（v50 R5）の定型文もセミコロンを含む1文があるので、分割前に丸ごと判定する。
+  const designChatWhole = localizeDesignChatDetail(stripped, language);
+  if (designChatWhole !== undefined) return designChatWhole;
   // 実行エラー・診断の定型文にもセミコロンを含む1文がある（`agent-output exceeds maxBytes (...); reduce rows ...` /
   // `declared output schema ... — the run fails after the tool executes; re-save ...`）。その形だけ分割前に丸ごと判定する。
   // 全メッセージで丸ごと判定すると、`; ` 連結された診断の複数 detail を貪欲な `(.+)` が1件として飲み込む。

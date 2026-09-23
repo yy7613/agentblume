@@ -7,6 +7,7 @@ import type { SaveSkillUseCase } from '../application/skill/save-skill';
 import { serializeSkill } from '../domain/skill/serialization';
 import { SemVer } from '../domain/tool/semver';
 import { scopeOf } from './authentication';
+import { withResolvedOwner } from './owner';
 import { BadRequestError } from './error-mapping';
 import { saveSkillBodySchema, scopeQuerySchema, skillDraftPromptBodySchema, skillPromptBodySchema, versionQuerySchema } from './schemas';
 export interface SkillRouteDeps { readonly saveSkill: SaveSkillUseCase; readonly querySkills: QuerySkillsUseCase; readonly generateSkillPrompt: GenerateSkillPromptUseCase; readonly deleteSkill: DeleteSkillUseCase }
@@ -14,7 +15,7 @@ function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> { con
 function version(value?: string): SemVer | undefined { if (value === undefined) return undefined; try { return SemVer.parse(value); } catch { throw new BadRequestError(`invalid version string: "${value}"`); } }
 const refs = (tools: readonly { internalId: string; version: string }[]) => tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer }));
 export function registerSkillRoutes(app: FastifyInstance, deps: SkillRouteDeps): void {
-  app.post('/skills', async (request, reply) => { const body = parse(saveSkillBodySchema, request.body); const skill = await deps.saveSkill.execute({ ...body, scope: scopeOf(request), tools: refs(body.tools) }); return reply.status(201).send({ skill: serializeSkill(skill) }); });
+  app.post('/skills', async (request, reply) => { const body = parse(saveSkillBodySchema, request.body); const skill = await deps.saveSkill.execute({ ...withResolvedOwner(request, body), scope: scopeOf(request), tools: refs(body.tools) }); return reply.status(201).send({ skill: serializeSkill(skill) }); });
   app.get('/skills', async (request) => { parse(scopeQuerySchema, request.query); const skills = await deps.querySkills.list(scopeOf(request)); return { skills: skills.map((skill) => ({ ...skill, latestVersion: skill.latestVersion.toString() })) }; });
   app.get<{ Params: { internalId: string } }>('/skills/:internalId', async (request) => { const query = parse(versionQuerySchema, request.query); return { skill: serializeSkill(await deps.querySkills.get(scopeOf(request), request.params.internalId, version(query.version))) }; });
   app.get<{ Params: { internalId: string } }>('/skills/:internalId/versions', async (request) => { parse(scopeQuerySchema, request.query); return { versions: (await deps.querySkills.versions(scopeOf(request), request.params.internalId)).map(String) }; });

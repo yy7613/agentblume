@@ -16,8 +16,6 @@ import type {
   DesignChatMessageDto,
   DesignChatResultDto,
   DesignChatUsageDto,
-  GraphEdgeDto,
-  GraphNodeDto,
   InstantiatedTemplateDto,
   PreviewResultDto,
   PropagationResultDto,
@@ -30,6 +28,7 @@ import type {
 } from '../api/types';
 import { catalogItem, inputHandleId, toInputOf, type ToolNodeType } from './node-catalog';
 import { scope } from '../scope';
+import { designChatPositions, freePosition, layoutWrapped, loadedPositions, ORIGIN, PLACEMENT_STEP_X, type CanvasPosition } from './layout';
 
 export interface ToolNodeData extends Record<string, unknown> {
   readonly nodeType: ToolNodeType;
@@ -37,9 +36,6 @@ export interface ToolNodeData extends Record<string, unknown> {
   readonly config: Readonly<Record<string, unknown>>;
 }
 export type ToolFlowNode = Node<ToolNodeData, 'tool'>;
-
-/** キャンバス座標（React Flow の XYPosition と同形）。 */
-interface CanvasPosition { readonly x: number; readonly y: number }
 
 /**
  * 設計アシスタント（v47 / ADR-0051）の 1 往復。
@@ -129,6 +125,16 @@ interface ToolBuilderState {
    * 別のツールを開く・新規作成・テンプレートから作成で消える。開閉だけは画面が localStorage に覚える。
    */
   designChat: DesignChatState;
+  /**
+   * 「整列」の直前の配置（v51）。「元に戻す」の戻り先で、1 段だけ持つ。
+   * グラフの編集（ノードの移動・追加・削除、接続、設定、読み込み）で消え、画面の通知も一緒に消える。
+   */
+  arrangeUndo?: readonly { readonly id: string; readonly position: CanvasPosition }[];
+  /**
+   * 全体を並べ直した回数（v51）。画面はこれが変わったら fitView で全体を見せる。
+   * ノード数が変わらない並べ替え（整列・元に戻す）でも見せ直すために、ノード数とは別に持つ。
+   */
+  layoutRevision: number;
   setMetadata<K extends keyof ToolMetadataState>(key: K, value: ToolMetadataState[K]): void;
   addNode(type: ToolNodeType): void;
   onNodesChange(changes: NodeChange<ToolFlowNode>[]): void;
@@ -171,6 +177,10 @@ interface ToolBuilderState {
   failDesignChatCompact(error: string): void;
   /** 会話・要約・消費を消す（v49）。キャンバスは変えない。 */
   clearDesignChat(): void;
+  /** 全ノードを段組み＋折り返しで並べ直す（v51）。`maxColumns` は画面が表示幅から決める。 */
+  arrangeNodes(maxColumns?: number): void;
+  /** 直前の「整列」を取り消し、整列前の配置へ戻す（1 段だけ）。 */
+  undoArrange(): void;
   applyDraft(draft: ToolBuilderDraft): void;
   reset(): void;
 }
@@ -187,8 +197,8 @@ export function toolBuilderDraft(state: Pick<ToolBuilderState, 'metadata' | 'nod
   return { metadata: state.metadata, nodes: state.nodes, edges: state.edges };
 }
 
-/** 保存APIが非空を要求するメタデータ（api層 saveToolBodySchema の min(1) と対応）。 */
-export const REQUIRED_METADATA_KEYS = ['internalId', 'workingName', 'displayName', 'publishName', 'owner'] as const;
+/** 保存APIが非空を要求するメタデータ（api層 saveToolBodySchema の min(1) と対応。ownerは v52 で入力必須から外れ、空ならサーバーがログイン中の利用者名で埋める）。 */
+export const REQUIRED_METADATA_KEYS = ['internalId', 'workingName', 'displayName', 'publishName'] as const;
 export type RequiredMetadataKey = (typeof REQUIRED_METADATA_KEYS)[number];
 
 /** 未入力の必須メタデータ。保存ボタンのdisabled判定と理由表示に使う。 */
@@ -304,6 +314,13 @@ function bumpSideEffect(metadata: ToolMetadataState, nodes: readonly ToolFlowNod
 const clearSaveError = { saveError: undefined } as const;
 /** 保存内容が変わった: 検証結果が届くまで保存を待たせる。 */
 const markPending = { propagationPending: true } as const;
+/** グラフを編集した: 「整列」の取り消しは 1 段だけなので、次の編集で戻り先を捨てる（v51）。 */
+const dropArrangeUndo = { arrangeUndo: undefined } as const;
+
+/** 人がノードを動かした・足した・消した（選択や寸法の計測は編集ではない）。 */
+function editsNodes(changes: readonly NodeChange<ToolFlowNode>[]): boolean {
+  return changes.some((change) => change.type === 'position' || change.type === 'add' || change.type === 'remove' || change.type === 'replace');
+}
 
 /**
  * 選択・移動だけの変更では保存失敗メッセージを消さない。
@@ -325,17 +342,6 @@ const initialMetadata: ToolMetadataState = {
   sideEffect: 'read-only',
 };
 
-/** 先頭列の起点。starterグラフと、選択が無いときのパレット追加の基準点。 */
-const ORIGIN: CanvasPosition = { x: 80, y: 120 };
-/** 配置間隔（min-width 170px のノードが重ならず、ハンドルのドラッグ接続が届く距離）。 */
-const PLACEMENT_STEP_X = 280;
-const PLACEMENT_STEP_Y = 140;
-/** これより近い既存ノードがあれば「重なっている」と判定する箱のサイズ。 */
-const NODE_FOOTPRINT_X = 200;
-const NODE_FOOTPRINT_Y = 110;
-/** 空き探索の幅。24×24=576スロットあり、graphSchemaのノード上限200でも空きが残る。 */
-const PLACEMENT_SCAN = 24;
-
 function starterNodes(): ToolFlowNode[] {
   return [
     makeNode('source-1', 'json-source', ORIGIN),
@@ -354,117 +360,6 @@ function uniqueNodeId(type: ToolNodeType, nodes: readonly ToolFlowNode[]): strin
   let counter = 1;
   while (taken.has(`${type}-${counter}`)) counter += 1;
   return `${type}-${counter}`;
-}
-
-/** 既存の配置と視覚的に重なるか。 */
-function occupied(positions: readonly CanvasPosition[], position: CanvasPosition): boolean {
-  return positions.some((placed) =>
-    Math.abs(placed.x - position.x) < NODE_FOOTPRINT_X && Math.abs(placed.y - position.y) < NODE_FOOTPRINT_Y);
-}
-
-/** 希望位置が占有済みなら下方向へ、列が埋まっていれば右列へずらして空き位置を返す。 */
-function freePosition(positions: readonly CanvasPosition[], desired: CanvasPosition): CanvasPosition {
-  for (let column = 0; column < PLACEMENT_SCAN; column += 1) {
-    for (let row = 0; row < PLACEMENT_SCAN; row += 1) {
-      const candidate = { x: desired.x + column * PLACEMENT_STEP_X, y: desired.y + row * PLACEMENT_STEP_Y };
-      if (!occupied(positions, candidate)) return candidate;
-    }
-  }
-  return desired;
-}
-
-/**
- * 保存済みDTOの配置を復元する。
- * `position` があればそれを使い、無いノード（position導入前の保存データ）は
- * 従来の自動グリッドへ退避する（復元済みの配置と重なる場合はずらす）。
- */
-function loadedPositions(graphNodes: readonly GraphNodeDto[]): CanvasPosition[] {
-  const saved = graphNodes.map((node) => node.position === undefined ? undefined : { x: node.position.x, y: node.position.y });
-  const placed: CanvasPosition[] = saved.filter((position): position is CanvasPosition => position !== undefined);
-  return saved.map((position, index) => {
-    if (position !== undefined) return position;
-    const fallback = freePosition(placed, { x: ORIGIN.x + index * PLACEMENT_STEP_X, y: ORIGIN.y });
-    placed.push(fallback);
-    return fallback;
-  });
-}
-
-/**
- * 位置を持たないグラフ（テンプレートの実体化結果）を左→右へ並べる。
- *
- * 列はトポロジカルな深さ（入力からの最長距離）、行は同じ深さの中の出現順。
- * 深さを使うのは、結合のように 2 本の枝が合流する形で「合流先が両方の右に来る」ためで、
- * 単純な出現順に並べると枝が重なって読めなくなる。循環は保存前の検査が弾くので、
- * ここでは未解決のまま残った節を最後の列へ置いて**必ず終わる**ようにする。
- */
-export function layoutByDepth(nodes: readonly GraphNodeDto[], edges: readonly GraphEdgeDto[]): CanvasPosition[] {
-  const depth = new Map<string, number>(nodes.map((node) => [node.id, 0] as const));
-  // ノード数ぶん繰り返せば最長距離は確定する（各周回で少なくとも 1 つの深さが確定する）。
-  for (let round = 0; round < nodes.length; round += 1) {
-    let changed = false;
-    for (const edge of edges) {
-      const from = depth.get(edge.from);
-      const to = depth.get(edge.to);
-      if (from === undefined || to === undefined || to >= from + 1) continue;
-      depth.set(edge.to, from + 1);
-      changed = true;
-    }
-    if (!changed) break;
-  }
-  const rows = new Map<number, number>();
-  return nodes.map((node) => {
-    const column = depth.get(node.id) ?? 0;
-    const row = rows.get(column) ?? 0;
-    rows.set(column, row + 1);
-    return { x: ORIGIN.x + column * PLACEMENT_STEP_X, y: ORIGIN.y + row * PLACEMENT_STEP_Y };
-  });
-}
-
-/** 設計アシスタントが足したノードを、上流ノードのどれだけ右に置くか（ADR-0051 の「右に 1 つ」）。 */
-const DESIGN_CHAT_OFFSET_X = 220;
-
-/**
- * 設計アシスタントが返したグラフの配置を決める（v47）。
- *
- * サーバーは変えなかったノードの position を写して返すので、基本はそれをそのまま使い、
- * 人が並べた形を崩さない。position が無いのは**新しく足されたノード**で、
- * サーバーの changes には `after` が無いため、エッジを辿って上流を引き、その右へ置く
- * （上流も新しい場合があるので、置けたものから繰り返し決める）。
- * 上流が無いノード（source を足した等）は既存の最右列のさらに右へ縦に並べる。
- */
-export function designChatPositions(graph: ToolGraphDto, previous: readonly ToolFlowNode[]): ReadonlyMap<string, CanvasPosition> {
-  const kept = new Map(previous.map((node) => [node.id, node.position] as const));
-  const placed = new Map<string, CanvasPosition>();
-  const pending: string[] = [];
-  for (const node of graph.nodes) {
-    // position を落として返されても、既に画面にあるノードなら前の配置を保つ。
-    const position = node.position ?? kept.get(node.id);
-    if (position === undefined) pending.push(node.id); else placed.set(node.id, position);
-  }
-  // 上流が決まったものから右へ置く。1 周で 1 つも置けなくなったら、残りは上流が無い（か循環している）。
-  // 鎖が下流から順に並んでいると 1 周で 1 つしか決まらないので、最大でもノード数だけ周回する。
-  const rounds = pending.length;
-  for (let round = 0; round < rounds && pending.length > 0; round += 1) {
-    let progressed = false;
-    for (const id of [...pending]) {
-      const upstream = graph.edges.filter((edge) => edge.to === id)
-        .map((edge) => placed.get(edge.from))
-        .filter((position): position is CanvasPosition => position !== undefined);
-      if (upstream.length === 0) continue;
-      // 2 入力（join / union）はどちらの枝よりも右に来るよう、最も右の上流を基準にする。
-      const anchor = upstream.reduce((right, position) => position.x > right.x ? position : right);
-      placed.set(id, freePosition([...placed.values()], { x: anchor.x + DESIGN_CHAT_OFFSET_X, y: anchor.y }));
-      pending.splice(pending.indexOf(id), 1);
-      progressed = true;
-    }
-    if (!progressed) break;
-  }
-  const rightmost = [...placed.values()].reduce((right, position) => Math.max(right, position.x), ORIGIN.x - PLACEMENT_STEP_X);
-  for (const id of pending) {
-    // 同じ列を指すので freePosition が行をずらし、結果として縦に並ぶ。
-    placed.set(id, freePosition([...placed.values()], { x: rightmost + PLACEMENT_STEP_X, y: ORIGIN.y }));
-  }
-  return placed;
 }
 
 /** グラフDTOをキャンバスのノード・エッジへ。エッジidは重複しないよう添字を混ぜる（loadToolと同じ作法）。 */
@@ -570,6 +465,7 @@ function initialState() {
     pendingCalculateIntent: undefined,
     createdFromTemplate: undefined,
     designChat: emptyDesignChat(false),
+    arrangeUndo: undefined,
   };
 }
 
@@ -593,6 +489,8 @@ export function flowToGraph(nodes: readonly ToolFlowNode[], edges: readonly Edge
 
 export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
   ...initialState(),
+  // 初期状態（reset）には入れない: 戻すと「前と同じ値」になり、画面が全体を見せ直す合図を取りこぼしうる。
+  layoutRevision: 0,
   setMetadata: (key, value) => set((state) => ({
     metadata: { ...state.metadata, [key]: value },
     ...clearSaveError,
@@ -624,21 +522,22 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
     const nodes = [...state.nodes, node];
     return {
       nodes, edges: [...state.edges, ...edge], selectedNodeId: id,
-      ...clearSaveError, ...markPending,
+      ...clearSaveError, ...markPending, ...dropArrangeUndo,
       ...bumpSideEffect(state.metadata, nodes),
     };
   }),
   onNodesChange: (changes) => set((state) => ({
     nodes: applyNodeChanges(changes, state.nodes),
     ...(changesSavePayload(changes) ? { ...clearSaveError, ...markPending } : {}),
+    ...(editsNodes(changes) ? dropArrangeUndo : {}),
   })),
-  onEdgesChange: (changes) => set((state) => ({ edges: applyEdgeChanges(changes, state.edges), ...clearSaveError, ...markPending })),
-  onConnect: (connection) => set((state) => ({ edges: addEdge(connection, state.edges), ...clearSaveError, ...markPending })),
+  onEdgesChange: (changes) => set((state) => ({ edges: applyEdgeChanges(changes, state.edges), ...clearSaveError, ...markPending, ...dropArrangeUndo })),
+  onConnect: (connection) => set((state) => ({ edges: addEdge(connection, state.edges), ...clearSaveError, ...markPending, ...dropArrangeUndo })),
   selectNode: (selectedNodeId) => set({ selectedNodeId }),
   updateNodeConfig: (nodeId, config) => set((state) => {
     const nodes = state.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, config } } : node);
     // agent-output の overflow を store-and-reference へ変えた場合もセッション書き込みになる。
-    return { nodes, ...clearSaveError, ...markPending, ...bumpSideEffect(state.metadata, nodes) };
+    return { nodes, ...clearSaveError, ...markPending, ...dropArrangeUndo, ...bumpSideEffect(state.metadata, nodes) };
   }),
   setPreviewLoading: (previewLoading) => set({ previewLoading }),
   // 検証結果が届いた（undefined でも失敗として届いたと見なし、続く setDraftIssue が理由を持つ）。
@@ -651,7 +550,10 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
   setSavedVersion: (currentVersion, versions) => set({ currentVersion, versions }),
   setVersions: (versions) => set({ versions }),
   loadTool: (tool) => set((state) => {
-    const positions = loadedPositions(tool.graph.nodes);
+    // 全ノードが位置を持たない（Factory が生成した・position 導入前の）ツールは折り返して並べる（v51）。
+    // 一部でも位置を持つなら人が並べたものなので動かさず、欠けたものだけ空き位置へ置く。
+    const unplaced = tool.graph.nodes.every((node) => node.position === undefined);
+    const positions = unplaced ? layoutWrapped(tool.graph.nodes, tool.graph.edges) : loadedPositions(tool.graph.nodes);
     return {
       metadata: {
         internalId: tool.metadata.internalId,
@@ -686,6 +588,8 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
       versions: state.versions,
       // 会話は編集中のツールに紐づく。別のツールを開いたら捨てる（パネルの開閉だけ引き継ぐ）。
       designChat: emptyDesignChat(state.designChat.open),
+      ...dropArrangeUndo,
+      ...(unplaced ? { layoutRevision: state.layoutRevision + 1 } : {}),
     };
   }),
   /**
@@ -696,7 +600,7 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
    * 表示名はテンプレートのタイトル、公開名と Agent Tool の名前は実体化が決めた function 名。
    */
   loadTemplate: (instantiated, displayName) => set((state) => {
-    const positions = layoutByDepth(instantiated.graph.nodes, instantiated.graph.edges);
+    const positions = layoutWrapped(instantiated.graph.nodes, instantiated.graph.edges);
     const name = instantiated.agentTool.name;
     const pending = instantiated.pendingExpressions[0];
     return {
@@ -735,6 +639,8 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
       diagnostics: undefined,
       saveError: undefined,
       designChat: emptyDesignChat(state.designChat.open),
+      ...dropArrangeUndo,
+      layoutRevision: state.layoutRevision + 1,
     };
   }),
   consumePendingCalculateIntent: (nodeId) => {
@@ -798,7 +704,12 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
         },
       };
     }
-    const { nodes, edges } = graphToFlow(result.graph, designChatPositions(result.graph, state.nodes));
+    // 空のキャンバスへの適用は丸ごと新しいグラフなので折り返して並べる。既存があれば人の配置を保つ（v51）。
+    const fresh = state.nodes.length === 0;
+    const positions = fresh
+      ? new Map(layoutWrapped(result.graph.nodes, result.graph.edges).map((position, index) => [result.graph?.nodes[index]?.id ?? '', position] as const))
+      : designChatPositions(result.graph, state.nodes);
+    const { nodes, edges } = graphToFlow(result.graph, positions);
     const touched = changes
       .map((change) => change.nodeId)
       .filter((nodeId): nodeId is string => nodeId !== undefined && nodes.some((node) => node.id === nodeId));
@@ -814,7 +725,8 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
         highlight: touched,
         usage,
       },
-      ...clearSaveError, ...markPending,
+      ...clearSaveError, ...markPending, ...dropArrangeUndo,
+      ...(fresh ? { layoutRevision: state.layoutRevision + 1 } : {}),
       ...(tool === undefined ? {} : { metadata }),
       // 説明文の更新と同じターンで sink が増えることもあるので、更新後のメタデータを渡して上書きを避ける。
       ...bumpSideEffect(metadata, nodes),
@@ -841,7 +753,7 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
         turns: state.designChat.turns.map((turn, position) => position >= index && turn.before !== undefined ? { ...turn, reverted: true } : turn),
         highlight: [],
       },
-      ...clearSaveError, ...markPending,
+      ...clearSaveError, ...markPending, ...dropArrangeUndo,
     };
   }),
   clearDesignChatHighlight: () => set((state) => ({ designChat: { ...state.designChat, highlight: [] } })),
@@ -871,6 +783,33 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
   failDesignChatCompact: (error) => set((state) => ({ designChat: { ...state.designChat, compacting: false, error } })),
   // 会話・要約・消費を捨てる。キャンバスは触らない（下書きの会話は資産ではないが、作ったグラフは資産）。
   clearDesignChat: () => set((state) => ({ designChat: emptyDesignChat(state.designChat.open) })),
+  /**
+   * 「整列」（v51）。人が並べた位置も含めて全ノードを並べ直すので、直前の配置を 1 段だけ控えて
+   * 「元に戻す」を出せるようにする。位置は保存対象だがドラッグと同じく検証は要らないので、
+   * 検証待ちにも保存失敗の消去にもしない。
+   */
+  arrangeNodes: (maxColumns) => set((state) => {
+    if (state.nodes.length === 0) return {};
+    const positions = layoutWrapped(
+      state.nodes,
+      state.edges.map((edge) => ({ from: edge.source, to: edge.target })),
+      maxColumns === undefined ? {} : { maxColumns },
+    );
+    return {
+      nodes: state.nodes.map((node, index) => ({ ...node, position: positions[index] ?? node.position })),
+      arrangeUndo: state.nodes.map((node) => ({ id: node.id, position: node.position })),
+      layoutRevision: state.layoutRevision + 1,
+    };
+  }),
+  undoArrange: () => set((state) => {
+    if (state.arrangeUndo === undefined) return {};
+    const before = new Map(state.arrangeUndo.map((entry) => [entry.id, entry.position] as const));
+    return {
+      nodes: state.nodes.map((node) => ({ ...node, position: before.get(node.id) ?? node.position })),
+      ...dropArrangeUndo,
+      layoutRevision: state.layoutRevision + 1,
+    };
+  }),
   // 復元した下書きを丸ごと反映する。派生状態（推論結果・プレビュー・エラー）は破棄して自動プレビューに再計算させる。
   applyDraft: (draft) => set({
     metadata: { ...draft.metadata },
@@ -883,6 +822,7 @@ export const useToolBuilderStore = create<ToolBuilderState>((set, get) => ({
     draftIssue: undefined,
     diagnostics: undefined,
     saveError: undefined,
+    ...dropArrangeUndo,
   }),
   // 新規作成。会話は消えるが、パネルを開いているかどうかは利用者の設定なので引き継ぐ。
   reset: () => set((state) => ({ ...initialState(), designChat: emptyDesignChat(state.designChat.open) })),

@@ -16,7 +16,7 @@
  *
  * 実装は `src/adapters/prompts/fs-prompt-catalog.ts`。
  */
-import type { PromptTemplate } from './prompt-template';
+import type { PromptId, PromptTemplate } from './prompt-template';
 
 /**
  * コードが要求するプロンプト 1 件（id と、コードが実際に描画する節）。
@@ -26,7 +26,7 @@ import type { PromptTemplate } from './prompt-template';
  */
 export interface PromptSpec {
   /** ファイルの相対パス（拡張子なし・`/` 区切り）。例 `tool/design-chat`。 */
-  readonly id: string;
+  readonly id: PromptId;
   /** コードが `render()` する節の名前。 */
   readonly sections: readonly string[];
 }
@@ -36,7 +36,7 @@ export interface PromptCatalogPort {
    * 読み込み済みのプロンプトを返す。ファイルの更新時刻・サイズが変わっていれば読み直す
    * （壊れていれば直前の良い版を返して警告を残す）。id が無ければ `PromptNotFoundError`。
    */
-  get(id: string): PromptTemplate;
+  get(id: PromptId): PromptTemplate;
   /** 起動時の検査。無い id / 無い節を、ファイルの置き場所と直し方つきで**一括で**投げる。 */
   require(specs: readonly PromptSpec[]): void;
 }
@@ -48,11 +48,11 @@ export interface PromptCatalogPort {
  * 「起動後にファイルを消した」のどちらかなので、どちらも直せるように置き場所と理由を持たせる。
  */
 export class PromptNotFoundError extends Error {
-  readonly promptId: string;
+  readonly promptId: PromptId;
   /** ファイルは在るが読めない場合の理由と直し方（無ければ空）。 */
   readonly problems: readonly string[];
 
-  constructor(promptId: string, message: string, problems: readonly string[] = []) {
+  constructor(promptId: PromptId, message: string, problems: readonly string[] = []) {
     super(message);
     this.name = 'PromptNotFoundError';
     this.promptId = promptId;

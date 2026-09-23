@@ -406,23 +406,32 @@ describe('MetadataBar', () => {
 
   it('必須項目に印を付け、未入力なら保存を無効化して理由を近傍に示す', () => {
     // 検証結果は届いている状態にして、必須項目だけが保存を止めているのを見る。
+    // v52: 所有者(Owner)は入力必須から外れたので required-mark も未入力一覧も対象外。
     useToolBuilderStore.getState().setPropagation(propagation);
     render(<MetadataBar client={{} as ToolApiClient} />);
-    expect(document.querySelectorAll('.required-mark')).toHaveLength(5);
+    expect(document.querySelectorAll('.required-mark')).toHaveLength(4);
+    expect(screen.getByLabelText('Owner').closest('label')?.querySelector('.required-mark')).toBeNull();
     const save = () => screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
     expect(save().disabled).toBe(true);
-    expect(screen.getByText('Internal ID, Working name, Display name, Publish name, Owner required to save.')).toBeTruthy();
+    expect(screen.getByText('Internal ID, Working name, Display name, Publish name required to save.')).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText('Internal ID'), { target: { value: 'customer-filter' } });
     fireEvent.change(screen.getByLabelText('Working name'), { target: { value: 'draft' } });
     fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Customer filter' } });
     fireEvent.change(screen.getByLabelText('Publish name'), { target: { value: 'adult_customers' } });
-    expect(save().disabled).toBe(true);
-    expect(screen.getByText('Owner required to save.')).toBeTruthy();
-
-    fireEvent.change(screen.getByLabelText('Owner'), { target: { value: 'owner@example.com' } });
     expect(save().disabled).toBe(false);
     expect(screen.queryByText(/required to save/)).toBeNull();
+  });
+
+  it('正常: 所有者(owner)を空欄のまま保存できる', () => {
+    useToolBuilderStore.getState().setPropagation(propagation);
+    render(<MetadataBar client={{} as ToolApiClient} />);
+    fireEvent.change(screen.getByLabelText('Internal ID'), { target: { value: 'customer-filter' } });
+    fireEvent.change(screen.getByLabelText('Working name'), { target: { value: 'draft' } });
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Customer filter' } });
+    fireEvent.change(screen.getByLabelText('Publish name'), { target: { value: 'adult_customers' } });
+    expect((screen.getByLabelText('Owner') as HTMLInputElement).value).toBe('');
+    expect((screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('保存失敗を保存ボタン近傍に出し、状態バッジを草案検証のままにして再保存できる', async () => {

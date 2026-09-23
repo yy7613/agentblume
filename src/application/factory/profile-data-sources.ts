@@ -13,7 +13,11 @@ import type { DataSourceRepository } from '../../domain/data-source/data-source-
 import { FactoryValidationError } from '../../domain/factory/errors';
 import { parsePeriodLabel, type PeriodGranularity } from '../../domain/etl/nodes/parse-period';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
+import { CODE_LIKE_COLUMN } from '../../domain/data/column-roles';
 import { throwIfAborted } from './abort';
+
+/** `CODE_LIKE_COLUMN` は `domain/data/column-roles` へ移した（v50 R3）。既存の import 元を壊さないための re-export。 */
+export { CODE_LIKE_COLUMN };
 
 export interface ColumnProfile {
   readonly name: string;
@@ -243,9 +247,6 @@ export const JOIN_KEY_OVERLAP_RATIO = 0.5;
 
 /** 結合キーになりうる列型（値を文字列へ写して比較できるもの）。 */
 const JOINABLE_TYPES: readonly string[] = ['string', 'number', 'date', 'unknown'];
-
-/** コードらしい列名（結合キーとして優先する）。 */
-export const CODE_LIKE_COLUMN = /コード|code|id$|_id|番号/i;
 
 /** セル1つを結合キーの比較用に文字列化する（`join` ノードの `coerceKeys: 'string'` と同じ発想）。 */
 function encodeKeyValue(value: unknown): string | null {

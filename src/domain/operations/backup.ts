@@ -34,6 +34,7 @@
  * ISO 文字列をそのまま使わない。
  */
 import type { IsoDateTime } from '../shared/time';
+import { isRecord } from '../shared/assert';
 import { BackupValidationError } from './errors';
 
 /**
@@ -125,10 +126,6 @@ export function createBackupManifest(input: BackupManifestInput): BackupManifest
       ? { included: true, file: BACKUP_SECRET_KEY_FILE_NAME }
       : { included: false },
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function requireInteger(source: Record<string, unknown>, key: string): number {

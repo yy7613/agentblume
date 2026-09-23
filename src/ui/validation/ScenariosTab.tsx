@@ -137,7 +137,7 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
   const surveyValid = survey.length > 0 && survey.every((question) => question.id.trim() !== '' && question.textJa.trim() !== '' && question.textEn.trim() !== '')
     && new Set(survey.map((question) => question.id)).size === survey.length;
   const valid = internalId.trim() !== '' && workingName.trim() !== '' && displayName.trim() !== '' && publishName.trim() !== ''
-    && owner.trim() !== '' && agentId !== '' && agentVersion !== '' && pseudoAgentId !== '' && pseudoAgentVersion !== ''
+    && agentId !== '' && agentVersion !== '' && pseudoAgentId !== '' && pseudoAgentVersion !== ''
     && goal.trim() !== '' && turnsValid && surveyValid;
 
   async function save(): Promise<void> {
@@ -198,7 +198,7 @@ export function ScenariosTab({ client, scope, onRunCompleted }: {
         <label>{text('Working name', '作業名')}<input aria-label={text('Scenario working name', 'シナリオ作業名')} value={workingName} onChange={(event) => setWorkingName(event.target.value)} /></label>
         <label>{text('Display name', '表示名')}<input aria-label={text('Scenario display name', 'シナリオ表示名')} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
         <label>{text('Publish name', '公開名')}<input aria-label={text('Scenario publish name', 'シナリオ公開名')} value={publishName} onChange={(event) => setPublishName(event.target.value)} /></label>
-        <label>{text('Owner', '所有者')}<input aria-label={text('Scenario owner', 'シナリオ所有者')} value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
+        <label>{text('Owner', '所有者')}<input aria-label={text('Scenario owner', 'シナリオ所有者')} placeholder={text('Optional (defaults to you)', '省略可（空欄なら自分の名前）')} value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
         <label>{text('Target agent', '対象エージェント')}<select aria-label={text('Scenario target agent', 'シナリオ対象エージェント')} value={agentId} onChange={(event) => void selectAgent(event.target.value)}><option value="">{text('Select an agent', 'エージェントを選択')}</option>{targetAgents.map((agent) => <option key={agent.internalId} value={agent.internalId}>{agent.displayName} · {agent.latestVersion}</option>)}</select></label>
         <label>{text('Agent version', 'エージェントバージョン')}<select aria-label={text('Scenario agent version', 'シナリオ対象エージェントバージョン')} value={agentVersion} disabled={agentVersions.length === 0} onChange={(event) => setAgentVersion(event.target.value)}>{agentVersions.length === 0 && <option value="">{text('Select an agent first', '先にエージェントを選択')}</option>}{agentVersions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
         <label>{text('Pseudo-user agent', '疑似ユーザーAgent')}<select aria-label={text('Scenario pseudo-user agent', 'シナリオ疑似ユーザーAgent')} value={pseudoAgentId} onChange={(event) => selectPseudoAgent(event.target.value)}><option value="">{text('Select a pseudo-user agent', '疑似ユーザーAgentを選択')}</option>{pseudoAgents.map((agent) => <option key={agent.internalId} value={agent.internalId}>{agent.displayName} · {agent.latestVersion}</option>)}</select></label>

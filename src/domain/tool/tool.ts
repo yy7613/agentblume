@@ -8,6 +8,8 @@
 import type { Schema } from '../data/types';
 import type { ToolGraph } from '../etl/graph';
 import { assertNonEmpty } from '../shared/assert';
+import type { FunctionName } from '../shared/function-name';
+import { isFunctionName } from '../shared/function-name';
 import { validatePublishableMetadata } from '../shared/publishable';
 import { ToolValidationError } from './errors';
 import { isSideEffect } from './metadata';
@@ -16,7 +18,7 @@ import { SemVer } from './semver';
 
 /** Agent/LLM に公開する Tool Calling 契約。未指定時は metadata から後方互換に導出する。 */
 export interface AgentToolContract {
-  readonly name: string;
+  readonly name: FunctionName;
   readonly description: string;
 }
 
@@ -111,7 +113,7 @@ export function createTool(props: CreateToolProps): Tool {
     throw new ToolValidationError('createTool: graph.edges must be an array');
   }
   if (agentTool !== undefined) {
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(agentTool.name)) throw new ToolValidationError('createTool: agentTool.name must be a valid function name');
+    if (!isFunctionName(agentTool.name)) throw new ToolValidationError('createTool: agentTool.name must be a valid function name');
     assertNonEmptyString(agentTool.description, 'agentTool.description');
   }
 

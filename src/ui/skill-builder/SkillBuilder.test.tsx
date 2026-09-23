@@ -83,8 +83,10 @@ describe('SkillBuilder', () => {
     const { container } = await openNewSkillEditor(client);
     const save = screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
-    expect(container.querySelectorAll('.required-mark').length).toBeGreaterThanOrEqual(7);
-    expect(screen.getByText(/Required fields are empty: Internal ID, Working name, Skill name, Publish name, Owner, Skill description, Skill content/)).toBeTruthy();
+    // v52: 所有者(Owner)は入力必須から外れた。
+    expect(container.querySelectorAll('.required-mark').length).toBeGreaterThanOrEqual(6);
+    expect(screen.getByText(/Required fields are empty: Internal ID, Working name, Skill name, Publish name, Skill description, Skill content/)).toBeTruthy();
+    expect(screen.getByLabelText('Skill owner').closest('label')?.querySelector('.required-mark')).toBeNull();
 
     await fillRequiredFields();
     expect(save.disabled).toBe(false);
@@ -93,6 +95,22 @@ describe('SkillBuilder', () => {
     await userEvent.clear(screen.getByLabelText('Skill display name'));
     expect(save.disabled).toBe(true);
     expect(screen.getByText('Required fields are empty: Skill name.')).toBeTruthy();
+  });
+
+  it('正常: 所有者を入力しなくても保存できる', async () => {
+    const client = stubClient();
+    (client.saveSkill as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { version: '1.0.0' } });
+    await openNewSkillEditor(client);
+    await userEvent.type(screen.getByLabelText('Skill internal ID'), 'data-analysis');
+    await userEvent.type(screen.getByLabelText('Skill working name'), 'Data analysis draft');
+    await userEvent.type(screen.getByLabelText('Skill display name'), 'Data analysis');
+    await userEvent.type(screen.getByLabelText('Skill publish name'), 'data_analysis');
+    await userEvent.type(screen.getByLabelText('Skill description'), 'Analyze supplied data.');
+    await userEvent.type(screen.getByLabelText('Skill content'), 'Use the supplied data and explain the result.');
+    expect(screen.queryByText(/Required fields are empty/)).toBeNull();
+    expect((screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(screen.getByRole('button', { name: 'Save version' }));
+    await waitFor(() => expect(client.saveSkill).toHaveBeenCalledWith(expect.objectContaining({ owner: '' })));
   });
 
   describe('一覧（Layer 1）', () => {

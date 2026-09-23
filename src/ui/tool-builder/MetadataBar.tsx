@@ -41,7 +41,6 @@ export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClien
     workingName: text('Working name', '作業名'),
     displayName: text('Display name', '表示名'),
     publishName: text('Publish name', '公開名'),
-    owner: text('Owner', '所有者'),
   };
   // 保存ガード（優先順）: 必須項目 → function 名 → Agent Input の衝突 → 検証待ち → グラフエラー。
   // どれも入力し直す・繋ぎ直す・待つことで解消でき、押せないまま行き止まりになる状態は作らない。
@@ -104,7 +103,7 @@ export function MetadataBar({ client, onSaved }: { readonly client: ToolApiClien
           <label>{text('Internal ID', '内部ID')}<span className="required-mark">*</span><input aria-label={text('Internal ID', '内部ID')} placeholder={text('e.g. customer-search', '例: customer-search')} value={metadata.internalId} onChange={(event) => setMetadata('internalId', event.target.value)} /></label>
           <label>{text('Working name', '作業名')}<span className="required-mark">*</span><input aria-label={text('Working name', '作業名')} placeholder={text('e.g. Customer search draft', '例: 顧客検索の下書き')} value={metadata.workingName} onChange={(event) => setMetadata('workingName', event.target.value)} /></label>
           <label>{text('Publish name', '公開名')}<span className="required-mark">*</span><input aria-label={text('Publish name', '公開名')} placeholder={text('e.g. customer_search', '例: customer_search')} value={metadata.publishName} onChange={(event) => setMetadata('publishName', event.target.value)} /></label>
-          <label>{text('Owner', '所有者')}<span className="required-mark">*</span><input aria-label={text('Owner', '所有者')} placeholder={text('e.g. team@example.com', '例: team@example.com')} value={metadata.owner} onChange={(event) => setMetadata('owner', event.target.value)} /></label>
+          <label>{text('Owner', '所有者')}<input aria-label={text('Owner', '所有者')} placeholder={text('Optional (defaults to you)', '省略可（空欄なら自分の名前）')} value={metadata.owner} onChange={(event) => setMetadata('owner', event.target.value)} /></label>
           {/* テナント／ワークスペースは編集させない。保存先は認証済みPrincipalがサーバー側で決めるので、
               ここで入力できても効かないうえ、以前は書き換えた瞬間にToolが他画面から見えなくなる罠だった。
               現在地の確認のためだけに読み取り専用で出す。 */}

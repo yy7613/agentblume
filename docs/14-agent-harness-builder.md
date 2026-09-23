@@ -361,7 +361,7 @@ eyebrowは `Multi-Agent Builder` / `マルチエージェントビルダー`、�
 
 ### 7.4 Canvas
 
-`aria-label` は `Multi-agent canvas` / `マルチエージェントキャンバス`。canvasの上に内部ID、表示名、所有者の必須入力を置く。内部IDは保存済みを開いた場合は読み取り専用である（変更すると別資産になるため）。
+`aria-label` は `Multi-agent canvas` / `マルチエージェントキャンバス`。canvasの上に内部ID・表示名（必須）と所有者（省略可。空欄なら保存時にログイン中の利用者名が入る）の入力を置く。内部IDは保存済みを開いた場合は読み取り専用である（変更すると別資産になるため）。
 
 slotカードはpatternごとに異なる2D配置で描く（sequentialは一列、concurrentはfan-out、agent-as-tools／group-chat／magenticはhub&spoke、handoffは分岐）。各カードは編集可能なslot名とslot目的、割当用の `<select>`、割当結果の `{internalId}@{version}` または `unassigned` / `未割当` を持つ。`<select>` の `aria-label` は `Assign agent to {slot.label}` / `Agentを割り当て {slot.label}`、先頭optionは `Assign saved Agent…` / `保存済みAgentを割り当て…` である。
 

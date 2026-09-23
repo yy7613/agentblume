@@ -62,7 +62,8 @@ describe('AgentBuilder', () => {
     // 空状態メッセージ・未入力理由も日本語で出す（ベタ書き英語/日本語を残さない）。
     expect(await screen.findByText('保存済みスキルがありません。')).toBeTruthy();
     expect(screen.getByText('保存済みツールがありません。')).toBeTruthy();
-    expect(screen.getByText(/内部ID、作業名、表示名、公開名、所有者、システムプロンプトが未入力です。/)).toBeTruthy();
+    // v52: 所有者は入力必須から外れた（未入力でも一覧に出ない）。
+    expect(screen.getByText(/内部ID、作業名、表示名、公開名、システムプロンプトが未入力です。/)).toBeTruthy();
   });
 
   it('サーバー必須項目が未入力なら保存できず、未入力の項目名を理由として表示する', async () => {
@@ -70,21 +71,34 @@ describe('AgentBuilder', () => {
     const { container } = await openNewAgentEditor(client);
     const save = screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
-    expect(container.querySelectorAll('.required-mark').length).toBeGreaterThanOrEqual(6);
-    expect(screen.getByText(/Required fields are empty: Internal ID, Working name, Display name, Publish name, Owner, System prompt/)).toBeTruthy();
+    // v52: 所有者(Owner)は入力必須から外れた。System prompt を含め5個の必須項目だけが印付き。
+    expect(container.querySelectorAll('.required-mark').length).toBeGreaterThanOrEqual(5);
+    expect(screen.getByText(/Required fields are empty: Internal ID, Working name, Display name, Publish name, System prompt/)).toBeTruthy();
 
     // systemPromptだけ埋めても内部ID等が残るためdisabledのまま（以前はここで押せてサーバー400になっていた）。
     await userEvent.type(screen.getByRole('textbox', { name: 'System prompt' }), 'You are helpful.');
     expect(save.disabled).toBe(true);
-    expect(screen.getByText(/Required fields are empty: Internal ID, Working name, Display name, Publish name, Owner/)).toBeTruthy();
+    expect(screen.getByText(/Required fields are empty: Internal ID, Working name, Display name, Publish name/)).toBeTruthy();
 
     await userEvent.type(screen.getByLabelText('Agent internal ID'), 'support-agent');
     await userEvent.type(screen.getByLabelText('Working name'), 'Support draft');
     await userEvent.type(screen.getByLabelText('Agent display name'), 'Support Agent');
     await userEvent.type(screen.getByLabelText('Publish name'), 'support_agent');
-    await userEvent.type(screen.getByLabelText('Owner'), 'local-user');
     expect(save.disabled).toBe(false);
     expect(screen.queryByText(/Required fields are empty/)).toBeNull();
+  });
+
+  it('正常: 所有者を入力しなくても保存でき、未入力一覧にも「*」にも出ない', async () => {
+    const client = stubClient();
+    await openNewAgentEditor(client);
+    expect(screen.getByLabelText('Owner').closest('label')?.querySelector('.required-mark')).toBeNull();
+    await userEvent.type(screen.getByLabelText('Agent internal ID'), 'support-agent');
+    await userEvent.type(screen.getByLabelText('Working name'), 'Support draft');
+    await userEvent.type(screen.getByLabelText('Agent display name'), 'Support Agent');
+    await userEvent.type(screen.getByLabelText('Publish name'), 'support_agent');
+    await userEvent.type(screen.getByRole('textbox', { name: 'System prompt' }), 'You are helpful.');
+    expect(screen.queryByText(/Required fields are empty/)).toBeNull();
+    expect((screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('Tool未選択でも保存はブロックせず、データに答えられない旨の警告を表示する', async () => {

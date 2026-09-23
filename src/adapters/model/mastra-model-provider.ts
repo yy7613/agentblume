@@ -12,6 +12,7 @@
 import '../../mastra-runtime-env';
 import { ContextWindowProbe } from './lm-studio-context-window';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { isRecord } from '../../domain/shared/assert';
 import { ModelRouterLanguageModel, modelSupportsAttachments } from '@mastra/core/llm';
 import {
   ModelProviderError,
@@ -118,10 +119,6 @@ interface RequestTuning {
 }
 
 const requestTuning = new AsyncLocalStorage<RequestTuning>();
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 /**
  * 送信直前のボディを補正する（openai-compatible の `transformRequestBody` フック）。

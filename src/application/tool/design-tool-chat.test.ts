@@ -657,7 +657,7 @@ describe('DesignToolChatUseCase: 有効化と応答の検証', () => {
     await expect(usecaseOf(plain).available()).resolves.toBe(false);
   });
 
-  it.each([[''], ['   ']])('異常: 指示が空（%s）なら ModelProviderError でモデルを呼ばない', async (instruction) => {
+  it.each([[''], ['   ']])('異常(回帰固定): 指示が空（%s）なら従来どおり ModelProviderError でモデルを呼ばない', async (instruction) => {
     const model = new ScriptedModelProvider();
     await expect(usecaseOf(model).execute({ scope: SCOPE, graph: graphOf(), instruction }))
       .rejects.toThrow('design assistant requires an instruction');
@@ -843,5 +843,65 @@ describe('DesignToolChatUseCase: 意味の検査（検証は通るのに答え�
     const result = await usecaseOf(model, () => true, deps).execute({ scope: SCOPE, graph: periodGraph(), instruction: '新しい順にして' });
     expect(result.repaired).toBe(false);
     expect(result.graph).toBeDefined();
+  });
+});
+
+describe('DesignToolChatUseCase: 結合の設計の検査（v50 R1: Factory と同じ規則を設計アシスタントにも効かせる）', () => {
+  /** 地域と注記を持つ表（結合の左）。 */
+  const regionGraph = (): ToolGraph => ({
+    nodes: [
+      { id: 'src', type: 'json-source', config: { rows: [{ 地域: '東京', 時点: '2025年', 注記: '', 値: 1 }, { 地域: '大阪', 時点: '2025年', 注記: '', 値: 2 }] } },
+      { id: 'out', type: 'agent-output', config: OUTPUT_CONFIG },
+    ],
+    edges: [{ from: 'src', to: 'out' }],
+  });
+  /** 右の表を足して、`keys` で結ぶ 3 操作。 */
+  const joinOn = (keys: readonly string[], after = 'src') => [
+    { op: 'add-node', id: 'jn', type: 'join', config: { mode: 'inner', keys }, after },
+    { op: 'add-node', id: 'src-2', type: 'json-source', config: { rows: [{ 地域: '東京', 時点: '2025年', 注記: '', 人口: 10 }, { 地域: '大阪', 時点: '2025年', 注記: '', 人口: 20 }] } },
+    { op: 'connect', from: 'src-2', to: 'jn' },
+  ];
+
+  it('異常: 注記の列を結合キーにすると差し戻し、キーから外した 2 回目を通す（プロファイルが無くても効く）', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue(
+      completion({ message: '結合しました。', operations: joinOn(['地域', '注記']) }),
+      completion({ message: '地域だけで結合しました。', operations: joinOn(['地域']) }),
+    );
+    const result = await usecaseOf(model).execute({ scope: SCOPE, graph: regionGraph(), instruction: '人口を並べて' });
+
+    expect(result.repaired).toBe(true);
+    expect(result.problems).toEqual([]);
+    expect(result.repairedFrom).toEqual([expect.stringMatching(/^joined tool design is wrong: the 'join' node 'jn' joins on '注記', which is free-text/)]);
+    expect(String(model.requests[1]?.messages.at(-1)?.content)).toContain('would give the agent wrong or empty answers');
+    expect(result.graph?.nodes.find((node) => node.id === 'jn')?.config).toMatchObject({ keys: ['地域'] });
+  });
+
+  it('異常: 結合より前の枝で parse-period を走らせると差し戻し、最後の結合の後へ移した 2 回目を通す', async () => {
+    const parseAfter = (after: string) => ({ op: 'add-node', id: 'period', type: 'parse-period', config: { column: '時点', startColumn: 'periodStart', granularityColumn: 'periodGranularity' }, after });
+    const model = new ScriptedModelProvider();
+    model.enqueue(
+      completion({ message: '期間を解析してから結合しました。', operations: [parseAfter('src'), ...joinOn(['地域', '時点'], 'period')] }),
+      completion({ message: '結合してから期間を解析しました。', operations: [...joinOn(['地域', '時点']), parseAfter('jn')] }),
+    );
+    const result = await usecaseOf(model).execute({ scope: SCOPE, graph: regionGraph(), instruction: '人口を並べて期間も開いて' });
+
+    expect(result.repaired).toBe(true);
+    expect(result.problems).toEqual([]);
+    expect(result.repairedFrom?.join(' ')).toContain("'parse-period' node 'period' sits on a branch BEFORE the join");
+    expect(result.graph?.edges).toContainEqual({ from: 'jn', to: 'period' });
+  });
+
+  it('異常: 結合の設計は「硬い問題」— 2 回とも注記キーなら適用しない（元のグラフには触らない）', async () => {
+    const model = new ScriptedModelProvider();
+    const wrong = completion({ message: '結合しました。', operations: joinOn(['地域', '注記']) });
+    model.enqueue(wrong, wrong);
+    const graph = regionGraph();
+    const result = await usecaseOf(model).execute({ scope: SCOPE, graph, instruction: '人口を並べて' });
+
+    expect(result.graph).toBeUndefined();
+    expect(result.warnings).toEqual([]);
+    expect(result.problems).toEqual([expect.stringContaining("Remove '注記' from \"keys\"")]);
+    expect(graph).toEqual(regionGraph());
   });
 });

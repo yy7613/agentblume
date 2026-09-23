@@ -51,6 +51,19 @@ describe('agent routes', () => {
     expect(versions.json()).toEqual({ versions: ['1.0.0', '1.0.1'] });
   });
 
+  it('正常: 所有者を省略・空欄にした Tool と Agent も保存でき、ログイン中の利用者名が入る', async () => {
+    const tool = await server.inject({ method: 'POST', url: '/tools', payload: {
+      scope, internalId: 'no-owner', workingName: 'No owner', displayName: 'No owner', publishName: 'no_owner', sideEffect: 'read-only',
+      graph: { nodes: [{ id: 'rows', type: 'json-source', config: { rows: [{ a: 1 }] } }, { id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 10, maxBytes: 65536, overflow: 'error' } }], edges: [{ from: 'rows', to: 'out' }] },
+    } });
+    expect(tool.statusCode).toBe(201);
+    expect(tool.json().tool.metadata.owner).toBe('Local operator');
+
+    const agent = await server.inject({ method: 'POST', url: '/agents', payload: body({ owner: '  ' }) });
+    expect(agent.statusCode).toBe(201);
+    expect(agent.json().agent.metadata.owner).toBe('Local operator');
+  });
+
   it('GET /agents/:id/diagnostics がツール呼び出しのプリフライト診断を返す', async () => {
     await server.inject({ method: 'POST', url: '/agents', payload: body() });
     const res = await server.inject({ method: 'GET', url: '/agents/assistant/diagnostics', query: scope });

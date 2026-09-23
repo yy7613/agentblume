@@ -1,3 +1,5 @@
+import type { FunctionName } from '../shared/function-name';
+import { isFunctionName } from '../shared/function-name';
 import { AgentValidationError } from './errors';
 
 export const STRUCTURED_OUTPUT_TYPES = ['string', 'number', 'integer', 'boolean'] as const;
@@ -11,7 +13,7 @@ export interface StructuredOutputField {
 }
 
 export interface StructuredOutputDefinition {
-  readonly name: string;
+  readonly name: FunctionName;
   readonly fields: readonly StructuredOutputField[];
 }
 
@@ -28,7 +30,7 @@ export interface StructuredOutputJsonSchema {
 }
 
 export function createStructuredOutput(value: StructuredOutputDefinition): StructuredOutputDefinition {
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(value.name)) {
+  if (!isFunctionName(value.name)) {
     throw new AgentValidationError('structured output name must be 1-64 letters, digits, underscores, or hyphens');
   }
   if (value.fields.length === 0) throw new AgentValidationError('structured output requires at least one field');

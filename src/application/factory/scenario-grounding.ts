@@ -11,7 +11,8 @@
  * 相手が何のデータを持つエージェントなのかを誰も教えていなかった。
  */
 import type { FactoryPlan } from '../../domain/factory/factory-plan';
-import { CODE_LIKE_COLUMN, type CategoricalColumnProfile, type DataProfile, type PeriodColumnProfile } from './profile-data-sources';
+import { CODE_LIKE_COLUMN } from '../../domain/data/column-roles';
+import type { CategoricalColumnProfile, DataProfile, PeriodColumnProfile } from './profile-data-sources';
 
 /** 前提ブロックの見出し（合成済みかの判定にも使うので、1文字も変えない）。 */
 export const SCENARIO_GROUNDING_HEADING = '# Validation premises / 検証の前提 (factory-managed)';

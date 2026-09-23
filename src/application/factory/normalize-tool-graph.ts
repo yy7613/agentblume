@@ -18,6 +18,8 @@
 import type { GraphNode, ToolGraph } from '../../domain/etl/graph';
 import { FILTER_OPS, MAX_FILTER_VALUES, MULTI_VALUE_OPS, VALUELESS_OPS, parseFilterValueList } from '../../domain/etl/nodes/filter';
 import { PARSE_PERIOD_TYPE } from '../../domain/etl/nodes/parse-period';
+import { DEFAULT_AGENT_OUTPUT_CONFIG } from '../../domain/etl/nodes/agent-output';
+import { isRecord } from '../../domain/shared/assert';
 import type { FactoryPlan } from '../../domain/factory/factory-plan';
 import type { PropagationResult } from '../etl/engine';
 import type { DataProfile } from './profile-data-sources';
@@ -74,10 +76,6 @@ const OP_SYNONYMS: ReadonlyMap<string, string> = new Map([
   ['includes', 'contains'], ['include', 'contains'], ['like', 'contains'],
   ['notin', 'notIn'], ['not_in', 'notIn'],
 ]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 /** 演算子の表記を正規化する（既に正規の演算子ならそのまま）。 */
 function canonicalOp(raw: unknown): string | undefined {
@@ -571,8 +569,8 @@ export function normalizeProposedGraph(graph: ToolGraph, context: NormalizeToolG
   return { graph: normalizeJoinPorts(next, context, changes), changes };
 }
 
-/** `agent-output` の必須項目の既定（`tool-output-dispatcher` の DEFAULT_OUTPUT と同じ値）。 */
-const AGENT_OUTPUT_DEFAULTS: Readonly<Record<string, string | number>> = { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65_536, overflow: 'error' };
+/** `agent-output` の必須項目の既定（`domain/etl/nodes/agent-output` の `DEFAULT_AGENT_OUTPUT_CONFIG` と同じ値）。 */
+const AGENT_OUTPUT_DEFAULTS: Readonly<Record<string, string | number>> = DEFAULT_AGENT_OUTPUT_CONFIG as unknown as Readonly<Record<string, string | number>>;
 
 /**
  * `agent-output` の書き忘れた必須項目を既定で埋める。

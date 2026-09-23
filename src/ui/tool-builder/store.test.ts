@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { SerializedToolDto } from '../api/types';
 import type { InstantiatedTemplateDto } from '../api/types';
 import type { DesignChatResultDto, ToolGraphDto } from '../api/types';
-import { buildSaveDto, currentGraph, designChatPositions, designChatTranscript, layoutByDepth, declaredInputSchema, effectiveFunctionName, flowToGraph, missingRequiredMetadata, requiresSessionWrite, saveBlocker, toolBuilderDraft, useToolBuilderStore, type DesignChatTurn } from './store';
+import { buildSaveDto, currentGraph, designChatTranscript, declaredInputSchema, effectiveFunctionName, flowToGraph, missingRequiredMetadata, requiresSessionWrite, saveBlocker, toolBuilderDraft, useToolBuilderStore, type DesignChatTurn } from './store';
 
 const okPropagation = {
   order: ['source-1', 'filter-1'], terminalId: 'filter-1', hasErrors: false,
@@ -228,13 +228,18 @@ describe('tool builder store', () => {
   });
 
   it('未入力の必須メタデータだけを保存前チェックとして返す', () => {
-    expect(missingRequiredMetadata(useToolBuilderStore.getState().metadata)).toEqual(['internalId', 'workingName', 'displayName', 'publishName', 'owner']);
+    // v52: owner は入力必須から外れた（未入力・空白のみでも missing に出ない）。
+    expect(missingRequiredMetadata(useToolBuilderStore.getState().metadata)).toEqual(['internalId', 'workingName', 'displayName', 'publishName']);
     for (const [key, value] of [['internalId', 'tool'], ['workingName', 'draft'], ['displayName', 'Tool'], ['publishName', 'tool_v1'], ['owner', ' ']] as const) {
       useToolBuilderStore.getState().setMetadata(key, value);
     }
-    // 空白だけの入力は未入力として扱う。
-    expect(missingRequiredMetadata(useToolBuilderStore.getState().metadata)).toEqual(['owner']);
-    useToolBuilderStore.getState().setMetadata('owner', 'owner@example.com');
+    expect(missingRequiredMetadata(useToolBuilderStore.getState().metadata)).toEqual([]);
+  });
+
+  it('正常: 所有者(owner)が空でも他の必須項目さえ埋まれば missing に出ない', () => {
+    const { setMetadata } = useToolBuilderStore.getState();
+    setMetadata('internalId', 'tool'); setMetadata('workingName', 'draft'); setMetadata('displayName', 'Tool'); setMetadata('publishName', 'tool_v1');
+    expect(useToolBuilderStore.getState().metadata.owner).toBe('');
     expect(missingRequiredMetadata(useToolBuilderStore.getState().metadata)).toEqual([]);
   });
 
@@ -428,7 +433,8 @@ describe('tool builder store', () => {
     const state = () => useToolBuilderStore.getState();
 
     it('必須メタデータ → function 名 → Agent Input の衝突 → 検証待ち → グラフエラーの順に理由を返す', () => {
-      expect(saveBlocker(state())).toEqual({ kind: 'missing-metadata', keys: ['internalId', 'workingName', 'displayName', 'publishName', 'owner'] });
+      // v52: owner は必須キーから外れた。
+      expect(saveBlocker(state())).toEqual({ kind: 'missing-metadata', keys: ['internalId', 'workingName', 'displayName', 'publishName'] });
       fillMetadata();
       state().setMetadata('publishName', 'adult customers');
       expect(saveBlocker(state())).toEqual({ kind: 'invalid-function-name', name: 'adult customers' });
@@ -472,7 +478,8 @@ describe('tool builder store', () => {
     it('理由が同時に複数あれば優先順の先頭だけを返す（未入力 > function 名 > 衝突 > 検証待ち）', () => {
       // 必須メタデータの未入力と無効な function 名: 未入力を先に伝える（keys から publishName は外れる）。
       state().setMetadata('publishName', 'bad name');
-      expect(saveBlocker(state())).toEqual({ kind: 'missing-metadata', keys: ['internalId', 'workingName', 'displayName', 'owner'] });
+      // v52: owner は必須キーから外れた。
+      expect(saveBlocker(state())).toEqual({ kind: 'missing-metadata', keys: ['internalId', 'workingName', 'displayName'] });
       // 無効な function 名と Agent Input の衝突と検証待ち: function 名を先に伝える。
       fillMetadata();
       state().setMetadata('publishName', 'bad name');
@@ -585,45 +592,6 @@ describe('tool builder store', () => {
     useToolBuilderStore.getState().setDiagnostics('loading');
     useToolBuilderStore.getState().reset();
     expect(useToolBuilderStore.getState().diagnostics).toBeUndefined();
-  });
-});
-
-/**
- * テンプレートの実体化結果をキャンバスへ展開する（v43 / ADR-0049）。
- * 配置はサーバーから来ないので、ここでトポロジカルな深さに沿って左→右へ並べる。
- */
-describe('layoutByDepth', () => {
-  it('正常: 直列のグラフは 1 行で左から右へ並ぶ', () => {
-    const nodes = [{ id: 'a', type: 'csv-source', config: {} }, { id: 'b', type: 'filter', config: {} }, { id: 'c', type: 'agent-output', config: {} }];
-    const positions = layoutByDepth(nodes, [{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }]);
-    expect(positions[0]!.x).toBeLessThan(positions[1]!.x);
-    expect(positions[1]!.x).toBeLessThan(positions[2]!.x);
-    expect(new Set(positions.map((position) => position.y)).size).toBe(1);
-  });
-
-  it('境界: 合流（join）は両方の枝より右へ置き、同じ列の枝は縦にずらす', () => {
-    const nodes = [
-      { id: 'left', type: 'csv-source', config: {} },
-      { id: 'right', type: 'csv-source', config: {} },
-      { id: 'select', type: 'select', config: {} },
-      { id: 'join', type: 'join', config: {} },
-    ];
-    const positions = layoutByDepth(nodes, [
-      { from: 'left', to: 'join', toInput: 0 },
-      { from: 'right', to: 'select' },
-      { from: 'select', to: 'join', toInput: 1 },
-    ]);
-    const at = (id: string) => positions[nodes.findIndex((node) => node.id === id)]!;
-    expect(at('left').y).not.toBe(at('right').y);
-    expect(at('join').x).toBeGreaterThan(at('select').x);
-    expect(at('join').x).toBeGreaterThan(at('left').x);
-  });
-
-  it('異常: 繋がっていないノードも重ならずに置かれる（先頭列の別の行）', () => {
-    const nodes = [{ id: 'a', type: 'csv-source', config: {} }, { id: 'args', type: 'agent-input', config: {} }];
-    const positions = layoutByDepth(nodes, []);
-    expect(positions[0]!.x).toBe(positions[1]!.x);
-    expect(positions[0]!.y).not.toBe(positions[1]!.y);
   });
 });
 
@@ -1040,54 +1008,170 @@ describe('designChatTranscript', () => {
   });
 });
 
-describe('designChatPositions', () => {
-  const placed = [
-    { id: 'a', type: 'tool' as const, position: { x: 80, y: 120 }, data: { nodeType: 'json-source' as const, label: 'a', config: {} } },
+/**
+ * 自動生成したツールの配置（v51）。どの自動経路も横一列に並べていたため、
+ * 10 ノードのツールが幅 2,740px × 高さ 80px になった。折り返して並べ、人が並べた位置は動かさない。
+ */
+describe('自動配置（段組み＋折り返し）', () => {
+  const tenant = { tenantId: 't', workspaceId: 'w' };
+  /** n0 → n1 → … の直線グラフ（位置は付けない）。 */
+  function chainGraph(count: number): ToolGraphDto {
+    const nodes = Array.from({ length: count }, (_value, index) => ({ id: `n${index}`, type: 'select', config: { columns: [] } }));
+    return { nodes, edges: nodes.slice(1).map((node, index) => ({ from: `n${index}`, to: node.id })) };
+  }
+  function toolWith(graph: ToolGraphDto): SerializedToolDto {
+    return {
+      metadata: { internalId: 'wide', workingName: 'w', displayName: 'W', publishName: 'w', version: '1.0.0', owner: 'o', state: 'draft', tenant },
+      sideEffect: 'read-only', graph,
+    } as SerializedToolDto;
+  }
+  const positions = () => useToolBuilderStore.getState().nodes.map((node) => node.position);
+  const maxX = () => Math.max(...positions().map((position) => position.x));
+  /** 4 列（80 / 360 / 640 / 920）で折り返し、帯は 200px ずつ下がる。 */
+  const wrappedChain6 = [
+    { x: 80, y: 120 }, { x: 360, y: 120 }, { x: 640, y: 120 }, { x: 920, y: 120 },
+    { x: 80, y: 320 }, { x: 360, y: 320 },
   ];
 
-  it('正常: 既に画面にあるノードは、返答に position が無くても前の配置を保つ', () => {
-    const positions = designChatPositions({ nodes: [{ id: 'a', type: 'json-source', config: {} }], edges: [] }, placed);
-    expect(positions.get('a')).toEqual({ x: 80, y: 120 });
+  beforeEach(() => useToolBuilderStore.getState().reset());
+
+  it('正常: テンプレートから作成すると、引数の帯の下で処理の列が 4 列で折り返す', () => {
+    const graph = chainGraph(6);
+    useToolBuilderStore.getState().loadTemplate({
+      template: { id: 'long', version: '1.0.0' },
+      graph: { nodes: [{ id: 'args', type: 'agent-input', config: {} }, ...graph.nodes], edges: graph.edges },
+      agentTool: { name: 'long', description: 'd' },
+      pendingExpressions: [],
+    }, 'x');
+    const [args, ...flow] = positions();
+    expect(args).toEqual({ x: 80, y: 120 });
+    expect(flow).toEqual(wrappedChain6.map((position) => ({ x: position.x, y: position.y + 200 })));
   });
 
-  it('境界: 新しいノードが連なるときも、上流から順に右へ置く', () => {
-    const positions = designChatPositions({
-      nodes: [{ id: 'a', type: 'json-source', config: {} }, { id: 'b', type: 'filter', config: {} }, { id: 'c', type: 'sort', config: {} }],
-      edges: [{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }],
-    }, placed);
-    expect(positions.get('b')).toEqual({ x: 300, y: 120 });
-    expect(positions.get('c')).toEqual({ x: 520, y: 120 });
+  it('正常: 全ノードが位置を持たない保存済みツールは折り返して並ぶ', () => {
+    useToolBuilderStore.getState().loadTool(toolWith(chainGraph(6)));
+    expect(positions()).toEqual(wrappedChain6);
   });
 
-  it('境界: 下流から順に並んだ鎖でも、上流から辿って全部を右へ置く', () => {
-    // nodes の並びは保証されないので、c（下流）が先に来ても b を待って正しく決める。
-    const positions = designChatPositions({
-      nodes: [{ id: 'c', type: 'sort', config: {} }, { id: 'b', type: 'filter', config: {} }, { id: 'a', type: 'json-source', config: {} }],
-      edges: [{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }],
-    }, placed);
-    expect(positions.get('b')).toEqual({ x: 300, y: 120 });
-    expect(positions.get('c')).toEqual({ x: 520, y: 120 });
+  it('従来どおり: 位置を持つ保存済みツールは、横に長くても人が並べた位置のまま開く', () => {
+    const graph = chainGraph(6);
+    const placed = { ...graph, nodes: graph.nodes.map((node, index) => ({ ...node, position: { x: 80 + index * 280, y: 120 } })) };
+    useToolBuilderStore.getState().loadTool(toolWith(placed));
+    expect(maxX()).toBe(80 + 5 * 280);
   });
 
-  it('境界: 2 入力（join）は両方の枝より右へ置く', () => {
-    const positions = designChatPositions({
-      nodes: [
-        { id: 'a', type: 'json-source', config: {} },
-        { id: 'far', type: 'csv-source', config: {}, position: { x: 600, y: 300 } },
-        { id: 'j', type: 'join', config: {} },
-      ],
-      edges: [{ from: 'a', to: 'j', toInput: 0 }, { from: 'far', to: 'j', toInput: 1 }],
-    }, placed);
-    expect(positions.get('j')?.x).toBeGreaterThan(600);
+  it('正常: 空のキャンバスへの設計アシスタントの適用は、返ったグラフ全体を折り返して並べる', () => {
+    useToolBuilderStore.getState().onNodesChange([{ type: 'remove', id: 'source-1' }, { type: 'remove', id: 'filter-1' }]);
+    const revision = useToolBuilderStore.getState().layoutRevision;
+    const id = useToolBuilderStore.getState().startDesignChatTurn('人口の推移を作って');
+    useToolBuilderStore.getState().completeDesignChatTurn(id, { message: '作りました。', graph: chainGraph(6), changes: [] });
+    expect(positions()).toEqual(wrappedChain6);
+    expect(useToolBuilderStore.getState().layoutRevision).toBe(revision + 1);
   });
 
-  it('例外: 循環していて上流を辿れないノードも、最右列の右へ置いて必ず終わる', () => {
-    const positions = designChatPositions({
-      nodes: [{ id: 'a', type: 'json-source', config: {} }, { id: 'x', type: 'filter', config: {} }, { id: 'y', type: 'sort', config: {} }],
-      edges: [{ from: 'x', to: 'y' }, { from: 'y', to: 'x' }],
-    }, placed);
-    expect(positions.get('x')).toBeDefined();
-    expect(positions.get('y')).toBeDefined();
-    expect(positions.get('x')?.x).toBeGreaterThan(80);
+  it('従来どおり: 既存のキャンバスへの追加では既存ノードを動かさず、新しいノードは上流の右へ置く', () => {
+    const id = useToolBuilderStore.getState().startDesignChatTurn('並べ替えて');
+    useToolBuilderStore.getState().completeDesignChatTurn(id, {
+      message: '足しました。',
+      graph: {
+        nodes: [
+          { id: 'source-1', type: 'json-source', config: { rows: [] }, position: { x: 80, y: 120 } },
+          { id: 'filter-1', type: 'filter', config: {}, position: { x: 390, y: 120 } },
+          { id: 'sort-1', type: 'sort', config: {} },
+        ],
+        edges: [{ from: 'source-1', to: 'filter-1' }, { from: 'filter-1', to: 'sort-1' }],
+      },
+      changes: [],
+    });
+    expect(positions()).toEqual([{ x: 80, y: 120 }, { x: 390, y: 120 }, { x: 610, y: 120 }]);
+  });
+
+  it('正常: 既存のキャンバスで右端を越える追加は、最下端の下の新しい帯の左端へ送る', () => {
+    const graph = chainGraph(2);
+    useToolBuilderStore.getState().loadTool(toolWith({
+      ...graph, nodes: [{ ...graph.nodes[0]!, position: { x: 80, y: 120 } }, { ...graph.nodes[1]!, position: { x: 1120, y: 120 } }],
+    }));
+    const revision = useToolBuilderStore.getState().layoutRevision;
+    const id = useToolBuilderStore.getState().startDesignChatTurn('10 件に絞って');
+    useToolBuilderStore.getState().completeDesignChatTurn(id, {
+      message: '絞りました。',
+      graph: {
+        nodes: [...graph.nodes, { id: 'limit-1', type: 'limit', config: { count: 10 } }],
+        edges: [...graph.edges, { from: 'n1', to: 'limit-1' }],
+      },
+      changes: [],
+    });
+    expect(positions()).toEqual([{ x: 80, y: 120 }, { x: 1120, y: 120 }, { x: 80, y: 320 }]);
+    // 足しただけなので全体を見せ直す合図は出さない（ノード数の変化で画面が追う）。
+    expect(useToolBuilderStore.getState().layoutRevision).toBe(revision);
+  });
+
+  it('正常: 整列は人が並べた位置も含めて並べ直し、元に戻すで整列前の位置へ戻る', () => {
+    const graph = chainGraph(6);
+    const row = graph.nodes.map((_node, index) => ({ x: 80 + index * 280, y: 120 }));
+    useToolBuilderStore.getState().loadTool(toolWith({ ...graph, nodes: graph.nodes.map((node, index) => ({ ...node, position: row[index] })) }));
+    const revision = useToolBuilderStore.getState().layoutRevision;
+
+    useToolBuilderStore.getState().arrangeNodes();
+    expect(positions()).toEqual(wrappedChain6);
+    expect(useToolBuilderStore.getState().arrangeUndo).toBeDefined();
+    expect(useToolBuilderStore.getState().layoutRevision).toBe(revision + 1);
+
+    useToolBuilderStore.getState().undoArrange();
+    expect(positions()).toEqual(row);
+    expect(useToolBuilderStore.getState().arrangeUndo).toBeUndefined();
+    expect(useToolBuilderStore.getState().layoutRevision).toBe(revision + 2);
+  });
+
+  it('正常: 整列は画面が渡した列数で折り返す', () => {
+    useToolBuilderStore.getState().loadTool(toolWith(chainGraph(6)));
+    useToolBuilderStore.getState().arrangeNodes(6);
+    expect(new Set(positions().map((position) => position.y))).toEqual(new Set([120]));
+    expect(maxX()).toBe(80 + 5 * 280);
+  });
+
+  it('境界: 元に戻すは 1 段だけで、2 度目は何も変えない', () => {
+    useToolBuilderStore.getState().arrangeNodes();
+    useToolBuilderStore.getState().undoArrange();
+    const once = positions();
+    const revision = useToolBuilderStore.getState().layoutRevision;
+    useToolBuilderStore.getState().undoArrange();
+    expect(positions()).toEqual(once);
+    expect(useToolBuilderStore.getState().layoutRevision).toBe(revision);
+  });
+
+  it('境界: 次の編集で元に戻すが消え、選択だけでは消えない', () => {
+    const edits = [
+      () => useToolBuilderStore.getState().onNodesChange([{ type: 'position', id: 'filter-1', position: { x: 5, y: 5 } }]),
+      () => useToolBuilderStore.getState().addNode('select'),
+      () => useToolBuilderStore.getState().updateNodeConfig('filter-1', { column: 'age', op: 'gte', value: 20 }),
+      () => useToolBuilderStore.getState().onConnect({ source: 'source-1', target: 'filter-1', sourceHandle: null, targetHandle: null }),
+      () => useToolBuilderStore.getState().onEdgesChange([{ type: 'remove', id: 'source-1-filter-1' }]),
+      () => useToolBuilderStore.getState().loadTool(toolWith(chainGraph(2))),
+    ];
+    for (const edit of edits) {
+      useToolBuilderStore.getState().reset();
+      useToolBuilderStore.getState().arrangeNodes();
+      useToolBuilderStore.getState().selectNode('source-1');
+      useToolBuilderStore.getState().onNodesChange([{ type: 'select', id: 'source-1', selected: true }]);
+      expect(useToolBuilderStore.getState().arrangeUndo).toBeDefined();
+      edit();
+      expect(useToolBuilderStore.getState().arrangeUndo).toBeUndefined();
+    }
+  });
+
+  it('境界: 整列は位置だけの変更なので、検証待ちにも保存失敗の消去にもしない', () => {
+    useToolBuilderStore.getState().setPropagation(okPropagation);
+    useToolBuilderStore.getState().setSaveError('failed');
+    useToolBuilderStore.getState().arrangeNodes();
+    expect(useToolBuilderStore.getState()).toMatchObject({ propagationPending: false, saveError: 'failed' });
+  });
+
+  it('異常: 空のキャンバスでは整列しても何も起きず、元に戻すも出ない', () => {
+    useToolBuilderStore.getState().onNodesChange([{ type: 'remove', id: 'source-1' }, { type: 'remove', id: 'filter-1' }]);
+    const revision = useToolBuilderStore.getState().layoutRevision;
+    useToolBuilderStore.getState().arrangeNodes();
+    expect(useToolBuilderStore.getState().arrangeUndo).toBeUndefined();
+    expect(useToolBuilderStore.getState().layoutRevision).toBe(revision);
   });
 });

@@ -3,6 +3,7 @@ import type { Cell, Column, Row, Schema, Table } from '../../domain/data/types';
 import type { ToolGraph } from '../../domain/etl/graph';
 import { listValueArgumentSummaries, operatorArgumentSummaries } from '../../domain/etl/nodes/filter';
 import type { ListValueArgumentSummary, OperatorArgumentSummary } from '../../domain/etl/nodes/filter';
+import { isFunctionName } from '../../domain/shared/function-name';
 import type { Tool } from '../../domain/tool/tool';
 import { AgentRunError, ToolArgumentsError } from './errors';
 import type { JsonObject, JsonSchemaObject, JsonSchemaProperty, JsonValue, ModelToolDefinition } from '../model/model-provider';
@@ -108,15 +109,13 @@ function withListValueDescriptions(schema: JsonSchemaObject, graph: ToolGraph, i
   return { ...schema, properties };
 }
 
-/** LLMへ公開する function 名の形式（OpenAI 互換 API の制約: 英数字・`_`・`-` で 1〜64 文字）。 */
-const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-
 /**
  * function 名として公開できる文字列か。`toolToModelDefinition` が実行時に投げる判定そのもので、
  * 保存時の拒否（SaveTool）・プリフライト診断も同じ関数を使い、規則を1か所に置く。
+ * 規則の実体は `domain/shared/function-name.ts` の `isFunctionName`（v50 R6）。
  */
 export function isValidFunctionName(name: string): boolean {
-  return FUNCTION_NAME_PATTERN.test(name);
+  return isFunctionName(name);
 }
 
 /**

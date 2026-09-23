@@ -85,7 +85,8 @@ export interface SaveToolDto {
   readonly workingName: string;
   readonly displayName: string;
   readonly publishName: string;
-  readonly owner: string;
+  /** 省略・空文字ならサーバーがログイン中の利用者名で埋める（v52）。 */
+  readonly owner?: string;
   readonly sideEffect: SideEffectDto;
   readonly graph: ToolGraphDto;
   readonly inputSchema?: SchemaDto;
@@ -159,7 +160,8 @@ export interface SaveAgentDto {
   readonly workingName: string;
   readonly displayName: string;
   readonly publishName: string;
-  readonly owner: string;
+  /** 省略・空文字ならサーバーがログイン中の利用者名で埋める（v52）。 */
+  readonly owner?: string;
   readonly kind: AgentKindDto;
   readonly systemPrompt: string;
   readonly skills?: readonly AgentToolRefDto[];
@@ -222,7 +224,8 @@ export interface SerializedSkillDto {
 }
 export interface SaveSkillDto {
   readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string;
-  readonly publishName: string; readonly owner: string; readonly responsibility: string; readonly activationCondition: string;
+  /** owner は省略・空文字ならサーバーがログイン中の利用者名で埋める（v52）。 */
+  readonly publishName: string; readonly owner?: string; readonly responsibility: string; readonly activationCondition: string;
   readonly inputDescription: string; readonly outputDescription: string; readonly instructions: string;
   readonly tools: readonly AgentToolRefDto[]; readonly bump?: 'major' | 'minor' | 'patch';
 }
@@ -332,7 +335,8 @@ export interface SerializedAgentHarnessDto {
   readonly output: { readonly format: 'text' };
 }
 export interface SaveHarnessDto {
-  readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner: string;
+  // owner は省略・空文字ならサーバーがログイン中の利用者名で埋める（v52）。
+  readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner?: string;
   readonly pattern: HarnessPatternDto; readonly slots: readonly HarnessSlotDto[]; readonly topology: HarnessTopologyDto; readonly policies?: HarnessPoliciesDto;
   readonly output?: { readonly format: 'text' }; readonly bump?: 'major' | 'minor' | 'patch';
 }
@@ -565,7 +569,8 @@ export interface SerializedPersonaDto {
 }
 export interface SavePersonaDto {
   readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string;
-  readonly publishName: string; readonly owner: string;
+  /** 省略・空文字ならサーバーがログイン中の利用者名で埋める（v52）。 */
+  readonly publishName: string; readonly owner?: string;
   readonly archetype: PersonaArchetypeDto;
   readonly knowledgeLevel: PersonaLevelDto;
   readonly patience: PersonaLevelDto;
@@ -607,7 +612,8 @@ export interface SerializedScenarioDto {
 }
 export interface SaveScenarioDto {
   readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string;
-  readonly publishName: string; readonly owner: string;
+  /** 省略・空文字ならサーバーがログイン中の利用者名で埋める（v52）。 */
+  readonly publishName: string; readonly owner?: string;
   readonly target: { readonly agentId: string; readonly version: string };
   readonly persona?: { readonly personaId: string; readonly version: string };
   readonly pseudoUser?: { readonly agentId: string; readonly version: string };
@@ -712,7 +718,8 @@ export interface SerializedEvaluationDatasetDto {
 }
 export interface SaveEvaluationDatasetDto {
   readonly scope: TenantScopeDto;
-  readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner: string;
+  // owner は省略・空文字ならサーバーがログイン中の利用者名で埋める（v52）。
+  readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner?: string;
   readonly cases: readonly EvaluationCaseDto[];
   readonly bump?: 'major' | 'minor' | 'patch';
 }
@@ -727,7 +734,8 @@ export type EvaluatorMetricDefinitionDto =
 export interface SerializedEvaluatorProfileDto { readonly metadata: SerializedAgentDto['metadata']; readonly metrics: readonly EvaluatorMetricDefinitionDto[] }
 export interface SaveEvaluatorProfileDto {
   readonly scope: TenantScopeDto;
-  readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner: string;
+  // owner は省略・空文字ならサーバーがログイン中の利用者名で埋める（v52）。
+  readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner?: string;
   readonly metrics: readonly EvaluatorMetricDefinitionDto[];
   readonly bump?: 'major' | 'minor' | 'patch';
 }
@@ -738,7 +746,8 @@ export interface EvaluatorProfileSummaryDto {
 export interface JudgeScoreLevelDto { readonly score: number; readonly label: string; readonly description: string }
 export interface JudgeCriterionDto { readonly id: string; readonly label: string; readonly description: string; readonly weight: number; readonly levels: readonly JudgeScoreLevelDto[] }
 export interface SerializedJudgeRubricDto { readonly metadata: SerializedAgentDto['metadata']; readonly instructions: string; readonly criteria: readonly JudgeCriterionDto[]; readonly referencePolicy: 'optional' | 'required' | 'forbidden'; /** 判定者へツール呼び出し列・会話履歴を渡すか（既定 optional）。 */ readonly tracePolicy?: 'optional' | 'required' | 'forbidden'; readonly reasonRequired: true }
-export interface SaveJudgeRubricDto { readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner: string; readonly instructions: string; readonly criteria: readonly JudgeCriterionDto[]; readonly referencePolicy: SerializedJudgeRubricDto['referencePolicy']; readonly tracePolicy?: SerializedJudgeRubricDto['tracePolicy']; readonly bump?: 'major' | 'minor' | 'patch' }
+/** owner は省略・空文字ならサーバーがログイン中の利用者名で埋める（v52）。 */
+export interface SaveJudgeRubricDto { readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner?: string; readonly instructions: string; readonly criteria: readonly JudgeCriterionDto[]; readonly referencePolicy: SerializedJudgeRubricDto['referencePolicy']; readonly tracePolicy?: SerializedJudgeRubricDto['tracePolicy']; readonly bump?: 'major' | 'minor' | 'patch' }
 export interface JudgeRubricSummaryDto { readonly internalId: string; readonly displayName: string; readonly publishName: string; readonly latestVersion: string; readonly state: SerializedAgentDto['metadata']['state']; readonly criterionCount: number }
 export type ExperimentStatusDto = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export interface ExperimentDto {
@@ -823,7 +832,8 @@ export type GateRuleDto =
   | { readonly id: string; readonly kind: 'required-case-pass'; readonly tags: readonly string[] };
 export interface SerializedGatePolicyDto { readonly metadata: SerializedAgentDto['metadata']; readonly rules: readonly GateRuleDto[]; readonly reportTtlHours: number }
 export interface GatePolicySummaryDto { readonly internalId: string; readonly displayName: string; readonly publishName: string; readonly latestVersion: string; readonly state: SerializedAgentDto['metadata']['state']; readonly ruleCount: number }
-export interface SaveGatePolicyDto { readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner: string; readonly rules: readonly GateRuleDto[]; readonly reportTtlHours?: number; readonly bump?: 'major' | 'minor' | 'patch' }
+/** owner は省略・空文字ならサーバーがログイン中の利用者名で埋める（v52）。 */
+export interface SaveGatePolicyDto { readonly scope: TenantScopeDto; readonly internalId: string; readonly workingName: string; readonly displayName: string; readonly publishName: string; readonly owner?: string; readonly rules: readonly GateRuleDto[]; readonly reportTtlHours?: number; readonly bump?: 'major' | 'minor' | 'patch' }
 export interface GateReportDto { readonly id: string; readonly scope: TenantScopeDto; readonly policy: { readonly id: string; readonly version: string }; readonly baselineExperimentId?: string; readonly candidateExperimentId: string; readonly status: 'pass' | 'fail'; readonly ruleResults: readonly { readonly ruleId: string; readonly passed: boolean; readonly observed?: number; readonly message: string }[]; readonly createdAt: string; readonly expiresAt: string }
 export interface PromotionRequestDto { readonly id: string; readonly scope: TenantScopeDto; readonly agent: { readonly id: string; readonly version: string }; readonly gateReportId: string; readonly status: 'pending' | 'approved' | 'rejected'; readonly requestedBy: string; readonly requestedAt: string; readonly decidedBy?: string; readonly decidedAt?: string; readonly reason?: string }
 

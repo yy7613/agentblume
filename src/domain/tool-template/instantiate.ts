@@ -9,11 +9,13 @@
  * （構造・列の存在・設計時プレビュー・保存検証）を通す前提で作る。テンプレート経路だけの
  * 抜け道は作らない。
  */
+import { CODE_LIKE_COLUMN } from '../data/column-roles';
 import type { Column, Schema } from '../data/types';
 import type { GraphEdge, GraphNode, ToolGraph } from '../etl/graph';
+import type { FunctionName } from '../shared/function-name';
+import { isFunctionName } from '../shared/function-name';
 import {
   TEMPLATE_ARGUMENTS_NODE_ID,
-  TEMPLATE_FUNCTION_NAME_PATTERN,
   ToolTemplateError,
   collectReferences,
   directiveKeyOf,
@@ -41,7 +43,7 @@ export interface InstantiatedTemplate {
   readonly graph: ToolGraph;
   /** 引数が 1 つも残らなければ undefined（`agent-input` ノードも置かない）。 */
   readonly inputSchema?: Schema;
-  readonly agentTool: { readonly name: string; readonly description: string };
+  readonly agentTool: { readonly name: FunctionName; readonly description: string };
   /** `$intent` を持つ calculate ノード（式は空）。実体化後に式提案が埋める。 */
   readonly pendingExpressions: readonly { readonly nodeId: string; readonly intent: string }[];
   /**
@@ -56,7 +58,7 @@ export type ArgumentNullability = Readonly<Record<string, boolean>>;
 
 export interface InstantiateTemplateOptions {
   /** エージェントへ公開する function 名（`toolFunctionNameOf` などで呼び出し側が作る）。 */
-  readonly toolName: string;
+  readonly toolName: FunctionName;
   readonly language: 'ja' | 'en';
   /**
    * 引数の必須 / 任意の上書き。省略時はテンプレートの既定のまま（Agent Factory はこれを渡さない）。
@@ -89,9 +91,6 @@ export interface SlotViolation {
 /** 期間ラベルが 1 件も解釈できなかったときに使う広い既定（`compileToolSpec` と同じ値）。 */
 const WIDE_PERIOD_START = '1000-01-01';
 const WIDE_PERIOD_END = '9999-12-31';
-
-/** コードらしい列名（「値の列」から外す）。`profile-data-sources` の `CODE_LIKE_COLUMN` と同じ語彙。 */
-const CODE_LIKE_COLUMN = /コード|code|id$|_id|番号/i;
 
 /** `parse-period` が足す列（「値の列」から外す）。 */
 const PERIOD_DERIVED_COLUMNS: readonly string[] = ['periodStart', 'periodGranularity'];
@@ -828,7 +827,7 @@ export function instantiateTemplate(
   facts: TemplateProfileFacts,
   options: InstantiateTemplateOptions,
 ): InstantiatedTemplate {
-  if (!TEMPLATE_FUNCTION_NAME_PATTERN.test(options.toolName)) {
+  if (!isFunctionName(options.toolName)) {
     throw new ToolTemplateError(`'${options.toolName}' cannot be published as a function name (allowed: letters, digits, '_' and '-', 1..64 characters); pass an ASCII name such as the tool plan key`);
   }
   const raw = withSlotDefaults(template, values);

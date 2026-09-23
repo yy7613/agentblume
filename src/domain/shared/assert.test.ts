@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertHttpUrl, assertNonEmpty } from './assert';
+import { assertHttpUrl, assertNonEmpty, isRecord } from './assert';
 import { SharedValidationError } from './errors';
 
 /** fail 注入の検証に使う BC 固有エラーの代役。 */
@@ -94,5 +94,29 @@ describe('assertHttpUrl', () => {
     class InjectedUrlError extends Error {}
     expect(() => assertHttpUrl('ftp://x', 'label')).toThrow(SharedValidationError);
     expect(() => assertHttpUrl('ftp://x', 'label', (m) => new InjectedUrlError(m))).toThrow(InjectedUrlError);
+  });
+});
+
+describe('isRecord', () => {
+  it('正常: プレーンオブジェクトを true と判定する', () => {
+    expect(isRecord({})).toBe(true);
+    expect(isRecord({ a: 1 })).toBe(true);
+  });
+
+  it('異常: 配列は record とみなさない', () => {
+    expect(isRecord([])).toBe(false);
+    expect(isRecord([1, 2, 3])).toBe(false);
+  });
+
+  it('境界: null は record とみなさない', () => {
+    expect(isRecord(null)).toBe(false);
+  });
+
+  it('境界: プリミティブ値・undefined・関数は record とみなさない', () => {
+    expect(isRecord(undefined)).toBe(false);
+    expect(isRecord('string')).toBe(false);
+    expect(isRecord(123)).toBe(false);
+    expect(isRecord(true)).toBe(false);
+    expect(isRecord(() => {})).toBe(false);
   });
 });

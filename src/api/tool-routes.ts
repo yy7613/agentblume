@@ -23,6 +23,7 @@ import type { SaveToolUseCase } from '../application/tool/save-tool';
 import { serializeTool } from '../domain/tool/serialization';
 import { SemVer } from '../domain/tool/semver';
 import { scopeOf } from './authentication';
+import { resolveOwner } from './owner';
 import { BadRequestError } from './error-mapping';
 import { previewBodySchema, saveToolBodySchema, scopeQuerySchema, versionQuerySchema } from './schemas';
 
@@ -98,7 +99,7 @@ export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): v
       workingName: body.workingName,
       displayName: body.displayName,
       publishName: body.publishName,
-      owner: body.owner,
+      owner: resolveOwner(request, body.owner),
       sideEffect: body.sideEffect,
       graph: body.graph,
       ...(body.inputSchema !== undefined ? { inputSchema: body.inputSchema } : {}),

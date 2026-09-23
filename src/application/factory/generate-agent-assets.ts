@@ -50,6 +50,7 @@ import { validateToolArguments } from '../agent/tool-schema';
 import { graphWithArguments } from '../tool/tool-execution';
 import { SaveSkillUseCase } from '../skill/save-skill';
 import { SaveToolUseCase } from '../tool/save-tool';
+import { describeJoinDesignViolations } from '../tool/design-rules';
 import { throwIfAborted } from './abort';
 import { toolFunctionNameOf } from './compile-tool-spec';
 import { hasJoinKeyResolutionError, normalizeArgumentTypes, normalizeProposedGraph, withSwappedJoinPorts } from './normalize-tool-graph';
@@ -1485,76 +1486,11 @@ function describeJoinProblems(context: ToolSemanticContext): string[] {
   return problems;
 }
 
-/** 注記・備考のような自由記述列（結合キーにすると、値が揃わない行を黙って落とす）。 */
-const NOTE_LIKE_COLUMN = /注記|備考|摘要|remarks?|notes?|comments?/i;
-
 /**
- * 結合Toolの**設計**の検査（ADR-0047 第5ラウンド）。実測の3ソース結合で起きた2つを塞ぐ。
- *
- * 1. 枝ごとに `parse-period` を走らせると、2つ目の結合で
- *    `right column 'periodStart' still conflicts after suffix: periodStart_right` になる。
- *    期間ラベル列は結合キーとして残るので、`parse-period` は**最後の結合の後で1回だけ**走らせる。
- * 2. 結合キーに `注記` のような自由記述列を混ぜると、値が揃わない行が黙って消える。
- *    キーはプロファイルの `joinCandidates` が挙げたものだけにする。
+ * 結合Toolの設計の検査は、設計アシスタントと共有するので `tool/design-rules.ts` に置く（v50 R1）。
+ * 既存の import 元（テスト・`compile-tool-spec.test.ts`）を壊さないよう、ここからも出す。
  */
-export function describeJoinDesignViolations(
-  graph: ToolGraph,
-  profile: DataProfile,
-  additionalProfiles: readonly DataProfile[] = [],
-): string | undefined {
-  const joins = graph.nodes.filter((node) => node.type === JOIN_NODE_TYPE);
-  if (joins.length === 0) return undefined;
-  const candidates = [profile, ...additionalProfiles].flatMap((source) => source.joinCandidates ?? []);
-  const inputsOf = new Map<string, { from: string; toInput: number }[]>();
-  for (const edge of graph.edges) {
-    const list = inputsOf.get(edge.to) ?? [];
-    list.push({ from: edge.from, toInput: edge.toInput ?? 0 });
-    inputsOf.set(edge.to, list);
-  }
-  const problems: string[] = [];
-  const parsePeriods = graph.nodes.filter((node) => node.type === PARSE_PERIOD_TYPE);
-  const upstreamOf = (nodeId: string): Set<string> => {
-    const seen = new Set<string>();
-    const queue = [nodeId];
-    while (queue.length > 0) {
-      const current = queue.pop()!;
-      for (const edge of inputsOf.get(current) ?? []) {
-        if (seen.has(edge.from)) continue;
-        seen.add(edge.from);
-        queue.push(edge.from);
-      }
-    }
-    return seen;
-  };
-
-  if (parsePeriods.length > 1) {
-    problems.push(`this joined tool runs '${PARSE_PERIOD_TYPE}' ${parsePeriods.length} times (${parsePeriods.map((node) => `'${node.id}'`).join(', ')}). Each run adds 'periodStart' / 'periodGranularity', so the second join cannot merge them ("still conflicts after suffix"). Run it exactly ONCE, after the LAST join, on the primary period label column — the label column survives the join because it is a key`);
-  } else if (parsePeriods.length === 1) {
-    const upstream = upstreamOf(parsePeriods[0]!.id);
-    if (!joins.some((join) => upstream.has(join.id))) {
-      problems.push(`'${PARSE_PERIOD_TYPE}' node '${parsePeriods[0]!.id}' sits on a branch BEFORE the join. Move it after the last join (the period label column survives the join as a key), so that 'periodStart' exists once instead of once per branch`);
-    }
-  }
-
-  // 結合キーは、プロファイルが「値が十分に重なる」と判定した列だけから選ぶ。
-  const allowedKeys = new Set(candidates.flatMap((candidate) => candidate.keys));
-  const codeColumns = new Set(profile.columns.map((column) => column.name).filter((name) => /コード|code$|_code|id$/i.test(name)));
-  for (const join of joins) {
-    const config = (join.config ?? {}) as { keys?: unknown };
-    const keys = (Array.isArray(config.keys) ? config.keys : [])
-      .map((key) => (typeof key === 'string' ? key : (key as { left?: unknown } | null)?.left))
-      .filter((key): key is string => typeof key === 'string');
-    const notes = keys.filter((key) => NOTE_LIKE_COLUMN.test(key));
-    const unlisted = keys.filter((key) => !allowedKeys.has(key) && !notes.includes(key));
-    if (notes.length === 0 && (unlisted.length === 0 || allowedKeys.size === 0)) continue;
-    const redundant = keys.some((key) => codeColumns.has(key)) && keys.some((key) => !codeColumns.has(key) && !NOTE_LIKE_COLUMN.test(key));
-    problems.push([
-      `the '${JOIN_NODE_TYPE}' node '${join.id}' joins on ${[...notes, ...unlisted].map((key) => `'${key}'`).join(', ')}, which ${notes.length > 0 ? 'is free-text (a note/remark column): rows whose notes differ are silently dropped' : 'the data profile did not list as a shared key'}. Remove ${[...notes, ...unlisted].map((key) => `'${key}'`).join(', ')} from "keys" and join only on the columns joinCandidates lists${allowedKeys.size === 0 ? '' : ` (${[...allowedKeys].map((key) => `'${key}'`).join(', ')})`}`,
-      ...(redundant ? ['The code column alone already identifies the row, so a redundant name column next to it can be dropped too.'] : []),
-    ].join(' '));
-  }
-  return problems.length === 0 ? undefined : `joined tool design is wrong: ${problems.join('. ')}`;
-}
+export { describeJoinDesignViolations };
 
 /** 複数値を受け取る filter 演算子（`filter` がこれを実装しているビルドでのみ意味を持つ）。 */
 export const MULTI_VALUE_FILTER_OPS: readonly string[] = ['in', 'notIn'];

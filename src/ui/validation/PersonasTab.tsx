@@ -113,7 +113,7 @@ export function PersonasTab({ client, scope }: { readonly client: ToolApiClient;
     finally { setBusy(false); }
   }
 
-  const valid = internalId.trim() !== '' && workingName.trim() !== '' && displayName.trim() !== '' && publishName.trim() !== '' && owner.trim() !== '' && tone.trim() !== '';
+  const valid = internalId.trim() !== '' && workingName.trim() !== '' && displayName.trim() !== '' && publishName.trim() !== '' && tone.trim() !== '';
 
   return <>
     {error !== undefined && <div className="api-error" role="alert">{error}</div>}
@@ -143,7 +143,7 @@ export function PersonasTab({ client, scope }: { readonly client: ToolApiClient;
         <label>{text('Working name', '作業名')}<input aria-label={text('Persona working name', 'ペルソナ作業名')} value={workingName} onChange={(event) => setWorkingName(event.target.value)} /></label>
         <label>{text('Display name', '表示名')}<input aria-label={text('Persona display name', 'ペルソナ表示名')} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
         <label>{text('Publish name', '公開名')}<input aria-label={text('Persona publish name', 'ペルソナ公開名')} value={publishName} onChange={(event) => setPublishName(event.target.value)} /></label>
-        <label>{text('Owner', '所有者')}<input aria-label={text('Persona owner', 'ペルソナ所有者')} value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
+        <label>{text('Owner', '所有者')}<input aria-label={text('Persona owner', 'ペルソナ所有者')} placeholder={text('Optional (defaults to you)', '省略可（空欄なら自分の名前）')} value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
         <label>{text('Archetype', '種別')}<select aria-label={text('Persona archetype', 'ペルソナ種別')} value={archetype} onChange={(event) => setArchetype(event.target.value as PersonaArchetypeDto)}>{ARCHETYPES.map((item) => <option key={item} value={item}>{archetypeLabel(text, item)}</option>)}</select></label>
         <label>{text('Knowledge level', '知識レベル')}<select aria-label={text('Persona knowledge level', 'ペルソナ知識レベル')} value={knowledgeLevel} onChange={(event) => setKnowledgeLevel(event.target.value as PersonaLevelDto)}>{LEVELS.map((item) => <option key={item} value={item}>{levelLabel(text, item)}</option>)}</select></label>
         <label>{text('Patience', '忍耐力')}<select aria-label={text('Persona patience', 'ペルソナ忍耐力')} value={patience} onChange={(event) => setPatience(event.target.value as PersonaLevelDto)}>{LEVELS.map((item) => <option key={item} value={item}>{levelLabel(text, item)}</option>)}</select></label>

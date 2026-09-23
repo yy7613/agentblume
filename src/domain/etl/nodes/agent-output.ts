@@ -18,6 +18,18 @@ export interface AgentOutputConfig {
   readonly overflow: 'error' | 'store-and-reference';
 }
 
+/**
+ * `agent-output` の必須項目の既定値（v50 R3）。`sink` を省略したときの配送（`tool-output-dispatcher`）と、
+ * ToolSmith が必須項目を書き忘れたときに埋める値（`normalize-tool-graph`）の両方が同じ値を使う。
+ */
+export const DEFAULT_AGENT_OUTPUT_CONFIG: AgentOutputConfig = {
+  shape: 'rows',
+  format: 'json',
+  maxRows: 100,
+  maxBytes: 65_536,
+  overflow: 'error',
+};
+
 const schema = z.object({
   shape: z.enum(AGENT_OUTPUT_SHAPES),
   format: z.enum(AGENT_OUTPUT_FORMATS),

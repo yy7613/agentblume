@@ -34,6 +34,7 @@ import {
   type ToolSpecOutput,
   type ToolSpecPeriod,
 } from '../../../domain/factory/tool-spec';
+import { isRecord } from '../../../domain/shared/assert';
 
 /** カテゴリ列ごとに材料として見せる実在値の件数（全値は渡さない）。 */
 export const CATEGORY_VALUE_SAMPLE = 8;
@@ -58,10 +59,6 @@ function quote(value: unknown): string {
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values)];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function parseJsonObject(content: string | null): RoleTaskParseResult<Record<string, unknown>> {

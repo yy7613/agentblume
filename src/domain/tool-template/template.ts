@@ -13,6 +13,7 @@
  */
 import { z } from 'zod';
 import type { PeriodGranularity } from '../etl/nodes/parse-period';
+import type { Flavor } from '../shared/brand';
 
 /** 対応するファイル形式の版。互換性のない変更を入れるときに上げる。 */
 export const TOOL_TEMPLATE_FORMAT_VERSION = 1;
@@ -64,12 +65,8 @@ export const TOOL_TEMPLATE_ID_PATTERN = /^[a-z][a-z0-9-]{1,48}$/;
 export const TEMPLATE_SLOT_NAME_PATTERN = /^[a-z][A-Za-z0-9]{0,39}$/;
 export const TEMPLATE_ARGUMENT_NAME_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
 
-/**
- * エージェントへ公開できる function 名の形（application の `isValidFunctionName` と同じ規則）。
- * domain は application を参照できないため写しを持つ。規則を変えるときは
- * `src/application/agent/tool-schema.ts` の `FUNCTION_NAME_PATTERN` と一緒に変えること。
- */
-export const TEMPLATE_FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+/** ツールテンプレートの id（v43 §2）。素の string から代入可能な弱ブランド（ADR-0034）。 */
+export type ToolTemplateId = Flavor<string, 'ToolTemplateId'>;
 
 // ── 型 ───────────────────────────────────────────────────────────────────────────
 
@@ -200,7 +197,7 @@ export interface ToolTemplateEdge {
 
 export interface ToolTemplate {
   readonly formatVersion: 1;
-  readonly id: string;
+  readonly id: ToolTemplateId;
   readonly version: string;
   readonly title: LocalizedText;
   readonly summary: LocalizedText;

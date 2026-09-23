@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Table } from '../../domain/data/types';
 import type { GraphNode } from '../../domain/etl/graph';
-import type { AgentOutputConfig } from '../../domain/etl/nodes/agent-output';
+import { DEFAULT_AGENT_OUTPUT_CONFIG, type AgentOutputConfig } from '../../domain/etl/nodes/agent-output';
 import type { GraphArtifactMapping, GraphOutputConfig } from '../../domain/etl/nodes/graph-output';
 import type { CompatibleWorkspaceOutputConfig, WorkspaceOutputConfig } from '../../domain/etl/nodes/workspace-output';
 import type { ChartOutputConfig } from '../../domain/etl/nodes/chart-output';
@@ -31,7 +31,7 @@ export type ToolDeliveryResult =
   | { readonly delivery: 'agent'; readonly value: unknown; readonly content: string; readonly sizeBytes: number; readonly overflowed?: boolean }
   | { readonly delivery: 'session-workspace'; readonly artifact: SessionArtifactDescriptor; readonly content: string };
 
-const DEFAULT_OUTPUT: AgentOutputConfig = { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65_536, overflow: 'error' };
+const DEFAULT_OUTPUT: AgentOutputConfig = DEFAULT_AGENT_OUTPUT_CONFIG;
 type TableArtifactPayload = { readonly schema: Table['schema']; readonly rows: readonly Readonly<Record<string, unknown>>[] };
 type GraphArtifactPayload = { readonly nodes: readonly { readonly id: string; readonly label?: string; readonly properties: Readonly<Record<string, unknown>> }[]; readonly edges: readonly { readonly id: string; readonly source: string; readonly target: string; readonly label?: string; readonly properties: Readonly<Record<string, unknown>> }[] };
 type ChartArtifactPayload = { readonly specVersion: 1; readonly chartType: ChartOutputConfig['chartType']; readonly title?: string; readonly mapping: Readonly<Record<string, string | number>>; readonly rows: readonly Readonly<Record<string, unknown>>[]; readonly sourceRowCount: number; readonly sampled: boolean };

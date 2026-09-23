@@ -12,6 +12,7 @@ import type { SuggestToolCheckCasesUseCase } from '../application/tool-check/sug
 import { SemVer } from '../domain/tool/semver';
 import { createTool } from '../domain/tool/tool';
 import { scopeOf } from './authentication';
+import { resolveOwner } from './owner';
 import { BadRequestError } from './error-mapping';
 import { analysisSuggestionBodySchema, calculateSuggestionBodySchema, designChatBodySchema, designChatCompactBodySchema, draftInspectBodySchema, draftPreviewBodySchema, saveToolBodySchema } from './schemas';
 import { previewResponse } from './tool-routes';
@@ -75,7 +76,7 @@ export function registerDraftToolRoutes(app: FastifyInstance, deps: DraftToolRou
     const tool = createTool({
       metadata: {
         internalId: body.internalId, workingName: body.workingName, displayName: body.displayName,
-        publishName: body.publishName, version: DRAFT_TOOL_VERSION, owner: body.owner,
+        publishName: body.publishName, version: DRAFT_TOOL_VERSION, owner: resolveOwner(request, body.owner),
         state: body.state ?? 'draft', tenant: scope,
       },
       sideEffect: body.sideEffect,

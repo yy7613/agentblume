@@ -215,10 +215,9 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
     if (workingName.trim() === '') missing.push(text('Working name', '作業名'));
     if (displayName.trim() === '') missing.push(text('Display name', '表示名'));
     if (publishName.trim() === '') missing.push(text('Publish name', '公開名'));
-    if (owner.trim() === '') missing.push(text('Owner', '所有者'));
     if (systemPrompt.trim() === '') missing.push(text('System prompt', 'システムプロンプト'));
     return missing;
-  }, [internalId, workingName, displayName, publishName, owner, systemPrompt, text]);
+  }, [internalId, workingName, displayName, publishName, systemPrompt, text]);
   const missingRequiredLabel = missingRequired.join(language === 'ja' ? '、' : ', ');
   const saveBlocked = missingRequired.length > 0 || !outputValid || !subAgentsValid;
   // 委譲用 function 名 `ask_<publishName>` が無効になる publishName。保存は止めず注意だけ出す（未入力は必須項目側で伝える）。
@@ -542,7 +541,7 @@ export function AgentBuilder({ client }: { readonly client: ToolApiClient }) {
           <label>{text('Display name', '表示名')}<span className="required-mark">*</span><input aria-label={text('Agent display name', 'エージェント表示名')} placeholder={text('e.g. Support Agent', '例: サポートエージェント')} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
           <label>{text('Publish name', '公開名')}<span className="required-mark">*</span><input aria-label={text('Publish name', '公開名')} placeholder={text('e.g. support_agent', '例: support_agent')} value={publishName} onChange={(event) => setPublishName(event.target.value)} />
             {publishNameInvalid && <small className="field-warning">{text(`Other agents cannot delegate to this agent: ask_${publishName} is not a valid function name (use 1–64 ASCII letters, digits, _ or -)`, `他のエージェントから委譲できません: ask_${publishName} は function 名として無効です（英数字・_・- の1〜64文字にしてください）`)}</small>}</label>
-          <label>{text('Owner', '所有者')}<span className="required-mark">*</span><input aria-label={text('Owner', '所有者')} placeholder={text('e.g. team@example.com', '例: team@example.com')} value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
+          <label>{text('Owner', '所有者')}<input aria-label={text('Owner', '所有者')} placeholder={text('Optional (defaults to you)', '省略可（空欄なら自分の名前）')} value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
           <label>{text('Kind', '種別')}<select aria-label={text('Agent kind', 'エージェント種別')} value={kind} onChange={(event) => setKind(event.target.value as AgentKindDto)}><option value="normal">{text('Normal', '通常')}</option><option value="pseudo-user">{text('Pseudo user', '疑似ユーザー')}</option><option value="evaluator">{text('Evaluator', '評価者')}</option></select></label>
         </div>
         <h2 id="agent-section-skills" tabIndex={-1}>{text('Skills', 'スキル')} <small>{skillRefs.length} {text('selected', '件選択')}</small></h2>

@@ -868,6 +868,196 @@ describe('localizeDiagnosticDetail（診断 detail の文言）', () => {
   });
 });
 
+describe('localizeDiagnosticDetail（設計アシスタント v50 R5: GraphEditError / set-agent-tool / design-rules）', () => {
+  // --- graph-edit.ts: GraphEditError（`operation N ('op'): 理由. 直し方`） -------------------------
+  it('正常: 必須の参照（after）が無い操作を、直し方つきで日本語化する', () => {
+    const raw = 'operation 1 (\'add-node\'): after is missing. Set "after" to the id of a node that exists in the current graph.';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('操作1 (\'add-node\'): 「after」が指定されていません。「after」には、いまのグラフに存在するノードの id を指定してください');
+  });
+
+  it('正常: 存在しないノードidを指す操作を、既存のid一覧つきで日本語化する（ノードidを埋め戻す）', () => {
+    const raw = "operation 2 ('connect'): to 'ghost-1' is not a node in the current graph. Use one of the existing node ids ('source-1', 'sink-1'), or add the node first with 'add-node'.";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe("操作2 ('connect'): 「to」に指定された「ghost-1」はいまのグラフに存在するノードではありません。既存のノード id（'source-1', 'sink-1'）のいずれかを使うか、先に 'add-node' でノードを追加してください");
+  });
+
+  it('境界: グラフが空のときは既存id一覧の代わりに「グラフは空です」を出す', () => {
+    const raw = "operation 1 ('remove-node'): id 'x' is not a node in the current graph. Use one of the existing node ids (the graph is empty), or add the node first with 'add-node'.";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe("操作1 ('remove-node'): 「id」に指定された「x」はいまのグラフに存在するノードではありません（グラフは空です）。まず 'add-node' でノードを追加してください");
+  });
+
+  it('正常: ノードidの形式違反を、直し方（小文字・数字・ハイフン）つきで日本語化する', () => {
+    const raw = 'operation 1 (\'add-node\'): the node id "Sort_1" does not match ^[a-z][a-z0-9-]{0,39}$. Use lower-case letters, digits and hyphens only, starting with a letter (for example "sort-1").';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('操作1 (\'add-node\'): ノード id "Sort_1" が形式（小文字英字で始まり、英小文字・数字・ハイフンだけ）に合いません。小文字の英字・数字・ハイフンだけを使い、英字で始めてください（例: "sort-1"）');
+  });
+
+  it('正常: 既存idとの重複を、直し方（set-configで変更）つきで日本語化する（ノードidを埋め戻す）', () => {
+    const raw = "operation 3 ('add-node'): a node with the id 'filter-1' already exists. Pick a new id, or use 'set-config' to change the existing 'filter-1'.";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe("操作3 ('add-node'): id「filter-1」のノードは既に存在します。新しい id を選ぶか、'set-config' で既存の「filter-1」を変更してください");
+    // 英語UIは原文のまま（セミコロンを含まないのでセグメント分割の影響を受けない）。
+    expect(localizeDiagnosticDetail(raw, 'en')).toBe(raw);
+  });
+
+  it('正常: ノード種別（type）の欠落を日本語化する（ノードidを埋め戻す）', () => {
+    const raw = "operation 1 ('add-node'): the node type of 'node-a' is missing. Set \"type\" to one of the node types in the catalog.";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('操作1 (\'add-node\'): ノード「node-a」の type が指定されていません。カタログにあるノード種別のいずれかを "type" に指定してください');
+  });
+
+  it('境界: config がオブジェクトでない違反（セミコロンを含む1文）を分割せずに丸ごと日本語化する', () => {
+    const raw = "operation 2 ('set-config'): the config of 'filter-1' is not an object. Send the complete config object for that node type; it replaces the current one.";
+    const localized = localizeDiagnosticDetail(raw, 'ja');
+    expect(localized)
+      .toBe("操作2 ('set-config'): ノード「filter-1」の config がオブジェクトではありません。そのノード種別の config をまるごと送ってください（既存の設定を置き換えます）");
+    // ";" で分割されて "it replaces the current one." が原文のまま重複表示されない。
+    expect(localized).not.toContain('it replaces the current one');
+  });
+
+  it('正常: 自己接続の違反を日本語化する（ノードidを埋め戻す）', () => {
+    const raw = "operation 4 ('connect'): 'sort-1' cannot be connected to itself. Connect two different nodes; a node never feeds itself.";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('操作4 (\'connect\'): 「sort-1」は自分自身に接続できません。異なる2つのノードを接続してください（ノードが自分自身の入力になることはありません）');
+  });
+
+  it('正常: 不正な toInput の値を埋め戻して日本語化する', () => {
+    const raw = 'operation 1 (\'connect\'): "toInput": 2 is not an input port. Use 0 (left) or 1 (right), and only on a node that takes two inputs (join, union). Leave it out everywhere else.';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('操作1 (\'connect\'): "toInput" の値 2 は入力ポートとして不正です。0（左）か 1（右）を、2入力を取るノード（join・union）でだけ指定してください。それ以外のノードでは指定しないでください');
+  });
+
+  it('正常: 既に接続済みの辺への connect を日本語化する（ノードidを埋め戻す）', () => {
+    const raw = "operation 2 ('connect'): 'source-1' is already connected to 'join-1'. Leave the existing edge alone, or 'disconnect' it first if you want a different input port.";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe("操作2 ('connect'): 「source-1」は既に「join-1」に接続されています。既存の接続をそのままにするか、別の入力ポートにしたい場合は先に 'disconnect' で外してください");
+  });
+
+  it('正常: 存在しない辺への disconnect を日本語化する（ノードidを埋め戻す）', () => {
+    const raw = "operation 1 ('disconnect'): there is no edge from 'a' to 'b'. Only disconnect edges that exist in the current graph.";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('操作1 (\'disconnect\'): 「a」から「b」への接続はありません。いまのグラフに存在する接続だけを外せます');
+  });
+
+  it('境界: 未知の操作語彙（op）を埋め戻して日本語化する', () => {
+    const raw = 'operation 5: unknown operation "rename-node". Use one of \'add-node\', \'remove-node\', \'set-config\', \'connect\', \'disconnect\'.';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('操作5: 不明な操作 "rename-node" です。\'add-node\' / \'remove-node\' / \'set-config\' / \'connect\' / \'disconnect\' のいずれかを使ってください');
+  });
+
+  // --- design-chat-agent-tool.ts: set-agent-tool の違反 ---------------------------------------------
+  it('正常: エージェントツールの説明文（description）欠落を、上限文字数つきで日本語化する', () => {
+    const raw = 'operation 1 (\'set-agent-tool\'): the tool description is missing. Set "description" to the text the agent reads before it calls this tool (1 to 4000 characters): the format of every argument, the exact spelling of the values it may pass, what the data covers and the columns that come back.';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('操作1 (\'set-agent-tool\'): ツールの説明文（description）が指定されていません。"description" に、エージェントがこのツールを呼ぶ前に読むテキスト（1〜4000文字）を書いてください: 各引数の書式、渡してよい値の正確な綴り、データが何を扱っているか、返ってくる列は何かを含めてください');
+  });
+
+  it('正常: エージェントツールの説明文が長すぎる違反を、実測文字数と上限つきで日本語化する', () => {
+    const raw = 'operation 1 (\'set-agent-tool\'): the tool description is 4500 characters, which is longer than the limit of 4000. Shorten it to at most 4000 characters, keeping the format of the arguments, the values the agent may pass and the columns that come back.';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('操作1 (\'set-agent-tool\'): ツールの説明文（description）が4500文字あり、上限の4000文字を超えています。引数の書式・渡してよい値・返ってくる列は残したまま、4000文字以内に短くしてください');
+  });
+
+  it('正常: エージェントツール名の形式違反を埋め戻して日本語化する', () => {
+    const raw = 'operation 1 (\'set-agent-tool\'): the tool name "pop top" does not match ^[A-Za-z0-9_-]{1,64}$. Use letters, digits, \'_\' and \'-\' only (for example "population_top"), or leave "name" out to keep the current name.';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('操作1 (\'set-agent-tool\'): ツール名 "pop top" が形式に合いません。英字・数字・"_"・"-" だけを使ってください（例: "population_top"）。いまの名前のままにする場合は "name" を省略してください');
+  });
+
+  // --- design-rules.ts: 意味の検査（期間ラベルでの並べ替え・粒度の混在・0行のプレビュー） ------------------
+  it('正常: 期間ラベルの文字列並べ替えを、ノードidと列名を埋め戻して日本語化する', () => {
+    const raw = "node 'sort-1': sorting on '時点' orders the period LABELS as text ('2025年9月' comes after '2025年12月'), not by time; add a parse-period node upstream (column \"時点\") and sort on its start column \"periodStart\" instead";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('ノード「sort-1」: 列「時点」で並べ替えていますが、期間ラベルを文字列として並べているため時系列になりません（例: \'2025年9月\' が \'2025年12月\' より後になってしまいます）。上流に期間解釈(parse-period)ノードを追加し（対象列: "時点"）、その開始日を表す列 "periodStart" で並べ替えてください');
+  });
+
+  it('正常: 粒度混在の期間列にフィルターが無い違反を、ノードidと列名を埋め戻して日本語化する', () => {
+    const raw = 'node \'parse-period-1\': the period column \'時点\' mixes granularities (monthly, quarterly, yearly and fiscal-year rows share it), but no filter narrows "periodGranularity" to one granularity; add a filter { "column": "periodGranularity", "op": "eq", "value": "<one of the granularities in the profile>" } right after the parse-period node so the rows are not mixed';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('ノード「parse-period-1」: 期間列「時点」は月次・四半期・年次・年度などの粒度が混在していますが、"periodGranularity" を1つの粒度に絞るフィルターがありません。期間解釈(parse-period)ノードの直後に、フィルター { "column": "periodGranularity", "op": "eq", "value": "<プロファイルにある粒度のいずれか>" } を追加して、行が混ざらないようにしてください');
+  });
+
+  it('正常: 設計時プレビューが0行（診断なし）を日本語化する', () => {
+    const raw = 'the design-time preview returned 0 rows, so the tool shows nothing on the canvas; use design-time values that exist in the data (see the profiles) so that the preview has rows';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('設計時プレビューが0行になり、キャンバスに何も表示されません。データに実在する値（プロファイルを参照）を設計時の値として使い、プレビューに行が出るようにしてください');
+  });
+
+  it('境界: 設計時プレビューが0行（空振りの診断つき・複数行かつセミコロンを含む）でも診断部分を保ったまま日本語化する', () => {
+    const detail = 'No rows matched. Do not answer from memory: tell the user no data matched, or call the tool again with one of the available values.\n- region eq "北海道" matched 0 rows; values in this column include: 東京都, 大阪府';
+    const raw = `the design-time preview returned 0 rows: ${detail}; use design-time values that exist in the data so that the preview has rows`;
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe(`設計時プレビューが0行になりました: ${detail}。データに実在する値を設計時の値として使い、プレビューに行が出るようにしてください`);
+  });
+
+  // --- design-rules.ts: 結合Toolの設計の違反（describeJoinDesignViolations） --------------------------
+  it('正常: parse-periodを複数回実行している違反を、実行回数とノードid一覧を埋め戻して日本語化する', () => {
+    const raw = "joined tool design is wrong: this joined tool runs 'parse-period' 2 times ('parse-1', 'parse-2'). Each run adds 'periodStart' / 'periodGranularity', so the second join cannot merge them (\"still conflicts after suffix\"). Run it exactly ONCE, after the LAST join, on the primary period label column — the label column survives the join because it is a key";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe("結合ツールの設計に誤りがあります: このツールは 'parse-period' を2回実行しています（'parse-1', 'parse-2'）。実行するたびに 'periodStart' / 'periodGranularity' が追加されるため、2回目以降の結合でこれらを統合できません（\"still conflicts after suffix\"）。'parse-period' は最後の結合の後に1回だけ、主となる期間ラベル列に対して実行してください — ラベル列は結合キーのため、結合後も残ります");
+  });
+
+  it('正常: parse-periodが結合より前の枝にある違反を、ノードidを埋め戻して日本語化する', () => {
+    const raw = "joined tool design is wrong: 'parse-period' node 'parse-1' sits on a branch BEFORE the join. Move it after the last join (the period label column survives the join as a key), so that 'periodStart' exists once instead of once per branch";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe("結合ツールの設計に誤りがあります: 'parse-period' ノード「parse-1」が結合より前の枝にあります。最後の結合の後に移動してください（期間ラベル列は結合キーとして結合後も残ります）。これで 'periodStart' が枝ごとではなく1つだけ存在するようになります");
+  });
+
+  it('正常: 結合キーが自由記述列の違反を、ノードidと列名一覧を埋め戻して日本語化する', () => {
+    const raw = "joined tool design is wrong: the 'join' node 'join-1' joins on '注記', which is free-text (a note/remark column): rows whose notes differ are silently dropped. Remove '注記' from \"keys\" and join only on the columns joinCandidates lists ('region_code', 'category_code')";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe("結合ツールの設計に誤りがあります: 'join' ノード「join-1」が '注記' で結合していますが、これは自由記述（注記・備考）列です。値が異なる行が黙って落ちます。\"keys\" から '注記' を外し、joinCandidates が挙げる列だけで結合してください ('region_code', 'category_code')。");
+  });
+
+  it('境界: 結合キーが共通キーに無い違反（許容キー一覧なし・冗長列の注記つき）を日本語化する', () => {
+    const raw = 'joined tool design is wrong: the \'join\' node \'join-2\' joins on \'name\', which the data profile did not list as a shared key. Remove \'name\' from "keys" and join only on the columns joinCandidates lists The code column alone already identifies the row, so a redundant name column next to it can be dropped too.';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('結合ツールの設計に誤りがあります: \'join\' ノード「join-2」が \'name\' で結合していますが、これはデータプロファイルが共通キーとして挙げていません。"keys" から \'name\' を外し、joinCandidates が挙げる列だけで結合してください。コード列だけで行を一意に識別できるため、隣にある冗長な名称列も削除できます。');
+  });
+
+  it('[回帰固定] 境界: 複数の結合違反が連結された形（単一違反の定型に合わない）は従来どおり原文のまま返す（握りつぶさない）', () => {
+    const raw = "joined tool design is wrong: 'parse-period' node 'parse-1' sits on a branch BEFORE the join. Move it after the last join (the period label column survives the join as a key), so that 'periodStart' exists once instead of once per branch. the 'join' node 'join-1' joins on 'name', which the data profile did not list as a shared key. Remove 'name' from \"keys\" and join only on the columns joinCandidates lists";
+    expect(localizeDiagnosticDetail(raw, 'ja')).toBe(raw);
+  });
+
+  // --- design-tool-chat.ts: 材料が読めない/グラフが不正なときの文 -----------------------------------------
+  it('境界: データソースを読めない失敗は、埋め込まれた原文を保ったまま見出しだけ日本語化する', () => {
+    const raw = 'the data sources of this tool cannot be read: connect ECONNREFUSED 127.0.0.1:5432';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('このツールのデータソースを読み込めません: connect ECONNREFUSED 127.0.0.1:5432');
+  });
+
+  it('正常: グラフが不正な失敗は、埋め込まれたETL定型文（graph has a cycle）を再帰的に日本語化する', () => {
+    const raw = 'the tool graph is not valid: graph has a cycle';
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('ツールグラフが不正です: グラフに循環(ループ)があります。下流から上流へ戻っている接続を1本外してください');
+  });
+
+  it('境界: 設計時プレビューの失敗は、和訳できない原文をそのまま埋め込んで見出しだけ日本語化する', () => {
+    const raw = "the design-time preview failed: Cannot read properties of undefined (reading 'rows')";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe("設計時プレビューに失敗しました: Cannot read properties of undefined (reading 'rows')");
+  });
+
+  it('正常: スキーマ伝播issue（node \'id\': issue）は、ノードidを保ったまま既存のETL定型文で issue を和訳する', () => {
+    const raw = "node 'sort-1': sort: column(s) not found: age";
+    expect(localizeDiagnosticDetail(raw, 'ja'))
+      .toBe('ノード「sort-1」: 列が見つかりません: age。sortノードで参照している列「age」を上流ノードの出力にある列名へ直すか、上流ノードの設定を見直してください');
+  });
+
+  it('境界: スキーマ伝播issueの本文が和訳できないときは、ノードidだけ日本語化して本文は原文のまま残す', () => {
+    const raw = "node 'custom-1': something totally new";
+    expect(localizeDiagnosticDetail(raw, 'ja')).toBe('ノード「custom-1」: something totally new');
+  });
+
+  it('[回帰固定] 境界: 英語UIでは従来どおり原文のまま返す（セミコロンを含まない文で分割の影響を受けないことを確認）', () => {
+    const raw = "operation 1 ('disconnect'): there is no edge from 'a' to 'b'. Only disconnect edges that exist in the current graph.";
+    expect(localizeDiagnosticDetail(raw, 'en')).toBe(raw);
+  });
+});
+
 describe('localizeRunTraceError（トレースの error イベント）', () => {
   it('`(retrying n/m)` 接尾辞を剥がして本文を変換し、再試行の注記を付け直す', () => {
     expect(localizeRunTraceError({ code: 'TOOL_ARGUMENTS', message: 'required argument missing: month (retrying 1/1)' }, 'ja'))
@@ -1375,7 +1565,7 @@ describe('判定モデル未設定・軌跡必須（JUDGE_MODEL_NOT_CONFIGURED /
     expect(localizeApiErrorMessage(payload, 'en')).toBe("Rubric 'quality-rubric' requires a tool trace, but scenario cases never produce one. Set its trace policy to optional, or use a dataset with turn cases only");
   });
 
-  it('境界: 本文に rubric が無ければ原文の `rubric \'<id>\'` から ID を拾い、それも無ければ一般形にする', () => {
+  it('境界(回帰固定): 従来どおり、本文に rubric が無ければ原文の `rubric \'<id>\'` から ID を拾い、それも無ければ一般形にする', () => {
     expect(en(409, 'JUDGE_TRACE_UNAVAILABLE', "rubric 'legacy-rubric' requires a trace")).toContain("Rubric 'legacy-rubric' requires a tool trace");
     expect(ja(409, 'JUDGE_TRACE_UNAVAILABLE', 'no id here')).toBe('ルーブリックがツール呼び出しの軌跡を必須にしていますが、シナリオ事例では軌跡が得られません。軌跡ポリシーを「任意」にするか、ターン事例だけのデータセットを使ってください');
     expect(en(409, 'JUDGE_TRACE_UNAVAILABLE', '')).toBe('The rubric requires a tool trace, but scenario cases never produce one. Set its trace policy to optional, or use a dataset with turn cases only');

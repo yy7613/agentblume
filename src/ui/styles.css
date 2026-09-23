@@ -1243,3 +1243,10 @@ fieldset.template-slot legend { font-size: 12px; padding: 0 4px; }
 .design-chat-send small { color: #8a94a8; font-size: 10px; }
 /* 変更されたノードの強調。数秒で外れるので、枠の色と薄い影だけで位置を示す。 */
 .react-flow__node.node-highlight .tool-node { border-color: #7d5bd6; box-shadow: 0 0 0 4px #7d5bd633, 0 6px 18px #2e3b5820; }
+
+/* --- キャンバスの操作列（v51: 整列） ------------------------------------------------------- */
+/* キャンバスの左上に重ねる。ノードの上に被っても押せるよう、背景を付けて前面に出す。 */
+.flow-canvas-actions { display: flex; align-items: center; gap: 8px; margin: 10px; }
+.flow-canvas-actions > button { padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 700; box-shadow: 0 2px 6px #2e3b5814; }
+.flow-canvas-arranged { display: inline-flex; align-items: center; gap: 8px; padding: 4px 6px 4px 10px; border-radius: 8px; background: #eef5ff; color: #2b3a55; font-size: 12px; box-shadow: 0 2px 6px #2e3b5814; }
+.flow-canvas-arranged button.ghost { padding: 3px 10px; }

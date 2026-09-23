@@ -26,7 +26,7 @@ export const MCP_TOOL_NAME_MAX_LENGTH = 64;
 /** モデルへ渡すdescriptionの上限（文脈を食い潰さないためにクリップする）。 */
 export const MCP_TOOL_DESCRIPTION_MAX_CHARS = 500;
 
-/** `/^[A-Za-z0-9_-]{1,64}$/` に収めるため、許可外の文字を `_` へ置換する。 */
+/** `FUNCTION_NAME_PATTERN`（`domain/shared/function-name.ts`。英数字・`_`・`-` で 1〜64 文字）に収めるため、許可外の文字を `_` へ置換する。 */
 const DISALLOWED_NAME_CHARS = /[^A-Za-z0-9_-]/g;
 /** 同名衝突時に試す数値サフィックスの上限（現実には到達しないが無限ループを避ける）。 */
 const MAX_NAME_SUFFIX = 1_000;
@@ -77,7 +77,7 @@ export function isMcpToolName(name: string): boolean {
 }
 
 /**
- * `mcp__<server>__<tool>` を `/^[A-Za-z0-9_-]{1,64}$/` に正規化する純関数。
+ * `mcp__<server>__<tool>` を `FUNCTION_NAME_PATTERN`（英数字・`_`・`-` で 1〜64 文字）に正規化する純関数。
  *
  * 1. 許可外の文字は `_` へ置換する。
  * 2. 64字を超える部分は切り詰める。

@@ -2,6 +2,7 @@ import {
   Background,
   Controls,
   MiniMap,
+  Panel,
   ReactFlow,
   type Connection,
   type Edge,
@@ -9,9 +10,10 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ToolNode } from './ToolNode';
 import { catalogItem } from './node-catalog';
+import { columnsForWidth } from './layout';
 import { useToolBuilderStore, type ToolFlowNode } from './store';
 import { useI18n } from '../i18n';
 
@@ -67,6 +69,12 @@ export function FlowCanvas() {
   const onEdgesChange = useToolBuilderStore((state) => state.onEdgesChange);
   const onConnect = useToolBuilderStore((state) => state.onConnect);
   const selectNode = useToolBuilderStore((state) => state.selectNode);
+  const arrangeNodes = useToolBuilderStore((state) => state.arrangeNodes);
+  const undoArrange = useToolBuilderStore((state) => state.undoArrange);
+  const arranged = useToolBuilderStore((state) => state.arrangeUndo !== undefined);
+  const layoutRevision = useToolBuilderStore((state) => state.layoutRevision);
+  // 整列の列数はキャンバスの表示幅から決める（ズーム 1 で横に収まる列数。測れなければ下限の 3 列）。
+  const canvasRef = useRef<HTMLElement>(null);
   const [instance, setInstance] = useState<ReactFlowInstance<ToolFlowNode, Edge>>();
   // 繋ぎ替えドラッグ中の元エッジid。isValidConnectionの容量判定から除外し、自ノードへ戻す・
   // 別ハンドルへ移す操作を「容量オーバー」として誤って弾かないようにする。
@@ -75,15 +83,17 @@ export function FlowCanvas() {
 
   // パレットから追加したノードは選択ノードの右280pxへ置かれ、可視域外へ落ちることがある。
   // ノード数が変わったらビューを再フィットして「押したのに何も起きない」を防ぐ。
+  // 全体を並べ直したとき（整列・元に戻す・折り返しての読み込み）はノード数が変わらないこともあるので、
+  // store の layoutRevision でも再フィットする（v51）。
   const nodeCount = nodes.length;
   useEffect(() => {
     if (instance === undefined) return;
     const timer = window.setTimeout(() => { void instance.fitView({ padding: 0.2, duration: 200 }); }, 0);
     return () => window.clearTimeout(timer);
-  }, [instance, nodeCount]);
+  }, [instance, nodeCount, layoutRevision]);
 
   return (
-    <main className="flow-canvas" aria-label={text('ETL canvas', 'ETLキャンバス')}>
+    <main ref={canvasRef} className="flow-canvas" aria-label={text('ETL canvas', 'ETLキャンバス')}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -109,6 +119,18 @@ export function FlowCanvas() {
         nodeDragThreshold={4}
         connectionDragThreshold={4}
       >
+        {/* 操作列（v51）。整列は人が並べた位置も動かすので、直後に 1 段だけ「元に戻す」を出す（次の編集で消える）。 */}
+        <Panel position="top-left" className="flow-canvas-actions">
+          <button type="button" className="secondary" disabled={nodeCount === 0}
+            title={text('Lay the nodes out in columns by processing step, wrapping to fit the canvas width', '処理の段ごとに列へ並べ、キャンバスの幅で折り返します')}
+            onClick={() => arrangeNodes(columnsForWidth(canvasRef.current?.clientWidth ?? 0))}>
+            {text('Arrange', '整列')}
+          </button>
+          {arranged && <span className="flow-canvas-arranged" role="status">
+            {text('Arranged', '整列しました')}
+            <button type="button" className="ghost" onClick={undoArrange}>{text('Undo', '元に戻す')}</button>
+          </span>}
+        </Panel>
         <Background gap={24} size={1} />
         <Controls />
         <MiniMap pannable zoomable nodeColor={MINIMAP_NODE_COLOR} nodeStrokeColor={MINIMAP_NODE_COLOR} />

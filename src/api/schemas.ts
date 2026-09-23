@@ -13,6 +13,7 @@ import type { PublishState, SideEffect } from '../domain/tool/metadata';
 import { AGENT_KINDS, AGENT_MAX_MCP_SERVERS, AGENT_MCP_SERVER_NAME_MAX_LENGTH } from '../domain/agent/agent';
 import { STRUCTURED_OUTPUT_TYPES } from '../domain/agent/structured-output';
 import { HARNESS_PATTERNS } from '../domain/harness/agent-harness';
+import { FUNCTION_NAME_PATTERN } from '../domain/shared/function-name';
 import { FACTORY_PROMPT_STRATEGIES, FACTORY_TOOL_GENERATIONS } from '../domain/factory/factory-run';
 import { PERSONA_ARCHETYPES, PERSONA_LANGUAGES, PERSONA_LEVELS, PERSONA_VERBOSITIES } from '../domain/validation/persona';
 import { SURVEY_QUESTION_KINDS } from '../domain/validation/survey';
@@ -45,6 +46,13 @@ export const tenantScopeSchema = z.object({
   tenantId: z.string().min(1).optional(),
   workspaceId: z.string().min(1).optional(),
 });
+
+/**
+ * 資産メタデータの所有者（v52）。省略可で、空文字・空白だけも「省略」と同じに扱う
+ * （UI が空欄をそのまま送っても通るように min(1) を掛けない）。ルートは `resolveOwner`（owner.ts）で
+ * 空でない値へ解決してからアプリケーション層へ渡す。長さの上限はドメインの検査に任せる。
+ */
+export const ownerSchema = z.string().optional();
 
 /**
  * ToolGraph の構造検証（config は unknown のまま通す）。
@@ -88,7 +96,7 @@ export const saveToolBodySchema = z.object({
   workingName: z.string().min(1),
   displayName: z.string().min(1),
   publishName: z.string().min(1),
-  owner: z.string().min(1),
+  owner: ownerSchema,
   sideEffect: z.enum(SIDE_EFFECTS as [SideEffect, ...SideEffect[]]),
   graph: graphSchema,
   inputSchema: dataSchemaSchema.optional(),
@@ -136,7 +144,7 @@ export const saveAgentBodySchema = z.object({
   workingName: z.string().min(1),
   displayName: z.string().min(1),
   publishName: z.string().min(1),
-  owner: z.string().min(1),
+  owner: ownerSchema,
   kind: z.enum(AGENT_KINDS),
   systemPrompt: z.string().min(1),
   skills: z.array(agentToolRefSchema).default([]),
@@ -179,7 +187,7 @@ const skillFieldsSchema = {
 export const saveSkillBodySchema = z.object({
   scope: tenantScopeSchema,
   internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1),
-  publishName: z.string().min(1), owner: z.string().min(1), ...skillFieldsSchema,
+  publishName: z.string().min(1), owner: ownerSchema, ...skillFieldsSchema,
   instructions: z.string().min(1),
   bump: z.enum(['major', 'minor', 'patch']).optional(),
   state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
@@ -257,7 +265,7 @@ const harnessPoliciesSchema = z.object({
 /** POST /harnesses と Harness Draft 検証の共通DTO。Agent参照は保存時にSemVer固定される。 */
 export const saveHarnessBodySchema = z.object({
   scope: tenantScopeSchema,
-  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: z.string().min(1),
+  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: ownerSchema,
   pattern: z.enum(HARNESS_PATTERNS), slots: z.array(harnessSlotSchema).min(1), topology: harnessTopologySchema,
   policies: harnessPoliciesSchema.optional(), output: z.object({ format: z.literal('text') }).optional(),
   bump: z.enum(['major', 'minor', 'patch']).optional(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
@@ -389,7 +397,7 @@ export const runTraceQuerySchema = tenantScopeSchema;
 export const savePersonaBodySchema = z.object({
   scope: tenantScopeSchema,
   internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1),
-  publishName: z.string().min(1), owner: z.string().min(1),
+  publishName: z.string().min(1), owner: ownerSchema,
   archetype: z.enum(PERSONA_ARCHETYPES),
   knowledgeLevel: z.enum(PERSONA_LEVELS),
   patience: z.enum(PERSONA_LEVELS),
@@ -415,7 +423,7 @@ const surveyQuestionSchema = z.object({
 export const saveScenarioBodySchema = z.object({
   scope: tenantScopeSchema,
   internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1),
-  publishName: z.string().min(1), owner: z.string().min(1),
+  publishName: z.string().min(1), owner: ownerSchema,
   target: z.object({ agentId: z.string().min(1), version: z.string().min(1) }),
   persona: z.object({ personaId: z.string().min(1), version: z.string().min(1) }).optional(),
   pseudoUser: z.object({ agentId: z.string().min(1), version: z.string().min(1) }).optional(),
@@ -551,7 +559,7 @@ const evaluationCaseSchema = z.discriminatedUnion('kind', [
 
 export const saveEvaluationDatasetBodySchema = z.object({
   scope: tenantScopeSchema,
-  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: z.string().min(1),
+  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: ownerSchema,
   cases: z.array(evaluationCaseSchema).min(1), bump: z.enum(['major', 'minor', 'patch']).optional(),
   state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
 });
@@ -566,7 +574,7 @@ export const evaluationDatasetExportQuerySchema = versionQuerySchema.extend({ fo
 
 export const saveEvaluatorProfileBodySchema = z.object({
   scope: tenantScopeSchema,
-  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: z.string().min(1),
+  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: ownerSchema,
   metrics: z.array(z.discriminatedUnion('kind', [
     z.object({ id: z.string().min(1), kind: z.literal('code'), weight: z.number().positive(), required: z.boolean(), scorer: z.enum(CODE_SCORERS) }),
     z.object({ id: z.string().min(1), kind: z.literal('judge'), weight: z.number().positive(), required: z.boolean(), rubric: z.object({ id: z.string().min(1), version: z.string().min(1) }) }),
@@ -576,7 +584,7 @@ export const saveEvaluatorProfileBodySchema = z.object({
 
 export const saveJudgeRubricBodySchema = z.object({
   scope: tenantScopeSchema,
-  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: z.string().min(1), instructions: z.string().min(1),
+  internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: ownerSchema, instructions: z.string().min(1),
   criteria: z.array(z.object({ id: z.string().min(1), label: z.string().min(1), description: z.string().min(1), weight: z.number().positive(), levels: z.array(z.object({ score: z.number().min(0).max(1), label: z.string().min(1), description: z.string().min(1) })).min(2) })).min(1),
   referencePolicy: z.enum(JUDGE_REFERENCE_POLICIES), tracePolicy: z.enum(JUDGE_TRACE_POLICIES).optional(), bump: z.enum(['major', 'minor', 'patch']).optional(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
 });
@@ -599,7 +607,7 @@ const gateRuleSchema = z.discriminatedUnion('kind', [
   z.object({ id: z.string().min(1), kind: z.literal('required-case-pass'), tags: z.array(z.string().min(1)).default([]) }),
 ]);
 export const saveGatePolicyBodySchema = z.object({
-  scope: tenantScopeSchema, internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: z.string().min(1),
+  scope: tenantScopeSchema, internalId: z.string().min(1), workingName: z.string().min(1), displayName: z.string().min(1), publishName: z.string().min(1), owner: ownerSchema,
   rules: z.array(gateRuleSchema).min(1), reportTtlHours: z.number().int().min(1).max(2160).optional(), bump: z.enum(['major', 'minor', 'patch']).optional(), state: z.enum(PUBLISH_STATES as [PublishState, ...PublishState[]]).optional(),
 });
 export const experimentComparisonBodySchema = z.object({ scope: tenantScopeSchema, baselineExperimentId: z.string().min(1), candidateExperimentId: z.string().min(1) });
@@ -841,10 +849,10 @@ export const toolTemplateCandidatesBodySchema = z.object({
  */
 const templateArgumentNullabilitySchema = z.record(z.string().min(1), z.boolean());
 /**
- * エージェントへ公開する function 名の形（`createTool` の `agentTool.name` と同じ規則）。
- * 保存の直前ではなく、実体化の入口で弾く（保存して初めて気づくのを避ける）。
+ * エージェントへ公開する function 名の形（`FUNCTION_NAME_PATTERN`。`createTool` の
+ * `agentTool.name` と同じ規則）。保存の直前ではなく、実体化の入口で弾く
+ * （保存して初めて気づくのを避ける）。
  */
-const TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const TOOL_NAME_MESSAGE = 'toolName must use only letters, digits, "_", or "-" (1-64 characters), e.g. "population_series"';
 
 export const toolTemplateInstantiateBodySchema = z.object({
@@ -866,7 +874,7 @@ export const toolTemplateInstantiateBodySchema = z.object({
     error: (issue) => issue.input === undefined
       ? `toolName is required; give the tool a function name so a second tool made from the same template does not overwrite the first. ${TOOL_NAME_MESSAGE}`
       : TOOL_NAME_MESSAGE,
-  }).regex(TOOL_NAME_PATTERN, TOOL_NAME_MESSAGE),
+  }).regex(FUNCTION_NAME_PATTERN, TOOL_NAME_MESSAGE),
   /** 引数の必須 / 任意の上書き（省略時はテンプレートの既定）。違反は 422 の `slot: 'argument:<name>'`。 */
   argumentNullability: templateArgumentNullabilitySchema.optional(),
 });

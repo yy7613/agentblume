@@ -295,8 +295,10 @@ describe('HarnessBuilder', () => {
     await screen.findByLabelText('Assign agent to Author');
 
     expect((screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText('Required fields are empty: Internal ID, Display name, Owner.')).toBeTruthy();
+    // v52: 所有者(Owner)は入力必須から外れた。
+    expect(screen.getByText('Required fields are empty: Internal ID, Display name.')).toBeTruthy();
     expect(screen.getByText('Assign a saved Agent version to every slot: Author, Reviewer, Publisher.')).toBeTruthy();
+    expect(screen.getByLabelText('Owner').closest('label')?.querySelector('.required-mark')).toBeNull();
 
     await fillMetadata('reason-check', 'Reason Check');
     expect(screen.queryByText(/Required fields are empty/)).toBeNull();
@@ -306,6 +308,22 @@ describe('HarnessBuilder', () => {
     await userEvent.selectOptions(screen.getByLabelText('Assign agent to Reviewer'), 'agent-a');
     await userEvent.selectOptions(screen.getByLabelText('Assign agent to Publisher'), 'agent-b');
     expect(screen.queryByText(/Assign a saved Agent version to every slot/)).toBeNull();
+    expect((screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('正常: 所有者を入力しなくても保存できる（他の必須項目とslot割り当てだけで活性化する）', async () => {
+    const client = stubClient();
+    await openNewHarnessEditor(client);
+    await screen.findByLabelText('Assign agent to Author');
+
+    await userEvent.type(screen.getByLabelText('Internal ID'), 'owner-optional');
+    await userEvent.type(screen.getByLabelText('Display name'), 'Owner Optional');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Author'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Reviewer'), 'agent-a');
+    await userEvent.selectOptions(screen.getByLabelText('Assign agent to Publisher'), 'agent-b');
+
+    expect(screen.queryByText(/Required fields are empty/)).toBeNull();
+    expect((screen.getByLabelText('Owner') as HTMLInputElement).value).toBe('');
     expect((screen.getByRole('button', { name: 'Save version' }) as HTMLButtonElement).disabled).toBe(false);
   });
 

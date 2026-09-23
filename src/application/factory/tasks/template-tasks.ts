@@ -34,6 +34,7 @@ import type { JsonSchemaObject, JsonSchemaProperty } from '../../model/model-pro
 import type { PromptCatalogPort, PromptSpec } from '../../prompt/prompt-catalog-port';
 import type { DataProfile } from '../profile-data-sources';
 import type { RoleTask, RoleTaskParseResult } from './role-task';
+import { isRecord } from '../../../domain/shared/assert';
 
 /** カテゴリ列ごとに材料として見せる実在値の件数（v42 の設計タスクと同じ上限）。 */
 export const TEMPLATE_CATEGORY_VALUE_SAMPLE = 8;
@@ -44,10 +45,6 @@ export const NO_TEMPLATE = 'none';
 // ---------------------------------------------------------------------------
 // 共通ヘルパー
 // ---------------------------------------------------------------------------
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function quote(value: unknown): string {
   return value === undefined ? 'nothing' : JSON.stringify(value) ?? 'nothing';

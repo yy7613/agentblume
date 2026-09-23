@@ -2107,6 +2107,24 @@ describe('describeToolSemanticViolations（3ソース結合の設計・実デー
 
     expect(message).toBeUndefined();
   });
+
+  it('境界: 結合候補が見つからなかったときは、注記だけを外させ、並んだ正しいキー（時点・地域コード）は残させる', async () => {
+    const dataSources = new InMemoryDataSourceRepository();
+    for (const [id, csv] of [['ds-1', WAGE_CSV], ['ds-hours', HOURS_CSV], ['ds-price', PRICE_CSV]] as const) {
+      await dataSources.save({ id, tenant: scope, name: id, kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: csv.length, createdAt: '', updatedAt: '' }, csv);
+    }
+    const engine = new EtlEngine(createDefaultRegistry());
+    const resolver = new ResolveDataSourceGraphUseCase(dataSources);
+    const profiles = (await new ProfileDataSourcesUseCase(dataSources, resolver, engine).executeAll(scope, ['ds-1', 'ds-hours', 'ds-price']))
+      .map((profile) => ({ ...profile, joinCandidates: [] }));
+    const graph = JSON.parse(threeSourceProposalJson({ keys: ['時点', '地域コード', '注記'] })).graph as ToolGraph;
+
+    const message = describeJoinDesignViolations(graph, profiles[0]!, [profiles[1]!, profiles[2]!]);
+
+    expect(message).toMatch(/joins on '注記', which is free-text/);
+    expect(message).toMatch(/Remove '注記' from "keys"/);
+    expect(message).not.toMatch(/'時点'|'地域コード'/);
+  });
 });
 
 describe('GenerateAgentAssetsUseCase（違反はまとめて1回で差し戻す）', () => {

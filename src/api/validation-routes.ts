@@ -18,6 +18,7 @@ import { serializePersona, serializeScenario, serializeScenarioRun } from '../do
 import { SemVer } from '../domain/tool/semver';
 import { clientAbortSignal } from './client-abort';
 import { scopeOf } from './authentication';
+import { withResolvedOwner } from './owner';
 import { BadRequestError } from './error-mapping';
 import {
   registerPseudoUserAgentBodySchema, runScenarioBodySchema, savePersonaBodySchema, saveScenarioBodySchema,
@@ -56,7 +57,7 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
   // Persona: Save / 一覧 / 取得（latest・version）/ バージョン列挙。
   app.post('/personas', async (request, reply) => {
     const body = parse(savePersonaBodySchema, request.body);
-    const persona = await deps.savePersona.execute({ ...body, scope: scopeOf(request) });
+    const persona = await deps.savePersona.execute({ ...withResolvedOwner(request, body), scope: scopeOf(request) });
     return reply.status(201).send({ persona: serializePersona(persona) });
   });
   app.get('/personas', async (request) => {
@@ -95,7 +96,7 @@ export function registerValidationRoutes(app: FastifyInstance, deps: ValidationR
   // Scenario: Save（参照整合検証はユースケース側）/ 一覧 / 取得 / バージョン列挙。
   app.post('/scenarios', async (request, reply) => {
     const body = parse(saveScenarioBodySchema, request.body);
-    const { persona, pseudoUser, ...rest } = body;
+    const { persona, pseudoUser, ...rest } = withResolvedOwner(request, body);
     const scenario = await deps.saveScenario.execute({
       ...rest,
       scope: scopeOf(request),

@@ -19,6 +19,12 @@
  * YAML パーサを使わないのは、frontmatter が 3 キーしかないのに YAML の全機能（別名・複数行・型推論）を
  * 持ち込むと、書ける形が増えるぶんだけ「読めるが意図と違う」が増えるため。
  */
+import type { Flavor } from '../../domain/shared/brand';
+
+/** プロンプトファイルの id（ファイルの相対パス・拡張子なし・`/` 区切り）。素の string から代入可能な弱ブランド（ADR-0034）。 */
+export type PromptId = Flavor<string, 'PromptId'>;
+/** プロンプトの版（`calculate-expression/v2` の形）。素の string から代入可能な弱ブランド（ADR-0034）。 */
+export type PromptVersion = Flavor<string, 'PromptVersion'>;
 
 /** 差し込みに渡せる値。配列は改行で連結する（箇条書きをコード側で組み立てるため）。 */
 export type PromptVariableValue = string | number | readonly string[];
@@ -46,13 +52,13 @@ const PLACEHOLDER = /\{\{([^{}]*)\}\}/g;
  */
 export class PromptRenderError extends Error {
   /** どのプロンプトか（ファイルの相対パス）。 */
-  readonly promptId: string;
+  readonly promptId: PromptId;
   /** どの節か。 */
   readonly section: string;
   /** どの差し込み名か（節そのものが無い場合は `undefined`）。 */
   readonly variable?: string;
 
-  constructor(promptId: string, section: string, message: string, variable?: string) {
+  constructor(promptId: PromptId, section: string, message: string, variable?: string) {
     super(message);
     this.name = 'PromptRenderError';
     this.promptId = promptId;
@@ -64,9 +70,9 @@ export class PromptRenderError extends Error {
 /** 読み込み済みのプロンプト 1 件。 */
 export interface PromptTemplate {
   /** ファイルの相対パス（拡張子なし・`/` 区切り）。 */
-  readonly id: string;
+  readonly id: PromptId;
   /** 実行記録に残す版（`calculate-expression/v2`）。版はファイルが正で、定数は持たない。 */
-  readonly version: string;
+  readonly version: PromptVersion;
   /**
    * 何のための文かを日本語 1〜2 行で。`{{}}` の一覧はコード側の `PromptSpec` と合わせて読む。
    * （契約 §4 の interface への追加。ファイルが必ず持つ値を読めないと README の案内が嘘になるため。）
@@ -92,8 +98,8 @@ function formatValue(value: PromptVariableValue): string {
 
 class FilePromptTemplate implements PromptTemplate {
   constructor(
-    readonly id: string,
-    readonly version: string,
+    readonly id: PromptId,
+    readonly version: PromptVersion,
     readonly description: string,
     readonly sections: ReadonlyMap<string, string>,
   ) {}
@@ -160,7 +166,7 @@ function checkPlaceholders(section: string, body: string, problems: string[]): v
  * frontmatter の `id` がそれと一致するかをここで見る。2 つを突き合わせるのは、ファイルを複製して
  * 中身の `id` を直し忘れたときに「別名のつもりが元の文を上書きしていた」を防ぐため。
  */
-export function parsePromptFile(id: string, text: string): ParsePromptFileResult {
+export function parsePromptFile(id: PromptId, text: string): ParsePromptFileResult {
   const problems: string[] = [];
   // BOM と CRLF を落とす。Windows のエディタで保存しただけで形式違反になるのは理不尽なので、
   // ここは寛容にする（読み取れる差異であり、意図の曖昧さを生まない）。

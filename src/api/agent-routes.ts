@@ -8,6 +8,7 @@ import type { SaveAgentUseCase } from '../application/agent/save-agent';
 import { serializeAgent } from '../domain/agent/serialization';
 import { SemVer } from '../domain/tool/semver';
 import { scopeOf } from './authentication';
+import { withResolvedOwner } from './owner';
 import { BadRequestError } from './error-mapping';
 import { agentDraftPromptBodySchema, agentListQuerySchema, agentPromptBodySchema, saveAgentBodySchema, scopeQuerySchema, versionQuerySchema } from './schemas';
 
@@ -40,7 +41,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
   app.post('/agents', async (request, reply) => {
     const body = parseWith(saveAgentBodySchema, request.body, 'invalid body');
     const agent = await deps.saveAgent.execute({
-      ...body,
+      ...withResolvedOwner(request, body),
       scope: scopeOf(request),
       skills: body.skills.map((skill) => ({ internalId: skill.internalId, version: version(skill.version) as SemVer })),
       tools: body.tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer })),
@@ -95,7 +96,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRouteDeps):
     const body = parseWith(saveAgentBodySchema, request.body, 'invalid body');
     const scope = scopeOf(request);
     const agent = buildDraftAgent({
-      ...body,
+      ...withResolvedOwner(request, body),
       scope,
       skills: body.skills.map((skill) => ({ internalId: skill.internalId, version: version(skill.version) as SemVer })),
       tools: body.tools.map((tool) => ({ internalId: tool.internalId, version: version(tool.version) as SemVer })),

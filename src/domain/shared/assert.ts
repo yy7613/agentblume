@@ -14,6 +14,16 @@ const defaultFail: ErrorFactory = (message) => new SharedValidationError(message
 /** 検証済みの http(s) URL(資格情報の埋め込みなし)。素の string から代入可(弱ブランド)。 */
 export type HttpUrl = Flavor<string, 'HttpUrl'>;
 
+/**
+ * プレーンオブジェクトか(配列・null を除く `typeof value === 'object'`)。
+ *
+ * 複数 BC に散らばっていた同名の写しを 1 つに集約した(v50 R4)。配列は record とみなさない
+ * (`Array.isArray` を除外)。7 つの写しを比較した結果、すべてこの判定で一致していた。
+ */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export interface AssertNonEmptyOptions {
   /**
    * 空白のみの文字列を空とみなすか。既定 true。

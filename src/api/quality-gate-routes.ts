@@ -4,6 +4,7 @@ import type { CompareExperimentsUseCase, DecidePromotionUseCase, DeleteGatePolic
 import { serializeGatePolicy, serializeGateReport, serializePromotionRequest } from '../domain/evaluation/quality-gate-serialization';
 import { SemVer } from '../domain/tool/semver';
 import { principalOf, scopeOf } from './authentication';
+import { withResolvedOwner } from './owner';
 import { recordAuditDetail } from './authorization';
 import { BadRequestError } from './error-mapping';
 import { decidePromotionBodySchema, evaluateGateBodySchema, experimentComparisonBodySchema, gateReportListQuerySchema, promotionListQuerySchema, requestPromotionBodySchema, saveGatePolicyBodySchema, scopeQuerySchema, versionQuerySchema } from './schemas';
@@ -18,7 +19,7 @@ function version(value: string): SemVer { try { return SemVer.parse(value); } ca
 
 export function registerQualityGateRoutes(app: FastifyInstance, deps: QualityGateRouteDeps): void {
   app.post('/experiment-comparisons', async (request) => { const body = parse(experimentComparisonBodySchema, request.body); return { comparison: await deps.compareExperiments.execute(scopeOf(request), body.baselineExperimentId, body.candidateExperimentId) }; });
-  app.post('/gate-policies', async (request, reply) => { const body = parse(saveGatePolicyBodySchema, request.body); return reply.status(201).send({ policy: serializeGatePolicy(await deps.saveGatePolicy.execute({ ...body, scope: scopeOf(request) })) }); });
+  app.post('/gate-policies', async (request, reply) => { const body = parse(saveGatePolicyBodySchema, request.body); return reply.status(201).send({ policy: serializeGatePolicy(await deps.saveGatePolicy.execute({ ...withResolvedOwner(request, body), scope: scopeOf(request) })) }); });
   app.get('/gate-policies', async (request) => { parse(scopeQuerySchema, request.query); return { policies: (await deps.queryQualityGates.listPolicies(scopeOf(request))).map((item) => ({ ...item, latestVersion: item.latestVersion.toString() })) }; });
   app.get<{ Params: { id: string } }>('/gate-policies/:id/versions', async (request) => { parse(scopeQuerySchema, request.query); return { versions: (await deps.queryQualityGates.policyVersions(scopeOf(request), request.params.id)).map(String) }; });
   app.get<{ Params: { id: string } }>('/gate-policies/:id', async (request) => { const query = parse(versionQuerySchema, request.query); return { policy: serializeGatePolicy(await deps.queryQualityGates.getPolicy(scopeOf(request), request.params.id, query.version === undefined ? undefined : version(query.version))) }; });

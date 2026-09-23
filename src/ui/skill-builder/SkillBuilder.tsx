@@ -71,11 +71,10 @@ export function SkillBuilder({ client }: { readonly client: ToolApiClient }) {
     if (workingName.trim() === '') missing.push(text('Working name', '作業名'));
     if (displayName.trim() === '') missing.push(text('Skill name', 'スキル名'));
     if (publishName.trim() === '') missing.push(text('Publish name', '公開名'));
-    if (owner.trim() === '') missing.push(text('Owner', '所有者'));
     if (description.trim() === '') missing.push(text('Skill description', 'スキルの説明'));
     if (instructions.trim() === '') missing.push(text('Skill content', 'スキル内容'));
     return missing;
-  }, [internalId, workingName, displayName, publishName, owner, description, instructions, text]);
+  }, [internalId, workingName, displayName, publishName, description, instructions, text]);
   const missingRequiredLabel = missingRequired.join(language === 'ja' ? '、' : ', ');
 
   function resetEditorState(): void {
@@ -180,7 +179,7 @@ export function SkillBuilder({ client }: { readonly client: ToolApiClient }) {
             <label>{text('Working name', '作業名')}<span className="required-mark">*</span><input aria-label={text('Skill working name', 'スキル作業名')} placeholder={text('e.g. Data analysis draft', '例: データ分析の下書き')} value={workingName} onChange={(event) => setWorkingName(event.target.value)} /></label>
             <label>{text('Skill name', 'スキル名')}<span className="required-mark">*</span><input aria-label={text('Skill display name', 'スキル名')} placeholder={text('e.g. Data analysis', '例: データ分析')} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
             <label>{text('Publish name', '公開名')}<span className="required-mark">*</span><input aria-label={text('Skill publish name', 'スキル公開名')} placeholder={text('e.g. data_analysis', '例: data_analysis')} value={publishName} onChange={(event) => setPublishName(event.target.value)} /></label>
-            <label>{text('Owner', '所有者')}<span className="required-mark">*</span><input aria-label={text('Skill owner', 'スキル所有者')} placeholder={text('e.g. team@example.com', '例: team@example.com')} value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
+            <label>{text('Owner', '所有者')}<input aria-label={text('Skill owner', 'スキル所有者')} placeholder={text('Optional (defaults to you)', '省略可（空欄なら自分の名前）')} value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
           </div>
         </section>
 

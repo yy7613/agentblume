@@ -89,7 +89,7 @@ describe('ToolBuilder: テンプレートから作成の入口', () => {
     expect(await screen.findByRole('button', { name: 'テンプレートから作成' })).toBeTruthy();
   });
 
-  it('従来どおり: 作成するとキャンバスへ移り、どのテンプレートから作ったかを通知する（名前は決まっているので残る宿題は所有者）', async () => {
+  it('従来どおり: 作成するとキャンバスへ移り、どのテンプレートから作ったかを通知する（名前は決まっているので残る宿題は内容確認だけ。所有者はv52で入力必須から外れた）', async () => {
     renderBuilder(client());
     await userEvent.click(screen.getByRole('button', { name: 'Create from a template' }));
     const dialog = await screen.findByRole('dialog');
@@ -101,7 +101,7 @@ describe('ToolBuilder: テンプレートから作成の入口', () => {
     await waitFor(() => expect(screen.getByLabelText('ETL canvas')).toBeTruthy());
     const notice = screen.getByRole('status').textContent ?? '';
     expect(notice).toContain('period-series@1.0.0');
-    expect(notice).toContain('Set the owner, then save.');
+    expect(notice).toContain('Review it, then save.');
     expect(useToolBuilderStore.getState().nodes.map((node) => node.id)).toEqual(['src', 'out']);
   });
 

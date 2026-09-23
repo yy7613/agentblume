@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { z } from 'zod';
 import type { CompileHarnessUseCase } from '../application/harness/compile-harness';
 import type { DeleteHarnessUseCase } from '../application/harness/delete-harness';
@@ -10,6 +10,7 @@ import type { HarnessTopology } from '../domain/harness/agent-harness';
 import type { TenantScope } from '../domain/shared/tenant-scope';
 import { SemVer } from '../domain/tool/semver';
 import { scopeOf } from './authentication';
+import { withResolvedOwner } from './owner';
 import { BadRequestError } from './error-mapping';
 import { harnessListQuerySchema, saveHarnessBodySchema, scopeQuerySchema, versionQuerySchema } from './schemas';
 
@@ -31,9 +32,9 @@ function parseVersion(value: string | undefined): SemVer | undefined {
   if (value === undefined) return undefined;
   try { return SemVer.parse(value); } catch { throw new BadRequestError(`invalid version string: "${value}"`); }
 }
-function inputFrom(body: z.infer<typeof saveHarnessBodySchema>, scope: TenantScope): SaveHarnessInput {
+function inputFrom(request: FastifyRequest, body: z.infer<typeof saveHarnessBodySchema>, scope: TenantScope): SaveHarnessInput {
   return {
-    ...body,
+    ...withResolvedOwner(request, body),
     scope,
     slots: body.slots.map((slot) => ({
       ...slot,
@@ -45,7 +46,7 @@ function inputFrom(body: z.infer<typeof saveHarnessBodySchema>, scope: TenantSco
 
 export function registerHarnessRoutes(app: FastifyInstance, deps: HarnessRouteDeps): void {
   app.post('/harnesses', async (request, reply) => {
-    const harness = await deps.saveHarness.execute(inputFrom(parseWith(saveHarnessBodySchema, request.body, 'invalid body'), scopeOf(request)));
+    const harness = await deps.saveHarness.execute(inputFrom(request, parseWith(saveHarnessBodySchema, request.body, 'invalid body'), scopeOf(request)));
     return reply.status(201).send({ harness: serializeAgentHarness(harness) });
   });
   app.get('/harnesses', async (request) => {
@@ -69,9 +70,9 @@ export function registerHarnessRoutes(app: FastifyInstance, deps: HarnessRouteDe
     await deps.deleteHarness.execute(scopeOf(request), request.params.internalId);
     return reply.status(204).send();
   });
-  app.post('/harness-drafts/validate', async (request) => ({ validation: await deps.validateHarness.execute(inputFrom(parseWith(saveHarnessBodySchema, request.body, 'invalid body'), scopeOf(request))) }));
+  app.post('/harness-drafts/validate', async (request) => ({ validation: await deps.validateHarness.execute(inputFrom(request, parseWith(saveHarnessBodySchema, request.body, 'invalid body'), scopeOf(request))) }));
   app.post('/harness-drafts/compile', async (request) => {
-    const input = inputFrom(parseWith(saveHarnessBodySchema, request.body, 'invalid body'), scopeOf(request));
+    const input = inputFrom(request, parseWith(saveHarnessBodySchema, request.body, 'invalid body'), scopeOf(request));
     const validation = await deps.validateHarness.execute(input);
     if (!validation.valid) return { validation };
     // Draftは保存versionを持たないため、compileは保存済みHarnessと同じ不変条件を通した一時versionを返す。

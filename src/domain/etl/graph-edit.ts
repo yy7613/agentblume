@@ -15,6 +15,7 @@
  *   別のノードが壊れる。文面には**何番目の操作の何が悪いか**と**直し方**を入れる（差し戻しの材料）。
  * - 入力のグラフは変異させない（返るのは新しい `ToolGraph`）。
  */
+import { isRecord } from '../shared/assert';
 import { GraphError } from './errors';
 import type { GraphEdge, GraphNode, ToolGraph } from './graph';
 import type { NodeId } from './ids';
@@ -101,10 +102,6 @@ export function summarizeConfig(config: unknown): string {
 /** 操作の位置を含む違反文（差し戻しでモデルが読む）。「何番目の何が悪いか」+「直し方」。 */
 function violation(index: number, op: GraphOperation['op'], reason: string, fix: string): GraphEditError {
   return new GraphEditError(`operation ${index + 1} ('${op}'): ${reason}. ${fix}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** 操作が名指しするノードを引く。無ければ違反（存在しない id への操作は契約 §4 で違反）。 */

@@ -122,6 +122,17 @@ describe('DatasetsTab の Judge Rubric 編集（実行履歴ポリシー・二�
     expect((screen.getByRole('combobox', { name: 'Judge trace policy' }) as HTMLSelectElement).value).toBe('forbidden');
   });
 
+  it('正常: 所有者を空欄にしても Save は有効のままで、空欄のまま保存 DTO に渡す（サーバーが利用者名で埋める）', async () => {
+    const client = makeClient();
+    renderTab(client);
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Judge rubric owner' }), { target: { value: '' } });
+    const save = screen.getByRole('button', { name: 'Save rubric' }) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    await userEvent.click(save);
+    await waitFor(() => expect(client.saveJudgeRubric).toHaveBeenCalled());
+    expect(savedInput(client)).toMatchObject({ owner: '' });
+  });
+
   it('二値化しても Save は有効のままで、基準 ID を空にすると無効になる（既存の検証は変えない）', async () => {
     const client = makeClient();
     renderTab(client);
