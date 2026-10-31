@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Schema, Table } from '../../domain/data/types';
+import type { JsonObject } from '../model/model-provider';
 import { OPERATOR_BINDABLE_OPS } from '../../domain/etl/nodes/filter';
 import { SemVer } from '../../domain/tool/semver';
 import { createTool } from '../../domain/tool/tool';
 import { AgentRunError, ToolArgumentsError } from './errors';
-import { agentInputInconsistency, assertOutputMatchesSchema, isValidFunctionName, schemaToJsonSchema, schemasEqual, toolToModelDefinition, validateToolArguments } from './tool-schema';
+import { agentInputInconsistency, assertOutputMatchesSchema, isValidFunctionName, schemaToJsonSchema, schemasEqual, toolArgumentRepairHint, toolToModelDefinition, validateToolArguments } from './tool-schema';
 
 const schema: Schema = { columns: [
   { name: 'month', type: 'string', nullable: false },
@@ -198,7 +199,7 @@ describe('filter opBinding の JSON Schema 公開', () => {
       description: "Row filter operator applied to column 'price'.",
     });
     // opバインドの無い引数は触らない。
-    expect(properties['month']).toEqual({ type: 'string' });
+    expect(properties['month']).toMatchObject({ type: 'string', description: expect.stringContaining('JSON string') });
   });
 
   it('nullable引数はanyOf内のstringへenumを付け、既定演算子の省略時挙動を説明する', () => {
@@ -262,7 +263,7 @@ describe('filter opBinding の JSON Schema 公開', () => {
     ], combine: 'and' });
     const { properties } = toolToModelDefinition(tool).parameters;
     expect(properties['wrongType']).toEqual({ type: 'number' });
-    expect(properties['emptyOp']).toEqual({ type: 'string' });
+    expect(properties['emptyOp']).toMatchObject({ type: 'string', description: expect.stringContaining('JSON string') });
   });
 
   it('inputSchemaに列が無いfieldはプロパティを作らず、string型でない列のfieldは変更しない（Q7）', () => {
@@ -280,7 +281,7 @@ describe('filter opBinding の JSON Schema 公開', () => {
     // (b) string 型でない列の field は素の型のまま触らない。
     expect(properties['limit']).toEqual({ type: 'number' });
     // opバインドの無い引数は従来どおり。
-    expect(properties['month']).toEqual({ type: 'string' });
+    expect(properties['month']).toMatchObject({ type: 'string', description: expect.stringContaining('JSON string') });
   });
 });
 
@@ -344,9 +345,46 @@ describe('filter in/notIn の値引数（カンマ区切りの並び）の JSON 
     expect(String(properties['regions']?.description)).toContain('Comma-separated list of values');
   });
 
-  it('境界: 従来どおり — 単値演算子の valueBinding には説明を足さない', () => {
+  it('単値演算子の string 引数にも JSON の引用と先頭ゼロの保持を伝える', () => {
     const inputSchema: Schema = { columns: [{ name: 'region', type: 'string', nullable: false }] };
     const tool = filterTool(inputSchema, { column: '地域', op: 'eq', value: '東京都', valueBinding: { source: 'agent-input', field: 'region' } });
-    expect(toolToModelDefinition(tool).parameters.properties['region']).toEqual({ type: 'string' });
+    expect(toolToModelDefinition(tool).parameters.properties['region']).toMatchObject({ type: 'string', description: expect.stringContaining('Preserve leading zeros') });
+  });
+});
+
+
+describe('typed argument repair hints', () => {
+  it('uses actual identifier examples for numeric groups, preserving zero-prefixed codes', () => {
+    for (const value of ['1', '01000']) {
+      const tool = filterTool({ columns: [{ name: 'groups', type: 'string', nullable: true }] }, { column: 'group', op: 'in', values: [value], valueBinding: { source: 'agent-input', field: 'groups' } });
+      const description = toolToModelDefinition(tool).parameters.properties['groups']?.description;
+      expect(description).toContain(`use "${value}", enclosed in quotes`);
+      expect(description).not.toContain('13000');
+    }
+  });
+  it('suggests quoting numeric identifiers without guessing lost leading zeros or executing them', () => {
+    const tool = filterTool({ columns: [{ name: 'region', type: 'string', nullable: false }] }, { column: 'code', op: 'eq', value: '01000', valueBinding: { source: 'agent-input', field: 'region' } });
+    const args = { region: 1000 };
+    const hint = toolArgumentRepairHint(tool, args);
+    expect(hint['suggestedArguments']).toEqual({ region: '1000' });
+    expect(hint['hint']).toContain('Leading zeros cannot be recovered');
+    expect(args).toEqual({ region: 1000 });
+    expect(() => validateToolArguments(tool.inputSchema, args)).toThrow(ToolArgumentsError);
+  });
+
+  it('does not fabricate missing arguments, convert objects or rewrite valid string identifiers', () => {
+    const tool = filterTool({ columns: [{ name: 'region', type: 'string', nullable: false }] }, {});
+    for (const args of [{}, { region: {} }, { region: '01000' }] as JsonObject[]) {
+      expect(toolArgumentRepairHint(tool, args)).not.toHaveProperty('suggestedArguments');
+    }
+  });
+
+  it('explains fiscal bounds only for date arguments bound to a parsed start column', () => {
+    const tool = filterTool({ columns: [{ name: 'to', type: 'date', nullable: true }, { name: 'other', type: 'date', nullable: true }] }, { column: 'start', op: 'lte', valueBinding: { source: 'agent-input', field: 'to' } });
+    const graph = { ...tool.graph, nodes: [...tool.graph.nodes, { id: 'p', type: 'parse-period', config: { column: 'period', startColumn: 'start', fiscalYearStartMonth: 7 } }] };
+    const properties = toolToModelDefinition({ ...tool, graph }).parameters.properties;
+    expect(properties['to']?.description).toContain('2024-07-01');
+    expect(properties['to']?.description).toContain('parsed period START');
+    expect(properties['other']?.description).toBeUndefined();
   });
 });

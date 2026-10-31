@@ -164,3 +164,20 @@ describe('Run serialization', () => {
     expect(() => deserializeRun({ ...record, trace: [{ sequence: 1, kind: 'mcp-server-skipped', reason: 'not-found' }] })).toThrow();
   });
 });
+
+
+describe('normalization evidence persistence', () => {
+  it('round-trips raw and resolved arguments plus raw and normalized responses', () => {
+    const record = { ...startRun({ runId: 'normalized', scope: { tenantId: 't', workspaceId: 'w' }, mode: 'test', tool: { internalId: 't' }, startedAt: 'now' }), trace: [
+      { sequence: 1, kind: 'tool-call' as const, name: 'lookup', arguments: { entity: 13000 }, resolvedArguments: { entity: '13000' }, argumentNormalizations: [{ field: 'entity', reason: 'exact-domain-string' as const }] },
+      { sequence: 2, kind: 'model-response' as const, content: '```json\n{}\n```', normalizedContent: '{}', normalization: 'json-envelope' as const },
+    ] };
+    expect(deserializeRun(JSON.parse(JSON.stringify(serializeRun(record))))).toEqual(record);
+  });
+});
+
+
+it('preserves display precision and audited leading-JSON delivery',()=>{
+ const record={...startRun({runId:'display',scope:{tenantId:'t',workspaceId:'w'},mode:'test',tool:{internalId:'t'},startedAt:'now'}),trace:[{sequence:1,kind:'tool-result' as const,name:'t',terminalId:'out',nodes:[],outputPreview:[{value:1.23456789}],displayDecimalPlaces:6},{sequence:2,kind:'model-response' as const,content:'{"value":1.234568}\n説明',normalizedContent:'{"value":1.234568}',normalization:'json-leading-value' as const}]};
+ expect(deserializeRun(JSON.parse(JSON.stringify(serializeRun(record))))).toEqual(record);
+});

@@ -44,6 +44,24 @@ import type { App } from './root';
 
 const scope: TenantScope = { tenantId: 'tenant-a', workspaceId: 'ws-1' };
 
+describe('明示providerを持つ埋め込み実行の分析アシスタント', () => {
+  it.each([
+    { profile: 'local' as const, enabled: undefined, available: true },
+    { profile: 'local' as const, enabled: 'false', available: false },
+    { profile: 'test' as const, enabled: undefined, available: false },
+  ])('envモデル未設定でもproviderを認識し、明示無効化とtestは守る: %j', async ({ profile, enabled, available }) => {
+    vi.stubEnv('LM_STUDIO_MODEL', undefined);
+    vi.stubEnv('ANALYSIS_ASSISTANT_ENABLED', enabled);
+    const model: ModelProviderPort = {
+      capabilities: () => ['chat', 'structured-output'],
+      complete: async () => { throw new Error('availability must not call the model'); },
+    };
+    const app = createApp({ profile, dbPath: ':memory:', modelProvider: model, logger: () => {} });
+    try { expect(await app.suggestCalculateExpression.available()).toBe(available); }
+    finally { app.close(); }
+  });
+});
+
 /**
  * 配線結果の確認のため、SwitchableModelProvider が現在保持しているアダプタ
  * （env既定から作った MastraModelProvider）の内部設定を読む（composition の責務検証に閉じる）。

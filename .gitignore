@@ -63,3 +63,8 @@ playwright.tool-demo.config.ts
 scripts/capture-slides.ps1
 scripts/capture-factory-demo.ps1
 scripts/capture-tool-demo.ps1
+
+# Local e-Stat metadata integration
+/src/adapters/templates/fs-column-annotation-catalog.ts
+/src/adapters/templates/fs-column-annotation-catalog.test.ts
+/templates/column-dictionaries/estat-social-indicators.json

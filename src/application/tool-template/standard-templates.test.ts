@@ -154,6 +154,8 @@ describe('同梱の標準テンプレート', () => {
       'join-side-by-side',
       'join-three-side-by-side',
       'latest-values',
+      'linear-model',
+      'observation-summary',
       'period-change',
       'period-series',
       'period-statistics',
@@ -572,5 +574,33 @@ describe('templates/tools/tool-template.schema.json', () => {
 
     const union = (definitions['directive']?.['oneOf'] as { $ref?: string }[]).map((branch) => branch.$ref);
     expect(union).toHaveLength(TOOL_TEMPLATE_DIRECTIVES.length);
+  });
+});
+
+
+describe('observation analysis templates without a period column', () => {
+  const csv = 'group,index,x,y\na,1,1,2\na,2,2,4\na,3,3,5\nb,1,8,1\nb,2,8,2';
+  it('executes grouped regression, filtering and unidentified models through the real tool binding path', async () => {
+    const harness = await setup([{ id: 'obs', name: 'observations', csv }]);
+    const template = await templateById('linear-model');
+    const tool = build(template, harness, ['obs'], { source: 'obs', xColumn: 'x', yColumn: 'y', groupColumn: 'group', interceptMode: 'include' }, 'fit');
+    await assertPassesEngineValidation(harness, tool);
+    const rows = await run(harness, tool);
+    expect(rows[0]).toMatchObject({ group: 'a', slope: 1.5, n: 3, status: 'ok' });
+    expect(rows[1]).toMatchObject({ group: 'b', slope: null, n: 2, status: 'not_identifiable' });
+    const filtered = await run(harness, tool, { categories: 'a', exclude_x: 3, predict_x: 10 });
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]).toMatchObject({ group: 'a', slope: 2, n: 2, intercept: 0, predictionX: 10, prediction: 20 });
+  });
+  it('executes both standard-deviation conventions and ordered autocorrelation', async () => {
+    const harness = await setup([{ id: 'obs', name: 'observations', csv }]);
+    const template = await templateById('observation-summary');
+    const tool = build(template, harness, ['obs'], { source: 'obs', valueColumns: ['y'], groupColumn: 'group', orderColumn: 'index' }, 'summarize');
+    await assertPassesEngineValidation(harness, tool);
+    const rows = await run(harness, tool, { categories: 'a' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ group: 'a', rowCount: 3, 'valid-count': 3, 'missing-count': 0 });
+    expect(rows[0]?.['sample-stddev']).toBeCloseTo(Math.sqrt(7/3), 12);
+    expect(rows[0]?.['population-stddev']).toBeCloseTo(Math.sqrt(14/9), 12);
   });
 });

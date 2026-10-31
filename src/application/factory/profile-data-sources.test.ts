@@ -266,3 +266,13 @@ describe('ProfileDataSourcesUseCase（結合候補の検出）', () => {
     expect(isUniqueKey(['a', 'b'], [{ a: '1', b: 'x' }, { a: '1', b: 'y' }])).toBe(true);
   });
 });
+
+
+describe('descriptive column metadata',()=>{
+ it('carries source labels and units into profiles without changing rows',async()=>{
+  const repository=new InMemoryDataSourceRepository();
+  await repository.save({id:'annotated',tenant:scope,name:'source',kind:'file',format:'json',contentType:'application/json',sizeBytes:20,createdAt:'',updatedAt:''},'[{"persons":100,"births":2}]');
+  const usecase=new ProfileDataSourcesUseCase(repository,new ResolveDataSourceGraphUseCase(repository),new EtlEngine(createDefaultRegistry()),{forSource:async()=>new Map([['births',{label:'Birth count',unit:'人'}]])});
+  const profile=await usecase.execute(scope,'annotated');expect(profile.columns.find(c=>c.name==='births')).toMatchObject({label:'Birth count',unit:'人'});expect(profile.sampleRows).toEqual([{persons:100,births:2}]);
+ });
+});

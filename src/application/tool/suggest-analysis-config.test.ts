@@ -73,3 +73,15 @@ describe('分析アシスタントのプロンプト: 文をファイルへ移�
     expect(bundledPrompts().get(ANALYSIS_CONFIG_PROMPT.id).version).toBe('analysis-config/v1');
   });
 });
+
+
+describe('linear-model configuration proposals', () => {
+  it('validates a regression setting proposal without applying it to the graph', async () => {
+    const model = new ScriptedModelProvider();
+    const linear = { ...graph, nodes: [graph.nodes[0]!, { id: 'analysis', type: 'linear-model', config: { x: 'x', y: 'y', groupBy: [], intercept: 'include' } }] };
+    model.enqueue({ message: { role: 'assistant', content: JSON.stringify({ nodeId: 'analysis', nodeType: 'linear-model', config: { x: 'x', y: 'y', groupBy: [], intercept: 'zero', predictAt: 5 }, rationale: ['Through origin requested.'], warnings: [] }) }, finishReason: 'stop' });
+    const usecase = new SuggestAnalysisConfigUseCase(new EtlEngine(createDefaultRegistry()), model, () => true, bundledPrompts());
+    expect((await usecase.execute({ graph: linear, nodeId: 'analysis', intent: 'fit through origin and predict x=5' })).config).toMatchObject({ intercept: 'zero', predictAt: 5 });
+    expect(linear.nodes[1]?.config).toMatchObject({ intercept: 'include' });
+  });
+});

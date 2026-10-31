@@ -23,7 +23,10 @@ import { EtlEngine } from '../etl/engine';
 import type { JsonObject, ModelCompletion, ModelContentPart, ModelMessage, ModelProviderPort, ModelRequestMessage, ModelToolCall, ModelToolDefinition, ModelUsage } from '../model/model-provider';
 import { AgentRunError, RunFailedError, ToolArgumentsError, ToolExecutionError, UnsafeToolError } from './errors';
 import { failureFrom, sanitizeRunTrace } from './run-trace';
-import { assertOutputMatchesSchema, toolToModelDefinition, validateToolArguments } from './tool-schema';
+import { assertOutputMatchesSchema, toolArgumentRepairHint, toolToModelDefinition, validateToolArguments } from './tool-schema';
+import { requestsJsonOnly, unwrapJsonEnvelope } from './json-response-envelope';
+import { normalizeIdentifierArguments, withFileSourceSnapshots } from './tool-argument-normalization';
+import { requestedDecimalPlaces } from '../model/numeric-display';
 import { toModelResponseFormat, validateStructuredResponse } from './structured-output';
 import { HARD_MAX_DEPTH, composeAgentSystemPrompt, resolveAgentCapabilities, resolveEffectiveSideEffect, type ResolvedSubAgent } from './resolve-agent-capabilities';
 import type { TelemetryPort } from '../operations/telemetry';
@@ -223,6 +226,7 @@ function makeBudget(partial?: Partial<RunBudget>): RunBudget {
 
 /** 1ノード（1エージェント実行）の委譲コンテキスト。budget はツリーで共有する同一参照。 */
 interface NodeContext {
+  readonly displayDecimalPlaces?: number;
   readonly runId: RunId;
   readonly scope: TenantScope;
   readonly mode: AgentRunMode;
@@ -766,7 +770,8 @@ export class RunAgentPreviewUseCase {
         throw new AgentRunError('model reported tool_calls without a tool call');
       }
       if (calls.length === 0) {
-        const content = completion.message.content ?? '';
+        const rawContent = completion.message.content ?? '';
+        const content = unwrapJsonEnvelope(rawContent, loop.output !== undefined || requestsJsonOnly(state.messages));
         let structuredResponse: JsonObject | undefined;
         if (loop.output !== undefined) {
           try { structuredResponse = validateStructuredResponse(loop.output, content); }
@@ -781,7 +786,8 @@ export class RunAgentPreviewUseCase {
             continue;
           }
         }
-        trace.push({ sequence: trace.length + 1, kind: 'model-response', content });
+        trace.push({ sequence: trace.length + 1, kind: 'model-response', content: rawContent,
+          ...(content === rawContent ? {} : { normalizedContent: content, normalization: rawContent.trim().startsWith('```') ? 'json-envelope' as const : 'json-leading-value' as const }) });
         const last = state.executed.at(-1);
         return {
           ...(loop.agent !== undefined ? { agent: loop.agent } : {}),
@@ -872,7 +878,7 @@ export class RunAgentPreviewUseCase {
       }
       const selected = tool as Tool;
       try {
-        state.messages.push(await this.executeToolTimed(selected, call, trace, timing, ctx, loop.agent, loop.signal));
+        state.messages.push(await this.executeToolTimed(selected, call, trace, timing, { ...ctx, displayDecimalPlaces: requestedDecimalPlaces(state.messages) }, loop.agent, loop.signal));
       } catch (error) {
         const toolRef = this.failureToolRef(selected, call);
         // 引数の作り間違いはモデル側の誤りなので、Runを落とさずツール結果として差し戻して呼び直させる。
@@ -880,7 +886,7 @@ export class RunAgentPreviewUseCase {
         if (error instanceof ToolArgumentsError && state.toolArgumentRepairs < MAX_TOOL_ARGUMENT_REPAIRS) {
           state.toolArgumentRepairs += 1;
           trace.push({ sequence: trace.length + 1, kind: 'error', code: error.code, message: `${error.message} (retrying ${state.toolArgumentRepairs}/${MAX_TOOL_ARGUMENT_REPAIRS})`, tool: toolRef });
-          state.messages.push({ role: 'tool', toolCallId: call.id, content: JSON.stringify({ error: error.message, hint: `Call '${call.name}' again with corrected arguments that match its schema.` }) });
+          state.messages.push({ role: 'tool', toolCallId: call.id, content: JSON.stringify({ error: error.message, ...toolArgumentRepairHint(selected, call.arguments) }) });
           continue;
         }
         // 中断は「利用者が止めた」であってこのToolの失敗ではないので、そのまま上へ返す（executeRun が RUN_CANCELLED にする）。
@@ -1088,9 +1094,12 @@ export class RunAgentPreviewUseCase {
   }
 
   private async executeTool(tool: Tool, call: ModelToolCall, trace: RunTraceEvent[], ctx: NodeContext, agent?: RunRecord['agent'], signal?: AbortSignal): Promise<ModelMessage> {
-    trace.push({ sequence: trace.length + 1, kind: 'tool-call', name: call.name, arguments: call.arguments });
-    const args = validateToolArguments(tool.inputSchema, call.arguments);
-    const graph = graphWithArguments(tool, args);
+    const normalized = await normalizeIdentifierArguments({ tool, arguments: call.arguments, engine: this.engine,
+      ...(this.resolveDataSources === undefined ? {} : { resolveFileSource: (node) => this.resolveDataSources!.fileSource(ctx.scope, node) }) });
+    trace.push({ sequence: trace.length + 1, kind: 'tool-call', name: call.name, arguments: call.arguments,
+      ...(normalized.normalizations.length === 0 ? {} : { resolvedArguments: normalized.arguments, argumentNormalizations: normalized.normalizations }) });
+    const args = validateToolArguments(tool.inputSchema, normalized.arguments);
+    const graph = withFileSourceSnapshots(graphWithArguments(tool, args), normalized.sourceSnapshots);
     // 添付は実行文脈で渡す（引数では数 MB の base64 を運べない）。子エージェント・再開実行には渡さない
     // ＝ 添付はその turn の入力であって、委譲先や再開後が引き継ぐものではない。
     //
@@ -1111,11 +1120,14 @@ export class RunAgentPreviewUseCase {
     const noMatch = preview.fullOutput.rows.length === 0
       ? diagnoseEmptyResult({ graph: executableGraph, tables: preview.tables ?? new Map() })
       : undefined;
-    const delivery = await this.output.dispatch({ tool, table: preview.fullOutput, session: ctx.session, runId: ctx.runId, toolCallId: call.id, ...(agent?.internalId === undefined ? {} : { agentId: agent.internalId }), ...(noMatch === undefined ? {} : { noMatch }) });
+    const delivery = await this.output.dispatch({ tool, table: preview.fullOutput, displayDecimalPlaces: ctx.displayDecimalPlaces, session: ctx.session, runId: ctx.runId, toolCallId: call.id, ...(agent?.internalId === undefined ? {} : { agentId: agent.internalId }), ...(noMatch === undefined ? {} : { noMatch }) });
+    const inline = delivery.delivery === 'agent' && delivery.value && typeof delivery.value === 'object' ? delivery.value as Record<string, unknown> : undefined;
+    const presentedPlaces = Array.isArray(inline?.['displayRows']) && typeof inline?.['displayDecimalPlaces'] === 'number' ? inline['displayDecimalPlaces'] : undefined;
     trace.push({
       sequence: trace.length + 1,
       kind: 'tool-result',
       name: call.name,
+      ...(presentedPlaces === undefined ? {} : { displayDecimalPlaces: presentedPlaces }),
       terminalId: preview.terminalId,
       // rowCount は計算結果の全行数。実行を切り詰めることはもう無い（上限超過は SchemaError で落ちる）ので
       // truncated は常に false。表示用スナップショットの切り出し（node.truncated）は実行結果と無関係なので写さない。

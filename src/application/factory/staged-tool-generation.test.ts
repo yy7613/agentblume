@@ -556,3 +556,31 @@ describe('StagedToolGeneration — 複数タスクへの差し戻し', () => {
     expect(harness.events[0]).toContain('re-running decide-computations:');
   });
 });
+
+
+describe('StagedToolGeneration — declared computations', () => {
+  const computations = [{ outputColumn: '人口指数', intent: '人口を1000で割った値' }];
+  it('keeps declared computations in the output without asking another model to choose them again', async () => {
+    const harness = await setup([{ id: 'ds-national', name: '全国人口', csv: NATIONAL_CSV }]);
+    harness.tasks.enqueue(
+      json({ period: { column: '時点', granularity: 'year', range: false }, categoryFilters: [] }),
+      json({ columns: ['時点', '人口'], sort: 'latest-first', limit: 10 }),
+    );
+    harness.expressions.enqueue(expressionJson('人口指数', '[人口] / 1000'));
+    const result = expectOk(await harness.generate({ ...nationalPlan, computations }));
+    expect(result.spec.computations).toEqual(computations);
+    expect(result.spec.output.columns).toContain('人口指数');
+    expect(harness.tasks.requests).toHaveLength(2);
+    expect(await runTool(harness, result.compiled)).toEqual(expect.arrayContaining([expect.objectContaining({ '時点': '2023年', '人口指数': 12.43 })]));
+  });
+  it('returns failure rather than a successful raw-data tool when a declared formula cannot be built', async () => {
+    const harness = await setup([{ id: 'ds-national', name: '全国人口', csv: NATIONAL_CSV }], { expressionAssistant: 'absent' });
+    harness.tasks.enqueue(
+      json({ period: { column: '時点', granularity: 'year', range: false }, categoryFilters: [] }),
+      json({ columns: [], sort: 'latest-first', limit: 10 }),
+    );
+    const result = await harness.generate({ ...nationalPlan, computations });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('required computations could not be generated');
+  });
+});

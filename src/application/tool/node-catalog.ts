@@ -43,7 +43,7 @@ const VALUELESS_OP_VOCABULARY = vocabulary(VALUELESS_OPS);
 const GRANULARITY_VOCABULARY = vocabulary(PERIOD_GRANULARITIES);
 
 /**
- * パレットの全種別（業務専用ノードを除く 29 種）の config 契約。
+ * パレットの全種別（業務専用ノードを除く 30 種）の config 契約。
  * 並びは種別名の昇順で固定する（プロンプトが版ごとに揺れると差分が読めない）。
  */
 export const DESIGN_NODE_CATALOG: readonly NodeCatalogEntry[] = [
@@ -118,6 +118,10 @@ export const DESIGN_NODE_CATALOG: readonly NodeCatalogEntry[] = [
   {
     type: 'limit',
     contract: 'Keeps the first rows. { "count": 1..10000, "offset": <0 or more, optional> }.\nsort + limit is how a tool returns "the top N", and how the chain stays inside the agent-output maxRows when the agent passes no arguments.',
+  },
+  {
+    type: 'linear-model',
+    contract: 'Grouped ordinary least squares for one numeric predictor x and numeric response y. { "x": "<numeric column>", "y": "<numeric column>", "groupBy": ["<column>"], "intercept": "include" | "zero", "predictAt": <number or null, optional> }.\nReturns pairwise-valid n, missingPairs, means, sample variances/covariance, Pearson correlation, slope, intercept, sse, df, residualStddev, centeredR2, uncenteredR2 and prediction. r2 is centered with an intercept and uncentered through origin. Unidentifiable coefficients are null. Optional predictionBinding:{ "source":"agent-input", "field":"<numeric argument>" } binds predictAt to an Agent argument; omitting a nullable argument disables prediction. Optional observationIndex (positive one-based input row ordinal after filters), or observationBinding:{ "source":"agent-input", "field":"<number argument>" }, returns observationX/Y, fitted and residual for that observation, using the SAME model fitted on all pairs. observationStatus distinguishes missing, not_found and not_identifiable. Never fit on one selected row to obtain its residual.',
   },
   {
     type: 'outlier-filter',

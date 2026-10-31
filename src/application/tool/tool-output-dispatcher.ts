@@ -12,6 +12,7 @@ import type { SessionArtifactRepository } from '../../domain/session/session-rep
 import type { RunNoMatch } from '../../domain/run/run';
 import type { Tool } from '../../domain/tool/tool';
 import { noMatchText } from './empty-result-diagnosis';
+import { withNumericDisplay } from '../model/numeric-display';
 
 export interface ToolOutputDispatchInput {
   readonly tool: Tool;
@@ -25,6 +26,7 @@ export interface ToolOutputDispatchInput {
    * セッション成果物として書き出す配送では、読むのは後続のツールなので触らない。
    */
   readonly noMatch?: RunNoMatch;
+  readonly displayDecimalPlaces?: number;
 }
 
 export type ToolDeliveryResult =
@@ -48,7 +50,10 @@ export class ToolOutputDispatcher {
     if (sink?.type === 'workspace-output' || sink?.type === 'graph-output' || sink?.type === 'chart-output') return this.store(input, sink);
     const config = sink?.type === 'agent-output' ? sink.config as AgentOutputConfig : DEFAULT_OUTPUT;
     const plain = inlineValue(input.table, config);
-    const value = withNoMatch(plain, input.noMatch);
+    const formatted = withNumericDisplay(plain, input.displayDecimalPlaces);
+    // Optional display text must never cause an otherwise deliverable result to overflow.
+    const withDisplay = withNoMatch(formatted, input.noMatch);
+    const value = byteLength(stringify(withDisplay)) <= config.maxBytes ? withDisplay : withNoMatch(plain, input.noMatch);
     const content = stringify(value);
     const sizeBytes = byteLength(content);
     if (sizeBytes <= config.maxBytes) return { delivery: 'agent', value, content, sizeBytes };

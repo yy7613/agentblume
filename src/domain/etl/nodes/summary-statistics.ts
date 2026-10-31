@@ -6,12 +6,12 @@ import type { EtlNode, SchemaInference, SchemaIssue } from '../node';
 import { zodMessage } from './zod-error';
 import { existingColumns, groupKey, groupValues, mean, numericColumns, requireColumns, requireNumbers, standardDeviation } from './analysis-utils';
 
-export const SUMMARY_METRICS = ['valid-count', 'missing-count', 'unique-count', 'sum', 'mean', 'stddev', 'min', 'q1', 'median', 'q3', 'max'] as const;
+export const SUMMARY_METRICS = ['valid-count', 'missing-count', 'unique-count', 'sum', 'mean', 'stddev', 'min', 'q1', 'median', 'q3', 'max', 'variance', 'sample-stddev', 'population-stddev', 'lag1-autocorrelation'] as const;
 export type SummaryMetric = (typeof SUMMARY_METRICS)[number];
 export interface SummaryStatisticsConfig { readonly configVersion: 1; readonly columns: readonly string[]; readonly groupBy: readonly string[]; readonly metrics: readonly SummaryMetric[]; readonly variance: 'sample' | 'population'; }
 const configSchema = z.object({ configVersion: z.literal(1).default(1), columns: z.array(z.string().min(1)).min(1), groupBy: z.array(z.string().min(1)).default([]), metrics: z.array(z.enum(SUMMARY_METRICS)).min(1).default(['valid-count', 'missing-count', 'mean', 'stddev', 'min', 'q1', 'median', 'q3', 'max']), variance: z.enum(['sample', 'population']).default('sample') });
 function validate(config: unknown): SummaryStatisticsConfig { const parsed = configSchema.safeParse(config); if (!parsed.success) throw new ConfigError(`summary-statistics: invalid config: ${zodMessage(parsed.error)}`); return parsed.data; }
-function outputSchema(input: Schema, config: SummaryStatisticsConfig): Schema { return { columns: [...config.groupBy.map((name) => input.columns.find((column) => column.name === name)!), { name: 'column', type: 'string', nullable: false }, { name: 'rowCount', type: 'number', nullable: false }, ...config.metrics.map((name) => ({ name, type: 'number' as const, nullable: ['mean', 'stddev', 'min', 'q1', 'median', 'q3', 'max'].includes(name) }))] }; }
+function outputSchema(input: Schema, config: SummaryStatisticsConfig): Schema { return { columns: [...config.groupBy.map((name) => input.columns.find((column) => column.name === name)!), { name: 'column', type: 'string', nullable: false }, { name: 'rowCount', type: 'number', nullable: false }, ...config.metrics.map((name) => ({ name, type: 'number' as const, nullable: !['valid-count', 'missing-count', 'unique-count', 'sum'].includes(name) }))] }; }
 
 /** 出力で生成する列名（`column` / `rowCount` / 選択 metric 名）。 */
 function generatedNames(config: SummaryStatisticsConfig): Set<string> { return new Set<string>(['column', 'rowCount', ...config.metrics]); }
@@ -60,6 +60,26 @@ function metricValues(values: readonly number[], rowCount: number, config: Summa
       case 'sum': result[metric] = values.reduce((sum, value) => sum + value, 0); break;
       case 'mean': result[metric] = mean(values); break;
       case 'stddev': result[metric] = standardDeviation(values, config.variance); break;
+      case 'sample-stddev': result[metric] = standardDeviation(values, 'sample'); break;
+      case 'population-stddev': result[metric] = standardDeviation(values, 'population'); break;
+      case 'variance': {
+        const sd = standardDeviation(values, config.variance);
+        result[metric] = sd === null ? null : sd * sd;
+        break;
+      }
+      case 'lag1-autocorrelation': {
+        // NIST r1: adjacent centered products / all centered squares. Never close gaps by deleting missing observations.
+        const average = mean(values);
+        if (values.length < 2 || values.length !== rowCount || average === null) { result[metric] = null; break; }
+        let denominator = 0; let numerator = 0;
+        for (let i = 0; i < values.length; i += 1) {
+          const deviation = values[i]! - average;
+          denominator += deviation * deviation;
+          if (i > 0) numerator += (values[i - 1]! - average) * deviation;
+        }
+        result[metric] = denominator === 0 ? null : numerator / denominator;
+        break;
+      }
       case 'min': result[metric] = rangeOf()?.min ?? null; break;
       default: result[metric] = rangeOf()?.max ?? null; break;
     }

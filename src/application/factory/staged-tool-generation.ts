@@ -8,7 +8,8 @@
  * 失敗したときの扱いが、この file の肝である:
  * - 検査の違反は**担当タスクへ 1 回だけ**差し戻す（v42 §6 の対応表）。どのタスクの決定でもない違反
  *   （コンパイラのバグ）は差し戻さずに諦める。
- * - 式が書けなかった計算列は**その列だけ**落として、ツールは作る（ツール全体を落とさない）。
+ * - 計画が計算列を宣言していれば、式が書けなかった列を落として成功にはしない。一括経路へ失敗理由を返す。
+ *   宣言のない旧計画だけは従来どおり、その列だけを落として続行する。
  * - 諦めるときも例外にせず `ok: false` を返す。呼び出し側（`GenerateAgentAssetsUseCase`）が
  *   従来の一括 ToolSmith へフォールバックできるようにするため。中断（`FactoryAbortedError`）だけは
  *   そのまま抜ける（cancel 後に新しいモデル呼び出しへ進まない）。
@@ -104,7 +105,7 @@ export class StagedToolGeneration implements StagedToolGenerationPort {
   constructor(
     private readonly model: ModelProviderPort,
     private readonly engine: EtlEngine,
-    /** 計算列の式を書く専用経路（v41）。未注入 / 利用不可なら計算列は全て落とす。 */
+    /** 計算列の式を書く専用経路（v41）。利用不可なら宣言済み計算を持つ生成は失敗となる。 */
     private readonly suggestExpression: SuggestCalculateExpressionUseCase | undefined,
     /** 検査と式の標本行に要る（未注入なら段階的経路は使えない）。 */
     private readonly resolveDataSources: ResolveDataSourceGraphUseCase | undefined,
@@ -157,7 +158,7 @@ export class StagedToolGeneration implements StagedToolGenerationPort {
       const filters = await run(decideFiltersTask, { plan, goal, profiles });
       let period: ToolSpecPeriod | undefined = filters.period;
       let categoryFilters: readonly ToolSpecCategoryFilter[] = filters.categoryFilters;
-      let computations: readonly ToolSpecComputation[] = (await run(decideComputationsTask, { plan, goal, profiles })).computations;
+      let computations: readonly ToolSpecComputation[] = plan.computations ?? (await run(decideComputationsTask, { plan, goal, profiles })).computations;
 
       const buildSpec = (output: ToolSpecOutput): ToolSpec => ({
         version: TOOL_SPEC_VERSION,
@@ -168,8 +169,10 @@ export class StagedToolGeneration implements StagedToolGenerationPort {
         output,
       });
       const availableColumns = (): string[] => columnsAfterJoinAndCompute(buildSpec(PLACEHOLDER_OUTPUT), plan, request.profiles);
-      const decideOutput = async (feedback?: string): Promise<ToolSpecOutput> =>
-        run(decideOutputTask, { plan, availableColumns: availableColumns(), estimatedRows: primary.rowCount }, feedback);
+      const decideOutput = async (feedback?: string): Promise<ToolSpecOutput> => {
+        const chosen = await run(decideOutputTask, { plan, availableColumns: availableColumns(), estimatedRows: primary.rowCount }, feedback);
+        return chosen.columns.length === 0 ? chosen : { ...chosen, columns: [...new Set([...chosen.columns, ...(plan.computations ?? []).map((entry) => entry.outputColumn)])] };
+      };
 
       let output = await decideOutput();
       /** 結合・絞り込み・計算をやり直した後、消えた列が `output.columns` に残らないようにする。 */
@@ -195,6 +198,7 @@ export class StagedToolGeneration implements StagedToolGenerationPort {
             return;
           }
           case 'decide-computations':
+            if (plan.computations !== undefined) throw new Error(`declared computations cannot be removed or renamed: ${feedback}`);
             computations = (await run(decideComputationsTask, { plan, goal, profiles }, feedback)).computations;
             pruneOutputColumns();
             return;
@@ -252,6 +256,7 @@ export class StagedToolGeneration implements StagedToolGenerationPort {
           onEvent(`dropped computation: ${note}`);
         }
         if (filled.kept.length !== computations.length) {
+          if (plan.computations !== undefined) return { ok: false, reason: `required computations could not be generated: ${filled.dropped.join('; ')}`, spec };
           // 落とした計算列は仕様からも外す（やり直しで同じ式をもう一度頼まないため）。
           computations = filled.kept;
           pruneOutputColumns();
@@ -276,7 +281,7 @@ export class StagedToolGeneration implements StagedToolGenerationPort {
             ok: true,
             compiled: filled.compiled,
             spec,
-            notes: describeNotes({ joins, expressionAttempts, repairedTasks, dropped }),
+            notes: describeNotes({ joins, expressionAttempts, repairedTasks, dropped, plannedComputations: plan.computations !== undefined }),
           };
         }
 
@@ -378,11 +383,12 @@ function describeNotes(input: {
   readonly expressionAttempts: number;
   readonly repairedTasks: ReadonlySet<ToolSpecTaskName>;
   readonly dropped: readonly string[];
+  readonly plannedComputations?: boolean;
 }): string[] {
   const tasks: string[] = [
     ...(input.joins ? ['decide-join'] : []),
     'decide-filters',
-    'decide-computations',
+    input.plannedComputations ? 'planned-computations' : 'decide-computations',
     'decide-output',
     ...(input.expressionAttempts > 0 ? [`write-expression×${input.expressionAttempts}`] : []),
   ];

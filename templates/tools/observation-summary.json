@@ -1,0 +1,209 @@
+{
+  "$schema": "./tool-template.schema.json",
+  "formatVersion": 1,
+  "id": "observation-summary",
+  "version": "1.0.0",
+  "title": {
+    "ja": "観測データの基本統計・ラグ1自己相関",
+    "en": "Observation summary and lag-1 autocorrelation"
+  },
+  "summary": {
+    "ja": "時点列を必須にせず、数値列の平均、標本/母標準偏差、標本分散、ラグ1自己相関をグループ別に決定的に計算する。",
+    "en": "Grouped mean, sample/population standard deviations, sample variance and lag-1 autocorrelation without requiring a period-label column."
+  },
+  "whenToUse": {
+    "ja": [
+      "観測系列の基本統計",
+      "標本標準偏差n-1と母標準偏差nを同時に確認"
+    ],
+    "en": [
+      "Descriptive statistics of observations",
+      "Both sample and population standard deviations"
+    ]
+  },
+  "notFor": {
+    "ja": [
+      "自己相関の時間間隔が不規則なデータ",
+      "回帰係数はlinear-modelを使用"
+    ],
+    "en": [
+      "Autocorrelation with irregular observation intervals",
+      "Use linear-model for regression"
+    ]
+  },
+  "tags": [
+    "statistics"
+  ],
+  "sources": {
+    "min": 1,
+    "max": 1
+  },
+  "slots": [
+    {
+      "name": "source",
+      "kind": "dataSource",
+      "label": {
+        "ja": "データソース",
+        "en": "Source"
+      }
+    },
+    {
+      "name": "valueColumns",
+      "kind": "column",
+      "label": {
+        "ja": "集計する数値列",
+        "en": "Numeric observations"
+      },
+      "source": "source",
+      "role": "value",
+      "multiple": {
+        "min": 1,
+        "max": 10
+      }
+    },
+    {
+      "name": "groupColumn",
+      "kind": "column",
+      "label": {
+        "ja": "グループ列（任意）",
+        "en": "Optional group/category column"
+      },
+      "source": "source",
+      "role": "category",
+      "optional": true
+    },
+    {
+      "name": "orderColumn",
+      "kind": "column",
+      "label": {
+        "ja": "観測順の列（任意）",
+        "en": "Optional observation ordering column"
+      },
+      "source": "source",
+      "role": "any",
+      "types": [
+        "number",
+        "date"
+      ],
+      "optional": true
+    }
+  ],
+  "arguments": [
+    {
+      "name": "categories",
+      "type": "string",
+      "nullable": true,
+      "when": "groupColumn",
+      "sample": {
+        "$profile": "firstValuesCsv:groupColumn:2"
+      },
+      "description": {
+        "ja": "対象グループをカンマ区切りで指定。省略で全グループ。",
+        "en": "Comma-separated group values; omit for all groups."
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "id": "src",
+      "type": {
+        "$sourceType": "source"
+      },
+      "config": {
+        "dataSourceId": {
+          "$slot": "source"
+        }
+      }
+    },
+    {
+      "id": "f_category",
+      "type": "filter",
+      "when": "groupColumn",
+      "config": {
+        "column": {
+          "$slot": "groupColumn"
+        },
+        "op": "in",
+        "values": {
+          "$profile": "firstValues:groupColumn:2"
+        },
+        "valueBinding": {
+          "$argument": "categories"
+        }
+      }
+    },
+    {
+      "id": "sort",
+      "type": "sort",
+      "when": "orderColumn",
+      "config": {
+        "keys": [
+          {
+            "column": {
+              "$slot": "orderColumn"
+            },
+            "direction": "asc",
+            "nulls": "last"
+          }
+        ]
+      }
+    },
+    {
+      "id": "stats",
+      "type": "summary-statistics",
+      "config": {
+        "columns": {
+          "$slot": "valueColumns"
+        },
+        "groupBy": {
+          "$each": "groupColumn",
+          "as": "g",
+          "item": "{{g}}"
+        },
+        "metrics": [
+          "valid-count",
+          "missing-count",
+          "mean",
+          "sample-stddev",
+          "population-stddev",
+          "variance",
+          "lag1-autocorrelation"
+        ],
+        "variance": "sample"
+      }
+    },
+    {
+      "id": "out",
+      "type": "agent-output",
+      "config": {
+        "shape": "rows",
+        "format": "json",
+        "maxRows": 100,
+        "maxBytes": 65536,
+        "overflow": "error"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "src",
+      "to": "f_category"
+    },
+    {
+      "from": "f_category",
+      "to": "sort"
+    },
+    {
+      "from": "sort",
+      "to": "stats"
+    },
+    {
+      "from": "stats",
+      "to": "out"
+    }
+  ],
+  "description": {
+    "ja": "グループ×数値列ごとの基本統計。meanは平均、sample-stddevは標本標準偏差(n-1)、population-stddevは母標準偏差(n)、varianceは標本分散(n-1)で単位は元単位の二乗です。lag1-autocorrelationは隣接する平均偏差の積和/全偏差平方和。orderColumn昇順（省略時はソースの順序）で等間隔観測を仮定します。定数列・欠測あり・2観測未満では自己相関をnullにし、欠測を消して間隔を詰めません。他の統計は欠測を除外しvalid-count/missing-countを返します。途中で丸めません。単位換算は明示して行ってください。",
+    "en": "One row per group and numeric column. mean, sample-stddev (n-1), population-stddev (n), variance (sample, n-1) retain the original measurement units (variance is squared). lag1-autocorrelation=sum adjacent centered products / sum all centered squares, in ascending orderColumn or original source order; assumes equally spaced observations. It is null for constant, incomplete or fewer than two observations; do not delete missing observations to close gaps. Other metrics omit missing values and valid-count/missing-count report them. No intermediate rounding; perform requested unit conversions explicitly."
+  }
+}

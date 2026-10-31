@@ -193,3 +193,17 @@ No rows matched.`)).toBe(true);
     });
   });
 });
+
+
+describe('request-specific display precision',()=>{
+ it('keeps full precision and supplies a rounded display row',async()=>{
+  const input={schema:{columns:[{name:'prediction',type:'number' as const,nullable:false}]},rows:[{prediction:500.79608593645315}]};
+  const result=await new ToolOutputDispatcher().dispatch({tool:tool('agent-output',{shape:'rows',format:'json',maxRows:10,maxBytes:4096,overflow:'error'}),table:input,runId:'p',toolCallId:'p',displayDecimalPlaces:6});
+  expect(result).toMatchObject({delivery:'agent',value:{displayDecimalPlaces:6,displayRows:[{prediction:500.796086}],rows:[{prediction:500.79608593645315}]}});
+ });
+ it('drops optional display rows before causing a result-size regression',async()=>{
+  const input={schema:{columns:[{name:'prediction',type:'number' as const,nullable:false},{name:'note',type:'string' as const,nullable:false}]},rows:[{prediction:1.23456789,note:'x'.repeat(600)}]};
+  const result=await new ToolOutputDispatcher().dispatch({tool:tool('agent-output',{shape:'rows',format:'json',maxRows:10,maxBytes:1024,overflow:'error'}),table:input,runId:'p',toolCallId:'p',displayDecimalPlaces:6});
+  expect(result.delivery).toBe('agent');expect(result.delivery==='agent'&&result.value).not.toHaveProperty('displayRows');expect(result.delivery==='agent'&&result.value).toMatchObject({rows:input.rows});
+ });
+});

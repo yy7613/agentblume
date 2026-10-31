@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_ADDITIONAL_DATA_SOURCES, validateFactoryPlan, type FactoryPlan } from './factory-plan';
+import { MAX_ADDITIONAL_DATA_SOURCES, MAX_PLANNED_COMPUTATIONS, validateFactoryPlan, type FactoryPlan } from './factory-plan';
+import { MAX_TOOL_SPEC_COMPUTATIONS } from './tool-spec';
 import { FactoryValidationError } from './errors';
 
 const validPlan: FactoryPlan = {
@@ -127,5 +128,20 @@ describe('validateFactoryPlan（結合する追加データソース）', () => 
       tools: [{ key: 'reused', displayName: 'R', purpose: 'p', dataSourceId: '', sideEffect: 'read-only', reuse: { internalId: 'tool-x' }, additionalDataSourceIds: ['ds-2'] }],
     };
     expect(() => validateFactoryPlan(plan, ctx)).toThrow(/cannot combine reuse with additionalDataSourceIds/);
+  });
+});
+
+
+describe('planned computation contracts', () => {
+  it('uses the staged compiler limit and rejects declarations attached to unchanged reused tools', () => {
+    expect(MAX_PLANNED_COMPUTATIONS).toBe(MAX_TOOL_SPEC_COMPUTATIONS);
+    expect(() => validateFactoryPlan({ ...validPlan, tools: [{ ...validPlan.tools[0]!, reuse: { internalId: 'saved-tool' }, computations: [{ outputColumn: 'x', intent: 'ratio' }] }] }, ctx)).toThrow(/cannot add computations to a reused tool/);
+  });
+  const planWith = (computations: unknown): FactoryPlan => ({ ...validPlan, tools: [{ ...validPlan.tools[0]!, computations } as FactoryPlan['tools'][number]] });
+  it('accepts legacy plans, empty declarations and three distinct computations', () => {
+    for (const plan of [validPlan, planWith([]), planWith(['a', 'b', 'c'].map(outputColumn => ({ outputColumn, intent: 'divide two columns' })))]) expect(() => validateFactoryPlan(plan, ctx)).not.toThrow();
+  });
+  it.each([null, {}, [{ outputColumn: '', intent: 'ratio' }], [{ outputColumn: 'x', intent: '' }], [{ outputColumn: 'x', intent: 'a' }, { outputColumn: 'x', intent: 'b' }], ['a','b','c','d'].map(outputColumn => ({ outputColumn, intent: 'ratio' }))].map(computations => ({ computations })))('rejects malformed or excessive declarations: %j', ({ computations }) => {
+    expect(() => validateFactoryPlan(planWith(computations), ctx)).toThrow(FactoryValidationError);
   });
 });

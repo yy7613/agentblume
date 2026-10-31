@@ -1,0 +1,3 @@
+# Prompt fixtures are compared against rendered LF strings on every platform.
+src/application/factory/roles/__fixtures__/*.txt text eol=lf
+src/application/factory/tasks/__fixtures__/*.txt text eol=lf

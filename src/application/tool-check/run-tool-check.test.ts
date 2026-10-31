@@ -76,6 +76,21 @@ async function run(expectations: ToolCheckExpectations, overrides: Partial<RunTo
 }
 
 describe('RunToolCheckUseCase', () => {
+  it('quotes only an unambiguous real-domain identifier and records the correction', async () => {
+    for (const ambiguous of [false, true]) {
+      const rows: Row[] = [{ ...salesRows[0]!, region: '13000', amount: 10 }, ...(ambiguous ? [{ ...salesRows[0]!, region: '013000', amount: 20 }] : [])];
+      const { useCase } = await harness([makeTool({ graph: salesGraph(rows) })]);
+      const result = await useCase.execute(input({ arguments: { region: 13000, minimum: 0 } }));
+      if (ambiguous) {
+        expect(result.status).toBe('error');
+        expect(result.argumentNormalizations).toBeUndefined();
+      } else {
+        expect(result.status).toBe('passed');
+        expect(result.output.rows[0]?.['region']).toBe('13000');
+        expect(result.argumentNormalizations).toEqual([{ field: 'region', reason: 'exact-domain-string' }]);
+      }
+    }
+  });
   describe('正常: 実行と結果の形', () => {
     it('引数で絞った全行を出力し、ノード別行数・所要時間・checkedAt・Tool 参照を返す', async () => {
       const { useCase } = await harness();

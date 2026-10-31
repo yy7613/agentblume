@@ -48,3 +48,14 @@ describe('ResolveDataSourceGraphUseCase', () => {
     await expect(new ResolveDataSourceGraphUseCase(repository, { readTable: async () => { throw new Error('connection detail'); } }).execute(scope, graph)).rejects.toThrow("cannot read allowed table");
   });
 });
+
+
+describe('file-only resolution', () => {
+  it('refuses database, web and overridden business resolvers without dispatching them', async () => {
+    const repository = new InMemoryDataSourceRepository();
+    let calls = 0;
+    const resolver = new ResolveDataSourceGraphUseCase(repository, { readTable: async () => { calls += 1; return []; } }, undefined, [{ nodeType: 'json-source', schema: { columns: [] }, requirement: 'none', unavailableMessage: 'not wired', rows: async () => { calls += 1; return []; } }]);
+    for (const type of ['database-source', 'web-search-source', 'json-source']) expect(await resolver.fileSource(scope, { id: 's', type, config: { dataSourceId: 'db', table: 't' } })).toBeUndefined();
+    expect(calls).toBe(0);
+  });
+});

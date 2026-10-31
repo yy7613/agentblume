@@ -1,7 +1,7 @@
 /**
  * application層: Agent Factory Stage 1 Plannerロール（v33 実装契約 §3 / docs/16-agent-factory.md §3, §4 Stage 1）。
  *
- * 「system prompt テンプレート + 構造化出力スキーマ + 温度0の1回呼び出し」で `ModelProviderPort` を呼び、
+ * 「system prompt テンプレート + 構造化出力スキーマ + 温度0・最大2回の呼び出し」で `ModelProviderPort` を呼び、
  * `FactoryPlan` を提案させる（`suggest-analysis-config.ts` と同じ形: LLM提案 → JSON.parse → アプリ側で
  * `validateFactoryPlan` により再検証）。データソースの列・サンプル行はuntrusted dataとしてuser message側へ
  * 隔離し、system命令へは混ぜない。
@@ -10,11 +10,12 @@ import type { DataSourceId } from '../../../domain/data-source/ids';
 import { FactoryValidationError } from '../../../domain/factory/errors';
 import { MAX_ADDITIONAL_DATA_SOURCES, validateFactoryPlan, type FactoryPlan } from '../../../domain/factory/factory-plan';
 import type { FactoryGoalInput, FactoryOptions } from '../../../domain/factory/factory-run';
-import type { JsonSchemaObject, ModelCompletionRequest, ModelProviderPort } from '../../model/model-provider';
+import { ModelStructuredOutputError, type JsonSchemaObject, type ModelCompletionRequest, type ModelProviderPort } from '../../model/model-provider';
 import type { PromptCatalogPort, PromptSpec } from '../../prompt/prompt-catalog-port';
 import type { DataProfile } from '../profile-data-sources';
 import type { ExistingToolCatalog } from '../tool-catalog';
 import { describeScenarioGroundingViolations } from './plan-grounding';
+import { describeMetricSourceViolations } from '../metric-source-validation';
 import { wrapUntrusted } from './untrusted';
 
 /** docs/16-agent-factory.md §4 Stage 1: Tool ≤4 / Skill ≤3（固定）。Persona / Scenario は options 由来。 */
@@ -56,7 +57,7 @@ const FACTORY_PLAN_SCHEMA: JsonSchemaObject = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['key', 'displayName', 'purpose', 'dataSourceId', 'sideEffect'],
+        required: ['key', 'displayName', 'purpose', 'dataSourceId', 'sideEffect', 'computations'],
         properties: {
           key: { type: 'string' },
           displayName: { type: 'string' },
@@ -65,6 +66,13 @@ const FACTORY_PLAN_SCHEMA: JsonSchemaObject = {
           sideEffect: { type: 'string', enum: ['read-only', 'session-write'] },
           outputShape: { type: 'string' },
           argumentSummary: { type: 'string' },
+          computations: {
+            type: 'array',
+            items: {
+              type: 'object', additionalProperties: false, required: ['outputColumn', 'intent'],
+              properties: { outputColumn: { type: 'string' }, intent: { type: 'string' } },
+            },
+          },
           // 同じキー（同じ時点・同じ地域…）で値を並べる必要があるとき、1つのToolへ join で束ねる
           // 追加のデータソース（ADR-0047 round 3）。単一ソースのToolでは設定しない。
           additionalDataSourceIds: { type: 'array', items: { type: 'string' } },
@@ -247,35 +255,45 @@ export class PlannerRole {
         dataSourceIds: input.dataSourceIds,
         limits: { maxTools: MAX_TOOLS, maxSkills: MAX_SKILLS, maxPersonas: input.options.personaCount, maxScenarios: input.options.scenarioCount },
       });
+      const metricIssues = describeMetricSourceViolations(plan, input.profiles);
+      if (metricIssues.length) throw new FactoryValidationError(metricIssues.join('; '));
       if (checkGrounding) {
         const violations = describeScenarioGroundingViolations(plan, input.profiles);
         if (violations.length > 0) throw new FactoryValidationError(violations.join('; '));
       }
       return plan;
     };
-    const first = await this.model.complete(request, signal);
-    try {
-      return accept(first.message.content, true);
-    } catch (error) {
-      if (!(error instanceof FactoryValidationError)) throw error;
-      // 計画の検証落ちで Run ごと失敗させない。何が規則に反したかを添えて 1 回だけ出し直させる
-      // （実測: 再利用と結合先を同じ Tool に書いて、計画段階で Run が即失敗した）。2 回目も落ちれば従来どおり投げる。
-      const second = await this.model.complete({
+    let repairReason: string | undefined;
+    let previousContent: string | null | undefined;
+    // Share the existing two-attempt budget between response-format and plan-validation repair.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const next: ModelCompletionRequest = repairReason === undefined ? request : {
         ...request,
-        messages: [
-          ...request.messages,
-          { role: 'assistant', content: first.message.content },
-          { role: 'user', content: prompt.render('repair', { reason: error.message }) },
+        messages: [...request.messages,
+          ...(previousContent === undefined ? [] : [{ role: 'assistant' as const, content: previousContent }]),
+          { role: 'user', content: prompt.render('repair', { reason: repairReason }) },
         ],
-      }, signal);
-      try {
-        return accept(second.message.content, false);
-      } catch (secondError) {
-        // 出し直しても空のまま → Run の失敗理由は「利用者がどう直せばよいか」が分かる文にする。
-        if (secondError instanceof EmptyDataSourceIdError) throw new FactoryValidationError(describeUnfillableDataSources(secondError, input.dataSourceIds.length));
-        throw secondError;
+      };
+      let completion;
+      try { completion = await this.model.complete(next, signal); }
+      catch (error) {
+        if (!(error instanceof ModelStructuredOutputError) || attempt === 1 || signal?.aborted) throw error;
+        // No partial response is accepted or patched; ask for a complete concise plan under the same schema.
+        repairReason = 'The previous generated JSON was incomplete or syntactically invalid. Return a complete, compact plan under the same schema and limits. Keep purpose, intent and scenario text concise; do not include commentary.';
+        continue;
+      }
+      try { return accept(completion.message.content, attempt === 0); }
+      catch (error) {
+        if (!(error instanceof FactoryValidationError)) throw error;
+        if (attempt === 1) {
+          if (error instanceof EmptyDataSourceIdError) throw new FactoryValidationError(describeUnfillableDataSources(error, input.dataSourceIds.length));
+          throw error;
+        }
+        repairReason = error.message;
+        previousContent = completion.message.content;
       }
     }
+    throw new FactoryValidationError('PlannerRole: exhausted plan attempts');
   }
 }
 

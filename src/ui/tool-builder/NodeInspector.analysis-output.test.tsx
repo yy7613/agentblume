@@ -533,3 +533,19 @@ describe('NodeInspector: インライン編集の残りの分岐', () => {
     expect(configOf(id)['inferTypes']).toBe(false);
   });
 });
+
+
+describe('NodeInspector: linear model', () => {
+  it('edits predictors, intercept convention and groups in the settings dialog', async () => {
+    withUpstreamColumns();
+    const id = addNode('linear-model');
+    render(<NodeInspector />);
+    const dialog = await openDialog();
+    await userEvent.selectOptions(within(dialog).getByLabelText('Predictor x'), 'amount');
+    await userEvent.selectOptions(within(dialog).getByLabelText('Response y'), 'amount');
+    await userEvent.selectOptions(within(dialog).getByLabelText('Group columns'), 'region');
+    await userEvent.selectOptions(within(dialog).getByLabelText('Intercept'), 'zero');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Apply settings' }));
+    expect(configOf(id)).toMatchObject({ x: 'amount', y: 'amount', groupBy: ['region'], intercept: 'zero' });
+  });
+});

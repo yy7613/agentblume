@@ -80,6 +80,17 @@ function makeFullRun(): FactoryRun {
 }
 
 describe('serializeFactoryRun / deserializeFactoryRun', () => {
+  it('preserves declared computations in plans and add-tool proposals', () => {
+    const full = makeFullRun();
+    const toolPlan = { ...plan.tools[0]!, computations: [{ outputColumn: 'unitPrice', intent: 'amount / count' }] };
+    const withDeclarations = { ...plan, tools: [toolPlan] };
+    const run: FactoryRun = { ...full, plan: withDeclarations,
+      iterations: [{ ...full.iterations[0]!, analysis: { findings: [], applied: [{ proposal: { kind: 'add-tool', plan: toolPlan, rationale: 'needed' }, resultingVersion: { internalId: 'new', version: '1.0.0' } }], rejected: [] } }],
+    };
+    const restored = deserializeFactoryRun(serializeFactoryRun(run));
+    expect(restored.plan?.tools[0]?.computations).toEqual(toolPlan.computations);
+    expect(restored.iterations[0]?.analysis?.applied[0]?.proposal).toMatchObject({ kind: 'add-tool', plan: { computations: toolPlan.computations } });
+  });
   it('往復でロスレスに復元する（plan/checkpoint/iterations/report/budget/failureを含む）', () => {
     const run = makeFullRun();
     const restored = deserializeFactoryRun(serializeFactoryRun(run));

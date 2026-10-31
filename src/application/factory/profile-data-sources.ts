@@ -15,11 +15,12 @@ import { parsePeriodLabel, type PeriodGranularity } from '../../domain/etl/nodes
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import { CODE_LIKE_COLUMN } from '../../domain/data/column-roles';
 import { throwIfAborted } from './abort';
+import type { ColumnAnnotation, ColumnAnnotationCatalogPort } from '../data-source/column-annotation-catalog';
 
 /** `CODE_LIKE_COLUMN` は `domain/data/column-roles` へ移した（v50 R3）。既存の import 元を壊さないための re-export。 */
 export { CODE_LIKE_COLUMN };
 
-export interface ColumnProfile {
+export interface ColumnProfile extends Partial<ColumnAnnotation> {
   readonly name: string;
   readonly type: string;
   readonly nullable: boolean;
@@ -163,6 +164,7 @@ export class ProfileDataSourcesUseCase {
     private readonly dataSources: DataSourceRepository,
     private readonly resolveGraph: ResolveDataSourceGraphUseCase,
     private readonly engine: EtlEngine,
+    private readonly annotations?: ColumnAnnotationCatalogPort,
   ) {}
 
   async execute(scope: TenantScope, dataSourceId: DataSourceId): Promise<DataProfile> {
@@ -192,7 +194,12 @@ export class ProfileDataSourcesUseCase {
     // 期間列・低カーディナリティ列の判定はサンプル20行では足りない（年次と月次の混在は末尾に出る）ので、
     // プレビューが既に計算済みの全行（`fullOutput`）を走査する。追加の実行コストは掛からない。
     const allRows = preview.fullOutput.rows as readonly Record<string, unknown>[];
-    const columns = inference.schema.columns.map((column) => ({ name: column.name, type: column.type, nullable: column.nullable }));
+    const annotations = await this.annotations?.forSource(source.name);
+    const columns = inference.schema.columns.map((column) => {
+      const code = /^([A-Z]\d+)(?:_|【|$)/u.exec(column.name)?.[1];
+      const annotation = annotations?.get(code ?? column.name);
+      return { name: column.name, type: column.type, nullable: column.nullable, ...annotation };
+    });
     const stringColumns = columns.filter((column) => column.type === 'string' || column.type === 'unknown');
 
     const periodColumns = stringColumns

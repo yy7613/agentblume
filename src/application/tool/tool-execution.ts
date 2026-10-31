@@ -168,6 +168,20 @@ export function graphWithArguments(tool: Tool, row: Row): ToolGraph {
       const config = node.config as { schema?: Schema };
       return { ...node, config: { ...config, sample: row } };
     }
+    if (node.type === 'linear-model') {
+      const config = node.config as { predictionBinding?: { source?: string; field?: string }; observationBinding?: { source?: string; field?: string } };
+      const updates: Record<string, unknown> = {};
+      for (const [binding, target] of [[config.predictionBinding, 'predictAt'], [config.observationBinding, 'observationIndex']] as const) {
+        if (binding?.source !== 'agent-input' || !binding.field) continue;
+        const value = agentArgumentOf(row, binding.field);
+        if (value === undefined) throw new AgentRunError(`linear-model node '${node.id}' references an unavailable Agent input`);
+        if (value !== null && (typeof value !== 'number' || !Number.isFinite(value))) throw new ToolArgumentsError(`invalid prediction argument '${binding.field}': expected number`);
+        if (target === 'observationIndex' && value !== null && (!Number.isSafeInteger(value) || Number(value) < 1)) throw new ToolArgumentsError(`invalid observation argument '${binding.field}': expected a positive row ordinal`);
+        if (value === null && !optionalFields.has(binding.field)) throw new ToolArgumentsError(`required argument missing: ${binding.field}`);
+        updates[target] = value;
+      }
+      return Object.keys(updates).length ? { ...node, config: { ...config, ...updates } } : node;
+    }
     if (node.type !== 'filter') return node;
     const config = filterConfigWithArguments(node.id, node.config, row, optionalFields, operatorSummaries);
     return config === node.config ? node : { ...node, config };

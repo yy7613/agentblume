@@ -229,7 +229,7 @@ async function setup(options?: {
     : undefined;
 
   const useCase = new GenerateAgentAssetsUseCase(toolSmith, skillWriter, assembler, saveTool, saveSkill, saveAgent, generateAgentPrompt, engine, resolver, staged, templates);
-  return { model, toolRepo, skillRepo, agentRepo, profiles, useCase, stagedTasks, stagedExpressions, templateTasks, templateExpressions };
+  return { model, toolRepo, skillRepo, agentRepo, profiles, useCase, stagedTasks, stagedExpressions, templateTasks, templateExpressions, engine, resolver };
 }
 
 /** 設計タスク / 式の台本を1件積む。 */
@@ -247,6 +247,24 @@ function enqueueStagedTasks(model: ScriptedModelProvider, options?: { readonly c
 }
 
 describe('GenerateAgentAssetsUseCase', () => {
+  it('one-shot fallback saves and executes every declared calculation instead of forbidding calculate', async () => {
+    const { model, toolRepo, profiles, useCase, engine, resolver } = await setup();
+    const proposal = JSON.parse(validToolProposalJson()) as { graph: ToolGraph };
+    const graph: ToolGraph = { nodes: [...proposal.graph.nodes,
+      { id: 'calc', type: 'calculate', config: { outputColumn: 'doubled', expression: '[amount] * 2' } }],
+      edges: [{ from: 'src', to: 'calc' }, { from: 'calc', to: 'out' }] };
+    model.enqueue(scripted({ ...proposal, graph }), scripted(JSON.parse(validSkillProposalJson())), scripted(JSON.parse(validAssemblerProposalJson())));
+    const plan: FactoryPlan = { ...onePlan, tools: onePlan.tools.map(t => ({ ...t, computations: [{ outputColumn: 'doubled', intent: 'amount times two' }] })) };
+    const result = await useCase.execute({ scope, runId: 'calc-fallback', goal, plan, profiles, maxRepairAttempts: 0 });
+    expect(result.toolRefs).toHaveLength(1);
+    expect(result.roleCallsUsed).toBe(3);
+    const ref = result.toolRefs[0]!;
+    const tool = await toolRepo.findVersion(scope, ref.internalId, SemVer.parse(ref.version));
+    expect(tool?.graph.nodes.find(n => n.id === 'calc')?.config).toEqual({ outputColumn: 'doubled', expression: '[amount] * 2' });
+    const preview = engine.preview(await resolver.execute(scope, tool!.graph));
+    expect(preview.fullOutput?.rows.map(row => row['doubled'])).toEqual([200, 400]);
+    expect(model.requests[0]?.messages[0]?.content).toContain('Required row computations');
+  });
   it('happy path: Tool → Skill → Agent の順にdraftとして保存する（read-only）', async () => {
     const { model, toolRepo, skillRepo, agentRepo, profiles, useCase } = await setup();
     model.enqueue(
@@ -1252,13 +1270,14 @@ const latestPlan: FactoryPlan = {
 };
 
 /** `describeToolSemanticViolations` を実データのスキーマ伝播つきで呼ぶ（本番と同じ経路）。 */
-async function semanticViolationOf(proposalJson: string, plan: FactoryPlan = periodPlan, csv: string = ESTAT_CSV): Promise<string | undefined> {
+async function semanticViolationOf(proposalJson: string, plan: FactoryPlan = periodPlan, csv: string = ESTAT_CSV, preserveRequired = false): Promise<string | undefined> {
   const dataSources = new InMemoryDataSourceRepository();
   await dataSources.save({ id: 'ds-1', tenant: scope, name: 'Population', kind: 'file', format: 'csv', contentType: 'text/csv', sizeBytes: csv.length, createdAt: '', updatedAt: '' }, csv);
   const engine = new EtlEngine(createDefaultRegistry());
   const resolver = new ResolveDataSourceGraphUseCase(dataSources);
   const profile = (await new ProfileDataSourcesUseCase(dataSources, resolver, engine).executeAll(scope, ['ds-1']))[0]!;
-  const graph = makeArgumentsOptional(mergeAgentInputDeclarations(JSON.parse(proposalJson).graph as ToolGraph));
+  const declared = mergeAgentInputDeclarations(JSON.parse(proposalJson).graph as ToolGraph);
+  const graph = preserveRequired ? declared : makeArgumentsOptional(declared);
   const propagation = engine.propagateSchemas(await resolver.execute(scope, graph));
   expect(propagation.hasErrors).toBe(false);
   return describeToolSemanticViolations({ graph, profile, toolPlan: plan.tools[0]!, inputSchema: agentToolArgumentsOf(graph), propagation });
@@ -1347,6 +1366,41 @@ describe('describeToolSemanticViolations（範囲で引けること・Defect B�
       .replace('"shape":"rows"', '"shape":"summary"');
 
     expect(await semanticViolationOf(summarised, latestPlan)).toBeUndefined();
+  });
+});
+
+describe('単一時点のランキング（e-Stat実モデルでのテンプレート誤拒否）', () => {
+  function ranking(options: { optional?: boolean; or?: boolean; dynamicOp?: boolean; disabled?: boolean; late?: boolean } = {}): string {
+    const proposal = JSON.parse(periodToolProposalJson({ selectColumns: ESTAT_COLUMNS, argumentType: 'date', sort: 'desc' }));
+    const args = proposal.graph.nodes.find((node: { id: string }) => node.id === 'args');
+    args.config.schema.columns[0].nullable = options.optional === true;
+    args.config.sample = { time_point: '2023-01-01' };
+    const range = proposal.graph.nodes.find((node: { id: string }) => node.id === 'range');
+    const condition = { column: 'periodStart', op: 'eq', value: '2023-01-01',
+      valueBinding: { source: 'agent-input', field: 'time_point' },
+      ...(options.disabled ? { disabled: true } : {}),
+      ...(options.dynamicOp ? { opBinding: { source: 'agent-input', field: 'period_op', allowed: ['eq', 'gte'] } } : {}) };
+    range.config = { conditions: [condition, ...(options.or ? [{ column: '地域', op: 'eq', value: '全国' }] : [])], combine: options.or ? 'or' : 'and' };
+    if (options.dynamicOp) {
+      args.config.schema.columns.push({ name: 'period_op', type: 'string', nullable: false });
+      args.config.sample.period_op = 'eq';
+    }
+    proposal.graph.nodes.find((node: { id: string }) => node.id === 'ord').config.keys = [{ column: '総人口（総数）【人】', direction: 'desc' }];
+    if (options.late) {
+      const ids = ['src', 'period', 'gran', 'cap', 'range', 'ord', 'sel', 'out'];
+      proposal.graph.edges = ids.slice(1).map((id, i) => ({ from: ids[i], to: id }));
+    }
+    return JSON.stringify(proposal);
+  }
+
+  it('必須の等価条件で1時点に固定したランキングは値の順で返してよい', async () => {
+    expect(await semanticViolationOf(ranking(), periodPlan, ESTAT_CSV, true)).toBeUndefined();
+  });
+
+  it.each([
+    { optional: true }, { or: true }, { dynamicOp: true }, { disabled: true }, { late: true },
+  ])('期間が固定されない条件 %j には従来の期間順検査を残す', async (options) => {
+    expect(await semanticViolationOf(ranking(options), periodPlan, ESTAT_CSV, true)).toMatch(/never sorts by 'periodStart'/);
   });
 });
 
@@ -2467,8 +2521,8 @@ describe('GenerateAgentAssetsUseCase（テンプレート経路の組み込み�
   });
 
   it('境界: 当てはまるテンプレートが無いデータでは、モデルを呼ばずイベントも出さずに段階的経路へ進む', async () => {
-    // 既定の `id,amount` には期間ラベル列が無く、どの同梱テンプレートも使えない。
-    const { model, profiles, useCase, templateTasks, stagedTasks } = await setup({ staged: true, templates: true });
+    // 数値列も期間ラベル列も無いため、観測統計テンプレートを含めて使えない。
+    const { model, profiles, useCase, templateTasks, stagedTasks } = await setup({ staged: true, templates: true, csv: 'id,amount\na,foo\nb,bar' });
     enqueueStagedTasks(stagedTasks);
     model.enqueue(
       { message: { role: 'assistant', content: validSkillProposalJson() }, finishReason: 'stop' },
@@ -2500,5 +2554,37 @@ describe('hasComputedColumns', () => {
 
   it('異常: グラフが壊れていても落ちない（保存済みToolのconfigは形が保証されない）', () => {
     expect(hasComputedColumns([{ graph: { nodes: null } } as never, {} as never])).toBe(false);
+  });
+});
+
+
+describe('declared computation evidence', () => {
+  function violation(options: { calculate?: boolean; drop?: boolean; disconnect?: boolean; second?: boolean } = {}): string | undefined {
+    const graph: ToolGraph = {
+      nodes: [
+        { id: 's', type: 'json-source', config: { rows: [{ x: 6, y: 3, ratio: 2 }] } },
+        ...(options.calculate === false ? [] : [{ id: 'c', type: 'calculate', config: { outputColumn: 'ratio', expression: '[x]/[y]' } }]),
+        ...(options.drop ? [{ id: 'select', type: 'select', config: { columns: ['x','y'] } }] : []),
+        { id: 'out', type: 'agent-output', config: { shape: 'rows', format: 'json', maxRows: 100, maxBytes: 65536, overflow: 'error' } },
+      ],
+      edges: options.disconnect ? [{ from: 's', to: 'c' }, { from: 's', to: 'out' }] : options.calculate === false ? [{ from: 's', to: 'out' }] : [
+        { from: 's', to: 'c' },
+        ...(options.drop ? [{ from: 'c', to: 'select' }, { from: 'select', to: 'out' }] : [{ from: 'c', to: 'out' }]),
+      ],
+    };
+    const engine = new EtlEngine(createDefaultRegistry());
+    // The engine rejects multiple terminals first; this synthetic propagation also tests the semantic guard in isolation.
+    const propagation = engine.propagateSchemas(options.disconnect ? { ...graph, edges: [{ from: 's', to: 'c' }, { from: 'c', to: 'out' }] } : graph);
+    return describeToolSemanticViolations({ graph, propagation, inputSchema: undefined,
+      profile: { dataSourceId: 'ds', name: 'table', kind: 'file', format: 'json', columns: [{ name: 'x', type: 'number', nullable: false }, { name: 'y', type: 'number', nullable: false }], sampleRowCount: 1, sampleRows: [{ x: 6, y: 3 }], rowCount: 1, periodColumns: [], categoricalColumns: [], joinCandidates: [] },
+      toolPlan: { key: 't', displayName: 'ratio', purpose: 'ratio', dataSourceId: 'ds', sideEffect: 'read-only', computations: [{ outputColumn: 'ratio', intent: 'x divided by y' }, ...(options.second ? [{ outputColumn: 'scaled', intent: 'ratio times 100' }] : [])] },
+    });
+  }
+  it('accepts a connected numeric calculation that reaches the terminal', () => expect(violation()).toBeUndefined());
+  it.each([{ calculate: false }, { drop: true }, { disconnect: true }])('rejects a missing, discarded or disconnected formula: %j', options => expect(violation(options)).toContain("required computation 'ratio'"));
+  it('rejects a partial implementation of two requirements', () => expect(violation({ second: true })).toContain("required computation 'scaled'"));
+  it('publishes the requested-format rule in both managed answer guards', () => {
+    expect(factoryAnswerGuardBlock('ja')).toContain('コードフェンス');
+    expect(factoryAnswerGuardBlock('en')).toContain('without Markdown fences');
   });
 });

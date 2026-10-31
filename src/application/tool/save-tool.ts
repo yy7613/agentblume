@@ -185,6 +185,10 @@ function hasBindingWithoutField(config: unknown, key: 'valueBinding' | 'opBindin
  * （新設した4メッセージも同様に変更禁止）。
  */
 function validateAgentInputBindings(graph: ToolGraph, inputSchema: Schema | undefined): void {
+  const predictions = graph.nodes.filter(node => node.type === 'linear-model').flatMap(node => {
+    const config = node.config as { predictionBinding?: { source?: unknown; field?: unknown }; observationBinding?: { source?: unknown; field?: unknown } } | null;
+    return [config?.predictionBinding, config?.observationBinding].filter((binding): binding is { source: 'agent-input'; field?: unknown } => binding?.source === 'agent-input');
+  });
   const configs = graph.nodes
     .filter((node) => node.type === 'filter')
     .map((node) => node.config);
@@ -192,8 +196,14 @@ function validateAgentInputBindings(graph: ToolGraph, inputSchema: Schema | unde
   const summaries = operatorArgumentSummaries(configs);
   const missingOpField = configs.some((config) => hasBindingWithoutField(config, 'opBinding'));
   const missingValueField = configs.some((config) => hasBindingWithoutField(config, 'valueBinding'));
-  if (valueSites.length === 0 && summaries.length === 0 && !missingOpField && !missingValueField) return;
+  if (valueSites.length === 0 && summaries.length === 0 && !missingOpField && !missingValueField && predictions.length === 0) return;
   if (inputSchema === undefined) throw new ToolValidationError('SaveTool: Agent input bindings require an inputSchema');
+  for (const prediction of predictions) {
+    if (typeof prediction.field !== 'string' || prediction.field === '') throw new ToolValidationError('SaveTool: prediction binding is missing its input field');
+    const column = inputSchema.columns.find(candidate => candidate.name === prediction.field);
+    if (column === undefined) throw new ToolValidationError(`SaveTool: prediction binding references unknown field '${prediction.field}'`);
+    if (column.type !== 'number') throw new ToolValidationError(`SaveTool: prediction binding for argument '${prediction.field}' requires a number argument`);
+  }
   if (missingOpField) {
     throw new ToolValidationError('SaveTool: operator binding is missing its input field');
   }

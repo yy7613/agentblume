@@ -99,6 +99,29 @@ function useCase(tool: Tool | null, model: ModelProviderPort): RunAgentPreviewUs
 const input = { scope, toolId: 'score-tool', systemPrompt: 'Use tools.', message: 'Alice score?', mode: 'preview' as const };
 
 describe('RunAgentPreviewUseCase', () => {
+  it('normalizes an exact numeric identifier without retry and preserves the raw trace', async () => {
+    const schema: Schema = { columns: [{ name: 'entity', type: 'string', nullable: false }] };
+    const tool = createTool({
+      metadata: { internalId: 'ids', workingName: 'ids', displayName: 'Identifier lookup', publishName: 'ids', version: SemVer.of(1,0,0), owner: 'owner', state: 'draft', tenant: scope },
+      sideEffect: 'read-only', inputSchema: schema,
+      graph: { nodes: [
+        { id: 'src', type: 'json-source', config: { rows: [{ entity: '13000', value: 7 }, { entity: '27000', value: 8 }] } },
+        { id: 'args', type: 'agent-input', config: { schema, sample: { entity: '13000' } } },
+        { id: 'f', type: 'filter', config: { column: 'entity', op: 'eq', value: '', valueBinding: { source: 'agent-input', field: 'entity' } } },
+      ], edges: [{ from: 'src', to: 'f' }] },
+    });
+    const model = new QueueModel([
+      { message: { role: 'assistant', content: null, toolCalls: [{ id: 'lookup', name: 'ids', arguments: { entity: 13000 } }] }, finishReason: 'tool_calls' },
+      { message: { role: 'assistant', content: 'done' }, finishReason: 'stop' },
+    ]);
+    const run = await useCase(tool, model).execute({ ...input, toolId: 'ids' });
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[1]?.messages.at(-1)?.content).toContain('"value":7');
+    expect(run.trace.find(event => event.kind === 'tool-call')).toMatchObject({
+      arguments: { entity: 13000 }, resolvedArguments: { entity: '13000' },
+      argumentNormalizations: [{ field: 'entity', reason: 'exact-domain-string' }],
+    });
+  });
   it('Agent Inputを未接続の引数宣言としてFilter条件へ束縛できる', async () => {
     const minimumSchema: Schema = { columns: [{ name: 'minimumScore', type: 'number', nullable: false }] };
     const tool = createTool({
@@ -272,7 +295,7 @@ describe('RunAgentPreviewUseCase', () => {
     it('nullable列はrequiredから外れ、function definitionでnullを許容する', () => {
       const definition = toolToModelDefinition(optionalTool());
       expect(definition.parameters.required).toEqual(['minimumScore']);
-      expect(definition.parameters.properties['region']).toEqual({ anyOf: [{ type: 'string' }, { type: 'null' }] });
+      expect(definition.parameters.properties['region']).toEqual({ anyOf: [{ type: 'string' }, { type: 'null' }], description: expect.stringContaining('JSON string') });
     });
 
     it('省略された引数の条件はスキップされ、他の条件だけで絞り込む', async () => {
@@ -2393,4 +2416,51 @@ describe('RunAgentPreviewUseCase: 複数値のフィルタ引数（in）', () =>
     expect(description).toContain('東京都');
     expect(description).toContain('Omit it to skip this filter.');
   });
+});
+
+
+describe('typed argument retry integration', () => {
+  it('returns an explicit corrected candidate and still requires a new validated model call', async () => {
+    const model = new QueueModel([
+      toolCall('c1', 'score_lookup', { name: 13000, score: 42 }),
+      toolCall('c2', 'score_lookup', { name: '13000', score: 42 }),
+      stop('ok'),
+    ]);
+    const run = await useCase(makeTool(), model).execute(input);
+    expect(run.response).toBe('ok');
+    const feedback = model.requests[1]?.messages.find(message => message.role === 'tool' && message.toolCallId === 'c1');
+    expect(JSON.parse(String(feedback?.content))).toMatchObject({ suggestedArguments: { name: '13000', score: 42 }, expectedParameters: { additionalProperties: false } });
+    expect(run.trace.filter(event => event.kind === 'tool-call')).toHaveLength(2);
+    expect(run.trace.filter(event => event.kind === 'tool-result')).toHaveLength(1);
+  });
+});
+
+
+describe('JSON-only envelope delivery', () => {
+  it('returns valid JSON text while preserving the raw model response in trace', async () => {
+    const content = '{"value":1.2300,"entity":"01000"}';
+    const raw = '```json\n' + content + '\n```';
+    const model = new QueueModel([stop(raw)]);
+    const result = await useCase(makeTool(), model).execute({ ...input, message: '回答はJSONオブジェクトだけで返してください。' });
+    expect(result.response).toBe(content);
+    expect(result.trace.find(event => event.kind === 'model-response')).toMatchObject({ content: raw, normalizedContent: content, normalization: 'json-envelope' });
+    expect(model.requests).toHaveLength(1);
+  });
+  it('retains an explicitly requested Markdown code block', async () => {
+    const raw = '```json\n{}\n```';
+    const result = await useCase(makeTool(), new QueueModel([stop(raw)])).execute({ ...input, message: 'Return only a JSON code block.' });
+    expect(result.response).toBe(raw);
+    expect(result.trace.find(event => event.kind === 'model-response')).not.toHaveProperty('normalization');
+  });
+});
+
+
+describe('request-specific formatting delivery',()=>{
+ it('delivers rounded display rows and preserves full raw values in the trace',async()=>{
+  const tool=createTool({metadata:{internalId:'precision',workingName:'precision',displayName:'Precision',publishName:'precision',version:SemVer.of(1,0,0),owner:'owner',state:'draft',tenant:scope},sideEffect:'read-only',graph:{nodes:[{id:'src',type:'json-source',config:{rows:[{prediction:500.79608593645315}]}}],edges:[]}});
+  const model=new QueueModel([{message:{role:'assistant',content:null,toolCalls:[{id:'p',name:'precision',arguments:{}}]},finishReason:'tool_calls'},{message:{role:'assistant',content:'{"value":500.796086}\n補足: 予測値です。'},finishReason:'stop'}]);
+  const run=await useCase(tool,model).execute({...input,toolId:'precision',message:'予測を小数第6位まで。JSONのみで返してください。'});
+  const message=JSON.parse(String(model.requests[1]?.messages.at(-1)?.content));expect(message.rows[0].prediction).toBe(500.79608593645315);expect(message.displayRows[0].prediction).toBe(500.796086);
+  expect(run.response).toBe('{"value":500.796086}');expect(run.trace.find(e=>e.kind==='tool-result')).toMatchObject({displayDecimalPlaces:6,outputPreview:[{prediction:500.79608593645315}]});expect(run.trace.at(-1)).toMatchObject({normalization:'json-leading-value',content:'{"value":500.796086}\n補足: 予測値です。'});
+ });
 });

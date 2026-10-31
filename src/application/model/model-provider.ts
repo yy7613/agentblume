@@ -103,3 +103,11 @@ export class ModelProviderError extends Error {
     this.name = 'ModelProviderError';
   }
 }
+
+/** A structured response was generated but was incomplete or syntactically invalid; not a transport/auth failure. */
+export class ModelStructuredOutputError extends ModelProviderError {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause);
+    this.name = 'ModelStructuredOutputError';
+  }
+}

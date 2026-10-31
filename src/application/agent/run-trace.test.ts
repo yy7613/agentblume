@@ -4,6 +4,12 @@ import { failureFrom, sanitizeRunTrace } from './run-trace';
 import { AgentRunError, ToolArgumentsError, ToolExecutionError } from './errors';
 
 describe('run trace persistence helpers', () => {
+  it('masks secrets in both original and resolved arguments', () => {
+    expect(sanitizeRunTrace([{ sequence: 0, kind: 'tool-call', name: 'x', arguments: { apiKey: 123 }, resolvedArguments: { apiKey: '123' }, argumentNormalizations: [{ field: 'apiKey', reason: 'exact-domain-string' }] }])[0]).toMatchObject({
+      arguments: { apiKey: '[REDACTED]' }, resolvedArguments: { apiKey: '[REDACTED]' },
+      argumentNormalizations: [{ field: 'apiKey', reason: 'exact-domain-string' }],
+    });
+  });
   it('secret-like keyを再帰maskしDateをISO化する', () => {
     const trace = sanitizeRunTrace([{ sequence: 1, kind: 'tool-call', name: 'x', arguments: {
       password: 'p', nested: { apiKey: 'k', at: new Date('2026-07-03T00:00:00Z') }, safe: 'ok',

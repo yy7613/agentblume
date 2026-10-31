@@ -50,6 +50,17 @@ function argumentProposalJson(): string {
 }
 
 describe('ToolSmithRole', () => {
+  it('declared computations opt into calculate without changing the ordinary lookup vocabulary', async () => {
+    const model = new ScriptedModelProvider();
+    model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' },
+      { message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });
+    const role = new ToolSmithRole(model, bundledPrompts());
+    await role.propose({ toolPlan: { ...toolPlan, computations: [{ outputColumn: 'doubled', intent: 'amount times two' }] }, profile });
+    await role.propose({ toolPlan, profile });
+    expect(model.requests[0]?.messages[0]?.content).toContain('Required row computations');
+    expect(model.requests[0]?.messages[0]?.content).toContain('"outputColumn"');
+    expect(model.requests[1]?.messages[0]?.content).not.toContain('Required row computations');
+  });
   it('温度0・厳格な構造化出力でToolグラフを提案する', async () => {
     const model = new ScriptedModelProvider();
     model.enqueue({ message: { role: 'assistant', content: validProposalJson() }, finishReason: 'stop' });

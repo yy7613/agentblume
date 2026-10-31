@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assertModelProviderContract } from './model-provider.contract';
 import { MastraModelProvider } from './mastra-model-provider';
+import { ModelProviderError, ModelStructuredOutputError } from '../../application/model/model-provider';
 
 /**
  * Mastra内部の fetch は差し替えできないため、OpenAI互換のフェイクサーバーを
@@ -210,6 +211,22 @@ describe('MastraModelProvider', () => {
       messages: [{ role: 'user', content: [{ type: 'image_url', imageUrl: 'not a url' }] }],
     })).rejects.toMatchObject({ message: 'Model request contains an unsupported image reference' });
     expect(fake.bodies).toHaveLength(0);
+  });
+
+  it('custom endpointの思考モードは指定時だけ送り、並行した別providerへ漏らさない', async () => {
+    const fake = await fakeOf([textChunk('ok', 'stop')]);
+    await Promise.all([
+      provider(fake, { enableThinking: false }).complete({ messages: [{ role: 'user', content: 'off' }] }),
+      provider(fake).complete({ messages: [{ role: 'user', content: 'default' }] }),
+      provider(fake, { enableThinking: true }).complete({ messages: [{ role: 'user', content: 'on' }] }),
+      provider(fake, { reasoningEffort: 'low' }).complete({ messages: [{ role: 'user', content: 'low' }] }),
+    ]);
+    const bodyFor = (content: string) => fake.bodies.find(body =>
+      (body['messages'] as { content: string }[]).some(message => message.content === content));
+    expect(bodyFor('off')?.['chat_template_kwargs']).toEqual({ enable_thinking: false });
+    expect(bodyFor('on')?.['chat_template_kwargs']).toEqual({ enable_thinking: true });
+    expect(bodyFor('default')).not.toHaveProperty('chat_template_kwargs');
+    expect(bodyFor('low')?.['chat_template_kwargs']).toEqual({ reasoning_effort: 'low' });
   });
 
   it('structured outputをresponse_formatとしてリクエストへ渡し、strictもワイヤへ載せる', async () => {
@@ -547,5 +564,25 @@ describe('MastraModelProvider: contextWindow（v49。url が LM Studio を指す
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+
+describe('structured response failure classification', () => {
+  it.each(['model did not return valid JSON: unexpected token', 'structured output was incomplete (finish_reason=length); increase the output budget'])('classifies a generated JSON failure: %s', async message => {
+    const fake = await startFake((_body, res) => { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { message, type: 'invalid_response' } })); });
+    const error = await provider(fake).complete({ messages: [], responseFormat: { name: 'plan', strict: true, schema: { type: 'object', properties: {} } } }).catch(error => error);
+    expect(error).toBeInstanceOf(ModelStructuredOutputError);
+    expect(error).toBeInstanceOf(ModelProviderError);
+    expect(fake.bodies).toHaveLength(1); // classification never performs a transport retry
+  });
+  it.each([
+    ['model did not return valid JSON: unexpected token', false],
+    ['Invalid credentials', true], ['Unsupported response_format schema', true], ['connection closed', true],
+  ])('keeps other failures non-retryable: %s / structured=%s', async (message, structured) => {
+    const fake = await startFake((_body, res) => { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { message, type: 'error' } })); });
+    const error = await provider(fake).complete({ messages: [], ...(structured ? { responseFormat: { name: 'plan', strict: true, schema: { type: 'object' as const, properties: {} } } } : {}) }).catch(error => error);
+    expect(error).toBeInstanceOf(ModelProviderError);
+    expect(error).not.toBeInstanceOf(ModelStructuredOutputError);
   });
 });

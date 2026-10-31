@@ -879,6 +879,9 @@ export function createApp(options?: AppOptions): App {
   /** LLM 補助（分析アシスタント・ツール検証のケース提案）を使えるか。モデルはUIからも設定できるため、envだけで判定しない。 */
   const assistantEnabled = async (): Promise<boolean> => {
     if (profile === 'test' || (process.env['ANALYSIS_ASSISTANT_ENABLED'] ?? 'true') === 'false') return false;
+    // 明示注入されたproviderも構成済みモデル。envや保存スロットだけを見ると、
+    // 埋め込み実行ではFactoryの計算式生成だけが無効になり、計算列が脱落する。
+    if (options?.modelProvider !== undefined) return true;
     // 保存済みのmainスロットがあればそれで足りる。
     if ((process.env['LM_STUDIO_MODEL']?.trim() ?? '') !== '') return true;
     try { return (await modelSettingsAdapter.repo.find(modelSettingsScope))?.main !== undefined; }

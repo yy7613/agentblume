@@ -260,10 +260,10 @@ export interface RunNoMatchDto {
 
 export type RunTraceEventDto =
   | { readonly sequence: number; readonly kind: 'model-request'; readonly step: number; readonly toolNames: readonly string[] }
-  | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }
+  | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>>; readonly resolvedArguments?: Readonly<Record<string, unknown>>; readonly argumentNormalizations?: readonly { readonly field: string; readonly reason: 'exact-domain-string' }[] }
   // noMatch は 0 行だった実行だけが持つ（なぜ 0 行かの内訳。モデルへ返した内容と同じ形）。旧Runには無い。
-  | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: string; readonly nodes: readonly { readonly nodeId: string; readonly rowCount: number; readonly truncated: boolean }[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[]; readonly noMatch?: RunNoMatchDto }
-  | { readonly sequence: number; readonly kind: 'model-response'; readonly content: string }
+  | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: string; readonly nodes: readonly { readonly nodeId: string; readonly rowCount: number; readonly truncated: boolean }[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[]; readonly noMatch?: RunNoMatchDto; readonly displayDecimalPlaces?: number }
+  | { readonly sequence: number; readonly kind: 'model-response'; readonly content: string; readonly normalizedContent?: string; readonly normalization?: 'json-envelope' | 'json-leading-value' }
   | { readonly sequence: number; readonly kind: 'agent_call'; readonly toolName: string; readonly agentRef: { readonly internalId: string; readonly version: string }; readonly childRunId: string; readonly ok: boolean; readonly summary: string }
   | { readonly sequence: number; readonly kind: 'compaction'; readonly beforeChars: number; readonly afterChars: number }
   | { readonly sequence: number; readonly kind: 'approval-requested'; readonly tool: string; readonly sideEffect: SideEffectDto; readonly prompt: string }
@@ -940,6 +940,7 @@ export interface FactoryToolPlanDto {
   readonly sideEffect: SideEffectDto;
   readonly outputShape?: string;
   readonly argumentSummary?: string;
+  readonly computations?: readonly { readonly outputColumn: string; readonly intent: string }[];
   /** このToolが主データソースへ join で束ねる追加データソース（未指定なら単一ソースのTool）。 */
   readonly additionalDataSourceIds?: readonly string[];
 }
@@ -1278,6 +1279,7 @@ export interface ToolCheckAssertionResultDto {
   readonly actual: string;
 }
 export interface ToolCheckRunResultDto {
+  readonly argumentNormalizations?: readonly { readonly field: string; readonly reason: 'exact-domain-string' }[];
   readonly tool: { readonly internalId: string; readonly version: string; readonly publishName: string };
   /** passed = 全期待合格、failed = 期待不合格あり、error = 実行自体が失敗（引数不正・ノードエラー等）。 */
   readonly status: 'passed' | 'failed' | 'error';

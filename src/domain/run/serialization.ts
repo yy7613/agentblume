@@ -27,10 +27,10 @@ const noMatchSchema = z.object({
 const failureToolRefSchema = z.object({ internalId: z.string().min(1), version: z.string().optional(), publishName: z.string().optional() });
 const traceSchema = z.discriminatedUnion('kind', [
   z.object({ sequence: z.number().int().positive(), kind: z.literal('model-request'), step: z.number().int().positive(), toolNames: z.array(z.string()) }),
-  z.object({ sequence: z.number().int().positive(), kind: z.literal('tool-call'), name: z.string(), arguments: z.record(z.string(), z.unknown()) }),
+  z.object({ sequence: z.number().int().positive(), kind: z.literal('tool-call'), name: z.string(), arguments: z.record(z.string(), z.unknown()), resolvedArguments: z.record(z.string(), z.unknown()).optional(), argumentNormalizations: z.array(z.object({ field: z.string(), reason: z.literal('exact-domain-string') })).optional() }),
   // noMatch は後から足した任意フィールド。0 行だった実行だけが持ち、旧 Run のトレースには入っていない。
-  z.object({ sequence: z.number().int().positive(), kind: z.literal('tool-result'), name: z.string(), terminalId: z.string(), nodes: z.array(nodeOutputSchema), outputPreview: z.array(z.record(z.string(), z.unknown())), noMatch: noMatchSchema.optional() }),
-  z.object({ sequence: z.number().int().positive(), kind: z.literal('model-response'), content: z.string() }),
+  z.object({ sequence: z.number().int().positive(), kind: z.literal('tool-result'), name: z.string(), terminalId: z.string(), nodes: z.array(nodeOutputSchema), outputPreview: z.array(z.record(z.string(), z.unknown())), noMatch: noMatchSchema.optional(), displayDecimalPlaces: z.number().int().min(0).max(15).optional() }),
+  z.object({ sequence: z.number().int().positive(), kind: z.literal('model-response'), content: z.string(), normalizedContent: z.string().optional(), normalization: z.enum(['json-envelope', 'json-leading-value']).optional() }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('agent_call'), toolName: z.string(), agentRef: z.object({ internalId: z.string(), version: z.string() }), childRunId: z.string(), ok: z.boolean(), summary: z.string() }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('compaction'), beforeChars: z.number().int().nonnegative(), afterChars: z.number().int().nonnegative() }),
   z.object({ sequence: z.number().int().positive(), kind: z.literal('approval-requested'), tool: z.string(), sideEffect: z.enum(SIDE_EFFECTS as [SideEffect, ...SideEffect[]]), prompt: z.string() }),

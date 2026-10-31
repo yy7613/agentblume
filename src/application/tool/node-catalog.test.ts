@@ -31,8 +31,8 @@ describe('設計アシスタントのノードカタログ', () => {
   const business = businessNodeTypes();
   const registryTypes = createDefaultRegistry().types().filter((type) => !business.has(type));
 
-  it('正常: パレットの 29 種すべてが載っている（種別は昇順で重複なし）', () => {
-    expect(DESIGN_NODE_TYPES).toHaveLength(29);
+  it('正常: パレットの 30 種すべてが載っている（種別は昇順で重複なし）', () => {
+    expect(DESIGN_NODE_TYPES).toHaveLength(30);
     expect(new Set(DESIGN_NODE_TYPES).size).toBe(DESIGN_NODE_TYPES.length);
     expect([...DESIGN_NODE_TYPES]).toEqual([...DESIGN_NODE_TYPES].sort());
   });

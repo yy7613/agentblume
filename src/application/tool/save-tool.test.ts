@@ -627,3 +627,23 @@ describe('SaveToolUseCase 境界・異常系（function 名・agent-input 契約
     expect(repo.size).toBe(0);
   });
 });
+
+
+describe('linear-model prediction contract at save time', () => {
+  function input(type: 'number' | 'string' = 'number', field = 'p'): SaveToolInput {
+    const inputSchema: Schema = { columns: [{ name: 'p', type, nullable: true }] };
+    return makeInput({ inputSchema, graph: { nodes: [
+      { id: 'src', type: 'json-source', config: { rows: [{ x: 1, y: 2 }, { x: 2, y: 4 }] } },
+      { id: 'fit', type: 'linear-model', config: { x: 'x', y: 'y', predictionBinding: { source: 'agent-input', field } } },
+      { id: 'args', type: 'agent-input', config: { schema: inputSchema, sample: {} } },
+    ], edges: [{ from: 'src', to: 'fit' }] } });
+  }
+  it('saves valid numeric bindings and rejects unknown fields or contradictory argument types before saving', async () => {
+    const { usecase, repo } = makeSut();
+    await expect(usecase.execute(input('number','unknown'))).rejects.toThrow(/prediction binding references unknown field/);
+    await expect(usecase.execute(input('string'))).rejects.toThrow(/requires a number argument/);
+    await expect(usecase.execute({ ...input(), inputSchema: undefined })).rejects.toThrow(/require an inputSchema/);
+    expect(repo.size).toBe(0);
+    await expect(usecase.execute(input())).resolves.toMatchObject({ inputSchema: { columns: [{ name: 'p', type: 'number', nullable: true }] } });
+  });
+});

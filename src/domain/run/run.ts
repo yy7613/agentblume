@@ -63,10 +63,10 @@ export interface RunNoMatch {
 
 export type RunTraceEvent =
   | { readonly sequence: number; readonly kind: 'model-request'; readonly step: number; readonly toolNames: readonly string[] }
-  | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>> }
+  | { readonly sequence: number; readonly kind: 'tool-call'; readonly name: string; readonly arguments: Readonly<Record<string, unknown>>; readonly resolvedArguments?: Readonly<Record<string, unknown>>; readonly argumentNormalizations?: readonly { readonly field: string; readonly reason: 'exact-domain-string' }[] }
   /** `noMatch` は 0 行だった実行だけが持つ（後から足した任意フィールド。旧 Run には無い）。 */
-  | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: TerminalId; readonly nodes: readonly RunNodeOutput[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[]; readonly noMatch?: RunNoMatch }
-  | { readonly sequence: number; readonly kind: 'model-response'; readonly content: string }
+  | { readonly sequence: number; readonly kind: 'tool-result'; readonly name: string; readonly terminalId: TerminalId; readonly nodes: readonly RunNodeOutput[]; readonly outputPreview: readonly Readonly<Record<string, unknown>>[]; readonly noMatch?: RunNoMatch; readonly displayDecimalPlaces?: number }
+  | { readonly sequence: number; readonly kind: 'model-response'; readonly content: string; readonly normalizedContent?: string; readonly normalization?: 'json-envelope' | 'json-leading-value' }
   | { readonly sequence: number; readonly kind: 'agent_call'; readonly toolName: string; readonly agentRef: { readonly internalId: AgentId; readonly version: string }; readonly childRunId: RunId; readonly ok: boolean; readonly summary: string }
   /** ランタイムハーネスの自動圧縮が走ったモデル往復（beforeChars → afterChars）。 */
   | { readonly sequence: number; readonly kind: 'compaction'; readonly beforeChars: number; readonly afterChars: number }

@@ -1,0 +1,288 @@
+{
+  "$schema": "./tool-template.schema.json",
+  "formatVersion": 1,
+  "id": "linear-model",
+  "version": "1.1.0",
+  "title": {
+    "ja": "単回帰・共分散・相関",
+    "en": "Simple linear regression, covariance and correlation"
+  },
+  "summary": {
+    "ja": "単一データソースの数値2列から、グループ別OLS単回帰・共分散・Pearson相関を決定的に計算する。切片あり/原点固定、SSE、自由度、残差標準偏差、centered/uncentered R²を区別する。 指定観測の実測値・当てはめ値・個別残差も全体回帰後に取得できる。",
+    "en": "Grouped ordinary least squares, Pearson correlation and sample covariance for two numeric columns. Includes intercept or through-origin models, residual diagnostics, predictions and both R-squared conventions. Also retrieves observed/fitted values and an individual residual by observation_index after fitting the full group."
+  },
+  "whenToUse": {
+    "ja": [
+      "数値2列の回帰係数、相関、分散・共分散が必要",
+      "時点列のない観測データにも使用できる"
+    ],
+    "en": [
+      "OLS regression, covariance, variance or Pearson correlation of two numeric columns",
+      "Works without a period column"
+    ]
+  },
+  "notFor": {
+    "ja": [
+      "因果効果の証明",
+      "多変量回帰・非線形回帰"
+    ],
+    "en": [
+      "Causal identification",
+      "Multiple or nonlinear regression"
+    ]
+  },
+  "tags": [
+    "statistics"
+  ],
+  "sources": {
+    "min": 1,
+    "max": 1
+  },
+  "slots": [
+    {
+      "name": "source",
+      "kind": "dataSource",
+      "label": {
+        "ja": "データソース",
+        "en": "Source"
+      }
+    },
+    {
+      "name": "xColumn",
+      "kind": "column",
+      "label": {
+        "ja": "説明変数 x",
+        "en": "Predictor x"
+      },
+      "source": "source",
+      "role": "value"
+    },
+    {
+      "name": "yColumn",
+      "kind": "column",
+      "label": {
+        "ja": "目的変数 y",
+        "en": "Response y"
+      },
+      "source": "source",
+      "role": "value",
+      "distinctFrom": [
+        "xColumn"
+      ]
+    },
+    {
+      "name": "groupColumn",
+      "kind": "column",
+      "label": {
+        "ja": "グループ列（任意）",
+        "en": "Optional group/category column"
+      },
+      "source": "source",
+      "role": "category",
+      "optional": true
+    },
+    {
+      "name": "interceptMode",
+      "kind": "choice",
+      "label": {
+        "ja": "切片の扱い",
+        "en": "Intercept convention"
+      },
+      "default": "include",
+      "options": [
+        {
+          "value": "include",
+          "label": {
+            "ja": "切片あり",
+            "en": "Include intercept"
+          }
+        },
+        {
+          "value": "zero",
+          "label": {
+            "ja": "切片0に固定",
+            "en": "Through origin"
+          }
+        }
+      ]
+    }
+  ],
+  "arguments": [
+    {
+      "name": "categories",
+      "type": "string",
+      "nullable": true,
+      "when": "groupColumn",
+      "sample": {
+        "$profile": "firstValuesCsv:groupColumn:2"
+      },
+      "description": {
+        "ja": "対象グループをカンマ区切りで指定。省略で全グループ。",
+        "en": "Comma-separated group values; omit for all groups."
+      }
+    },
+    {
+      "name": "exclude_x",
+      "type": "number",
+      "nullable": true,
+      "sample": 0,
+      "description": {
+        "ja": "xがこの値の観測だけを除外。省略で除外なし。",
+        "en": "Exclude observations whose x equals this number. Omit for no exclusion."
+      }
+    },
+    {
+      "name": "exclude_y",
+      "type": "number",
+      "nullable": true,
+      "sample": 0,
+      "description": {
+        "ja": "yがこの値の観測だけを除外。省略で除外なし。",
+        "en": "Exclude observations whose y equals this number. Omit for no exclusion."
+      }
+    },
+    {
+      "name": "predict_x",
+      "type": "number",
+      "nullable": true,
+      "sample": 0,
+      "description": {
+        "ja": "この説明変数xで予測値を計算。省略で予測なし。",
+        "en": "Compute prediction at this predictor x; omit for no prediction."
+      }
+    },
+    {
+      "name": "observation_index",
+      "type": "number",
+      "nullable": true,
+      "sample": 1,
+      "description": {
+        "ja": "群内の入力行順で1始まりの観測番号。全有効ペアで回帰した後、この観測の実測値・当てはめ値・残差を返す。除外後の行順。任意のID列とは異なる。省略で観測照会なし。",
+        "en": "One-based input row ordinal within a group after exclusion filters. Fit ALL valid pairs first, then return observationX, observationY, fitted and residual=observed y minus fitted. This is not an arbitrary ID column. Omit for no observation query."
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "id": "src",
+      "type": {
+        "$sourceType": "source"
+      },
+      "config": {
+        "dataSourceId": {
+          "$slot": "source"
+        }
+      }
+    },
+    {
+      "id": "f_category",
+      "type": "filter",
+      "when": "groupColumn",
+      "config": {
+        "column": {
+          "$slot": "groupColumn"
+        },
+        "op": "in",
+        "values": {
+          "$profile": "firstValues:groupColumn:2"
+        },
+        "valueBinding": {
+          "$argument": "categories"
+        }
+      }
+    },
+    {
+      "id": "f_x",
+      "type": "filter",
+      "config": {
+        "column": {
+          "$slot": "xColumn"
+        },
+        "op": "neq",
+        "value": 0,
+        "valueBinding": {
+          "$argument": "exclude_x"
+        }
+      }
+    },
+    {
+      "id": "f_y",
+      "type": "filter",
+      "config": {
+        "column": {
+          "$slot": "yColumn"
+        },
+        "op": "neq",
+        "value": 0,
+        "valueBinding": {
+          "$argument": "exclude_y"
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "linear-model",
+      "config": {
+        "x": {
+          "$slot": "xColumn"
+        },
+        "y": {
+          "$slot": "yColumn"
+        },
+        "groupBy": {
+          "$each": "groupColumn",
+          "as": "g",
+          "item": "{{g}}"
+        },
+        "intercept": {
+          "$slot": "interceptMode"
+        },
+        "predictAt": 0,
+        "predictionBinding": {
+          "$argument": "predict_x"
+        },
+        "observationIndex": null,
+        "observationBinding": {
+          "$argument": "observation_index"
+        }
+      }
+    },
+    {
+      "id": "out",
+      "type": "agent-output",
+      "config": {
+        "shape": "rows",
+        "format": "json",
+        "maxRows": 100,
+        "maxBytes": 65536,
+        "overflow": "error"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "src",
+      "to": "f_category"
+    },
+    {
+      "from": "f_category",
+      "to": "f_x"
+    },
+    {
+      "from": "f_x",
+      "to": "f_y"
+    },
+    {
+      "from": "f_y",
+      "to": "model"
+    },
+    {
+      "from": "model",
+      "to": "out"
+    }
+  ],
+  "description": {
+    "ja": "グループごとに y=intercept+slope*x の最小二乗回帰を計算します。nは有効ペア数、missingPairsは欠測除外数。sampleVarianceX/Y・sampleCovarianceはn-1の標本分散・共分散、correlationはPearson相関です。sseは残差平方和、dfは切片ありn-2・原点固定n-1、residualStddev=sqrt(sse/df)。r2は切片ありでcenteredR2、原点固定でuncenteredR2を採用し両方を明示します。識別できなければstatus=not_identifiableと係数null。predict_xを渡すとpredictionX・predictionを丸めなしの係数から計算します。相関から因果を断定しないでください。 observation_indexで指定した観測のobservationX/observationY/fitted/residualを返す。回帰は全有効ペアを使い、観測だけに絞ってから再計算しない。",
+    "en": "Returns one row per group. slope/intercept fit y=intercept+slope*x. n counts finite pairs; missingPairs are excluded pairwise. sampleVarianceX/Y and sampleCovariance use n-1; correlation is Pearson. sse is residual sum of squares; df=n-2 with intercept, n-1 through origin; residualStddev=sqrt(sse/df). r2 uses centeredR2 for include and uncenteredR2 for zero; both conventions are returned explicitly. status=not_identifiable and null coefficients when x cannot identify the model. Never infer causation. No intermediate rounding. Pass predict_x to obtain predictionX and prediction directly from the fitted model, without rounding coefficients or mental arithmetic. Pass observation_index to obtain the original observed pair, fitted value and residual for a specific row without refitting on that row. Use residual directly; never guess observed y from coefficients."
+  }
+}

@@ -16,6 +16,7 @@ import { isRecord } from '../../domain/shared/assert';
 import { ModelRouterLanguageModel, modelSupportsAttachments } from '@mastra/core/llm';
 import {
   ModelProviderError,
+  ModelStructuredOutputError,
   type JsonObject,
   type ModelCapability,
   type ModelCompletion,
@@ -45,6 +46,10 @@ export interface MastraModelProviderOptions {
   readonly idleTimeoutMs?: number;
   /** 指定時のみ maxOutputTokens をリクエストへ含める（推論の暴走を抑える）。 */
   readonly maxTokens?: number;
+  /** カスタムOpenAI互換エンドポイントでのみ、chat_template_kwargs.enable_thinkingを明示する。省略時はサーバーの既定を維持。 */
+  readonly enableThinking?: boolean;
+  /** カスタムOpenAI互換エンドポイントのchat_template_kwargs.reasoning_effort。省略時は変更しない。 */
+  readonly reasoningEffort?: 'low' | 'medium' | 'high';
   /** 既定の capabilities を上書きする。 */
   readonly capabilities?: readonly ModelCapability[];
 }
@@ -116,6 +121,8 @@ interface TunableModelConfig {
 interface RequestTuning {
   /** `response_format.json_schema.strict` へ載せる値。responseFormat 未指定なら undefined。 */
   readonly strict: boolean | undefined;
+  readonly enableThinking: boolean | undefined;
+  readonly reasoningEffort: 'low' | 'medium' | 'high' | undefined;
 }
 
 const requestTuning = new AsyncLocalStorage<RequestTuning>();
@@ -128,6 +135,14 @@ const requestTuning = new AsyncLocalStorage<RequestTuning>();
  */
 function tuneRequestBody(body: Record<string, unknown>): Record<string, unknown> {
   const tuned: Record<string, unknown> = { ...body };
+  const enableThinking = requestTuning.getStore()?.enableThinking;
+  const reasoningEffort = requestTuning.getStore()?.reasoningEffort;
+  if (enableThinking !== undefined || reasoningEffort !== undefined) {
+    const kwargs = isRecord(tuned['chat_template_kwargs']) ? tuned['chat_template_kwargs'] : {};
+    tuned['chat_template_kwargs'] = { ...kwargs,
+      ...(enableThinking === undefined ? {} : { enable_thinking: enableThinking }),
+      ...(reasoningEffort === undefined ? {} : { reasoning_effort: reasoningEffort }) };
+  }
   if (tuned['stream'] === true) tuned['stream_options'] = { include_usage: true };
   const strict = requestTuning.getStore()?.strict;
   const format = tuned['response_format'];
@@ -523,13 +538,15 @@ export class MastraModelProvider implements ModelProviderPort {
       });
       // strict は AI SDK の CallOptions に無いので、送信直前のボディ補正（tuneRequestBody）へ
       // 非同期コンテキストで受け渡す。complete() は並行に走るためインスタンス変数では持てない。
-      const tuning: RequestTuning = { strict: request.responseFormat?.strict };
+      const tuning: RequestTuning = { strict: request.responseFormat?.strict,
+        enableThinking: this.spec.url === undefined ? undefined : this.options.enableThinking,
+        reasoningEffort: this.spec.url === undefined ? undefined : this.options.reasoningEffort };
       // doStream() 自体も abort と race させる（接続確立前に吊っても必ず脱出する）。
       const { stream } = await Promise.race([requestTuning.run(tuning, call), aborted]);
       const state = await readStream(stream, aborted, armIdle);
       // 認証解決失敗やプロバイダ側エラーは例外ではなく error パートで届く。
       if (state.error !== undefined) {
-        throw new ModelProviderError(this.redact(`Model request failed${detailOf(state.error)}`), state.error);
+        throw this.providerFailure(state.error, request.responseFormat !== undefined);
       }
       // 空SSE・即[DONE]・プロキシの空応答は finish パートだけが届く。ここで止めないと
       // 「content が空文字の成功」として Run が succeeded で確定してしまう。
@@ -544,12 +561,20 @@ export class MastraModelProvider implements ModelProviderPort {
         throw new ModelProviderError(`Model request timed out: exceeded total limit ${this.timeoutMs}ms`, error);
       }
       if (controller.signal.aborted) throw new ModelProviderError('Model request was aborted or timed out', error);
-      throw new ModelProviderError(this.redact(`Model request failed${detailOf(error)}`), error);
+      throw this.providerFailure(error, request.responseFormat !== undefined);
     } finally {
       clearTimeout(total);
       if (idle !== undefined) clearTimeout(idle);
       signal?.removeEventListener('abort', abort);
     }
+  }
+
+  private providerFailure(error: unknown, structured: boolean): ModelProviderError {
+    const message = this.redact(`Model request failed${detailOf(error)}`);
+    // Narrow compatibility mapping for servers that reject generated JSON before returning a completion.
+    // Unknown failures, unsupported schemas, authentication, cancellation and timeouts remain non-retryable.
+    const generatedJsonFailure = /^Model request failed: (?:model did not return valid JSON:|structured output was incomplete \(finish_reason=length\))/u.test(message);
+    return structured && generatedJsonFailure ? new ModelStructuredOutputError(message, error) : new ModelProviderError(message, error);
   }
 
   private model(): ModelRouterLanguageModel {

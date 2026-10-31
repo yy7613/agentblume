@@ -37,7 +37,7 @@ function sampleText(values: readonly JsonCell[]): string {
     return shown;
   }).join(', ');
 }
-const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'ai-judge', 'rename', 'cast', 'calculate', 'join', 'sort', 'fill-null', 'replace', 'summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output']);
+const DIALOG_NODE_TYPES = new Set<ToolNodeType>(['agent-input', 'json-source', 'csv-source', 'database-source', 'web-search-source', 'ai-judge', 'rename', 'cast', 'calculate', 'join', 'sort', 'fill-null', 'replace', 'summary-statistics', 'linear-model', 'correlation-analysis', 'time-series-analysis', 'outlier-filter', 'agent-output', 'workspace-output', 'graph-output', 'chart-output']);
 
 export function NodeInspector({ client }: { readonly client?: ToolApiClient }) {
   const selectedNodeId = useToolBuilderStore((state) => state.selectedNodeId);
@@ -384,17 +384,24 @@ function NodeConfigDialog({ type, initial, nodeId, graph, analysisAssistantAvail
   </div>;
 }
 
-function isAnalysisType(type: ToolNodeType): type is 'summary-statistics' | 'correlation-analysis' | 'time-series-analysis' | 'outlier-filter' { return ['summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter'].includes(type); }
+function isAnalysisType(type: ToolNodeType): type is 'summary-statistics' | 'linear-model' | 'correlation-analysis' | 'time-series-analysis' | 'outlier-filter' { return ['summary-statistics', 'linear-model', 'correlation-analysis', 'time-series-analysis', 'outlier-filter'].includes(type); }
 
-function AnalysisFields({ type, config, setConfig, columns }: { readonly type: 'summary-statistics' | 'correlation-analysis' | 'time-series-analysis' | 'outlier-filter'; readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[] }) {
+function AnalysisFields({ type, config, setConfig, columns }: { readonly type: 'summary-statistics' | 'linear-model' | 'correlation-analysis' | 'time-series-analysis' | 'outlier-filter'; readonly config: Readonly<Record<string, unknown>>; readonly setConfig: (patch: Record<string, unknown>) => void; readonly columns: readonly ColumnDto[] }) {
   const { text } = useI18n();
   const numeric = columns.filter((column) => column.type === 'number');
   const selected = (key: string) => Array.isArray(config[key]) ? (config[key] as string[]) : [];
   const setSelected = (key: string, values: string[]) => setConfig({ [key]: values });
+  if (type === 'linear-model') return <>
+    {(['x', 'y'] as const).map(key => <label key={key}>{key === 'x' ? text('Predictor x', '説明変数 x') : text('Response y', '目的変数 y')}<select value={String(config[key] ?? '')} onChange={event => setConfig({ [key]: event.target.value })}><option value="">{text('Select a numeric column', '数値列を選択')}</option>{numeric.map(column => <option key={column.name} value={column.name}>{column.name}</option>)}</select></label>)}
+    <ColumnMultiSelect label={text('Group columns', 'グループ列')} columns={columns} value={selected('groupBy')} onChange={next => setSelected('groupBy', next)} hint={text('Optional', '任意')} />
+    <label>{text('Intercept', '切片')}<select value={String(config['intercept'] ?? 'include')} onChange={event => setConfig({ intercept: event.target.value })}><option value="include">{text('Include', '切片あり')}</option><option value="zero">{text('Fixed at zero', '0に固定')}</option></select></label>
+    <label>{text('Prediction x (optional)', '予測する x（任意）')}<input type="number" value={config['predictAt'] == null ? '' : Number(config['predictAt'])} onChange={event => setConfig({ predictAt: event.target.value === '' ? null : Number(event.target.value) })} /></label>
+      <label>{text('Observation ordinal (optional)', '観測の行番号（1始まり・任意）')}<input type="number" min="1" step="1" value={config['observationIndex'] == null ? '' : Number(config['observationIndex'])} onChange={event => setConfig({ observationIndex: event.target.value === '' ? null : Number(event.target.value) })} /></label>
+  </>;
   if (type === 'summary-statistics') return <>
     <ColumnMultiSelect label={text('Numeric columns', '数値列')} columns={numeric} value={selected('columns')} onChange={(next) => setSelected('columns', next)} />
     <ColumnMultiSelect label={text('Group columns', 'グループ列')} columns={columns} value={selected('groupBy')} onChange={(next) => setSelected('groupBy', next)} hint={text('Optional', '任意')} />
-    <ColumnMultiSelect label={text('Metrics', '統計量')} columns={['valid-count','missing-count','unique-count','sum','mean','stddev','min','q1','median','q3','max'].map((name) => ({ name, type: 'number' as DataType, nullable: false }))} value={selected('metrics')} onChange={(next) => setSelected('metrics', next)} />
+    <ColumnMultiSelect label={text('Metrics', '統計量')} columns={['valid-count','missing-count','unique-count','sum','mean','stddev','variance','sample-stddev','population-stddev','lag1-autocorrelation','min','q1','median','q3','max'].map((name) => ({ name, type: 'number' as DataType, nullable: false }))} value={selected('metrics')} onChange={(next) => setSelected('metrics', next)} />
     <label>{text('Standard deviation', '標準偏差')}<select value={String(config['variance'] ?? 'sample')} onChange={(event) => setConfig({ variance: event.target.value })}><option value="sample">sample</option><option value="population">population</option></select></label>
   </>;
   if (type === 'correlation-analysis') return <>

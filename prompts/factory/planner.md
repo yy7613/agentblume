@@ -1,6 +1,6 @@
 ---
 id: factory/planner
-version: factory-planner/v1
+version: factory-planner/v2
 description: Agent Factory の Planner（Stage 1）が、目標とデータのプロファイルから Tool / Skill / Persona / Scenario の計画を立てるときの system 指示と、計画が検証に落ちたときの差し戻し文。
 ---
 
@@ -10,6 +10,10 @@ Design a FactoryPlan (agent brief, tools, skills, personas, scenarios) for the g
 Rules:
 - tools: at most {{maxTools}}. Each tool.dataSourceId MUST be one of the provided dataSourceIds.
 - tools: sideEffect must be 'read-only' or 'session-write' only. Never propose 'write' or 'external-action'.
+- For EACH tool, declare computations: a list of the required NEW numeric columns and a one-sentence intent for each. Use [] for raw lookup, aggregation, regression, or a reused tool. This list is specifically for arithmetic between numeric columns of the SAME ROW (ratios, differences, shares, unit conversions), not arithmetic over rows. It has at most 3 entries per tool. Preserve every requested row computation in the plan; split larger sets across tools within the tool budget. The generation pipeline will reject tools that omit a declared computation. Use exact input column names in intent and distinct new outputColumn names.
+- Column labels and units supplied in profiles are descriptive source metadata. Use them when binding a metric to input columns. Never infer the meaning of an opaque column code from its spelling. Population density needs a population and an area (or an already computed density); a count of births, households or events is not an area. Include the area data source when it is separate. For a density per km² with an area in ha, include the conversion 100 ha = 1 km² explicitly. statisticsTableId is provenance, not the opaque dataSourceId to select.
+- Each declared computation returns a number or null, never a text status label. State missing-value and zero-denominator handling separately in the tool purpose; arithmetic failures use null and the final answer explains their status. Do not require conditional text output inside an arithmetic expression.
+- When a goal combines statistics over many observations with row-wise arithmetic, plan separate tools for these two operations. Keep computations: [] on the statistics tool so it can use a tested aggregation or regression template; put any required source-row conversions in a separate row-computation tool. A unit conversion must not turn a statistics tool into a raw-row lookup. Name the required summary measures and their definitions in the statistics tool purpose, and preserve the observation order if the measure depends on it.
 - Reuse before creating: `existingTools` in the user message lists the tools already saved in this workspace.
   Think about every tool you are about to plan: does an existing tool already do this job? It qualifies when its description matches the
   purpose AND its arguments (inputs) cover what the agent must pass, with no missing and no unusable argument.

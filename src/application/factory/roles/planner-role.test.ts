@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { bundledPrompts } from '../../../test-support/prompts';
 import { ScriptedModelProvider } from '../../../adapters/model/scripted-model-provider';
 import { DEFAULT_FACTORY_OPTIONS, type FactoryGoalInput } from '../../../domain/factory/factory-run';
+import { ModelProviderError, ModelStructuredOutputError } from '../../model/model-provider';
 import type { ModelCapability, ModelCompletion, ModelCompletionRequest, ModelProviderPort } from '../../model/model-provider';
 import type { DataProfile } from '../profile-data-sources';
 import type { ExistingToolCatalog } from '../tool-catalog';
@@ -646,16 +647,16 @@ async function systemMessagesOf(input: Parameters<PlannerRole['propose']>[0]): P
 describe('PlannerRole の system 文', () => {
   const base = { goal: fixtureGoal, profiles: [fixtureProfile('ds-1', 'Wage', 'csv')], dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS } as const;
 
-  it('従来どおり: 目標とプロファイルだけの計画は、移行前と一字一句同じ system 文になる', async () => {
+  it('計算要件を含む基本計画の system 文を固定する', async () => {
     expect((await systemMessagesOf(base)).system).toBe(promptFixture('planner.base'));
   });
 
-  it('従来どおり: テンプレートを渡したときだけ足す 1 行も、移行前と一字一句同じ', async () => {
+  it('テンプレートを渡したときだけ専用の節を加える', async () => {
     const { system } = await systemMessagesOf({ ...base, templates: [{ id: 'period-series', summary: '推移' }] });
     expect(system).toBe(promptFixture('planner.templates'));
   });
 
-  it('従来どおり: 既存Agent強化モードの規則と、options 由来の件数も移行前と一字一句同じ', async () => {
+  it('既存Agent強化モードの規則と options の件数を固定する', async () => {
     const { system } = await systemMessagesOf({
       ...base,
       options: { ...DEFAULT_FACTORY_OPTIONS, personaCount: 3, scenarioCount: 5 },
@@ -664,7 +665,7 @@ describe('PlannerRole の system 文', () => {
     expect(system).toBe(promptFixture('planner.enhancement'));
   });
 
-  it('従来どおり: テンプレートと強化モードを同時に渡しても、節の順序は移行前と同じ', async () => {
+  it('テンプレートと強化モードを同時に渡すときの節の順序を固定する', async () => {
     const { system } = await systemMessagesOf({
       ...base,
       templates: [{ id: 'period-series', summary: '推移' }],
@@ -676,4 +677,53 @@ describe('PlannerRole の system 文', () => {
   it('従来どおり: 検証に落ちたときの差し戻し文も、理由を差し込んだ形まで移行前と同じ', async () => {
     expect((await systemMessagesOf(base)).repair).toBe(promptFixture('planner.repair'));
   });
+});
+
+
+describe('PlannerRole bounded structured-output recovery', () => {
+  const input = { goal, profiles, dataSourceIds: ['ds-1'], options: DEFAULT_FACTORY_OPTIONS };
+  const success: ModelCompletion = { message: { role: 'assistant', content: validPlanJson() }, finishReason: 'stop' };
+  const invalid: ModelCompletion = { message: { role: 'assistant', content: validPlanJson({ sideEffect: 'write' }) }, finishReason: 'stop' };
+  function model() {
+    const complete = vi.fn<ModelProviderPort['complete']>();
+    return { complete, capabilities: (): readonly ModelCapability[] => ['structured-output'] };
+  }
+  it('regenerates once under the original schema and does not expose provider details', async () => {
+    const provider = model();provider.complete.mockRejectedValueOnce(new ModelStructuredOutputError('secret provider detail')).mockResolvedValueOnce(success);
+    expect((await new PlannerRole(provider, bundledPrompts()).propose(input)).tools).toHaveLength(1);
+    expect(provider.complete).toHaveBeenCalledTimes(2);
+    const first=provider.complete.mock.calls[0]![0],second=provider.complete.mock.calls[1]![0];
+    expect(second.responseFormat).toEqual(first.responseFormat);
+    expect(second.messages.at(-1)?.content).toContain('complete, compact plan');
+    expect(JSON.stringify(second)).not.toContain('secret provider detail');
+  });
+  it.each(['format-format', 'format-validation', 'validation-format'])('shares two total attempts across %s', async kind => {
+    const provider = model();
+    for (const failure of kind.split('-')) if (failure === 'format') provider.complete.mockRejectedValueOnce(new ModelStructuredOutputError('bad JSON'));else provider.complete.mockResolvedValueOnce(invalid);
+    await expect(new PlannerRole(provider,bundledPrompts()).propose(input)).rejects.toThrow();
+    expect(provider.complete).toHaveBeenCalledTimes(2);
+  });
+  it('never retries transport/auth failures or an aborted response', async () => {
+    for (const aborted of [false,true]) {
+      const provider=model(),controller=new AbortController();if(aborted)controller.abort();
+      const error=aborted?new ModelStructuredOutputError('bad JSON'):new ModelProviderError('credentials rejected');
+      provider.complete.mockRejectedValueOnce(error);
+      await expect(new PlannerRole(provider,bundledPrompts()).propose(input,controller.signal)).rejects.toBe(error);
+      expect(provider.complete).toHaveBeenCalledTimes(1);
+    }
+  });
+});
+
+
+describe('Planner repairs a proven metric/source contradiction',()=>{
+ it('uses descriptive units to reject a count as the area denominator within two attempts',async()=>{
+  const numeric=(name:string,label:string,unit:string)=>({name,label,unit,type:'number',nullable:false});
+  const p:DataProfile={...profiles[0]!,dataSourceId:'pop',columns:[numeric('people','Population','人'),numeric('born','Births','人')]};
+  const land:DataProfile={...profiles[0]!,dataSourceId:'land',columns:[numeric('surface','Area','ha')]};
+  const plan=JSON.parse(validPlanJson({dataSourceId:'pop'}));plan.tools[0].purpose='Compute population density';plan.tools[0].computations=[{outputColumn:'density',intent:'people / born'}];
+  const fixed=structuredClone(plan);fixed.tools[0].additionalDataSourceIds=['land'];fixed.tools[0].computations[0].intent='people / surface * 100';
+  const model=new ScriptedModelProvider();model.enqueue({message:{role:'assistant',content:JSON.stringify(plan)},finishReason:'stop'},{message:{role:'assistant',content:JSON.stringify(fixed)},finishReason:'stop'});
+  const result=await new PlannerRole(model,bundledPrompts()).propose({goal,profiles:[p,land],dataSourceIds:['pop','land'],options:DEFAULT_FACTORY_OPTIONS});
+  expect(result.tools[0]?.additionalDataSourceIds).toContain('land');expect(model.requests).toHaveLength(2);expect(model.requests[1]?.messages.at(-1)?.content).toContain('land.surface');
+ });
 });

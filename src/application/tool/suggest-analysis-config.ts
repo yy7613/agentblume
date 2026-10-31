@@ -4,7 +4,7 @@ import type { PromptCatalogPort, PromptSpec } from '../prompt/prompt-catalog-por
 import type { ToolGraph } from '../../domain/etl/graph';
 import type { NodeId } from '../../domain/etl/ids';
 
-const ANALYSIS_TYPES = new Set(['summary-statistics', 'correlation-analysis', 'time-series-analysis', 'outlier-filter']);
+const ANALYSIS_TYPES = new Set(['summary-statistics', 'linear-model', 'correlation-analysis', 'time-series-analysis', 'outlier-filter']);
 
 /** 文の置き場所（v48 / ADR-0052）。 */
 export const ANALYSIS_CONFIG_PROMPT: PromptSpec = { id: 'tool/analysis-config', sections: ['system'] };

@@ -25,6 +25,13 @@ export interface FactoryToolReuse {
 /** 1つのToolが結合してよい追加データソースの上限（主データソースを含めて最大3ソース）。 */
 export const MAX_ADDITIONAL_DATA_SOURCES = 2;
 
+/** Row arithmetic declared in the plan must survive every generation route. */
+export const MAX_PLANNED_COMPUTATIONS = 3;
+export interface FactoryPlannedComputation {
+  readonly outputColumn: string;
+  readonly intent: string;
+}
+
 export interface FactoryToolPlan {
   readonly key: string;
   readonly displayName: string;
@@ -33,6 +40,8 @@ export interface FactoryToolPlan {
   readonly sideEffect: SideEffect;
   readonly outputShape?: string;
   readonly argumentSummary?: string;
+  /** Undefined preserves legacy plans; [] explicitly requests no additional row arithmetic. */
+  readonly computations?: readonly FactoryPlannedComputation[];
   readonly reuse?: FactoryToolReuse;
   /**
    * 主データソース（`dataSourceId`）へ **join で束ねる** 追加のデータソース（ADR-0047 round 3）。
@@ -161,9 +170,20 @@ export function validateFactoryPlan(plan: FactoryPlan, ctx: { readonly dataSourc
     toolKeys.add(tool.key);
     nonEmpty(tool.displayName, `validateFactoryPlan: tools.${index}.displayName`);
     nonEmpty(tool.purpose, `validateFactoryPlan: tools.${index}.purpose`);
+    if (tool.computations !== undefined) {
+      if (!Array.isArray(tool.computations) || tool.computations.length > MAX_PLANNED_COMPUTATIONS) throw new FactoryValidationError(`validateFactoryPlan: tools.${index}.computations must be an array of at most ${MAX_PLANNED_COMPUTATIONS} entries`);
+      const outputs = new Set<string>();
+      tool.computations.forEach((computation, computationIndex) => {
+        nonEmpty(computation?.outputColumn, `validateFactoryPlan: tools.${index}.computations.${computationIndex}.outputColumn`);
+        nonEmpty(computation?.intent, `validateFactoryPlan: tools.${index}.computations.${computationIndex}.intent`);
+        if (outputs.has(computation.outputColumn)) throw new FactoryValidationError(`validateFactoryPlan: duplicate computation output: ${computation.outputColumn}`);
+        outputs.add(computation.outputColumn);
+      });
+    }
     // 再利用計画（reuse付き）は既存Toolのグラフをそのまま使うため、データソースを読まないTool
     // （例: 組み込みの現在日時）も選べるよう `dataSourceId: ''` を許す。新規作成計画は従来どおり必須。
     const reuse = tool.reuse;
+    if (reuse !== undefined && (tool.computations?.length ?? 0) > 0) throw new FactoryValidationError(`validateFactoryPlan: tools.${index} cannot add computations to a reused tool`);
     if (reuse === undefined) nonEmpty(tool.dataSourceId, `validateFactoryPlan: tools.${index}.dataSourceId`);
     else nonEmpty(reuse.internalId, `validateFactoryPlan: tools.${index}.reuse.internalId`);
     const omitsDataSource = reuse !== undefined && tool.dataSourceId === '';

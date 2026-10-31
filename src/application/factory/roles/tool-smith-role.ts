@@ -76,7 +76,7 @@ export const TOOL_SMITH_PROMPT: PromptSpec = {
   sections: [
     'system', 'task.single', 'task.joined', 'rules.header', 'rules.source.single', 'rules.source.joined',
     'rules.core', 'rules.join', 'rules.join.example', 'rules.category.header', 'rules.category.in',
-    'rules.category.omit', 'rules.tail', 'closing',
+    'rules.category.omit', 'rules.tail', 'rules.computations', 'closing',
   ],
 };
 
@@ -183,7 +183,7 @@ export class ToolSmithRole {
       prompt.render('rules.header'),
       sourceLine,
       prompt.render('rules.core', {
-        transformTypes: SAFE_TRANSFORM_TYPES.join(', '),
+        transformTypes: [...SAFE_TRANSFORM_TYPES, ...(input.toolPlan.computations?.length ? ['calculate'] : [])].join(', '),
         parsePeriodType: PARSE_PERIOD_TYPE,
         granularities: GRANULARITY_VOCABULARY,
         joinNodeType: JOIN_NODE_TYPE,
@@ -198,6 +198,7 @@ export class ToolSmithRole {
         filterOps: OP_VOCABULARY,
         valuelessOps: VALUELESS_OP_VOCABULARY,
       }),
+      ...(input.toolPlan.computations?.length ? [prompt.render('rules.computations')] : []),
       prompt.render('closing'),
     ].join('\n');
     const payload = {

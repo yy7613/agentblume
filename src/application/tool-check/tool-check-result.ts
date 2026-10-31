@@ -31,6 +31,7 @@ export interface ToolCheckRunError {
 }
 
 export interface ToolCheckRunResult {
+  readonly argumentNormalizations?: readonly { readonly field: string; readonly reason: 'exact-domain-string' }[];
   readonly tool: ToolCheckToolRef;
   /** passed = 全期待合格、failed = 期待不合格あり、error = 実行自体が失敗。 */
   readonly status: ToolCheckStatus;

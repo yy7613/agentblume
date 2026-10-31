@@ -32,6 +32,7 @@ import type { ToolRepository } from '../../domain/tool/tool-repository';
 import type { JsonCell, ToolCheckExpectations } from '../../domain/tool-check/tool-check-case';
 import { AgentRunError } from '../agent/errors';
 import { validateToolArguments } from '../agent/tool-schema';
+import { normalizeIdentifierArguments, withFileSourceSnapshots, type NormalizedToolArguments } from '../agent/tool-argument-normalization';
 import type { ResolveDataSourceGraphUseCase } from '../data-source/resolve-data-source-graph';
 import { DEFAULT_ROW_LIMIT, type EtlEngine } from '../etl/engine';
 import type { ResolveAiJudgmentsUseCase } from '../tool/resolve-ai-judgments';
@@ -98,9 +99,13 @@ export class RunToolCheckUseCase {
     let nodes: ToolCheckRunResult['nodes'];
     let judgments: readonly ToolCheckJudgmentTable[] = [];
     let judgedBy: string | undefined;
+    let normalized: NormalizedToolArguments | undefined;
+    const normalizationDetails = () => normalized?.normalizations.length ? { argumentNormalizations: normalized.normalizations } : {};
     try {
-      const row = validateToolArguments(tool.inputSchema, input.arguments);
-      const graph = graphWithArguments(tool, row);
+      normalized = await normalizeIdentifierArguments({ tool, arguments: input.arguments, engine: this.engine,
+        ...(this.resolveDataSources === undefined ? {} : { resolveFileSource: node => this.resolveDataSources!.fileSource(input.scope, node) }) });
+      const row = validateToolArguments(tool.inputSchema, normalized.arguments);
+      const graph = withFileSourceSnapshots(graphWithArguments(tool, row), normalized.sourceSnapshots);
       const withSources = this.resolveDataSources === undefined ? graph : await this.resolveDataSources.execute(input.scope, graph);
       const executable = this.resolveAiJudgments === undefined ? withSources : await this.resolveAiJudgments.execute(withSources);
       // sink ノードは preview の中では表を通すだけで外部へ書かない。ここで出力ディスパッチャは呼ばない。
@@ -115,13 +120,14 @@ export class RunToolCheckUseCase {
       const failure = toRunError(error);
       if (failure === undefined) throw error;
       const { status, assertions } = evaluateFailedRun(input.expectations, failure);
-      return { tool: ref, status, assertions, output: EMPTY_TABLE, rowCount: 0, nodes: [], durationMs: elapsed(), error: failure, checkedAt: this.now().toISOString() };
+      return { tool: ref, status, assertions, output: EMPTY_TABLE, rowCount: 0, nodes: [], durationMs: elapsed(), error: failure, checkedAt: this.now().toISOString(), ...normalizationDetails() };
     }
     const durationMs = elapsed();
     const { status, assertions } = evaluateSuccessfulRun(input.expectations, fullOutput, durationMs, judgments);
     const snapshots: ToolCheckJudgmentSnapshot[] = judgments.map((judgment) => ({ nodeId: judgment.nodeId, verdictColumn: judgment.verdictColumn, reasonColumn: judgment.reasonColumn, table: { schema: judgment.table.schema, rows: judgment.table.rows.slice(0, rowLimit) }, rowCount: judgment.table.rows.length }));
     return {
       tool: ref,
+      ...normalizationDetails(),
       status,
       assertions,
       output,

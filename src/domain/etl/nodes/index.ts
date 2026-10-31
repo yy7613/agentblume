@@ -35,6 +35,7 @@ import { agentOutputNode } from './agent-output';
 import { workspaceOutputNode } from './workspace-output';
 import { graphOutputNode } from './graph-output';
 import { summaryStatisticsNode } from './summary-statistics';
+import { linearModelNode } from './linear-model';
 import { correlationAnalysisNode } from './correlation-analysis';
 import { timeSeriesAnalysisNode } from './time-series-analysis';
 import { outlierFilterNode } from './outlier-filter';
@@ -118,6 +119,8 @@ export type { WorkspaceArtifactKind, WorkspaceOutputConfig, LegacyGraphWorkspace
 export { graphOutputNode } from './graph-output';
 export type { GraphArtifactMapping, EdgeListGraphArtifactMapping, CorrelationNetworkGraphArtifactMapping, GraphOutputConfig } from './graph-output';
 export { summaryStatisticsNode } from './summary-statistics';
+export { linearModelNode } from './linear-model';
+export type { LinearModelConfig } from './linear-model';
 export type { SummaryStatisticsConfig, SummaryMetric } from './summary-statistics';
 export { correlationAnalysisNode } from './correlation-analysis';
 export type { CorrelationAnalysisConfig } from './correlation-analysis';
@@ -158,6 +161,7 @@ export function createDefaultRegistry(): NodeRegistry {
   registry.register(workspaceOutputNode);
   registry.register(graphOutputNode);
   registry.register(summaryStatisticsNode);
+  registry.register(linearModelNode);
   registry.register(correlationAnalysisNode);
   registry.register(timeSeriesAnalysisNode);
   registry.register(outlierFilterNode);

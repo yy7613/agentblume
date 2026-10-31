@@ -338,8 +338,8 @@ describe('TemplateToolGeneration — 1 ソース', () => {
   });
 
   it('境界: 当てはまるテンプレートが 1 つも無ければ、モデルを一度も呼ばない', async () => {
-    // 期間ラベル列が無いデータは、どの同梱テンプレートも必須スロットを埋められない。
-    const harness = await setup([{ id: 'ds-flat', name: '明細', csv: 'id,amount\n1,100\n2,200' }]);
+    // 数値列も期間ラベル列も無いデータでは、同梱テンプレートの必須スロットを埋められない。
+    const harness = await setup([{ id: 'ds-flat', name: '明細', csv: 'id,name\na,foo\nb,bar' }]);
     const failed = expectFailed(await harness.generate({ ...monthlyPlan, dataSourceId: 'ds-flat' }));
 
     expect(failed.attempted).toBe(false);
@@ -458,5 +458,28 @@ describe('テンプレート経路の小さな部品', () => {
     } as unknown as Parameters<typeof describeSlots>[0];
     expect(describeSlots(template, { source: 'ds-1', periodColumn: '時点', valueColumns: ['売上', '客数'] }))
       .toBe('periodColumn=時点, valueColumns=[売上, 客数]');
+  });
+});
+
+
+describe('TemplateToolGeneration — observation statistics', () => {
+  it('generates and validates an executable regression tool in two role calls', async () => {
+    const harness = await setup([{ id: 'obs', name: 'observations', csv: 'x,y\n1,2\n2,4\n3,5' }]);
+    harness.tasks.enqueue(selected('linear-model'), json({ xColumn: 'x', yColumn: 'y', groupColumn: null, interceptMode: 'include' }));
+    const result = expectOk(await harness.generate({ ...monthlyPlan, dataSourceId: 'obs', purpose: 'OLS regression y on x', computations: [] }));
+    expect(result.template.id).toBe('linear-model');
+    expect(harness.roleCalls()).toBe(2);
+    expect(harness.expressions.requests).toHaveLength(0);
+    const rows = await runTool(harness, result.instantiated, { predict_x: 10 });
+    expect(rows[0]).toMatchObject({ slope: 1.5, n: 3, df: 1, status: 'ok', predictionX: 10 });
+    expect(rows[0]?.['prediction']).toBeCloseTo(47/3, 12);
+  });
+  it('generates an observation summary without requiring a time-period column', async () => {
+    const harness = await setup([{ id: 'obs', name: 'observations', csv: 'x,y\n1,2\n2,4\n3,5' }]);
+    harness.tasks.enqueue(selected('observation-summary'), json({ valueColumns: ['y'], groupColumn: null, orderColumn: 'x' }));
+    const result = expectOk(await harness.generate({ ...monthlyPlan, dataSourceId: 'obs', purpose: 'mean, both standard deviations and lag1', computations: [] }));
+    const rows = await runTool(harness, result.instantiated);
+    expect(rows[0]?.['mean']).toBeCloseTo(11/3, 12);
+    expect(rows[0]?.['lag1-autocorrelation']).toBeCloseTo(-1/42, 12);
   });
 });

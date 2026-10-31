@@ -111,6 +111,7 @@ function goalMaterial(goal: FactoryGoalInput): Record<string, unknown> {
 function planMaterial(plan: FactoryToolPlan): Record<string, unknown> {
   return {
     purpose: plan.purpose,
+    ...(plan.computations === undefined ? {} : { computations: plan.computations }),
     ...(plan.argumentSummary === undefined ? {} : { argumentSummary: plan.argumentSummary }),
     ...(plan.outputShape === undefined ? {} : { outputShape: plan.outputShape }),
   };

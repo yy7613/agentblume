@@ -85,8 +85,12 @@ function withOperatorEnums(schema: JsonSchemaObject, graph: ToolGraph, inputSche
 function listValueDescription(summary: ListValueArgumentSummary, nullable: boolean): string {
   const columns = summary.columns.map((column) => `'${column}'`).join(', ');
   const example = summary.samples.length === 0 ? '' : ` For example: "${summary.samples.join(',')}".`;
+  const numericSample = summary.samples.find((sample) => /^\d+$/.test(String(sample)));
+  const codeNote = numericSample !== undefined
+    ? ` This argument is a JSON STRING even for one numeric-looking identifier: use ${JSON.stringify(String(numericSample))}, enclosed in quotes. Preserve leading zeros exactly.`
+    : '';
   const target = summary.columns.length === 0 ? 'the filtered column' : `${summary.columns.length > 1 ? 'columns' : 'column'} ${columns}`;
-  const base = `Comma-separated list of values to match in ${target}. Pass every value you need in one call (for example "A,B,C") instead of calling the tool once per value.${example}`;
+  const base = `Comma-separated list of values to match in ${target}. Pass every value you need in one call (for example "A,B,C") instead of calling the tool once per value.${example}${codeNote}`;
   return nullable ? `${base} Omit it to skip this filter.` : base;
 }
 
@@ -132,7 +136,55 @@ export function toolToModelDefinition(tool: Tool): ModelToolDefinition {
   return {
     name,
     description: tool.agentTool?.description ?? `${tool.metadata.displayName} (${tool.sideEffect})`,
-    parameters: withListValueDescriptions(withOperatorEnums(schemaToJsonSchema(tool.inputSchema), tool.graph, tool.inputSchema), tool.graph, tool.inputSchema),
+    parameters: withPeriodArgumentDescriptions(withListValueDescriptions(withOperatorEnums(withStringArgumentDescriptions(schemaToJsonSchema(tool.inputSchema), tool.inputSchema), tool.graph, tool.inputSchema), tool.graph, tool.inputSchema), tool.graph, tool.inputSchema),
+  };
+}
+
+function withStringArgumentDescriptions(schema: JsonSchemaObject, inputSchema: Schema | undefined): JsonSchemaObject {
+  const properties = { ...schema.properties };
+  for (const column of inputSchema?.columns ?? []) {
+    if (column.type === 'string') properties[column.name] = { ...properties[column.name], description: 'JSON string: enclose the value in double quotes, including numeric-looking identifiers. Preserve leading zeros exactly.' };
+  }
+  return { ...schema, properties };
+}
+
+/** Describe the actual parse-period binding, rather than guessing dates from argument names. */
+function withPeriodArgumentDescriptions(schema: JsonSchemaObject, graph: ToolGraph, inputSchema: Schema | undefined): JsonSchemaObject {
+  const properties = { ...schema.properties };
+  for (const parser of graph.nodes.filter((node) => node.type === 'parse-period')) {
+    const config = parser.config as { startColumn?: string; fiscalYearStartMonth?: number };
+    const startColumn = config.startColumn ?? 'periodStart';
+    const month = String(config.fiscalYearStartMonth ?? 4).padStart(2, '0');
+    for (const node of graph.nodes.filter((candidate) => candidate.type === 'filter')) {
+      const filter = node.config as { conditions?: readonly Record<string, unknown>[] } & Record<string, unknown>;
+      for (const condition of filter.conditions ?? [filter]) {
+        const binding = condition['valueBinding'] as { source?: string; field?: string } | undefined;
+        const field = binding?.field;
+        if (condition['column'] !== startColumn || binding?.source !== 'agent-input' || field === undefined) continue;
+        if (!inputSchema?.columns.some((column) => column.name === field && column.type === 'date')) continue;
+        properties[field] = { ...properties[field], description: `ISO date bound (${String(condition['op'])}) to the parsed period START '${startColumn}'. For fiscal-year granularity, FY2024 starts on 2024-${month}-01. To include FY2024, an inclusive upper bound must include that start date; an earlier bound excludes FY2024. Omitting optional bounds removes the date-range filter, but the tool row limit still applies. Use the returned original period labels.` };
+      }
+    }
+  }
+  return { ...schema, properties };
+}
+
+/** Repair suggestions are sent back for a new, validated call; they never execute or guess missing identifiers. */
+export function toolArgumentRepairHint(tool: Tool, args: JsonObject): JsonObject {
+  const candidate: Record<string, JsonValue> = { ...args };
+  const changes: string[] = [];
+  for (const column of tool.inputSchema?.columns ?? []) {
+    const value = args[column.name];
+    if (column.type === 'string' && typeof value === 'number' && Number.isFinite(value)) {
+      candidate[column.name] = String(value);
+      changes.push(`Quote '${column.name}' as a JSON string. Leading zeros cannot be recovered from a number: verify the original identifier against the tool description.`);
+    }
+  }
+  const name = tool.agentTool?.name ?? tool.metadata.publishName;
+  return {
+    hint: `Call '${name}' again with corrected arguments that match its schema. ${changes.join(' ')}`.trim(),
+    ...(changes.length === 0 ? {} : { suggestedArguments: candidate }),
+    expectedParameters: toolToModelDefinition(tool).parameters as unknown as JsonObject,
   };
 }
 

@@ -75,19 +75,35 @@ export const FACTORY_OWNER = 'agent-factory';
 export const FACTORY_ANSWER_GUARD_HEADING = '# Answer discipline / 回答の規律 (factory-managed)';
 
 const ANSWER_GUARD_RULES_JA: readonly string[] = [
+  '- 利用者が指定した出力形式・列名・識別子・小数桁数を守る。JSONオブジェクトだけを求められた場合は、そのオブジェクトだけを返し、Markdownのコードフェンスや前後の説明を付けない。',
+  '- ツール結果にdisplayRowsとdisplayDecimalPlacesがあり、利用者の指定桁数と一致する場合、最終回答の数値はdisplayRowsの丸め済み値を使う。追加計算には元のrowsの精度を使い、識別子やラベルは書き換えない。',
   '- 数値・件数・順位は、必ずツールが返した行から引き写す。記憶や推測で数字を書かない。',
+  '- 予測や統計量を計算する引数・機能がツールにある場合は、それを指定して返された計算結果を使う。表示用に丸めた係数から再計算しない。丸めは回答の最後だけに行い、求められた統計量が返っていなければ、計算できるツールで確認するか未計算と説明する。',
   '- ツールが 0 件（または該当なし）を返したら、まず「その条件に当てはまる行が無い」と伝える。そのうえで、ツールの説明や返却内容にある実在の値（期間の書式・選べる地域や区分など）を挙げて、次に試す条件を提案する。0 件を「値が 0 である」と書き換えない。',
   '- 数値を答えるときは、その行の時点（期間）と単位を必ず併記する。期間の粒度（月次・四半期・年次・年度）が混ざりうるデータでは、どの粒度の値かも書く。',
   '- 行に注記（備考）が付いていたら、その内容をそのまま引用して添える。',
   '- ツールの引数は、ツールの説明が示す書式・値のとおりに渡す。当てはまる値が分からないときは、勝手に作らず利用者に確認する。',
+  '- 数値の出典名・統計表ID・参照先などがツール結果や契約にある場合は、回答にもその情報を添える。返されていない出典や識別子は作らない。',
+  '- 地域・期間・指標など、答えを一意にする条件が会話から定まらない場合は、任意の条件を選んで答えず、必要な条件を利用者に確認する。',
+  '- 行があっても値が null や欠測記号なら、0として扱わず欠測と伝える。指定の期間・粒度・地域に値が無い場合、別の期間や地域の値で黙って代用しない。',
+  '- 地域・期間などが指定され、ツールの収録範囲内の値を「欠測」「計算不能」と答えるときも、まだ確認していなければ対応するツールを実行して根拠を確認する。必要な条件が未指定なら、先にその条件を確認する。',
+  '- 比率や増減率は分母・単位・対象範囲を確認し、割合の差（ポイント）と相対的な変化率（%）を区別する。相関係数だけから因果関係や政策効果を断定しない。',
 ];
 
 const ANSWER_GUARD_RULES_EN: readonly string[] = [
+  '- Follow the requested output format, field names, identifiers and decimal precision. When the user requests only a JSON object, return that object alone without Markdown fences or surrounding explanation.',
+  '- When Tool results include displayRows and displayDecimalPlaces matching the requested precision, copy those rounded numeric values into the final answer. Use original rows for further calculation. Preserve identifiers and labels exactly.',
   '- Take every number, count and ranking verbatim from a row a tool returned. Never answer a number from memory or by guessing.',
+  '- When a tool has arguments or capabilities for a prediction or statistic, request that calculation and use the returned result. Do not recompute from rounded display coefficients. Round only the final answer; if a requested statistic was not returned, obtain it from a capable tool or explain that it has not been computed.',
   '- When a tool returns no rows (or reports no match), say first that nothing matches those conditions. Then offer the values that do exist (the accepted period format, the selectable regions or categories) and suggest what to try next. Never turn "no rows" into "the value is 0".',
   '- When you state a number, always cite the period (時点) and the unit from that same row. When the data mixes period granularities (monthly / quarterly / yearly / fiscal year), say which granularity the number is.',
   '- When a row carries a note (注記 / remarks), quote it alongside the number.',
   '- Pass tool arguments exactly in the format and values the tool description gives. If you do not know a valid value, ask the user instead of inventing one.',
+  '- When tool results or contracts provide a source name, statistical table ID or reference, include it in the answer. Never invent a source or identifier that was not provided.',
+  '- If the conversation does not determine the region, period, metric or other conditions needed for a unique answer, ask the user for those conditions instead of silently choosing them.',
+  '- A row with a null or missing-value marker is missing, not zero. Do not silently substitute another period, granularity or region when the requested observation is unavailable.',
+  '- For a fully specified request within a tool\'s coverage, verify missing or uncomputable values with that tool if you have not already checked them. Ask for required conditions first when they are unspecified.',
+  '- Check the denominator, unit and population scope of ratios and changes. Distinguish percentage-point differences from relative percent changes. A correlation coefficient alone does not establish causality or policy effects.',
 ];
 
 /**
@@ -365,7 +381,9 @@ export class GenerateAgentAssetsUseCase {
       // v43: テンプレート経路（テンプレートを選び、スロットを埋める）を**最初に**試す。
       // 失敗したら理由をイベントへ残して段階的生成へ落ちる（中断だけはそのまま抜ける。§4-5）。
       const templates = this.templateToolGeneration;
-      if (templates !== undefined && useGeneratedPaths) {
+      // Fixed-shape templates cannot promise all declared formulas (or their exact operands).
+      // Compile explicit row computations through the staged path instead of accepting a partial ratio template.
+      if (templates !== undefined && useGeneratedPaths && (toolPlan.computations?.length ?? 0) === 0) {
         try {
           const result = await templates.generate({
             scope: input.scope,
@@ -1004,6 +1022,7 @@ export async function generateToolWithRepair(deps: ToolRepairLoopDeps, request: 
       const normalizations = [...normalized.changes];
       // ノード語彙・木の形の構造検査（エンジンより手前で、修復の当て先が分かる文面で返す）。
       const shapeViolation = describeGraphShapeViolations(graph, {
+        ...(request.toolPlan.computations?.length ? { extraTransformTypes: [CALCULATE_TYPE] } : {}),
         sources: profilesForNormalization.map((profile) => ({
           dataSourceId: profile.dataSourceId,
           sourceType: profile.format === 'json' ? 'json-source' : 'csv-source',
@@ -1229,7 +1248,7 @@ export function describeGraphShapeViolations(
  * 「期間ラベル列と値の列が終端まで残っていること」「periodStart で並べ替えること」を**正しく**
  * 満たせないので、元の規則をそのまま当てると必ず差し戻しになる（ADR-0049）。
  */
-const AGGREGATING_NODE_TYPES: readonly string[] = ['summary-statistics', 'group-by', 'time-series-analysis', 'correlation-analysis'];
+const AGGREGATING_NODE_TYPES: readonly string[] = ['summary-statistics', 'group-by', 'time-series-analysis', 'correlation-analysis', 'linear-model'];
 /** 行をそのまま載せる `agent-output.shape`（ここだけが「証拠列が残っているか」を問える形）。 */
 const ROW_SHAPES: readonly string[] = ['rows', 'first-row'];
 /** 下限・上限の比較演算子（同じ引数を両方へ束縛すると「範囲」ではなく完全一致になる）。 */
@@ -1279,6 +1298,36 @@ export interface ToolSemanticContext {
   readonly propagation: PropagationResult;
   /** 設計時プレビュー。`join` が行を増やしていないかを実測で見るために使う（省略時はその検査を飛ばす）。 */
   readonly preview?: PreviewResult;
+}
+
+/** 必須の等価引数で単一時点に固定する単一ソースToolでは、値順のランキングを許す。 */
+function pinsRequiredPeriod(graph: ToolGraph, inputSchema: Schema | undefined, startColumn: string): boolean {
+  if (graph.nodes.some((node) => node.type === 'join')) return false;
+  const requiredDates = new Set((inputSchema?.columns ?? [])
+    .filter((column) => column.type === 'date' && !column.nullable).map((column) => column.name));
+  return graph.nodes.some((node) => {
+    if (node.type !== 'filter') return false;
+    // 年度を絞る前に上流で件数を切っていたら、必要な年度の行が既に失われうる。
+    const upstream = graph.edges.filter((edge) => edge.to === node.id).map((edge) => edge.from);
+    const visited = new Set<string>();
+    while (upstream.length > 0) {
+      const id = upstream.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      if (graph.nodes.some((candidate) => candidate.id === id && candidate.type === 'limit')) return false;
+      upstream.push(...graph.edges.filter((edge) => edge.to === id).map((edge) => edge.from));
+    }
+    const config = node.config as { combine?: unknown; conditions?: unknown } | null;
+    if (config?.combine === 'or') return false;
+    const conditions = Array.isArray(config?.conditions) ? config.conditions : [node.config];
+    return conditions.some((condition: unknown) => {
+      const c = condition as { column?: unknown; op?: unknown; disabled?: unknown; opBinding?: unknown;
+        valueBinding?: { source?: unknown; field?: unknown } } | null;
+      return c?.column === startColumn && c.op === 'eq' && c.disabled !== true && c.opBinding === undefined
+        && c.valueBinding?.source === 'agent-input' && typeof c.valueBinding.field === 'string'
+        && requiredDates.has(c.valueBinding.field);
+    });
+  });
 }
 
 /**
@@ -1336,6 +1385,22 @@ export function describeToolSemanticViolations(context: ToolSemanticContext): st
   const aggregates = graph.nodes.some((node) => AGGREGATING_NODE_TYPES.includes(node.type));
   const terminalSchema = propagation.nodes[propagation.terminalId]?.schema;
   const terminalColumns = new Set((terminalSchema?.columns ?? []).map((column) => column.name));
+  // A declaration is fulfilled only by a connected calculation whose numeric result reaches the output.
+  // A description mentioning a formula, or a disconnected calculate node, is not evidence of a working tool.
+  const ancestors = new Set<string>([propagation.terminalId]);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const edge of graph.edges) if (ancestors.has(edge.to) && !ancestors.has(edge.from)) {
+      ancestors.add(edge.from);
+      changed = true;
+    }
+  }
+  for (const computation of toolPlan.computations ?? []) {
+    const generated = graph.nodes.some((node) => node.type === 'calculate' && ancestors.has(node.id)
+      && (node.config as { outputColumn?: string }).outputColumn === computation.outputColumn);
+    const exposed = terminalSchema?.columns.some((column) => column.name === computation.outputColumn && column.type === 'number');
+    if (!generated || !exposed) problems.push(`required computation '${computation.outputColumn}' is missing from the executable output. Add a connected calculate node for: ${computation.intent}, and retain its numeric output column '${computation.outputColumn}' in the terminal table`);
+  }
   const parsePeriod = graph.nodes.find((node) => node.type === PARSE_PERIOD_TYPE);
   const parsePeriodConfig = (parsePeriod?.config ?? {}) as { column?: unknown; startColumn?: unknown };
   const startColumn = typeof parsePeriodConfig.startColumn === 'string' && parsePeriodConfig.startColumn !== ''
@@ -1394,7 +1459,7 @@ export function describeToolSemanticViolations(context: ToolSemanticContext): st
   }
 
   // B3: 期間を開いたなら、開始日で並べ替えてから絞る（並べ替えが無いと「最新」が取れない）。
-  if (parsePeriod !== undefined && rowShaped && !aggregates) {
+  if (parsePeriod !== undefined && rowShaped && !aggregates && !pinsRequiredPeriod(graph, inputSchema, startColumn)) {
     const sortKeys = graph.nodes
       .filter((node) => node.type === 'sort')
       .flatMap((node) => {
